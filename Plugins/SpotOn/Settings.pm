@@ -452,9 +452,10 @@ sub _clearLogsHandler {
 
     my $serverPrefs = preferences('server');
     my $spotonDir   = catdir($serverPrefs->get('cachedir'), 'spoton');
+    # W1: bsd_glob — plain glob() splits on whitespace (fails for paths with spaces)
     my @logFiles = (
-        glob(catfile($spotonDir, '*-connect.log')),
-        glob(catfile($spotonDir, '*-unified.log')),
+        bsd_glob(catfile($spotonDir, '*-connect.log')),
+        bsd_glob(catfile($spotonDir, '*-unified.log')),
     );
 
     my $deleted = 0;

@@ -5,6 +5,7 @@ use warnings;
 
 use base qw(Slim::Utils::Accessor);
 
+use File::Glob qw(bsd_glob);
 use File::Spec;
 use File::Spec::Functions qw(catdir catfile);
 use File::Temp qw(tempfile);
@@ -23,6 +24,11 @@ use constant MAX_INTERVAL_BEFORE_DISABLE_DISCOVERY => 5 * 60;
 # Cooldown duration before re-enabling discovery after crash-loop (D-02: 30 minutes)
 use constant DISCOVERY_COOLDOWN_SECONDS => 1800;
 
+# M12: async port-announcement poll — 0.1s interval, 50 attempts (5s cap).
+# Replaces the old synchronous usleep loop that blocked the LMS event loop.
+use constant PORT_POLL_INTERVAL     => 0.1;
+use constant PORT_POLL_MAX_ATTEMPTS => 50;
+
 __PACKAGE__->mk_accessor( rw => qw(
 	id
 	mac
@@ -39,8 +45,14 @@ __PACKAGE__->mk_accessor( rw => qw(
 	_stderrFh
 	_healthCheckCount
 	_lastHealthSession
-	_lastHealthRestart
+	_portTmpfile
+	_portPollAttempts
+	_portWaitStart
+	_stderrFile
 ) );
+# NOTE: _lastHealthRestart accessor removed (H9) — health-restart rate-limit
+# timestamps now live in DaemonManager's package-level %lastHealthRestart
+# (keyed by MAC) so they survive stopHelper's object deletion.
 
 # NOTE: No _streamMode accessor (unified daemon is always streaming when alive)
 # NOTE: No _streamStartTimes (single crash-loop check, no separate stream check)
@@ -167,18 +179,15 @@ sub start {
 		}
 	}
 
-	# T-29-07: Log the command BEFORE adding --lms-auth (security: no credentials in logs)
+	# T-29-07: no credentials in logs — argv no longer carries any.
 	if (main::INFOLOG && $log->is_info) {
 		$log->info("Starting SpotOn Unified daemon:\n$helperPath " . join(' ', @helperArgs));
 	}
 
-	# Add LMS authentication data AFTER the log statement (credentials must not appear in logs)
-	if ($connectEnabled && $serverPrefs->get('authorize')) {
-		push @helperArgs, '--lms-auth',
-			encode_base64(sprintf("%s:%s",
-				$serverPrefs->get('username'),
-				$serverPrefs->get('password')), '');
-	}
+	# H10/T-46-01: LMS credentials are passed via the SPOTON_LMS_AUTH env var
+	# (set in the env block below, deleted immediately after spawn) — argv is
+	# world-readable via /proc/<pid>/cmdline and `ps`. The env var must never
+	# be logged (T-29-07 discipline).
 
 	# Tempfile for synchronous port capture (cross-platform: IO::Select on pipes
 	# fails on Windows where select() only works on sockets).
@@ -229,6 +238,12 @@ sub start {
 	$ENV{SPOTON_PORT_FILE} = $port_tmpfile;
 	# SPOTON_LOG_FILE only when Proc::Background can't redirect stderr
 	$ENV{SPOTON_LOG_FILE} = $stderrFile if $stderrFile && main::ISWINDOWS;
+	# H10: credentials via env (see comment above) — same gate as the old argv path
+	if ($connectEnabled && $serverPrefs->get('authorize')) {
+		$ENV{SPOTON_LMS_AUTH} = encode_base64(sprintf("%s:%s",
+			$serverPrefs->get('username'),
+			$serverPrefs->get('password')), '');
+	}
 
 	eval {
 		$self->_proc( Proc::Background->new(
@@ -242,6 +257,7 @@ sub start {
 
 	delete $ENV{SPOTON_PORT_FILE};
 	delete $ENV{SPOTON_LOG_FILE};
+	delete $ENV{SPOTON_LMS_AUTH};   # H10: never leave credentials in LMS's environment
 
 	delete $ENV{RUST_LOG};
 
@@ -257,34 +273,75 @@ sub start {
 
 	# Store stderr file handle as accessor to prevent premature GC (Pitfall 3)
 	$self->_stderrFh($stderr_fh) if $stderr_fh;
+	$self->_stderrFile($stderrFile);
 
-	# Poll tempfile for port announcement (cross-platform, 5s timeout).
-	# Unified daemon writes stream_port=N to stdout which Proc::Background
-	# redirects to the tempfile.
-	my $portWaitStart = Time::HiRes::time();
+	main::INFOLOG && $log->is_info && $stderrFile && $log->info(
+		"SpotOn Unified daemon stderr logged to $stderrFile"
+	);
+
+	# M12: Poll the tempfile for the port announcement ASYNCHRONOUSLY via
+	# timer (0.1s interval, 50 attempts = 5s cap). The old synchronous usleep
+	# loop blocked the LMS event loop for up to 5s per daemon start (multiple
+	# players = serialized multi-second freezes). Contract check: every port
+	# consumer already guards with `alive && _streamPort` and tolerates a
+	# not-yet-known port; the async failure path kills the daemon so the
+	# 5s _streamAlivePoll restarts it, feeding the same crash-loop accounting
+	# (_checkStartTimes) as the old synchronous failure path.
+	# The daemon writes stream_port=N to stdout, which Proc::Background
+	# redirects to the tempfile (or SPOTON_PORT_FILE writes it directly).
+	$self->_portTmpfile($port_tmpfile);
+	$self->_portPollAttempts(0);
+	$self->_portWaitStart(Time::HiRes::time());
+	Slim::Utils::Timers::killTimers($self, \&_pollPortFile);
+	Slim::Utils::Timers::setTimer($self, Time::HiRes::time() + PORT_POLL_INTERVAL, \&_pollPortFile);
+}
+
+# M12: timer callback — completion continuation for the port announcement.
+# Handles success (parse + set _streamPort), daemon death, and timeout.
+sub _pollPortFile {
+	my $self = shift;
+
+	my $port_tmpfile = $self->_portTmpfile;
+	return unless $port_tmpfile;   # stop() cleared state — nothing to do
+
+	my $attempts = ($self->_portPollAttempts || 0) + 1;
+	$self->_portPollAttempts($attempts);
+
 	my $port_line;
-	for (1..50) {
-		if (-s $port_tmpfile) {
-			if (open(my $pfh, '<', $port_tmpfile)) {
-				$port_line = readline($pfh);
-				close($pfh);
-				last if defined $port_line && $port_line =~ /stream_port=\d+\s*$/;
-				undef $port_line;
-			}
+	if (-s $port_tmpfile) {
+		if (open(my $pfh, '<', $port_tmpfile)) {
+			$port_line = readline($pfh);
+			close($pfh);
+			undef $port_line
+				unless defined $port_line && $port_line =~ /stream_port=\d+\s*$/;
 		}
-		last unless $self->_proc && $self->_proc->alive;
-		Time::HiRes::usleep(100_000);
 	}
+
+	my $procAlive = $self->_proc && $self->_proc->alive;
+
+	# Not there yet, daemon still starting, attempts remain — poll again.
+	if (!defined $port_line && $procAlive && $attempts < PORT_POLL_MAX_ATTEMPTS) {
+		Slim::Utils::Timers::setTimer($self,
+			Time::HiRes::time() + PORT_POLL_INTERVAL, \&_pollPortFile);
+		return;
+	}
+
+	# Completion (success, daemon death, or timeout).
+	$self->_portTmpfile(undef);
+
 	# Clean up tempfile. On Windows the daemon may still hold the FD open
 	# (no POSIX unlink semantics), so unlink can fail — stale files are
 	# cleaned up on next daemon start via the glob below.
+	# W1: bsd_glob — plain glob() splits its argument on whitespace and
+	# silently fails for cache paths with spaces (e.g. C:\Program Files\...).
 	unlink $port_tmpfile;
-	for my $stale (glob(catfile(catdir($serverPrefs->get('cachedir'), 'spoton'), 'spoton-port-*'))) {
+	for my $stale (bsd_glob(catfile(catdir($serverPrefs->get('cachedir'), 'spoton'), 'spoton-port-*'))) {
 		unlink $stale;
 	}
 
 	if (!defined $port_line || $port_line !~ /^stream_port=(\d+)/) {
-		my $reason = defined $port_line ? "unexpected output: $port_line" : "timeout";
+		my $reason = defined $port_line ? "unexpected output: $port_line"
+		           : ($procAlive ? "timeout" : "daemon exited");
 		$log->warn("SpotOn Unified daemon did not announce HTTP stream port ($reason) - aborting");
 		$self->_proc->die if $self->_proc && $self->_proc->alive;
 		$self->_streamPort(undef);
@@ -293,18 +350,16 @@ sub start {
 
 	$self->_streamPort($1 + 0);
 	$log->warn(sprintf("[DIAG] unified_port_announce: mac=%s port=%d wait_ms=%.0f",
-		$self->mac, $self->_streamPort, (Time::HiRes::time() - $portWaitStart) * 1000))
+		$self->mac, $self->_streamPort,
+		(Time::HiRes::time() - ($self->_portWaitStart || Time::HiRes::time())) * 1000))
 		if $prefs->get('diagnosticMode');
 
 	main::INFOLOG && $log->is_info && $log->info(
 		"SpotOn Unified daemon started, stream port=" . $self->_streamPort
 	);
-	main::INFOLOG && $log->is_info && $stderrFile && $log->info(
-		"SpotOn Unified daemon stderr logged to $stderrFile"
-	);
 	$log->warn("[DIAG] daemon_start: mac=" . $self->mac . " pid=" . ($self->pid || 'unknown')
 		. " stream_port=" . $self->_streamPort . " name=" . $self->name
-		. " binary=$helperPath connect_enabled=" . ($connectEnabled ? 1 : 0))
+		. " connect_enabled=" . ($self->_connectEnabled ? 1 : 0))
 		if $prefs->get('diagnosticMode');
 }
 
@@ -385,8 +440,20 @@ sub _resetDiscoveryCooldown {
 	Plugins::SpotOn::Unified::DaemonManager->startHelper($client);
 }
 
+# M12: cancel a pending port poll and remove its tempfile (daemon is going away)
+sub _cancelPortPoll {
+	my $self = shift;
+	Slim::Utils::Timers::killTimers($self, \&_pollPortFile);
+	if (my $tmp = $self->_portTmpfile) {
+		unlink $tmp;
+		$self->_portTmpfile(undef);
+	}
+}
+
 sub stop {
 	my $self = shift;
+
+	$self->_cancelPortPoll;
 
 	if ($self->alive) {
 		main::INFOLOG && $log->is_info && $log->info(
@@ -405,6 +472,8 @@ sub stop {
 
 sub stopForSync {
 	my $self = shift;
+
+	$self->_cancelPortPoll;   # M12
 
 	# HTTP mode: plain process kill — no FIFO to preserve.
 	# Cache-dir (Spotify credentials) is intentionally NOT removed here.

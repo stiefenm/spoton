@@ -256,6 +256,16 @@ async fn main() {
         i += 1;
     }
 
+    // H10: LMS credentials via environment take precedence over the --lms-auth
+    // flag. argv is world-readable via /proc/<pid>/cmdline; the env var is set
+    // by Daemon.pm just for the spawn and deleted immediately after. The flag
+    // is retained for manual testing / backward compatibility. Never log the value.
+    if let Ok(env_auth) = std::env::var("SPOTON_LMS_AUTH") {
+        if !env_auth.is_empty() {
+            lms_auth = env_auth;
+        }
+    }
+
     // Convert LMS volume scale (0-100) to librespot u16 scale (0-65535)
     let initial_volume_u16: Option<u16> = initial_volume_lms.map(|v| (v as u32 * 65535 / 100) as u16);
 

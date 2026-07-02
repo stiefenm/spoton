@@ -4,6 +4,7 @@ use strict;
 use warnings;
 
 use File::Basename qw(basename);
+use File::Glob qw(bsd_glob);
 use File::Spec::Functions qw(catdir catfile);
 use Scalar::Util qw(blessed);
 
@@ -33,6 +34,21 @@ my $serverPrefs = preferences('server');
 my $log         = logger('plugin.spoton');
 
 my %helperInstances;
+
+# H8: crash-loop flags are reset ONCE per LMS process start (fresh chance after
+# an LMS restart) — initHelpers is re-invoked by the 60s watchdog, and resetting
+# on every invocation would wipe the crash-loop protection 60s after it engages.
+my $crashLoopFlagsWereReset = 0;
+
+# H9: health-restart rate-limit timestamps keyed by daemon MAC. Stored at
+# package level because stopHelper DELETES the Daemon object — an object-level
+# timestamp would be erased by the very restart it is rate-limiting.
+my %lastHealthRestart;
+
+# M10: subscription coderefs, kept so shutdown() can unsubscribe them —
+# anonymous subs passed inline can never be unregistered and accumulate
+# across plugin re-inits.
+my ($clientSubRef, $syncSubRef);
 
 # _isConnectEnabled($client)
 # Returns true if the per-player (or global fallback) Spotify Connect toggle is on.
@@ -103,17 +119,20 @@ sub init {
     my $class = shift;
 
     # Debounced init on client connect/disconnect (2s delay to batch events)
-    Slim::Control::Request::subscribe(sub {
+    # M10: coderef stored so shutdown() can unsubscribe it.
+    $clientSubRef = sub {
         Slim::Utils::Timers::killTimers($class, \&initHelpers);
         Slim::Utils::Timers::setTimer($class, Time::HiRes::time() + DAEMON_INIT_DELAY, \&initHelpers);
-    }, [['client'], ['new', 'disconnect']]);
+    };
+    Slim::Control::Request::subscribe($clientSubRef, [['client'], ['new', 'disconnect']]);
 
     # Differential restart on sync changes.
     # Stop each daemon via stopForSync (clears stream port, resets backoff) then
     # re-init with a 0.1s micro-delay instead of DAEMON_INIT_DELAY (2s), so
     # Spirc re-registration (when Connect is enabled) happens fast enough for the
     # Spotify app to see the refreshed device within ~10s.
-    Slim::Control::Request::subscribe(sub {
+    # M10: coderef stored so shutdown() can unsubscribe it.
+    $syncSubRef = sub {
         my $request = shift;
 
         return if $request->isNotCommand([['sync']]);
@@ -139,7 +158,8 @@ sub init {
         }
 
         Slim::Utils::Timers::setTimer($class, Time::HiRes::time() + 0.1, \&initHelpers);
-    }, [['sync']]);
+    };
+    Slim::Control::Request::subscribe($syncSubRef, [['sync']]);
 
     # Per-player Connect toggle reaction is handled by Settings.pm calling
     # initHelpers() directly after saving — setChange on global prefs namespace
@@ -160,19 +180,25 @@ sub initHelpers {
 
     # Reset crash-loop flags BEFORE evaluating daemons. Done here (not in
     # init()) because players may not be connected yet when init() runs at startup.
-    for my $client (Slim::Player::Client::clients()) {
-        if ($prefs->client($client)->get('discoveryDisabledByCrashLoop')) {
-            main::INFOLOG && $log->is_info && $log->info(
-                "Resetting discoveryDisabledByCrashLoop for " . $client->id
-            );
-            $prefs->client($client)->set('discoveryDisabledByCrashLoop', 0);
+    # H8: runs ONCE per LMS process — initHelpers is re-invoked by the 60s
+    # watchdog, and an unconditional reset would wipe the crash-loop cooldown
+    # 60s after it engages, letting the daemon crash-loop forever.
+    unless ($crashLoopFlagsWereReset) {
+        for my $client (Slim::Player::Client::clients()) {
+            if ($prefs->client($client)->get('discoveryDisabledByCrashLoop')) {
+                main::INFOLOG && $log->is_info && $log->info(
+                    "Resetting discoveryDisabledByCrashLoop for " . $client->id
+                );
+                $prefs->client($client)->set('discoveryDisabledByCrashLoop', 0);
+            }
         }
-    }
-    if ($prefs->get('disableDiscovery')) {
-        main::INFOLOG && $log->is_info && $log->info(
-            "Resetting global disableDiscovery flag (crash-loop fallback)"
-        );
-        $prefs->set('disableDiscovery', 0);
+        if ($prefs->get('disableDiscovery')) {
+            main::INFOLOG && $log->is_info && $log->info(
+                "Resetting global disableDiscovery flag (crash-loop fallback)"
+            );
+            $prefs->set('disableDiscovery', 0);
+        }
+        $crashLoopFlagsWereReset = 1;
     }
 
     main::DEBUGLOG && $log->is_debug && $log->debug("Checking SpotOn Unified helper daemons...");
@@ -296,7 +322,9 @@ sub _cleanupOrphanedLogs {
 
     return unless -d $baseDir;
 
-    my @logFiles = glob(catfile($baseDir, '*-unified.log'));
+    # W1: bsd_glob — plain glob() splits its argument on whitespace, silently
+    # failing for cache dirs with spaces (e.g. C:\Program Files\...).
+    my @logFiles = bsd_glob(catfile($baseDir, '*-unified.log'));
     return unless @logFiles;
 
     for my $f (@logFiles) {
@@ -491,11 +519,12 @@ sub _restartForHealth {
     return unless $helper && $helper->alive;
 
     # Rate-limit health restarts: no more than 1 per 5 minutes (WR-02).
-    # stopHelper deletes the Daemon object, losing _startTimes and thus crash-loop
-    # history. A permanently dead session (revoked credentials, broken token cache)
-    # would otherwise restart indefinitely at the health-check cadence (~60s).
+    # H9: timestamps live in the package-level %lastHealthRestart hash keyed by
+    # MAC — stopHelper DELETES the Daemon object, so an object-level timestamp
+    # would be erased by the very restart being rate-limited and a permanently
+    # dead session would restart indefinitely at the health-check cadence (~60s).
     my $now  = time();
-    my $last = $helper->_lastHealthRestart // 0;
+    my $last = $lastHealthRestart{ $helper->mac } // 0;
     if ($now - $last < 300) {
         main::INFOLOG && $log->is_info && $log->info(
             sprintf("Health restart suppressed for %s (last was %ds ago): %s",
@@ -503,7 +532,7 @@ sub _restartForHealth {
         );
         return;
     }
-    $helper->_lastHealthRestart($now);
+    $lastHealthRestart{ $helper->mac } = $now;
 
     main::INFOLOG && $log->is_info && $log->info(
         sprintf("Health check restart for %s: %s", $helper->mac, $reason)
@@ -552,6 +581,13 @@ sub shutdown {
     unless ($mode && $mode eq 'inactive-only') {
         Slim::Utils::Timers::killTimers($class, \&initHelpers);
         Slim::Utils::Timers::killTimers($class, \&_streamAlivePoll);
+
+        # M10: unregister the event subscriptions added in init() — otherwise
+        # they accumulate across plugin shutdown/re-init cycles.
+        for my $subRef ($clientSubRef, $syncSubRef) {
+            Slim::Control::Request::unsubscribe($subRef) if $subRef;
+        }
+        ($clientSubRef, $syncSubRef) = (undef, undef);
     }
 }
 
