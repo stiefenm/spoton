@@ -42,7 +42,9 @@ sub dontStopTheMusic {
 
     main::INFOLOG && $log->info("SpotOn DSTM: Auto-mixing Spotify tracks from current playlist");
 
-    my $accountId = $prefs->get('activeAccount') || '';
+    my $accountId = $prefs->client($client)->get('activeAccount')
+                 || $prefs->get('activeAccount')
+                 || '';
     unless ($accountId) {
         main::INFOLOG && $log->info("SpotOn DSTM: no active account, skipping");
         $cb->($client);

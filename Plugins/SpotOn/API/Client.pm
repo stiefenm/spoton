@@ -105,7 +105,8 @@ sub getMe {
 
 # search($class, $accountId, $params, $cb)
 # Searches Spotify. q is the search query; type defaults to "track,album,artist,playlist";
-# limit defaults to 10 (Dev Mode max per NAV-11); offset is optional for pagination.
+# limit defaults to 50. Note: Spotify docs claim Dev Mode max is 10, but empirically
+# limit=50 works and returns full results. Intentional — do not reduce to 10.
 sub search {
     my ($class, $accountId, $params, $cb) = @_;
     $class->_request('get', 'search', {
