@@ -822,6 +822,9 @@ sub _buildExplodedTrackItem {
     my $url     = 'spoton://track:' . $track->{id};
     return {
         name     => "$title - $artist",
+        title    => $title,
+        artist   => $artist,
+        album    => $albumName || '',
         line1    => $title,
         line2    => $artist . ($albumName ? " \x{2022} $albumName" : ''),
         url      => $url,
