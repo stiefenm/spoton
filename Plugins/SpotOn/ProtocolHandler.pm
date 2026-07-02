@@ -208,8 +208,10 @@ sub handleDirectError {
                           - ($client->controller()->playingSongElapsed() || 0);
             $remaining = 1 if $remaining < 1;
             $log->warn("Browse daemon 404 for $url — prefetch context, scheduling skip in ${remaining}s");
+            # M9: pass the failing URL — playback state can change before the
+            # timer fires, and _skipUnavailable must not skip the wrong track.
             Slim::Utils::Timers::killTimers($client, \&_skipUnavailable);
-            Slim::Utils::Timers::setTimer($client, Time::HiRes::time() + $remaining, \&_skipUnavailable);
+            Slim::Utils::Timers::setTimer($client, Time::HiRes::time() + $remaining, \&_skipUnavailable, $url);
             return;
         }
 
@@ -235,7 +237,7 @@ sub handleDirectError {
         delete $_browse404Retries{$retryKey};
         Slim::Utils::Timers::killTimers($client, \&_retryStream);
         Slim::Utils::Timers::killTimers($client, \&_skipUnavailable);
-        Slim::Utils::Timers::setTimer($client, Time::HiRes::time() + 0.1, \&_skipUnavailable);
+        Slim::Utils::Timers::setTimer($client, Time::HiRes::time() + 0.1, \&_skipUnavailable, $url);   # M9
         return;
     }
 
@@ -254,7 +256,27 @@ sub _retryStream {
 }
 
 sub _skipUnavailable {
-    my $client = shift;
+    my ($client, $url) = @_;
+
+    # M9: playback state may have changed between scheduling and firing
+    # (manual skip, new track, stop) — a late skip would kill the WRONG track.
+    # Only skip if the streaming song still matches the 404'd URL.
+    if ($url) {
+        my $streaming = $client->streamingSong();
+        my $streamUrl = '';
+        if ($streaming) {
+            $streamUrl = $streaming->streamUrl
+                || ($streaming->track ? ($streaming->track->url || '') : '')
+                || '';
+        }
+        unless ($streaming && $streamUrl eq $url) {
+            main::DEBUGLOG && $log->is_debug && $log->debug(
+                "_skipUnavailable: streaming song changed (now: "
+                . ($streamUrl || 'none') . ") — dropping stale skip for $url (M9)");
+            return;
+        }
+    }
+
     # Clean up any leftover retry state for this client
     my $prefix = $client->id . '|';
     delete @_browse404Retries{ grep { index($_, $prefix) == 0 } keys %_browse404Retries };
@@ -464,7 +486,12 @@ sub explodePlaylist {
             my $tracksData = $album->{tracks} || {};
             my $total      = $tracksData->{total} || 0;
 
+            # H5: pagination offsets and completion checks must count RAW page
+            # items. @allItems is filtered (tracks without an id are skipped),
+            # so using it as the API offset shifts every subsequent page back
+            # by one per skipped track — re-fetching duplicates.
             my @allItems;
+            my $fetched = scalar(@{ $tracksData->{items} || [] });
             for my $track (@{ $tracksData->{items} || [] }) {
                 next unless $track && $track->{id};
                 my $item = _buildExplodedTrackItem($track, $albumName, $albumCover);
@@ -472,7 +499,7 @@ sub explodePlaylist {
                 _cacheExplodedTrack($item->{url}, $track, $albumName, $albumCover, $albumId);
             }
 
-            if (scalar(@allItems) >= $total) {
+            if ($fetched >= $total) {
                 main::INFOLOG && $log->is_info && $log->info(
                     "explodePlaylist: album $albumId => " . scalar(@allItems) . " tracks"
                 );
@@ -493,14 +520,15 @@ sub explodePlaylist {
                         $cb->({ items => \@allItems });
                         return;
                     }
+                    $fetched += scalar(@{ $data->{items} });   # H5: raw count
                     for my $track (@{ $data->{items} }) {
                         next unless $track && $track->{id};
                         my $item = _buildExplodedTrackItem($track, $albumName, $albumCover);
                         push @allItems, $item;
                         _cacheExplodedTrack($item->{url}, $track, $albumName, $albumCover, $albumId);
                     }
-                    if (scalar(@allItems) < $total && @{ $data->{items} }) {
-                        $fetchPage->($offset + scalar(@{ $data->{items} }));
+                    if ($fetched < $total && @{ $data->{items} }) {
+                        $fetchPage->($fetched);
                     } else {
                         undef $fetchPage;
                         main::INFOLOG && $log->is_info && $log->info(
@@ -510,7 +538,7 @@ sub explodePlaylist {
                     }
                 });
             };
-            $fetchPage->(scalar(@allItems));
+            $fetchPage->($fetched);
         });
         return;
     }
