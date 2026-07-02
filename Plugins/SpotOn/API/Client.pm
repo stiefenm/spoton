@@ -5,7 +5,7 @@ use warnings;
 
 use Digest::MD5 qw(md5_hex);
 use JSON::XS::VersionOneAndTwo;
-use URI::Escape qw(uri_escape);
+use URI::Escape qw(uri_escape uri_escape_utf8);
 
 use Exporter 'import';
 our @EXPORT_OK = qw(SPOTON_DEFAULT_CLIENT_ID);
@@ -588,8 +588,17 @@ sub _request {
         $cb->(@_);
     };
 
-    # Step 5: Dispatch to flavor-aware request with optional bundled fallback
-    $class->_doFlavouredRequest($method, $cleanPath, $params, $userCb, $startFlavor, 0, $isMeFamily);
+    # Step 5: Dispatch to flavor-aware request with optional bundled fallback.
+    # H1: eval-guarded — any die after $inflightCount++ must exit through $userCb
+    # (the single decrement point with double-call guard), or the counter leaks
+    # until MAX_CONCURRENT_REQUESTS is reached and all API traffic deadlocks.
+    eval {
+        $class->_doFlavouredRequest($method, $cleanPath, $params, $userCb, $startFlavor, 0, $isMeFamily);
+        1;
+    } or do {
+        $log->error("Client: dispatch failed for $cleanPath: $@");
+        $userCb->(undef, { error => 'internal_error' });
+    };
 }
 
 # _resolveStartFlavor($class, $cleanPath, $isMeFamily)
@@ -621,6 +630,44 @@ sub _doFlavouredRequest {
 
     my $accountId = $params->{_accountId};
 
+    # M1/H1c: Build URL, query string, and cache key BEFORE any token fetch.
+    # The cache key is flavor-agnostic (accountId/path/query/locale only), so a
+    # cache hit must never trigger a token fetch (which may spawn a subprocess).
+    # eval-guarded: uri_escape_utf8 or interpolation dies must exit via $userCb.
+    # CR-01: Include accountId to prevent multi-account cache contamination.
+    my ($url, $queryStr);
+    my $built = eval {
+        $url = API_BASE . "/$cleanPath";
+        my @queryParts;
+        for my $key (sort keys %{$params}) {
+            next if $key =~ /^_/;
+            push @queryParts, "$key=" . uri_escape_utf8($params->{$key});
+        }
+        $queryStr = join('&', @queryParts);
+        if ($queryStr) {
+            $url .= '?' . $queryStr;
+        }
+        1;
+    };
+    unless ($built) {
+        $log->error("Client: request build failed for $cleanPath: $@");
+        $userCb->(undef, { error => 'internal_error' });
+        return;
+    }
+
+    unless ($params->{_noCache}) {
+        my $cacheKey = $queryStr
+            ? "spoton_resp_${accountId}_${cleanPath}?${queryStr}"
+            : "spoton_resp_${accountId}_${cleanPath}";
+        $cacheKey .= "_locale=$params->{_locale}" if $params->{_locale};
+        $params->{_cacheKey} = $cacheKey;
+        if (my $cached = $cache->get($cacheKey)) {
+            main::INFOLOG && $log->info("Client: cache hit for $cleanPath (no token fetch needed)");
+            $userCb->($cached);
+            return;
+        }
+    }
+
     require Plugins::SpotOn::API::TokenManager;
     Plugins::SpotOn::API::TokenManager->getToken($accountId, $flavor, sub {
         my $token = shift;
@@ -637,6 +684,15 @@ sub _doFlavouredRequest {
                 if (!$hasCustomId) {
                     $log->warn("Client: token retrieval failed — bundled fallback skipped (no custom client ID configured, bundled uses identical ID)");
                     $userCb->(undef, { error => 'no_token', flavor => $flavor });
+                    return;
+                }
+                # M3: bundled fallback must respect the bundled rate-limit gate —
+                # _request Step 2 only checks the START flavor's key, so an
+                # own-token failure storm would otherwise hammer the bundled ID
+                # during a 429 window.
+                if ($cache->get('spoton_rate_limit_bundled')) {
+                    $log->warn("Client: bundled fallback skipped for $cleanPath — bundled flavor is rate limited");
+                    $userCb->(undef, { error => 'rate_limited', code => 429 });
                     return;
                 }
                 my $maskedOwn = substr($prefs->get('clientId'), 0, 8) . '...';
@@ -657,34 +713,6 @@ sub _doFlavouredRequest {
         }
 
         $params->{_flavor} = $flavor;
-
-        # Build URL and compute cache key with query params.
-        # Cache key is built from path + sorted query string (CR-02).
-        # CR-01: Include accountId to prevent multi-account cache contamination.
-        # Note: cache key does NOT include flavor — response data is flavor-agnostic (API-03).
-        my $url = API_BASE . "/$cleanPath";
-        my @queryParts;
-        for my $key (sort keys %{$params}) {
-            next if $key =~ /^_/;
-            push @queryParts, "$key=" . uri_escape($params->{$key});
-        }
-        my $queryStr = join('&', @queryParts);
-        if ($queryStr) {
-            $url .= '?' . $queryStr;
-        }
-
-        unless ($params->{_noCache}) {
-            my $cacheKey = $queryStr
-                ? "spoton_resp_${accountId}_${cleanPath}?${queryStr}"
-                : "spoton_resp_${accountId}_${cleanPath}";
-            $cacheKey .= "_locale=$params->{_locale}" if $params->{_locale};
-            $params->{_cacheKey} = $cacheKey;
-            if (my $cached = $cache->get($cacheKey)) {
-                main::INFOLOG && $log->info("Client: cache hit for $cleanPath [flavor=$flavor]");
-                $userCb->($cached);
-                return;
-            }
-        }
 
         # T-02-10: Never log Authorization header value — only URL path, flavor, and method
         main::INFOLOG && $log->info("Client: $method $cleanPath [flavor=$flavor]");
@@ -787,6 +815,12 @@ sub _doFlavouredRequest {
                 if (!$isRetry && $flavor eq 'own'
                         && ($code == 403 || $code == 410
                             || ($code == 404 && $class->_is404Deprecated($cleanPath)))) {
+                    # M3: bundled fallback must respect the bundled rate-limit gate
+                    if ($cache->get('spoton_rate_limit_bundled')) {
+                        $log->warn("Client: bundled fallback skipped for $cleanPath ($code on own) — bundled flavor is rate limited");
+                        $userCb->(undef, { error => 'rate_limited', code => 429 });
+                        return;
+                    }
                     $log->warn("[DIAG] api_bundled_fallback: endpoint=$cleanPath trigger_code=$code") if $prefs->get('diagnosticMode');
                     my $maskedBundled = substr(SPOTON_DEFAULT_CLIENT_ID, 0, 8) . '...';
                     main::INFOLOG && $log->info(
@@ -821,7 +855,16 @@ sub _doFlavouredRequest {
             push @headers, 'Content-Length' => 0;
         }
 
-        $http->$method($url, @headers);
+        # H1c: this closure runs inside the async getToken callback — a die here
+        # would escape the eval in _request and leak $inflightCount. Route it
+        # through $userCb (double-call guard makes a late duplicate harmless).
+        eval {
+            $http->$method($url, @headers);
+            1;
+        } or do {
+            $log->error("Client: HTTP dispatch failed for $cleanPath [flavor=$flavor]: $@");
+            $userCb->(undef, { error => 'internal_error' });
+        };
     });
 }
 

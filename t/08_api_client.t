@@ -356,11 +356,24 @@ sub refreshToken {
 END
 
 # Stub: URI::Escape — not Perl core, bundled by LMS
+# Mirrors real behavior: uri_escape dies on codepoints > 255 (wide chars),
+# uri_escape_utf8 UTF-8-encodes first and never dies.
 write_stub($stub_dir, 'URI::Escape', <<'END');
 package URI::Escape;
 use Exporter 'import';
-our @EXPORT_OK = qw(uri_escape);
-sub uri_escape { my ($s) = @_; $s =~ s/([^A-Za-z0-9\-._~])/sprintf("%%%02X", ord($1))/ge; return $s; }
+our @EXPORT_OK = qw(uri_escape uri_escape_utf8);
+sub uri_escape {
+    my ($s) = @_;
+    die "Can't escape multibyte character" if $s =~ /[^\x00-\xFF]/;
+    $s =~ s/([^A-Za-z0-9\-._~])/sprintf("%%%02X", ord($1))/ge;
+    return $s;
+}
+sub uri_escape_utf8 {
+    my ($s) = @_;
+    utf8::encode($s) if utf8::is_utf8($s);
+    $s =~ s/([^A-Za-z0-9\-._~])/sprintf("%%%02X", ord($1))/ge;
+    return $s;
+}
 1;
 END
 
@@ -728,6 +741,39 @@ SKIP: {
     my $second_count = scalar(@Slim::Networking::SimpleAsyncHTTP::requests);
     is($second_count, 2,
         'LIB-09: checkShows with _noCache => 1 always dispatches HTTP (Client.pm does not cache)');
+}
+
+# H1: Wide-character query params must not die and must not leak the
+# inflight counter (regression test for uri_escape dying on codepoints > 255
+# AFTER $inflightCount++, which deadlocked the request pipeline).
+SKIP: {
+    skip "Client.pm not yet created", 3
+        unless -f $client_module;
+
+    Slim::Networking::SimpleAsyncHTTP::reset_requests();
+    Plugins::SpotOn::API::Client->reset() if Plugins::SpotOn::API::Client->can('reset');
+    Slim::Utils::Cache->new()->clear();
+    $Slim::Networking::SimpleAsyncHTTP::auto_mode = 'success';
+    $Slim::Networking::SimpleAsyncHTTP::auto_response_content = '{"tracks":{"items":[]}}';
+
+    my ($called, $got_result, $got_err);
+    my $lived = eval {
+        Plugins::SpotOn::API::Client->search('testacct', { q => "Mot\x{f6}rhead \x{263A}" }, sub {
+            $called = 1;
+            ($got_result, $got_err) = @_;
+        });
+        1;
+    };
+    ok($lived, 'H1: request with wide-char query param does not die');
+    ok($called, 'H1: callback is invoked (result or error) for wide-char query');
+
+    my $snap = Plugins::SpotOn::API::Client->statusSnapshot;
+    is($snap->{inflightCount}, 0,
+        'H1: inflight counter returns to 0 after wide-char request');
+
+    Slim::Utils::Cache->new()->clear();
+    Slim::Networking::SimpleAsyncHTTP::reset_requests();
+    Plugins::SpotOn::API::Client->reset() if Plugins::SpotOn::API::Client->can('reset');
 }
 
 # API-06: No LWP or SimpleSyncHTTP in API/ modules — grep test (runs immediately)
