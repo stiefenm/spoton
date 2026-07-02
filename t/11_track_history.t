@@ -335,6 +335,14 @@ BEGIN {
     *main::PERFMON     = sub () { 0 };
 }
 
+# M5: SPOTON_CACHE_VERSION is defined in Plugin.pm (single source of truth);
+# submodules resolve it via a fully-qualified call at load time. Production
+# always compiles Plugin.pm first — provide the constant for standalone loads.
+BEGIN {
+    package Plugins::SpotOn::Plugin;
+    use constant SPOTON_CACHE_VERSION => 4;
+}
+
 # Add to @INC
 unshift @INC, $stub_dir, $project_dir;
 

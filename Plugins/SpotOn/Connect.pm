@@ -41,7 +41,9 @@ my $serverPrefs = preferences('server');
 my $log         = logger('plugin.spoton');
 
 my $initialized;
-my $cache = Slim::Utils::Cache->new('spoton', 4);
+# M5: cache version lives in Plugin.pm (single source of truth). Plugin.pm is
+# always compiled first in production (this module is runtime-require'd).
+my $cache = Slim::Utils::Cache->new('spoton', Plugins::SpotOn::Plugin::SPOTON_CACHE_VERSION());
 
 # Track the MAC of the player currently owning the active Connect session.
 # Used by _onPause to suppress stale stop events from old players when switching.

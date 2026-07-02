@@ -334,13 +334,15 @@ unshift @INC, $stub_dir, $project_dir;
 require Plugins::SpotOn::Helper;
 
 # ============================================================
-# Load ProtocolHandler.pm and Plugin.pm
+# Load Plugin.pm and ProtocolHandler.pm
+# M5: Plugin.pm FIRST — it defines SPOTON_CACHE_VERSION, which submodules
+# resolve at load time (mirrors production load order).
 # ============================================================
-require_ok('Plugins::SpotOn::ProtocolHandler')
-    or BAIL_OUT("Failed to load ProtocolHandler.pm");
-
 require_ok('Plugins::SpotOn::Plugin')
     or BAIL_OUT("Failed to load Plugin.pm");
+
+require_ok('Plugins::SpotOn::ProtocolHandler')
+    or BAIL_OUT("Failed to load ProtocolHandler.pm");
 
 # ============================================================
 # Mock client object

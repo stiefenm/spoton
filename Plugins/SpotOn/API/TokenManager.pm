@@ -33,7 +33,9 @@ use constant SPOTON_DEFAULT_CLIENT_ID => do {
 
 my $log   = logger('plugin.spoton');
 my $prefs = preferences('plugin.spoton');
-my $cache = Slim::Utils::Cache->new('spoton', 4);
+# M5: cache version lives in Plugin.pm (single source of truth). Plugin.pm is
+# always compiled first in production (this module is runtime-require'd).
+my $cache = Slim::Utils::Cache->new('spoton', Plugins::SpotOn::Plugin::SPOTON_CACHE_VERSION());
 
 # Package-level discovery process reference
 my $discoveryProc;
@@ -292,6 +294,14 @@ sub stopDiscovery {
         File::Path::remove_tree($discoverDir);
         main::INFOLOG && $log->info("TokenManager: cleaned up empty __DISCOVER__ dir");
     }
+}
+
+# discoveryPid($class)
+# W2: Returns the PID of the running ZeroConf discovery process, or undef.
+# Consumed by Plugin.pm _killOrphanedProcesses so orphan cleanup does not
+# kill the discovery process (same helper binary name).
+sub discoveryPid {
+    return ($discoveryProc && $discoveryProc->alive) ? $discoveryProc->pid : undef;
 }
 
 # isDiscoveryRunning($class)

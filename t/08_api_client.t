@@ -391,6 +391,14 @@ BEGIN {
     *main::PERFMON     = sub () { 0 };
 }
 
+# M5: SPOTON_CACHE_VERSION is defined in Plugin.pm (single source of truth);
+# submodules resolve it via a fully-qualified call at load time. Production
+# always compiles Plugin.pm first — provide the constant for standalone loads.
+BEGIN {
+    package Plugins::SpotOn::Plugin;
+    use constant SPOTON_CACHE_VERSION => 4;
+}
+
 # Add paths to @INC
 unshift @INC, $stub_dir, $project_dir;
 
@@ -645,8 +653,12 @@ SKIP: {
     open(my $cfh, '<', $client_module) or die "Cannot open $client_module: $!";
     my $csrc = do { local $/; <$cfh> };
     close($cfh);
-    like($csrc, qr/new\('spoton',\s*4\)/,
-        "LIB-05: Client.pm cache namespace version is 4");
+    # M5: cache version is resolved from Plugin.pm's constant (single source
+    # of truth) — no hardcoded literal allowed in Client.pm.
+    like($csrc, qr/new\('spoton',\s*Plugins::SpotOn::Plugin::SPOTON_CACHE_VERSION\(\)\)/,
+        "LIB-05: Client.pm cache namespace version comes from Plugin.pm constant");
+    unlike($csrc, qr/new\('spoton',\s*\d/,
+        "LIB-05: Client.pm has no hardcoded cache version literal");
 }
 
 # LIB-06: saveShows sends PUT to /me/shows with ids query param

@@ -334,14 +334,26 @@ sub _killOrphanedProcesses {
             $isBusy = 1;
         }
 
-        # Track PIDs of active transcoding processes to protect them from kill
-        my $pid = $song->transcodeProcess() if $song->can('transcodeProcess');
+        # Track PIDs of active transcoding processes to protect them from kill.
+        # M7: 'my $x = ... if ...' is undefined behavior in Perl (stale values
+        # across iterations) — declare and assign separately.
+        # Note: LMS Song objects have no transcodeProcess method under the
+        # Unified daemon architecture — this guard is a defensive no-op there.
+        my $pid;
+        $pid = $song->transcodeProcess() if $song->can('transcodeProcess');
         $activePids{$pid} = 1 if $pid;
     }
 
     unless ($isBusy) {
         my ($helper) = Plugins::SpotOn::Helper->get();
         if ($helper) {
+            # W2: The ZeroConf discovery process runs the same helper binary —
+            # exclude its PID from orphan cleanup so a running discovery is
+            # not killed mid-flow.
+            my $discoveryPid;
+            if ($INC{'Plugins/SpotOn/API/TokenManager.pm'}) {
+                $discoveryPid = Plugins::SpotOn::API::TokenManager->discoveryPid;
+            }
             eval {
                 if (main::ISWINDOWS) {
                     my $name = basename($helper);
@@ -357,6 +369,7 @@ sub _killOrphanedProcesses {
                         for my $pid (@pids) {
                             next if $activePids{$pid};
                             next if $unifiedPids{$pid};
+                            next if $discoveryPid && $pid == $discoveryPid;   # W2
                             kill 'KILL', $pid;
                             main::DEBUGLOG && $log->is_debug && $log->debug("Killed orphaned spoton process PID $pid (Windows)");
                         }
@@ -371,11 +384,16 @@ sub _killOrphanedProcesses {
                             Plugins::SpotOn::Unified::DaemonManager->helperPids();
                     }
 
-                    (my $safeHelper = $helper) =~ s/'/'\\''/g;
+                    # M6: pgrep -f treats the pattern as an extended regex —
+                    # quotemeta the helper path FIRST so dots and other
+                    # metacharacters cannot match (and kill) foreign processes,
+                    # THEN apply the single-quote shell escaping.
+                    (my $safeHelper = quotemeta($helper)) =~ s/'/'\\''/g;
                     my @pids = map { /^\s*(\d+)/ ? $1 : () } `pgrep -f '$safeHelper'`;
                     for my $pid (@pids) {
                         next if $activePids{$pid};
                         next if $unifiedPids{$pid};    # CON-09: protect Unified daemon PIDs
+                        next if $discoveryPid && $pid == $discoveryPid;   # W2
                         kill 'TERM', $pid;
                         main::DEBUGLOG && $log->is_debug && $log->debug("Killed orphaned spoton process PID $pid");
                     }
@@ -519,6 +537,9 @@ sub _switchAccount {
 # Falls back to global activeAccount pref, then empty string.
 sub _getAccountId {
     my ($client) = @_;
+    # H4: $prefs->client(undef) crashes — web UI browse without an active
+    # player passes no client. Fall back to the global active account.
+    return $prefs->get('activeAccount') || '' unless $client;
     return $prefs->client($client)->get('activeAccount')
         || $prefs->get('activeAccount')
         || '';

@@ -343,6 +343,7 @@ END
 # Stub: Plugins::SpotOn::Plugin (needed by Status.pm _systemInfo for _pluginDataFor)
 write_stub($stub_dir, 'Plugins::SpotOn::Plugin', <<'END');
 package Plugins::SpotOn::Plugin;
+use constant SPOTON_CACHE_VERSION => 4;   # M5: mirrors real Plugin.pm constant
 sub _pluginDataFor { 'test-version' }
 1;
 END

@@ -32,7 +32,9 @@ use constant SPOTON_DEFAULT_CLIENT_ID => 'd420a117a32841c2b3474932e49fb54b';
 
 my $log   = logger('plugin.spoton');
 my $prefs = preferences('plugin.spoton');
-my $cache = Slim::Utils::Cache->new('spoton', 4);
+# M5: cache version lives in Plugin.pm (single source of truth). Plugin.pm is
+# always compiled first in production (this module is runtime-require'd).
+my $cache = Slim::Utils::Cache->new('spoton', Plugins::SpotOn::Plugin::SPOTON_CACHE_VERSION());
 
 # Module-level concurrency counter.
 # Must be reset to 0 in Plugin.pm::initPlugin via Client->reset()

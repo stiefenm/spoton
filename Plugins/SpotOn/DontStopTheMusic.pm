@@ -13,7 +13,9 @@ use Slim::Utils::Prefs;
 
 my $log   = Slim::Utils::Log->logger('plugin.spoton');
 my $prefs = Slim::Utils::Prefs::preferences('plugin.spoton');
-my $cache = Slim::Utils::Cache->new('spoton', 4);
+# M5: cache version lives in Plugin.pm (single source of truth). Plugin.pm is
+# always compiled first in production (this module is runtime-require'd).
+my $cache = Slim::Utils::Cache->new('spoton', Plugins::SpotOn::Plugin::SPOTON_CACHE_VERSION());
 
 # init()
 # Registers SpotOn as a DSTM provider.
