@@ -695,10 +695,18 @@ sub getMetadataFor {
     }
 
     # For Connect streams: try pluginData info first (set by Connect.pm _fetchTrackMetadata)
+    # M8: only when the playing song IS the requested URL — a lookup for a
+    # DIFFERENT connect- URL (history entry, stale queue item) must not get the
+    # live session's metadata (bleed). Non-matching URLs fall through to the
+    # cache-based history lookup below.
     if ($url && $url =~ m{spoton://connect-} && $client) {
         $client = $client->master if $client->can('master');
         my $connectSong = $client->playingSong();
-        if ($connectSong && (my $info = $connectSong->pluginData('info'))) {
+        if ($connectSong
+            && $connectSong->track
+            && $connectSong->track->url
+            && $connectSong->track->url eq $url
+            && (my $info = $connectSong->pluginData('info'))) {
             return $info;
         }
     }

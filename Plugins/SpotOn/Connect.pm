@@ -36,6 +36,11 @@ use constant VOLUME_DEBOUNCE => 0.5;
 # Seek debounce: coalesce rapid seek events (0.3s window)
 use constant SEEK_DEBOUNCE => 0.3;
 
+# H7: newTrack flag fallback — the flag only needs to suppress the transitional
+# stop-before-play burst (~1-2s); 10s is generous. Without a fallback, a failed
+# metadata fetch leaves the flag set forever and ALL stop events get swallowed.
+use constant NEW_TRACK_FALLBACK => 10;
+
 my $prefs       = preferences('plugin.spoton');
 my $serverPrefs = preferences('server');
 my $log         = logger('plugin.spoton');
@@ -114,6 +119,32 @@ sub shutdown {
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
+
+# H7: newTrack lifecycle helpers.
+# _armNewTrackFallback: called wherever newTrack => 1 is set — guarantees the
+# flag clears within NEW_TRACK_FALLBACK seconds even if the metadata callback
+# never completes (API failure, early return).
+sub _armNewTrackFallback {
+    my ($client) = @_;
+    Slim::Utils::Timers::killTimers($client, \&_clearNewTrack);
+    Slim::Utils::Timers::setTimer($client,
+        Time::HiRes::time() + NEW_TRACK_FALLBACK, \&_clearNewTrack);
+}
+
+# Timer callback — clears the flag after the fallback window.
+sub _clearNewTrack {
+    my ($client) = @_;
+    main::DEBUGLOG && $log->is_debug && $log->debug(
+        "newTrack fallback timer fired — clearing flag for " . $client->id . " (H7)");
+    $client->pluginData(newTrack => 0);
+}
+
+# _finishNewTrack: normal-path clear — kills the fallback timer and clears the flag.
+sub _finishNewTrack {
+    my ($client) = @_;
+    Slim::Utils::Timers::killTimers($client, \&_clearNewTrack);
+    $client->pluginData(newTrack => 0);
+}
 
 # _isStreamMode($client)
 # Returns true if the unified daemon for this client has an active stream port.
@@ -510,6 +541,15 @@ sub _connectEvent {
     # Volume handler (CON-11): check grace period before forwarding
     # -----------------------------------------------------------------
     if ($cmd eq 'volume') {
+        # H6: ignore Spirc volume events for players not in an active Connect
+        # session — a player that switched back to Browse must not have its
+        # volume overwritten (known error: connect-metadata-bleed).
+        unless (__PACKAGE__->isSpotifyConnect($client)) {
+            main::DEBUGLOG && $log->is_debug && $log->debug(
+                "Dropping Connect volume event for non-Connect player " . $client->id . " (H6)");
+            return;
+        }
+
         # Skip source-marked requests (would be from our own _onVolume, not from binary)
         return if $request->source && $request->source eq __PACKAGE__;
 
@@ -541,6 +581,15 @@ sub _connectEvent {
     # Seek handler (CON-13): always use startOffset, NEVER ['time', N] in stream mode
     # -----------------------------------------------------------------
     if ($cmd eq 'seek') {
+        # H6: ignore Spirc seek events for players not in an active Connect
+        # session (metadata/position bleed fix). CON-17 exception: seek can
+        # arrive BEFORE playlist play — accept while pendingConnect is set.
+        unless (__PACKAGE__->isSpotifyConnect($client) || $client->pluginData('pendingConnect')) {
+            main::DEBUGLOG && $log->is_debug && $log->debug(
+                "Dropping Connect seek event for non-Connect player " . $client->id . " (H6)");
+            return;
+        }
+
         my $position = $request->getParam('_p2');
         if (defined $position && $position ne '') {
             main::INFOLOG && $log->is_info && $log->info("Binary reported seek to: $position");
@@ -634,6 +683,7 @@ sub _connectEvent {
             # sequence to the binary, which would immediately re-pause Spotify.
             $client->pluginData(connectPauseTs => 0);
             $client->pluginData(newTrack => 1);
+            _armNewTrackFallback($client);   # H7
             $client->pluginData(connectStartTime => Time::HiRes::time());
 
             if ($currentUrl =~ m{^spoton://} && $currentUrl !~ m{spoton://connect-}) {
@@ -740,6 +790,7 @@ sub _connectEvent {
 
         # Mark new track in progress (prevents premature newsong handling)
         $client->pluginData(newTrack => 1);
+        _armNewTrackFallback($client);   # H7
         $client->pluginData(connectStartTime => Time::HiRes::time());
 
         # CON-17: store progress from initial seek event (already set in 'seek' handler above)
@@ -780,6 +831,16 @@ sub _connectEvent {
     # Change: track changed mid-playback (stream continues, metadata updates)
     # -----------------------------------------------------------------
     if ($cmd eq 'change') {
+        # H6: ignore Spirc change events for players not in an active Connect
+        # session — a change for a player back in Browse mode would overwrite
+        # Browse metadata (known error: connect-metadata-bleed). pendingConnect
+        # exception mirrors the seek handler (event may precede playlist play).
+        unless (__PACKAGE__->isSpotifyConnect($client) || $client->pluginData('pendingConnect')) {
+            main::DEBUGLOG && $log->is_debug && $log->debug(
+                "Dropping Connect change event for non-Connect player " . $client->id . " (H6)");
+            return;
+        }
+
         my $newTrackId  = $request->getParam('_p2');
         my $prevTrackId = $request->getParam('_p3');
 
@@ -801,7 +862,9 @@ sub _connectEvent {
             $client->pluginData(progress => 0);
         }
 
-        # Ensure player is playing — stop→change from skip leaves squeezelite paused
+        # Ensure player is playing — stop→change from skip leaves squeezelite paused.
+        # (isSpotifyConnect re-check kept although the H6 top guard makes it
+        # near-redundant: pendingConnect-only entry must not force playback.)
         if (!$client->isPlaying && __PACKAGE__->isSpotifyConnect($client)) {
             $client->pluginData(connectPauseTs => Time::HiRes::time());
             my $playReq = Slim::Control::Request->new($client->id, ['pause', 0]);
@@ -884,6 +947,14 @@ sub _connectEvent {
         # Only re-issue if this player was previously the active Connect player.
         # If not (e.g. another player took over), ignore.
         if ($_activeConnectPlayer && $_activeConnectPlayer eq $client->id) {
+            # M11: do not force-start playback if the user paused — a Spirc
+            # reconnect must not override the paused state.
+            if ($client->isPaused()) {
+                main::INFOLOG && $log->is_info && $log->info(
+                    "Spirc ready but player is paused — not forcing playback (M11)"
+                );
+                return;
+            }
             $client->pluginData(connectStartTime => Time::HiRes::time());
             my $ts      = int(Time::HiRes::time() * 1000);
             my $playReq = Slim::Control::Request->new($client->id, [
@@ -928,14 +999,22 @@ sub _fetchTrackMetadata {
                 "Stale API response: event=$eventUri, API=" . $trackInfo->{uri} . " — using event (T-05-14)"
             );
             $log->warn("[DIAG] metadata_stale: mac=" . $client->id . " event_uri=$eventUri api_uri=" . ($trackInfo->{uri} || 'none')) if $prefs->get('diagnosticMode');
-            $client->pluginData(newTrack => 0);
+            _finishNewTrack($client);   # H7
             return;
         }
 
-        return unless $trackInfo && $trackInfo->{name};
+        # H7: EVERY exit path of this callback must clear newTrack — a leaked
+        # flag swallows all subsequent stop events.
+        unless ($trackInfo && $trackInfo->{name}) {
+            _finishNewTrack($client);
+            return;
+        }
 
         my $song = $client->playingSong();
-        return unless $song;
+        unless ($song) {
+            _finishNewTrack($client);
+            return;
+        }
 
         my $title    = $trackInfo->{name};
         my $artist   = join(', ', map { $_->{name} } @{ $trackInfo->{artists} || [] });
@@ -1004,8 +1083,9 @@ sub _fetchTrackMetadata {
         # Fire newmetadata notification so LMS refreshes Now Playing
         Slim::Control::Request::notifyFromArray($client, ['newmetadata']);
 
-        # Clear newTrack flag — initial metadata fetch complete
-        $client->pluginData(newTrack => 0);
+        # Clear newTrack flag — initial metadata fetch complete (H7: also
+        # kills the fallback timer)
+        _finishNewTrack($client);
 
         main::INFOLOG && $log->is_info && $log->info(
             "Track metadata updated: $title — $artist"
