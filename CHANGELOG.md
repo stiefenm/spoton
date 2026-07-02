@@ -5,6 +5,28 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2.3.2] - 2026-07-02
+### Fixed
+- **API deadlock prevention**: `uri_escape_utf8` for non-ASCII search queries (Björk, CJK) — previously could leak `$inflightCount` and deadlock all API requests. Cache lookup now runs before token fetch to avoid unnecessary token refreshes.
+- **Token fetch timeout**: async token fetch with 15s watchdog replaces blocking backtick call that could hang the LMS event loop. Added in-flight coalescing to prevent token refresh stampede on cache expiry.
+- **Credentials cleanup**: `removeAccount` now deletes the credentials directory from disk.
+- **Web UI crash**: `_getAccountId` no longer crashes with undef `$client` when browsing SpotOn from the web UI without an attached player.
+- **Album pagination loop**: album explode now uses the raw API offset instead of filtered count, preventing an infinite loop when tracks are skipped (e.g., unavailable tracks).
+- **Connect metadata bleed**: `change`/`seek`/`volume` events now have Connect guards — metadata from Connect playback no longer overwrites Browse metadata. `newTrack` flag leak fixed with 10s expiry timer.
+- **Pause after Spotify disconnect**: `ready` handler no longer force-resumes playback after a Spotify app disconnect — player stays paused if it was paused.
+- **Crash-loop cooldown**: watchdog no longer resets the 30-minute cooldown every 60s. Health-restart rate-limit is now tied to the player MAC, not the daemon object.
+- **Credentials in process list**: LMS auth credentials are passed via environment variable instead of command-line argument, no longer visible in `ps aux`.
+- **Daemon subscriptions**: event subscriptions are now properly unsubscribed on shutdown.
+- **Async port wait**: daemon port detection no longer blocks the LMS event loop for up to 5s.
+- **Rapid-skip session teardown**: superseded Browse requests now return HTTP 409 instead of counting as failures that could tear down the Spotify session. `browse_cancel` properly aborts the stream.
+- **Stream relay generation**: reconnecting `/stream` clients get their own relay channel instead of sharing one — prevents audio corruption.
+- **Connect/Browse timeouts**: LMS notify calls in Rust have a 10s timeout instead of the 2min OS default. Graceful shutdown no longer hangs on active `/stream` clients.
+- **Reconnect backoff**: failed Browse reconnects use exponential backoff instead of infinite immediate retry.
+- **DSTM multi-account**: Don't Stop The Music now uses the per-client account instead of only the global account.
+- **Discovery PID tracking**: `bsd_glob` replaces glob for Windows compatibility. Discovery process PID is tracked for clean shutdown.
+- **Cache version constant**: unified across all modules to prevent silent cache schema divergence.
+- **pgrep safety**: helper process detection uses `quotemeta` to prevent regex injection from binary paths.
+
 ## [2.3.1] - 2026-07-02
 ### Fixed
 - **Bitrate preference**: `--bitrate` flag is now wired to the librespot daemon, honoring the per-player bitrate preference (96/160/320 kbps). NowPlaying metadata shows the actual stream bitrate instead of always displaying "320k". Fixes #97.
