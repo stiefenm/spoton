@@ -12,6 +12,7 @@ use Slim::Utils::Versions;
 use Slim::Utils::Cache;
 use Slim::Utils::Network;
 use Digest::MD5 qw(md5_hex);
+use Time::HiRes;
 
 my $log   = logger('plugin.spoton');
 my $prefs = preferences('plugin.spoton');
@@ -995,7 +996,8 @@ sub _asyncRefetch {
         # Notify LMS to refresh NowPlaying display
         if ($client) {
             require Slim::Control::Request;
-            $client->currentPlaylistUpdateTime(Time::HiRes::time());
+            $client->currentPlaylistUpdateTime(Time::HiRes::time())
+                if $client->can('currentPlaylistUpdateTime');
             Slim::Control::Request::notifyFromArray($client, ['newmetadata']);
         }
     };
