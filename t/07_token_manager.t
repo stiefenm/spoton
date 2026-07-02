@@ -292,12 +292,50 @@ sub content { $_[0]->{_content} }
 1;
 END
 
-# Stub: URI::Escape — uri_escape is used by Client.pm
+# Stub: URI::Escape — uri_escape/uri_escape_utf8 are used by Client.pm
 write_stub($stub_dir, 'URI::Escape', <<'END');
 package URI::Escape;
 use Exporter 'import';
-our @EXPORT_OK = qw(uri_escape);
-sub uri_escape { my ($s) = @_; $s =~ s/([^A-Za-z0-9\-._~])/sprintf("%%%02X", ord($1))/ge; return $s; }
+our @EXPORT_OK = qw(uri_escape uri_escape_utf8);
+sub uri_escape {
+    my ($s) = @_;
+    die "Can't escape multibyte character" if $s =~ /[^\x00-\xFF]/;
+    $s =~ s/([^A-Za-z0-9\-._~])/sprintf("%%%02X", ord($1))/ge;
+    return $s;
+}
+sub uri_escape_utf8 {
+    my ($s) = @_;
+    utf8::encode($s) if utf8::is_utf8($s);
+    $s =~ s/([^A-Za-z0-9\-._~])/sprintf("%%%02X", ord($1))/ge;
+    return $s;
+}
+1;
+END
+
+# Stub: Proc::Background — records spawn calls, writes configurable output
+# to the stdout redirect target (mimics the merged stdout+stderr tempfile).
+write_stub($stub_dir, 'Proc::Background', <<'END');
+package Proc::Background;
+our @spawn_calls;
+our $mock_output = '';
+our $mock_alive  = 0;
+our $mock_exit   = 0;
+sub new {
+    my ($class, $opts, @args) = @_;
+    push @spawn_calls, { opts => $opts, args => [@args] };
+    if ($opts && ref $opts eq 'HASH' && $opts->{stdout} && !ref $opts->{stdout}) {
+        if (open(my $fh, '>', $opts->{stdout})) {
+            print $fh $mock_output;
+            close($fh);
+        }
+    }
+    return bless { pid => 12345, died => 0 }, $class;
+}
+sub alive { $mock_alive }
+sub pid   { $_[0]->{pid} }
+sub die   { $_[0]->{died} = 1 }
+sub wait  { $mock_exit }
+sub reset_spawns { @spawn_calls = (); $mock_output = ''; $mock_alive = 0; $mock_exit = 0 }
 1;
 END
 
@@ -336,6 +374,7 @@ require Slim::Utils::Prefs;
 Slim::Utils::Prefs->import();
 require Slim::Utils::Log;
 Slim::Utils::Log->import();
+require Proc::Background;   # stub — used by _fetchKeymasterToken (H2)
 
 # ============================================================
 # Tests: TokenManager.pm (skip if not yet created)
@@ -404,12 +443,21 @@ SKIP: {
     }
 
     # AUTH-05: removeAccount removes from prefs and cache
+    # M2: removeAccount also deletes the account's credentials dir from disk
     {
         reset_state();
         preferences('plugin.spoton')->set('accounts', {
             'remove_me' => { displayName => 'Remove', spotifyUserId => 'removeme' },
         });
         Slim::Utils::Cache->new()->set('spoton_token_remove_me_own', 'cached_tok', 3600);
+
+        # M2: seed a credentials dir for the account
+        use File::Spec::Functions qw(catdir catfile);
+        my $acct_dir = catdir($cache_dir, 'spoton', 'remove_me');
+        File::Path::make_path($acct_dir);
+        open(my $cfh, '>', catfile($acct_dir, 'credentials.json')) or die "seed creds: $!";
+        print $cfh '{"username":"removeme"}';
+        close($cfh);
 
         Plugins::SpotOn::API::TokenManager->removeAccount('remove_me');
 
@@ -418,6 +466,10 @@ SKIP: {
             'AUTH-05: removeAccount removes account from prefs');
         ok(!defined Slim::Utils::Cache->new()->get('spoton_token_remove_me_own'),
             'AUTH-05: removeAccount clears cached access token');
+        ok(!-d $acct_dir,
+            'M2: removeAccount deletes the account credentials dir from disk');
+        ok(-d catdir($cache_dir, 'spoton'),
+            'M2: shared spoton cache root is NOT removed');
     }
 
     # --------------------------------------------------------
@@ -450,30 +502,55 @@ SKIP: {
     }
 
     # --------------------------------------------------------
-    # Keymaster: _fetchKeymasterToken via mocked binary
+    # Keymaster: _fetchKeymasterToken spawns async via Proc::Background (H2)
     # --------------------------------------------------------
     {
         reset_state();
-        # Clear any cached token for this account
-        Slim::Utils::Cache->new()->remove('spoton_token_keymaster_acct_own');
+        Proc::Background::reset_spawns();
+        $Proc::Background::mock_output = '{"accessToken":"async_tok","expiresIn":3600}';
+        # mock_alive = 0: process "exits" immediately, first poll completes fetch
 
-        # Override the binary spawn via local *CORE::GLOBAL::readpipe — not feasible.
-        # Instead test the deferred timer path: verify that a setTimer call was made.
-        my $timer_called = 0;
-        {
-            no warnings 'redefine';
-            local *Slim::Utils::Timers::setTimer = sub {
-                $timer_called++;
-                # Do NOT execute the callback — binary not available in test env
-            };
+        my $got_token;
+        Plugins::SpotOn::API::TokenManager->_fetchKeymasterToken('keymaster_acct', 'own', sub {
+            $got_token = shift;
+        });
 
-            # Must reload the module's reference — use direct call
-            Plugins::SpotOn::API::TokenManager->_fetchKeymasterToken('keymaster_acct', 'own', sub {
-                # callback intentionally not reached (timer not executed)
-            });
-        }
-        ok($timer_called >= 1,
-            'Keymaster: _fetchKeymasterToken defers binary spawn via Timers::setTimer');
+        is(scalar(@Proc::Background::spawn_calls), 1,
+            'H2: _fetchKeymasterToken spawns via Proc::Background (no blocking backtick)');
+        my $call = $Proc::Background::spawn_calls[0];
+        ok((grep { $_ eq '--get-token' } @{ $call->{args} }),
+            'H2: --get-token passed as argument-list element (no shell string)');
+        ok(scalar(@Slim::Utils::Timers::set_calls) >= 1,
+            'H2: poll timer armed — fetch is asynchronous');
+        ok(!defined $got_token,
+            'H2: callback not yet fired before poll timer runs (truly async)');
+
+        # Run the deferred poll — process has exited, output parsed, token delivered
+        Slim::Utils::Timers::run_deferred();
+        is($got_token, 'async_tok',
+            'H2: token delivered via async poll completion');
+    }
+
+    # --------------------------------------------------------
+    # H3: concurrent getToken calls for same account/flavor coalesce
+    # --------------------------------------------------------
+    {
+        reset_state();
+        Proc::Background::reset_spawns();
+        $Proc::Background::mock_output = '{"accessToken":"coal_tok","expiresIn":3600}';
+
+        my @results;
+        Plugins::SpotOn::API::TokenManager->getToken('coalacct', 'own', sub { push @results, $_[0] });
+        Plugins::SpotOn::API::TokenManager->getToken('coalacct', 'own', sub { push @results, $_[0] });
+
+        is(scalar(@Proc::Background::spawn_calls), 1,
+            'H3: two concurrent getToken calls start exactly one --get-token subprocess');
+
+        Slim::Utils::Timers::run_deferred();
+
+        is(scalar(@results), 2, 'H3: both queued callbacks fire on completion');
+        is($results[0], 'coal_tok', 'H3: first waiter receives the token');
+        is($results[1], 'coal_tok', 'H3: second (coalesced) waiter receives the same token');
     }
 
     # --------------------------------------------------------

@@ -7,6 +7,7 @@ use Digest::MD5 qw(md5_hex);
 use JSON::XS::VersionOneAndTwo;
 
 use File::Spec::Functions qw(catdir catfile);
+use File::Temp qw(tempfile);
 
 use Slim::Utils::Cache;
 use Slim::Utils::Log;
@@ -19,6 +20,8 @@ use constant TOKEN_EXPIRY_BUFFER   => 300;       # Refresh 5 min before expiry
 use constant TOKEN_REFRESH_TIMER   => 45 * 60;   # 45 minute proactive refresh cycle
 use constant DISCOVERY_TIMEOUT     => 60 * 15;   # 15 min Proc::Background watchdog
 use constant DISCOVER_DIR          => '__DISCOVER__'; # temp dir during ZeroConf
+use constant TOKEN_FETCH_TIMEOUT   => 15;        # H2: watchdog for --get-token subprocess
+use constant TOKEN_FETCH_POLL      => 0.2;       # H2: async poll interval (seconds)
 use constant SPOTIFY_ME_URL        => 'https://api.spotify.com/v1/me';
 # Import SPOTON_DEFAULT_CLIENT_ID from Client.pm (single source of truth — D-04).
 # Using require + direct call avoids circular compile-time dependency
@@ -34,6 +37,11 @@ my $cache = Slim::Utils::Cache->new('spoton', 4);
 
 # Package-level discovery process reference
 my $discoveryProc;
+
+# H3: In-flight token fetch coalescing — keyed by "accountId|flavor".
+# Each value is an arrayref of pending callbacks. Concurrent cache misses for
+# the same key share a single --get-token subprocess.
+my %tokenFetchInflight;
 
 # ============================================================
 # Public class methods
@@ -81,6 +89,24 @@ sub removeAccount {
     $cache->remove("spoton_token_${accountId}_own");
     $cache->remove("spoton_token_${accountId}_bundled");
     $cache->remove("spoton_token_$accountId");  # legacy key — safe migration net
+
+    # M2: Remove the account's credentials directory from disk — a "removed"
+    # account must not leave its Spotify credentials.json behind.
+    # Same dir _fetchKeymasterToken uses as --cache for this accountId.
+    # Safety: only the per-ACCOUNT dir, never the shared spoton cache root —
+    # assert the path ends in the accountId segment before removing.
+    if ($accountId) {
+        my $serverPrefs = preferences('server');
+        my $acctDir = catdir($serverPrefs->get('cachedir'), 'spoton', $accountId);
+        if (-d $acctDir && $acctDir =~ m{[/\\]\Q$accountId\E$}) {
+            require File::Path;
+            if (eval { File::Path::remove_tree($acctDir); 1 }) {
+                main::INFOLOG && $log->info("TokenManager: removed credentials dir for account $accountId");
+            } else {
+                $log->warn("TokenManager: failed to remove credentials dir for $accountId: $@");
+            }
+        }
+    }
 
     # Clear active account if it was this one
     my $active = $prefs->get('activeAccount') || '';
@@ -363,8 +389,10 @@ sub _setupAccountFromCredentials {
 # Spawns "spoton --get-token [--client-id X] --cache {cachedir}/spoton/{accountId}".
 # Flavor dispatch: 'bundled' = no --client-id; 'own' = own Client-ID from prefs/constant.
 # Backward-compatible: _fetchKeymasterToken($id, $cb) maps to flavor='own'.
-# WR-01: Deferred via Timer to avoid blocking event loop.
-# T-04.3-05: Single-quote escaping on $helper and $cacheDir (shell injection prevention).
+# H2: Non-blocking — Proc::Background + timer polling with a 15s watchdog.
+#     A hung librespot binary can no longer freeze the LMS event loop.
+#     Argument LIST spawn (no shell) makes manual quoting unnecessary (Windows-safe).
+# H3: Concurrent fetches for the same account/flavor coalesce to one subprocess.
 # T-04.3-06: Never logs $result->{accessToken} — logs only accountId, flavor, and TTL.
 sub _fetchKeymasterToken {
     my ($class, $accountId, $flavorOrCb, $cb) = @_;
@@ -378,57 +406,129 @@ sub _fetchKeymasterToken {
         $flavor = $flavorOrCb // 'own';
     }
 
+    # H3: Coalesce concurrent fetches for the same account/flavor.
+    my $inflightKey = "${accountId}|${flavor}";
+    if ($tokenFetchInflight{$inflightKey}) {
+        main::INFOLOG && $log->info("TokenManager: coalescing token fetch for $accountId ($flavor)");
+        push @{ $tokenFetchInflight{$inflightKey} }, $cb;
+        return;
+    }
+    $tokenFetchInflight{$inflightKey} = [$cb];
+
+    # Drains ALL queued callbacks with the same result. The key is deleted
+    # BEFORE invoking callbacks so a callback that re-triggers a fetch does
+    # not self-coalesce into a dead entry.
+    my $resolve = sub {
+        my ($token) = @_;
+        my $queue = delete $tokenFetchInflight{$inflightKey} || [];
+        $_->($token) for @{$queue};
+    };
+
     require Plugins::SpotOn::Helper;
     my ($helper) = Plugins::SpotOn::Helper->get();
     unless ($helper) {
         $log->error("TokenManager: binary not found for account $accountId ($flavor)");
-        $cb->(undef);
+        $resolve->(undef);
         return;
     }
 
     my $serverPrefs = preferences('server');
     my $cacheDir    = catdir($serverPrefs->get('cachedir'), 'spoton', $accountId);
 
-    # T-04.3-05: Shell quoting for injection prevention.
-    # Windows cmd.exe requires double-quotes; Unix shells use single-quotes.
-    my ($q, $escFn);
-    if (main::ISWINDOWS) {
-        $q = '"';
-        $escFn = sub { my $s = $_[0]; $s =~ s/"/\\"/g; $s =~ s/%/%%/g; $s };
-    } else {
-        $q = "'";
-        $escFn = sub { (my $s = $_[0]) =~ s/'/'\\''/g; $s };
-    }
-    my $safeHelper = $escFn->($helper);
-    my $safeDir    = $escFn->($cacheDir);
-    my $stderr     = '2>&1';
-
-    my ($cmd, $usedClientId);
+    my $usedClientId;
     if ($flavor eq 'bundled') {
         $usedClientId = SPOTON_DEFAULT_CLIENT_ID;
-        my $safeBundledId = $escFn->($usedClientId);
-        $cmd = sprintf("${q}%s${q} --get-token --cache ${q}%s${q} --client-id ${q}%s${q} $stderr",
-            $safeHelper, $safeDir, $safeBundledId);
     } else {
         my $ownClientId = $prefs->get('clientId');
         $usedClientId = $ownClientId || SPOTON_DEFAULT_CLIENT_ID;
-        my $safeClientId = $escFn->($usedClientId);
-        $cmd = sprintf("${q}%s${q} --get-token --cache ${q}%s${q} --client-id ${q}%s${q} $stderr",
-            $safeHelper, $safeDir, $safeClientId);
         if (!$ownClientId) {
             main::INFOLOG && $log->info("TokenManager: flavor=own has no custom client ID — using bundled ID (fallback will be identical)");
         }
     }
+
+    # H2: Argument LIST spawn — no shell involved, so no quoting/escaping needed
+    # (replaces the old T-04.3-05 manual shell-quoting, which is now obsolete).
+    my @args = ($helper, '--get-token', '--cache', $cacheDir, '--client-id', $usedClientId);
+
     my $maskedId = substr($usedClientId, 0, 8) . '...';
     main::INFOLOG && $log->info("TokenManager: --get-token for account $accountId ($flavor, client_id=$maskedId)");
 
-    # Defer via Timer — prevents event-loop block (~100-500ms Mercury/AP connection)
-    # WR-03: blocking backtick is a known limitation; non-blocking fork+waitpid
-    # interferes with Perl's open('-|') child management. Proper async requires
-    # Proc::Background or AnyEvent — deferred to a future phase.
-    Slim::Utils::Timers::setTimer(undef, Time::HiRes::time() + 0.1, sub {
-        my $output = `$cmd`;
-        my $exit   = $? >> 8;
+    # Tempfile for stdout+stderr capture (same pattern as Daemon.pm port capture).
+    # stderr is merged into the same file to preserve Keymaster error diagnostics.
+    my $tmpDir = catdir($serverPrefs->get('cachedir'), 'spoton');
+    unless (-d $tmpDir) {
+        require File::Path;
+        eval { File::Path::make_path($tmpDir) };
+    }
+    my ($out_fh, $out_tmpfile);
+    eval {
+        ($out_fh, $out_tmpfile) = tempfile('spoton-token-XXXX',
+            DIR    => $tmpDir,
+            UNLINK => 0,
+        );
+    };
+    if ($@ || !$out_tmpfile) {
+        $log->error("TokenManager: tempfile() failed for token capture: $@");
+        $resolve->(undef);
+        return;
+    }
+    close($out_fh);
+
+    require Proc::Background;
+
+    # Pitfall 7 (see Daemon.pm): LMS ties STDERR to Slim::Utils::Log::Trapper —
+    # untie around the fork so Proc::Background can dup2 it in the child.
+    my $had_stderr_tie = defined tied(*STDERR);
+    untie *STDERR if $had_stderr_tie;
+
+    my $proc;
+    eval {
+        $proc = Proc::Background->new(
+            { 'die_upon_destroy' => 1,
+              stdout => $out_tmpfile,
+              stderr => $out_tmpfile },
+            @args,
+        );
+    };
+
+    tie *STDERR, 'Slim::Utils::Log::Trapper' if $had_stderr_tie;
+
+    if ($@ || !$proc) {
+        $log->error("TokenManager: failed to spawn --get-token for $accountId ($flavor): $@");
+        unlink $out_tmpfile;
+        $resolve->(undef);
+        return;
+    }
+
+    my $deadline = Time::HiRes::time() + TOKEN_FETCH_TIMEOUT;
+
+    # Completion continuation — runs the pre-existing output-parsing logic on
+    # the captured tempfile content, then resolves the coalescing queue.
+    my $finish = sub {
+        my ($timedOut) = @_;
+
+        if ($timedOut) {
+            # H2 watchdog: bounds the worst case at TOKEN_FETCH_TIMEOUT seconds
+            # of ASYNC waiting instead of an infinite SYNCHRONOUS freeze.
+            $proc->die if $proc->alive;
+            $log->error("TokenManager: --get-token timed out after " . TOKEN_FETCH_TIMEOUT . "s for $accountId ($flavor, client_id=$maskedId)");
+            if ($INC{'Plugins/SpotOn/Status.pm'}) {
+                Plugins::SpotOn::Status->recordError('error', 'Token', "get-token timed out for $accountId ($flavor)");
+            }
+            $log->warn("[DIAG] token_refresh_timeout: account=" . substr($accountId, 0, 4) . "**** flavor=$flavor") if $prefs->get('diagnosticMode');
+            unlink $out_tmpfile;
+            $resolve->(undef);
+            return;
+        }
+
+        my $exit = $proc->wait >> 8;
+        my $output = '';
+        if (open(my $ofh, '<', $out_tmpfile)) {
+            local $/;
+            $output = <$ofh> // '';
+            close($ofh);
+        }
+        unlink $out_tmpfile;
 
         if ($exit != 0 || !$output) {
             $log->error("TokenManager: --get-token failed for $accountId ($flavor, client_id=$maskedId) (exit $exit)");
@@ -453,23 +553,51 @@ sub _fetchKeymasterToken {
                 Plugins::SpotOn::Status->recordError('error', 'Token', "get-token failed for $accountId ($flavor)");
             }
             $log->warn("[DIAG] token_refresh_fail: account=" . substr($accountId, 0, 4) . "**** flavor=$flavor exit=$exit") if $prefs->get('diagnosticMode');
-            $cb->(undef);
+            $resolve->(undef);
             return;
         }
 
+        # The token JSON is the last stdout line; stderr noise may precede it.
+        # from_json on the full merged output works when librespot is quiet;
+        # fall back to the last JSON-looking line if the full parse fails.
         my $result = eval { from_json($output) };
-        if ($@ || !$result->{accessToken}) {
+        if ($@ || !$result || !$result->{accessToken}) {
+            for my $line (reverse split /\r?\n/, $output) {
+                next unless $line =~ /^\s*\{/;
+                $result = eval { from_json($line) };
+                last if $result && $result->{accessToken};
+            }
+        }
+        if (!$result || !$result->{accessToken}) {
             $log->error("TokenManager: JSON parse error on --get-token for $accountId ($flavor): $@");
             $log->warn("[DIAG] token_parse_fail: account=" . substr($accountId, 0, 4) . "**** flavor=$flavor") if $prefs->get('diagnosticMode');
-            $cb->(undef);
+            $resolve->(undef);
             return;
         }
 
         # T-04.3-06: Log only accountId, flavor, and TTL — never the token value
         $class->_cacheToken($accountId, $flavor, $result->{accessToken}, $result->{expiresIn});
         $log->warn("[DIAG] token_refresh_ok: account=" . substr($accountId, 0, 4) . "**** flavor=$flavor ttl=" . ($result->{expiresIn} || 'unknown') . "s") if $prefs->get('diagnosticMode');
-        $cb->($result->{accessToken});
-    });
+        $resolve->($result->{accessToken});
+    };
+
+    # H2: Async polling — check every TOKEN_FETCH_POLL seconds whether the
+    # subprocess has exited; watchdog fires at $deadline.
+    my $pollCb;
+    $pollCb = sub {
+        unless ($proc->alive) {
+            undef $pollCb;   # break closure self-reference cycle
+            $finish->(0);
+            return;
+        }
+        if (Time::HiRes::time() >= $deadline) {
+            undef $pollCb;
+            $finish->(1);
+            return;
+        }
+        Slim::Utils::Timers::setTimer(undef, Time::HiRes::time() + TOKEN_FETCH_POLL, $pollCb);
+    };
+    Slim::Utils::Timers::setTimer(undef, Time::HiRes::time() + TOKEN_FETCH_POLL, $pollCb);
 }
 
 # _fetchDisplayName($class, $accountId, $spotifyUserId, $cb)
