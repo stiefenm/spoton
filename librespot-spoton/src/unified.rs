@@ -412,6 +412,11 @@ async fn unified_http_server(
 
     // CR-01: guard against concurrent relay tasks that would split the PCM stream.
     let relay_active = Arc::new(AtomicBool::new(false));
+    // M15: relay takeover generation — each new /stream connection bumps this.
+    // The old relay's loop exits on generation mismatch, and its RelayGuard
+    // only clears relay_active if the generation still matches (so a stale
+    // guard cannot clear the flag out from under the new relay).
+    let relay_gen = Arc::new(AtomicU64::new(0));
     let last_data_time: Arc<std::sync::Mutex<Option<Instant>>> = Arc::new(std::sync::Mutex::new(None));
 
     loop {
@@ -428,6 +433,7 @@ async fn unified_http_server(
                 let mode_state = Arc::clone(&mode_state);
                 let browse_cancel = Arc::clone(&browse_cancel);
                 let relay_active = Arc::clone(&relay_active);
+                let relay_gen = Arc::clone(&relay_gen);
                 let last_data_time = Arc::clone(&last_data_time);
                 let browse_preempting = Arc::clone(&browse_preempting);
                 let browse_abort_gen = Arc::clone(&browse_abort_gen);
@@ -447,6 +453,7 @@ async fn unified_http_server(
                     let mode_state = Arc::clone(&mode_state);
                     let browse_cancel = Arc::clone(&browse_cancel);
                     let relay_active = Arc::clone(&relay_active);
+                    let relay_gen = Arc::clone(&relay_gen);
                     let last_data_time = Arc::clone(&last_data_time);
                     let browse_preempting = Arc::clone(&browse_preempting);
                     let browse_abort_gen = Arc::clone(&browse_abort_gen);
@@ -549,6 +556,11 @@ async fn unified_http_server(
                                 log::warn!("[spoton/unified] /stream: relay_active was true — taking over (old relay likely stale)");
                             }
 
+                            // M15: claim a new relay generation. The old relay (if any)
+                            // observes the mismatch and exits within one loop iteration;
+                            // its RelayGuard then leaves relay_active alone.
+                            let my_relay_gen = relay_gen.fetch_add(1, Ordering::AcqRel) + 1;
+
                             // Reset browse_preempting flag for this new relay session.
                             browse_preempting.store(false, Ordering::Release);
 
@@ -594,15 +606,31 @@ async fn unified_http_server(
                             let pcm_rx_clone = Arc::clone(&pcm_rx);
                             let flush_rx_clone = Arc::clone(&flush_rx);
                             let relay_active_clone = Arc::clone(&relay_active);
+                            let relay_gen_clone = Arc::clone(&relay_gen);
                             let last_data_time_clone = Arc::clone(&last_data_time);
                             let browse_preempting_clone = Arc::clone(&browse_preempting);
                             let last_activity_relay = Arc::clone(&last_activity);
                             tokio::spawn(async move {
-                                struct RelayGuard(Arc<AtomicBool>);
-                                impl Drop for RelayGuard {
-                                    fn drop(&mut self) { self.0.store(false, Ordering::Release); }
+                                // M15: the guard clears relay_active only if this relay is
+                                // still the current generation — a superseded relay's guard
+                                // must not clear the flag out from under the new relay.
+                                struct RelayGuard {
+                                    active: Arc<AtomicBool>,
+                                    gen: Arc<AtomicU64>,
+                                    my_gen: u64,
                                 }
-                                let _guard = RelayGuard(Arc::clone(&relay_active_clone));
+                                impl Drop for RelayGuard {
+                                    fn drop(&mut self) {
+                                        if self.gen.load(Ordering::Acquire) == self.my_gen {
+                                            self.active.store(false, Ordering::Release);
+                                        }
+                                    }
+                                }
+                                let _guard = RelayGuard {
+                                    active: Arc::clone(&relay_active_clone),
+                                    gen: Arc::clone(&relay_gen_clone),
+                                    my_gen: my_relay_gen,
+                                };
 
                                 let mut last_seen_gen: u64 = {
                                     let rx = flush_rx_clone.lock().unwrap_or_else(|e| e.into_inner());
@@ -618,6 +646,13 @@ async fn unified_http_server(
                                     // sending EOF on /stream to LMS, freeing relay_active.
                                     if browse_preempting_clone.load(Ordering::Acquire) {
                                         log::debug!("[spoton/unified] /stream: browse_preempting — relay exiting");
+                                        break;
+                                    }
+
+                                    // M15: a newer /stream connection has taken over — exit so
+                                    // both relays do not poll the shared pcm_rx.
+                                    if relay_gen_clone.load(Ordering::Acquire) != my_relay_gen {
+                                        log::debug!("[spoton/unified] /stream: relay generation superseded — relay exiting");
                                         break;
                                     }
 
@@ -766,19 +801,16 @@ async fn unified_http_server(
                             // Per-request PCM channel.
                             let (pcm_tx, pcm_rx) = mpsc::channel::<Bytes>(256);
 
-                            // Browse cancel listener: if Spirc takes over during our stream (D-09),
-                            // we need to drop pcm_tx to send EOF to LMS.
-                            let cancel = Arc::clone(&browse_cancel);
-                            let pcm_tx_for_cancel = pcm_tx.clone();
-                            let cancel_task = tokio::spawn(async move {
-                                cancel.notified().await;
-                                drop(pcm_tx_for_cancel);
-                                log::debug!("[spoton/unified] /track: browse_cancel notified — dropping pcm_tx");
-                            });
-                            let cancel_abort = cancel_task.abort_handle();
-
                             // Status channel: serve_track_request signals 404 (Unavailable) early.
                             let (status_tx, mut status_rx) = tokio::sync::oneshot::channel::<StatusCode>();
+
+                            // H13: shared slot for the cancel-listener's abort handle. The serve
+                            // task must be spawned FIRST (it consumes pcm_tx by move) so its
+                            // AbortHandle exists when the cancel listener is spawned; the serve
+                            // task in turn needs to abort the cancel listener from its tail —
+                            // this Option slot resolves the ordering.
+                            let cancel_listener_abort: Arc<std::sync::Mutex<Option<tokio::task::AbortHandle>>> =
+                                Arc::new(std::sync::Mutex::new(None));
 
                             let session_snap = {
                                 let s = session.lock().await;
@@ -787,14 +819,17 @@ async fn unified_http_server(
                             let track_id_for_task = track_id.clone();
                             let content_type_for_task = content_type.clone();
                             let mode_state_for_task = Arc::clone(&mode_state);
-                            let cancel_abort_for_task = cancel_abort.clone();
+                            let cancel_listener_abort_for_task = Arc::clone(&cancel_listener_abort);
                             let browse_abort_gen_task = Arc::clone(&browse_abort_gen);
-                            tokio::spawn(async move {
+                            let serve_task = tokio::spawn(async move {
                                 // T-30-05 (mitigate): pre-spawn supersession check.
                                 // If another /track/ request arrived while we were setting up
                                 // (e.g. acquiring the session lock), abort before Player::load().
                                 // Our increment set the counter to my_gen + 1; if it's already
                                 // higher, a newer request has arrived and superseded us.
+                                // H11: signal supersession as 409 CONFLICT — NOT 404 — so the
+                                // outer handler does not count it as a browse failure (rapid
+                                // skipping must not tear down a healthy session).
                                 let current_gen = browse_abort_gen_task.load(Ordering::SeqCst);
                                 if current_gen > my_gen + 1 {
                                     log::info!(
@@ -802,7 +837,11 @@ async fn unified_http_server(
                                         track_id_for_task, current_gen, my_gen
                                     );
                                     drop(pcm_tx);
-                                    let _ = status_tx.send(StatusCode::NOT_FOUND);
+                                    if let Some(h) = cancel_listener_abort_for_task
+                                        .lock().unwrap_or_else(|e| e.into_inner()).take() {
+                                        h.abort();
+                                    }
+                                    let _ = status_tx.send(StatusCode::CONFLICT);
                                     return;
                                 }
 
@@ -819,19 +858,47 @@ async fn unified_http_server(
                                         track_id_for_task, post_gen, my_gen
                                     );
                                 }
-                                // Abort the cancel listener so its cloned pcm_tx_for_cancel is
-                                // dropped — otherwise the mpsc channel stays open (all senders
-                                // must drop for ReceiverStream EOF) and LMS loops the last buffer.
-                                cancel_abort_for_task.abort();
+                                // Abort the cancel listener — serve is done, nothing to cancel.
+                                if let Some(h) = cancel_listener_abort_for_task
+                                    .lock().unwrap_or_else(|e| e.into_inner()).take() {
+                                    h.abort();
+                                }
+                                // H12: only reset the mode if it still holds OUR track — a newer
+                                // request may already have installed ITS track in the mode, and
+                                // resetting it to Idle would corrupt Connect/Browse arbitration.
                                 {
                                     let mut mode = mode_state_for_task.lock().await;
-                                    if matches!(*mode, ActiveMode::Browse(_)) {
+                                    if matches!(*mode, ActiveMode::Browse(ref t) if *t == track_id_for_task) {
                                         *mode = ActiveMode::Idle;
                                         log::debug!("[spoton/unified] Browse track completed — mode set to Idle");
                                     }
                                 }
                                 let _ = status_tx.send(status);
                             });
+                            let serve_abort = serve_task.abort_handle();
+
+                            // H13: the cancel listener aborts the SERVE TASK itself. Aborting
+                            // drops the ORIGINAL pcm_tx held inside serve_track_request, which
+                            // produces a real EOF on /track for LMS. (The old code dropped a
+                            // CLONE of pcm_tx — a no-op, since serve kept the original sender
+                            // and LMS held on to the dead stream.)
+                            // Mode reset is intentionally NOT done on this path: browse_cancel
+                            // is only notified from Spirc-takeover paths, and every one of them
+                            // sets ActiveMode::Connect itself right after notify_waiters().
+                            let cancel = Arc::clone(&browse_cancel);
+                            let cancel_task = tokio::spawn(async move {
+                                cancel.notified().await;
+                                log::debug!("[spoton/unified] /track: browse_cancel notified — aborting serve task (EOF to LMS)");
+                                serve_abort.abort();
+                            });
+                            let cancel_abort = cancel_task.abort_handle();
+                            *cancel_listener_abort.lock().unwrap_or_else(|e| e.into_inner()) = Some(cancel_abort.clone());
+                            // Close the registration race: if serve finished before the listener
+                            // handle was stored, the tail's take() found None — abort it now so
+                            // the listener does not linger waiting on browse_cancel.
+                            if serve_task.is_finished() {
+                                cancel_abort.abort();
+                            }
 
                             // Wait briefly for early 404 from serve_track_request.
                             let early_status = tokio::time::timeout(
@@ -839,14 +906,28 @@ async fn unified_http_server(
                                 &mut status_rx,
                             ).await;
 
+                            // H11: supersession is signalled as 409 CONFLICT and is NOT a
+                            // browse failure — rapid skipping produces supersessions as a
+                            // matter of course, and counting them tore down healthy sessions
+                            // after only 2 skips. No failure-counter increment, no reconnect
+                            // trigger, no mode touch (the newer request owns the mode; the
+                            // superseded response goes to a connection LMS already abandoned).
+                            if let Ok(Ok(StatusCode::CONFLICT)) = early_status {
+                                log::info!("[spoton/unified] /track/{}: superseded — 409, not counted as failure", track_id);
+                                cancel_abort.abort();
+                                return Ok(empty_response(StatusCode::CONFLICT));
+                            }
+
                             if let Ok(Ok(StatusCode::NOT_FOUND)) = early_status {
                                 let fails = consecutive_browse_fails.fetch_add(1, Ordering::SeqCst) + 1;
                                 log::info!("[spoton/unified] track unavailable — returning 404 (consecutive_fails={})", fails);
                                 cancel_abort.abort();
                                 // Reset mode to Idle since the track failed.
+                                // H12: only when the mode still holds OUR track — a newer
+                                // request may already have installed its own track.
                                 {
                                     let mut mode = mode_state.lock().await;
-                                    if matches!(*mode, ActiveMode::Browse(_)) {
+                                    if matches!(*mode, ActiveMode::Browse(ref t) if *t == track_id) {
                                         *mode = ActiveMode::Idle;
                                     }
                                 }
@@ -1006,7 +1087,11 @@ async fn unified_http_server(
     }
 
     // Give in-progress Browse requests up to 5s to complete (D-11 graceful shutdown).
-    graceful.shutdown().await;
+    // M18: BOUNDED — graceful.shutdown() waits for ALL watched connections, and an
+    // active /stream connection is long-lived, so an unbounded await hangs forever.
+    if tokio::time::timeout(Duration::from_secs(5), graceful.shutdown()).await.is_err() {
+        log::warn!("[spoton/unified] graceful shutdown timed out after 5s — long-lived connections abandoned");
+    }
 }
 
 // -------------------------------------------------------------------------
@@ -1723,8 +1808,40 @@ pub async fn run_unified(
                         }
                         Err(e) => {
                             log::error!("[spoton/unified] Browse-only session reconnect failed: {e}");
-                            let fallback = Session::new(session_config.clone(), Some(reconnect_cache.clone()));
-                            *session_shared.lock().await = fallback;
+
+                            // M19: retry with exponential backoff (1s/2s/4s) before
+                            // installing a fallback. The old behavior installed a brand-new
+                            // UNCONNECTED session immediately and cleared the pending flag,
+                            // so the next browse failure instantly re-triggered reconnect —
+                            // a tight fail loop hammering Spotify APs.
+                            let mut reconnected = false;
+                            for (attempt, delay_secs) in [1u64, 2, 4].iter().enumerate() {
+                                tokio::time::sleep(Duration::from_secs(*delay_secs)).await;
+                                log::warn!("[spoton/unified] Browse-only reconnect retry {}/3", attempt + 1);
+                                let retry = Session::new(session_config.clone(), Some(reconnect_cache.clone()));
+                                match retry.connect(credentials.clone(), false).await {
+                                    Ok(()) => {
+                                        *session_shared.lock().await = retry;
+                                        log::info!("[spoton/unified] Browse-only session reconnected (retry {})", attempt + 1);
+                                        { *session_created_at.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now(); }
+                                        reconnected = true;
+                                        break;
+                                    }
+                                    Err(retry_err) => {
+                                        log::error!("[spoton/unified] Browse-only reconnect retry {} failed: {retry_err}", attempt + 1);
+                                    }
+                                }
+                            }
+                            if !reconnected {
+                                // All attempts exhausted — install a fallback so callers
+                                // hold a Session object, but it is UNHEALTHY (unconnected).
+                                // browse_reconnect_pending is still cleared below so a
+                                // future failure can retry (the backoff has already
+                                // spaced things out).
+                                log::error!("[spoton/unified] Browse-only reconnect exhausted (1s/2s/4s backoff) — installing unconnected fallback session (unhealthy)");
+                                let fallback = Session::new(session_config.clone(), Some(reconnect_cache.clone()));
+                                *session_shared.lock().await = fallback;
+                            }
                         }
                     }
                     browse_reconnect_pending.store(false, Ordering::Release);

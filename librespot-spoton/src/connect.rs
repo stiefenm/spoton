@@ -318,17 +318,25 @@ impl LMS {
             len = body.len(),
         );
 
-        match TcpStream::connect(host_port).await {
-            Ok(mut stream) => {
-                if let Err(e) = stream.write_all(request.as_bytes()).await {
-                    log::debug!("[spoton] notify({cmd}): write failed: {e}");
-                } else {
-                    let _ = stream.shutdown().await;
+        // M16: bound the whole connect+write+shutdown at 5s — TcpStream::connect
+        // has no timeout of its own, and an unreachable LMS host would otherwise
+        // stall the notify caller for the OS TCP timeout (minutes).
+        let send = async {
+            match TcpStream::connect(host_port).await {
+                Ok(mut stream) => {
+                    if let Err(e) = stream.write_all(request.as_bytes()).await {
+                        log::debug!("[spoton] notify({cmd}): write failed: {e}");
+                    } else {
+                        let _ = stream.shutdown().await;
+                    }
+                }
+                Err(e) => {
+                    log::debug!("[spoton] notify({cmd}): connect failed: {e}");
                 }
             }
-            Err(e) => {
-                log::debug!("[spoton] notify({cmd}): connect failed: {e}");
-            }
+        };
+        if tokio::time::timeout(Duration::from_secs(5), send).await.is_err() {
+            log::debug!("[spoton] notify({cmd}): timed out after 5s");
         }
     }
 }
