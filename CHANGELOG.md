@@ -5,6 +5,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2.3.3] - 2026-07-02
+### Fixed
+- **Third-party player metadata**: exploded track items now include separate `title`, `artist`, and `album` fields that LMS maps onto the RemoteTrack object. This allows `standardTitle()` to compose the client's configured `titleFormat` (e.g. "Title by Artist from Album") instead of showing only the combined "Title - Artist" string. Fixes metadata display on WiiM Ultra and similar players that rely on `current_title`. Fixes #96.
+- **Time::HiRes import**: added missing `use Time::HiRes` in ProtocolHandler.pm and guarded `currentPlaylistUpdateTime()` calls with `->can()` in both Connect.pm and ProtocolHandler.pm to prevent runtime errors on clients that don't implement the method. Based on PR #98 by @urknall.
+
 ## [2.3.2] - 2026-07-02
 ### Fixed
 - **API deadlock prevention**: `uri_escape_utf8` for non-ASCII search queries (Björk, CJK) — previously could leak `$inflightCount` and deadlock all API requests. Cache lookup now runs before token fetch to avoid unnecessary token refreshes.
