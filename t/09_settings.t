@@ -430,6 +430,49 @@ SKIP: {
 }
 
 # ============================================================
+# COMPAT-01: Global streamingMode handler save/validation (GH #96 scope
+# extension) — real handler-execution coverage of the global setting.
+# ============================================================
+SKIP: {
+    skip "Settings.pm not yet updated with global streamingMode handler", 3
+        unless -f $settings_module && do {
+            open(my $fh, '<', $settings_module) or die $!;
+            my $src = do { local $/; <$fh> };
+            close($fh);
+            $src =~ /pref_streamingMode/;
+        };
+
+    skip "Settings.pm module required for global streamingMode test", 3
+        unless eval { require Plugins::SpotOn::Settings; 1 };
+
+    my $prefs = Slim::Utils::Prefs::preferences('plugin.spoton');
+
+    Plugins::SpotOn::Settings->handler(
+        undef, { saveSettings => 1, pref_streamingMode => 'proxy' },
+        sub { }, undef, undef
+    );
+    is($prefs->get('streamingMode'), 'proxy',
+        'COMPAT-01: global streamingMode handler persists valid "proxy" value');
+
+    Plugins::SpotOn::Settings->handler(
+        undef, { saveSettings => 1, pref_streamingMode => 'bogus' },
+        sub { }, undef, undef
+    );
+    is($prefs->get('streamingMode'), 'direct',
+        'COMPAT-01: global streamingMode handler falls back to "direct" for invalid value');
+
+    # Set a known sentinel value directly, then verify a saveSettings call with
+    # no pref_streamingMode key leaves it untouched (defined-check guard, T-47-05).
+    $prefs->set('streamingMode', 'proxy');
+    Plugins::SpotOn::Settings->handler(
+        undef, { saveSettings => 1 },
+        sub { }, undef, undef
+    );
+    is($prefs->get('streamingMode'), 'proxy',
+        'COMPAT-01: global streamingMode handler leaves value untouched when pref_streamingMode key absent');
+}
+
+# ============================================================
 # discoveryRunning template param test
 # ============================================================
 SKIP: {

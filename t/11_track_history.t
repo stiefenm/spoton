@@ -642,4 +642,109 @@ subtest 'Connect URL returns Browse mode label not Connect' => sub {
     }
 };
 
+# ============================================================
+# Test K: COMPAT-03 — HTTP track URL canonicalizes to spoton://track:ID cache key
+# ============================================================
+subtest 'COMPAT-03: HTTP track URL canonicalizes to spoton:// cache key' => sub {
+    use Digest::MD5 qw(md5_hex);
+
+    my $browse_url = 'spoton://track:ABC123';
+    my $cache_key  = 'spoton_meta_' . md5_hex($browse_url);
+
+    Slim::Utils::Cache->new->clear();
+    Slim::Utils::Cache->new->set($cache_key, {
+        title    => 'HTTP Canon Track',
+        artist   => 'HTTP Canon Artist',
+        album    => 'HTTP Canon Album',
+        duration => 200,
+        cover    => 'https://example.com/httpcanon.jpg',
+        icon     => 'https://example.com/httpcanon.jpg',
+        bitrate  => '320k',
+        type     => 'OGG (Spotify Browse)',
+    }, 604800);
+
+    my $client   = MockClient->new('player_http_canon');
+    my $http_url = 'http://127.0.0.1:39755/track/ABC123';
+    my $result   = Plugins::SpotOn::ProtocolHandler->getMetadataFor($client, $http_url);
+
+    ok(defined $result, 'COMPAT-03: getMetadataFor returns defined result for daemon HTTP track URL');
+    is($result->{title}, 'HTTP Canon Track',
+        'COMPAT-03: daemon HTTP /track/{ID} URL hits the cache entry keyed under spoton://track:{ID}');
+};
+
+# ============================================================
+# Test L: COMPAT-03 — query-string tolerance (?start_position=N, Pitfall 2)
+# ============================================================
+subtest 'COMPAT-03: HTTP track URL with ?start_position= still hits cache' => sub {
+    use Digest::MD5 qw(md5_hex);
+
+    my $browse_url = 'spoton://track:ABC123';
+    my $cache_key  = 'spoton_meta_' . md5_hex($browse_url);
+
+    Slim::Utils::Cache->new->clear();
+    Slim::Utils::Cache->new->set($cache_key, {
+        title    => 'Seek Canon Track',
+        artist   => 'Seek Canon Artist',
+        album    => 'Seek Canon Album',
+        duration => 200,
+        cover    => 'https://example.com/seekcanon.jpg',
+        icon     => 'https://example.com/seekcanon.jpg',
+        bitrate  => '320k',
+        type     => 'OGG (Spotify Browse)',
+    }, 604800);
+
+    my $client   = MockClient->new('player_seek_canon');
+    my $http_url = 'http://127.0.0.1:39755/track/ABC123?start_position=30';
+    my $result   = Plugins::SpotOn::ProtocolHandler->getMetadataFor($client, $http_url);
+
+    ok(defined $result, 'COMPAT-03: getMetadataFor returns defined result with seek query string');
+    is($result->{title}, 'Seek Canon Track',
+        'COMPAT-03 Pitfall 2: ?start_position=N suffix does not break canonicalization');
+};
+
+# ============================================================
+# Test M: COMPAT-03 — episode canonicalization
+# ============================================================
+subtest 'COMPAT-03: HTTP episode URL canonicalizes to spoton://episode:ID cache key' => sub {
+    use Digest::MD5 qw(md5_hex);
+
+    my $browse_url = 'spoton://episode:XYZ789';
+    my $cache_key  = 'spoton_meta_' . md5_hex($browse_url);
+
+    Slim::Utils::Cache->new->clear();
+    Slim::Utils::Cache->new->set($cache_key, {
+        title    => 'Episode Canon',
+        artist   => 'Podcast',
+        album    => '',
+        duration => 1800,
+        cover    => 'https://example.com/epcanon.jpg',
+        icon     => 'https://example.com/epcanon.jpg',
+        bitrate  => '320k',
+        type     => 'OGG (Spotify Browse)',
+    }, 604800);
+
+    my $client   = MockClient->new('player_episode_canon');
+    my $http_url = 'http://127.0.0.1:39755/episode/XYZ789';
+    my $result   = Plugins::SpotOn::ProtocolHandler->getMetadataFor($client, $http_url);
+
+    ok(defined $result, 'COMPAT-03: getMetadataFor returns defined result for daemon HTTP episode URL');
+    is($result->{title}, 'Episode Canon',
+        'COMPAT-03: daemon HTTP /episode/{ID} URL hits the cache entry keyed under spoton://episode:{ID}');
+};
+
+# ============================================================
+# Test N: D-07 — /stream URLs are NOT canonicalized (no track ID to derive a key from)
+# ============================================================
+subtest 'D-07: HTTP /stream URL is not canonicalized, returns placeholder' => sub {
+    Slim::Utils::Cache->new->clear();
+
+    my $client   = MockClient->new('player_stream_excl');
+    my $http_url = 'http://127.0.0.1:39755/stream';
+    my $result   = Plugins::SpotOn::ProtocolHandler->getMetadataFor($client, $http_url);
+
+    ok(defined $result, 'D-07: /stream URL returns defined result');
+    is($result->{cover}, '/html/images/cover.png',
+        'D-07: /stream URL is not canonicalized to a track cache key — falls to placeholder');
+};
+
 done_testing();
