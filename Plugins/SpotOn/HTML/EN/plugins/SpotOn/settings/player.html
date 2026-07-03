@@ -40,6 +40,14 @@
 		</select>
 	[% END %]
 
+	[% WRAPPER setting title="PLUGIN_SPOTON_STREAMING_MODE" desc="PLUGIN_SPOTON_STREAMING_MODE_DESC" %]
+		<select class="stdedit" name="pref_streamingMode" id="pref_streamingMode">
+			<option value="global" [% IF streamingMode == 'global' %]selected[% END %]>[% 'PLUGIN_SPOTON_STREAMING_MODE_USE_GLOBAL' | string %]</option>
+			<option value="direct" [% IF streamingMode == 'direct' %]selected[% END %]>[% 'PLUGIN_SPOTON_STREAMING_MODE_DIRECT' | string %]</option>
+			<option value="proxy"  [% IF streamingMode == 'proxy'  %]selected[% END %]>[% 'PLUGIN_SPOTON_STREAMING_MODE_PROXY'  | string %]</option>
+		</select>
+	[% END %]
+
 	[% WRAPPER setting title="PLUGIN_SPOTON_BITRATE_OVERRIDE" desc="PLUGIN_SPOTON_BITRATE_OVERRIDE_DESC" %]
 		<select class="stdedit" name="pref_bitrateOverride" id="pref_bitrateOverride">
 			<option value=""    [% IF bitrateOverride == '' %]selected[% END %]>[% 'PLUGIN_SPOTON_BITRATE_GLOBAL' | string %]</option>

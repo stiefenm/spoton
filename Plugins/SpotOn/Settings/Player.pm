@@ -47,6 +47,12 @@ sub handler {
             $prefs->client($client)->set('streamFormat', $fmt);
         }
 
+        if (defined $paramRef->{'pref_streamingMode'}) {
+            my $mode = $paramRef->{'pref_streamingMode'};
+            $mode = 'global' unless $mode =~ /^(?:global|direct|proxy)$/;
+            $prefs->client($client)->set('streamingMode', $mode);
+        }
+
         if (defined $paramRef->{'pref_bitrateOverride'}) {
             my $override = $paramRef->{'pref_bitrateOverride'} // '';
             $override = '' unless $override =~ /^(?:96|160|320)$/;
@@ -81,6 +87,8 @@ sub handler {
         $paramRef->{streamFormat} = $prefs->client($client)->get('streamFormat')
                                  || $prefs->client($client)->get('connectOggOverride')
                                  || 'auto';
+        # COMPAT-01: no legacy-pref fallback chain (D-05 — streamingMode has no predecessor pref)
+        $paramRef->{streamingMode} = $prefs->client($client)->get('streamingMode') || 'global';
         require Plugins::SpotOn::Helper;
         $paramRef->{canAutoplay}     = Plugins::SpotOn::Helper->getCapability('autoplay') ? 1 : 0;
         my $rawAutoplay = $prefs->client($client)->get('enableAutoplay');

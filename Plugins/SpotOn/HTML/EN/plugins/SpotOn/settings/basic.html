@@ -108,6 +108,13 @@
 		</select>
 	[% END %]
 
+	[% WRAPPER setting title="PLUGIN_SPOTON_STREAMING_MODE_GLOBAL" desc="PLUGIN_SPOTON_STREAMING_MODE_GLOBAL_DESC" %]
+		<select class="stdedit" name="pref_streamingMode" id="pref_streamingMode">
+			<option value="direct" [% IF globalStreamingMode == 'direct' %]selected[% END %]>[% 'PLUGIN_SPOTON_STREAMING_MODE_DIRECT' | string %]</option>
+			<option value="proxy"  [% IF globalStreamingMode == 'proxy'  %]selected[% END %]>[% 'PLUGIN_SPOTON_STREAMING_MODE_PROXY'  | string %]</option>
+		</select>
+	[% END %]
+
 	[% WRAPPER setting title="PLUGIN_SPOTON_NORMALIZATION" desc="PLUGIN_SPOTON_NORMALIZATION_DESC" %]
 		<input type="checkbox" class="stdedit" name="pref_normalization" id="pref_normalization"
 			value="1" [% IF prefs.pref_normalization %]checked[% END %]/>

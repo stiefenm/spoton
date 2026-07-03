@@ -175,6 +175,16 @@ sub handler {
         # Save diagnosticMode (global pref, not per-player) (#3)
         my $diagMode = $paramRef->{'pref_diagnosticMode'} ? 1 : 0;
         $prefs->set('diagnosticMode', $diagMode);
+
+        # Save global streamingMode default (COMPAT-01, GH #96 scope extension).
+        # Deliberately NOT in the prefs() return list (see comment there) — validated
+        # here and written directly so the base class handler cannot overwrite it
+        # with unsanitized raw form input.
+        if (defined $paramRef->{'pref_streamingMode'}) {
+            my $mode = $paramRef->{'pref_streamingMode'};
+            $mode = 'direct' unless $mode =~ /^(?:direct|proxy)$/;
+            $prefs->set('streamingMode', $mode);
+        }
     }
 
     # Auto-setup fallback for GET requests (manual reload, first visit).
@@ -200,6 +210,9 @@ sub handler {
 
     # Diagnostic mode status for template (#3)
     $paramRef->{diagnosticEnabled} = $prefs->get('diagnosticMode') ? 1 : 0;
+
+    # Global streaming mode default status for template (COMPAT-01, GH #96 scope extension)
+    $paramRef->{globalStreamingMode} = $prefs->get('streamingMode') || 'direct';
 
     my $logTotal = 0;
     my $spotonDir = catdir($serverPrefs->get('cachedir'), 'spoton');

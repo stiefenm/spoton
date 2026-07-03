@@ -1051,6 +1051,97 @@ PLUGIN_SPOTON_STREAM_FORMAT_MP3
 	PL	MP3 (transkodowane)
 	SV	MP3 (transkodad)
 
+PLUGIN_SPOTON_STREAMING_MODE
+	CS	Režim streamování
+	DA	Streamingtilstand
+	DE	Streaming-Modus
+	EN	Streaming Mode
+	ES	Modo de streaming
+	FR	Mode de diffusion
+	IT	Modalità di streaming
+	NL	Streamingmodus
+	NO	Strømmemodus
+	PL	Tryb strumieniowania
+	SV	Streamingläge
+
+PLUGIN_SPOTON_STREAMING_MODE_DESC
+	CS	Globální používá výchozí nastavení serveru. Přímý streamuje přímo z démona SpotOn. Proxy nechá LMS přenášet stream, vhodné pro přehrávače, které přijímají metadata ve streamu (např. UPnP/DLNA přehrávače přes UPnPBridge). Pokud si nejste jisti, ponechte na Globální.
+	DA	Global bruger serverens standardindstilling. Direkte streamer direkte fra SpotOn-dæmonen. Proxy lader LMS videresende streamen, til afspillere der modtager metadata i streamen (f.eks. UPnP/DLNA-afspillere via UPnPBridge). Hvis du er i tvivl, så behold Global.
+	DE	Global verwendet die Server-Standardeinstellung. Direkt streamt direkt vom SpotOn-Daemon. Proxy lässt LMS den Stream weiterleiten, für Player, die Metadaten im Stream empfangen (z.B. UPnP/DLNA-Player über UPnPBridge). Im Zweifel bei Global belassen.
+	EN	Global uses the server default. Direct streams straight from the SpotOn daemon. Proxy makes LMS relay the stream, for players that receive metadata in the stream (e.g. UPnP/DLNA players via UPnPBridge). If unsure, leave on Global.
+	ES	Global usa el valor predeterminado del servidor. Directo transmite directamente desde el daemon de SpotOn. Proxy hace que LMS retransmita el flujo, para reproductores que reciben metadatos en el flujo (p. ej. reproductores UPnP/DLNA vía UPnPBridge). Si no está seguro, deje Global.
+	FR	Global utilise la valeur par défaut du serveur. Direct diffuse directement depuis le démon SpotOn. Proxy fait relayer le flux par LMS, pour les lecteurs qui reçoivent les métadonnées dans le flux (ex. lecteurs UPnP/DLNA via UPnPBridge). En cas de doute, laissez sur Global.
+	IT	Globale usa il valore predefinito del server. Diretto trasmette direttamente dal demone SpotOn. Proxy fa sì che LMS inoltri lo stream, per i lettori che ricevono i metadati nello stream (es. lettori UPnP/DLNA tramite UPnPBridge). In caso di dubbio, lasciare su Globale.
+	NL	Globaal gebruikt de standaardinstelling van de server. Direct streamt rechtstreeks vanaf de SpotOn-daemon. Proxy laat LMS de stream doorgeven, voor spelers die metadata in de stream ontvangen (bijv. UPnP/DLNA-spelers via UPnPBridge). Bij twijfel op Globaal laten.
+	NO	Global bruker serverens standardinnstilling. Direkte strømmer rett fra SpotOn-daemonen. Proxy lar LMS videresende strømmen, for spillere som mottar metadata i strømmen (f.eks. UPnP/DLNA-spillere via UPnPBridge). Hvis du er usikker, behold Global.
+	PL	Globalny używa domyślnego ustawienia serwera. Bezpośredni strumieniuje bezpośrednio z demona SpotOn. Proxy powoduje, że LMS przekazuje strumień, dla odtwarzaczy odbierających metadane w strumieniu (np. odtwarzacze UPnP/DLNA przez UPnPBridge). W razie wątpliwości pozostaw Globalny.
+	SV	Global använder serverns standardvärde. Direkt strömmar direkt från SpotOn-demonen. Proxy låter LMS vidarebefordra strömmen, för spelare som tar emot metadata i strömmen (t.ex. UPnP/DLNA-spelare via UPnPBridge). Vid osäkerhet, behåll Global.
+
+PLUGIN_SPOTON_STREAMING_MODE_DIRECT
+	CS	Přímý
+	DA	Direkte
+	DE	Direkt
+	EN	Direct
+	ES	Directo
+	FR	Direct
+	IT	Diretto
+	NL	Direct
+	NO	Direkte
+	PL	Bezpośredni
+	SV	Direkt
+
+PLUGIN_SPOTON_STREAMING_MODE_PROXY
+	CS	Proxy
+	DA	Proxy
+	DE	Proxy
+	EN	Proxy
+	ES	Proxy
+	FR	Proxy
+	IT	Proxy
+	NL	Proxy
+	NO	Proxy
+	PL	Proxy
+	SV	Proxy
+
+PLUGIN_SPOTON_STREAMING_MODE_USE_GLOBAL
+	CS	Globální (výchozí)
+	DA	Global (standard)
+	DE	Global (Standard)
+	EN	Global (Default)
+	ES	Global (predeterminado)
+	FR	Global (par défaut)
+	IT	Globale (predefinito)
+	NL	Globaal (standaard)
+	NO	Global (standard)
+	PL	Globalny (domyślny)
+	SV	Global (standard)
+
+PLUGIN_SPOTON_STREAMING_MODE_GLOBAL
+	CS	Režim streamování (výchozí)
+	DA	Streamingtilstand (standard)
+	DE	Streaming-Modus (Standard)
+	EN	Streaming Mode (Default)
+	ES	Modo de streaming (predeterminado)
+	FR	Mode de diffusion (par défaut)
+	IT	Modalità di streaming (predefinita)
+	NL	Streamingmodus (standaard)
+	NO	Strømmemodus (standard)
+	PL	Tryb strumieniowania (domyślny)
+	SV	Streamingläge (standard)
+
+PLUGIN_SPOTON_STREAMING_MODE_GLOBAL_DESC
+	CS	Výchozí režim streamování pro všechny přehrávače; Přímý = přehrávače streamují přímo z démona SpotOn (nejnižší zátěž); Proxy = LMS přenáší stream (potřebné pro některé přehrávače, např. UPnP/DLNA přes UPnPBridge, pro zobrazení metadat); jednotlivé přehrávače mohou toto nastavení přepsat v Nastavení přehrávače.
+	DA	Standard streamingtilstand for alle afspillere; Direkte = afspillere streamer direkte fra SpotOn-dæmonen (laveste overhead); Proxy = LMS videresender streamen (nødvendigt for nogle afspillere, f.eks. UPnP/DLNA via UPnPBridge, for at vise metadata); individuelle afspillere kan tilsidesætte dette i Afspillerindstillinger.
+	DE	Standard-Streaming-Modus für alle Player; Direkt = Player streamen direkt vom SpotOn-Daemon (geringster Overhead); Proxy = LMS leitet den Stream weiter (für manche Player nötig, z.B. UPnP/DLNA über UPnPBridge, um Metadaten anzuzeigen); einzelne Player können dies in den Player-Einstellungen überschreiben.
+	EN	Default streaming mode for all players; Direct = players stream straight from the SpotOn daemon (lowest overhead); Proxy = LMS relays the stream (needed by some players, e.g. UPnP/DLNA via UPnPBridge, to display metadata); individual players can override this in Player Settings.
+	ES	Modo de streaming predeterminado para todos los reproductores; Directo = los reproductores transmiten directamente desde el daemon de SpotOn (menor sobrecarga); Proxy = LMS retransmite el flujo (necesario para algunos reproductores, p. ej. UPnP/DLNA vía UPnPBridge, para mostrar metadatos); los reproductores individuales pueden anular esto en Configuración del reproductor.
+	FR	Mode de diffusion par défaut pour tous les lecteurs ; Direct = les lecteurs diffusent directement depuis le démon SpotOn (charge la plus faible) ; Proxy = LMS relaie le flux (nécessaire pour certains lecteurs, ex. UPnP/DLNA via UPnPBridge, pour afficher les métadonnées) ; chaque lecteur peut remplacer ce réglage dans les paramètres du lecteur.
+	IT	Modalità di streaming predefinita per tutti i lettori; Diretto = i lettori trasmettono direttamente dal demone SpotOn (overhead minimo); Proxy = LMS inoltra lo stream (necessario per alcuni lettori, es. UPnP/DLNA tramite UPnPBridge, per mostrare i metadati); i singoli lettori possono sovrascrivere questa impostazione nelle Impostazioni del lettore.
+	NL	Standaard streamingmodus voor alle spelers; Direct = spelers streamen rechtstreeks vanaf de SpotOn-daemon (laagste overhead); Proxy = LMS geeft de stream door (nodig voor sommige spelers, bijv. UPnP/DLNA via UPnPBridge, om metadata te tonen); individuele spelers kunnen dit overschrijven in Spelerinstellingen.
+	NO	Standard strømmemodus for alle spillere; Direkte = spillere strømmer rett fra SpotOn-daemonen (lavest overhead); Proxy = LMS videresender strømmen (nødvendig for enkelte spillere, f.eks. UPnP/DLNA via UPnPBridge, for å vise metadata); individuelle spillere kan overstyre dette i Spillerinnstillinger.
+	PL	Domyślny tryb strumieniowania dla wszystkich odtwarzaczy; Bezpośredni = odtwarzacze strumieniują bezpośrednio z demona SpotOn (najniższe obciążenie); Proxy = LMS przekazuje strumień (potrzebne dla niektórych odtwarzaczy, np. UPnP/DLNA przez UPnPBridge, do wyświetlania metadanych); poszczególne odtwarzacze mogą to nadpisać w Ustawieniach odtwarzacza.
+	SV	Standard streamingläge för alla spelare; Direkt = spelare strömmar direkt från SpotOn-demonen (lägst overhead); Proxy = LMS vidarebefordrar strömmen (behövs för vissa spelare, t.ex. UPnP/DLNA via UPnPBridge, för att visa metadata); enskilda spelare kan åsidosätta detta i Spelarinställningar.
+
 PLUGIN_SPOTON_BITRATE_OVERRIDE
 	CS	Přenosová rychlost (přehrávač)
 	DA	Bithastighed (afspiller)
