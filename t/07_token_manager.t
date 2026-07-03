@@ -391,7 +391,7 @@ require Proc::Background;   # stub — used by _fetchKeymasterToken (H2)
 my $tm_module = "$project_dir/Plugins/SpotOn/API/TokenManager.pm";
 
 SKIP: {
-    skip "TokenManager.pm not yet created", 22
+    skip "TokenManager.pm not yet created", 24
         unless -f $tm_module;
 
     require_ok('Plugins::SpotOn::API::TokenManager')
@@ -559,6 +559,29 @@ SKIP: {
         is(scalar(@results), 2, 'H3: both queued callbacks fire on completion');
         is($results[0], 'coal_tok', 'H3: first waiter receives the token');
         is($results[1], 'coal_tok', 'H3: second (coalesced) waiter receives the same token');
+    }
+
+    # --------------------------------------------------------
+    # GH #99: stderr log noise (exit 0) yields undef, not a JSON parse crash
+    # --------------------------------------------------------
+    {
+        reset_state();
+        Proc::Background::reset_spawns();
+        $Proc::Background::mock_output = "[2026-07-02T20:40:28Z ERR librespot] Keymaster failed\n";
+        $Proc::Background::mock_exit   = 0;
+
+        my $got_token;
+        my $cb_fired = 0;
+        Plugins::SpotOn::API::TokenManager->_fetchKeymasterToken('km403_acct', 'bundled', sub {
+            $got_token = shift;
+            $cb_fired  = 1;
+        });
+
+        Slim::Utils::Timers::run_deferred();
+
+        ok($cb_fired, 'GH #99: callback fires even when output is only log noise');
+        is($got_token, undef,
+            'GH #99: token is undef when --get-token output has no JSON (exit 0 + stderr noise)');
     }
 
     # --------------------------------------------------------

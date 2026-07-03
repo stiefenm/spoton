@@ -579,7 +579,24 @@ sub _fetchKeymasterToken {
             }
         }
         if (!$result || !$result->{accessToken}) {
-            $log->error("TokenManager: JSON parse error on --get-token for $accountId ($flavor): $@");
+            # GH #99: librespot may exit 0 on Keymaster errors, leaving only
+            # stderr log noise ([timestamp ERR ...]) and no JSON token.
+            # Run the same Keymaster diagnostics as the exit-nonzero path.
+            if ($output =~ /status_code:\s*(\d+)/) {
+                $log->error("TokenManager: keymaster_status: HTTP $1 for client_id=$maskedId");
+            }
+            if ($output =~ /payload:\s*\[\[([0-9,\s]+)\]\]/) {
+                my $payloadJson = join('', map { chr($_) } split(/,\s*/, $1));
+                my $payload = eval { from_json($payloadJson) };
+                if ($payload && $payload->{errorDescription}) {
+                    $log->error("TokenManager: keymaster_error: code=" . ($payload->{code} // '?')
+                        . " message=\"$payload->{errorDescription}\" (client_id=$maskedId)");
+                }
+            }
+            $log->error("TokenManager: no valid token in --get-token output for $accountId ($flavor, client_id=$maskedId)");
+            if ($INC{'Plugins/SpotOn/Status.pm'}) {
+                Plugins::SpotOn::Status->recordError('error', 'Token', "get-token failed for $accountId ($flavor)");
+            }
             $log->warn("[DIAG] token_parse_fail: account=" . substr($accountId, 0, 4) . "**** flavor=$flavor") if $prefs->get('diagnosticMode');
             $resolve->(undef);
             return;
