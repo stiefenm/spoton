@@ -98,6 +98,32 @@ sub canDirectStream {
 
     return 0 unless $client;
 
+    # COMPAT-02: per-player streamingMode=proxy (or per-player 'global' resolving
+    # to a global streamingMode=proxy default) forces LMS-relayed streaming for
+    # BOTH Browse and Connect (D-02) — one gate at the top covers both branches
+    # below, no duplication. D-03: this gate is orthogonal to sync-group gating,
+    # which already happens independently inside the Browse/Connect branches.
+    # D-05: this gate is orthogonal to codec/transcoding format selection.
+    # Known, accepted side effect (review finding): in proxy mode this gate
+    # returns before the translated-Connect-URL cleanup further down, so an entry
+    # can remain in %_translatedConnectUrls; if the user later switches back to
+    # direct, one stale entry causes a single harmless extra return 0 (the proxy
+    # path in new() absorbs it) — bounded and accepted, no mitigation needed.
+    {
+        my $gateClient = $client->can('master') ? $client->master : $client;
+        my $mode = $prefs->client($gateClient)->get('streamingMode') || 'global';
+        if ($mode eq 'global') {
+            # GH #96: per-player unset/global resolves against the global default
+            $mode = $prefs->get('streamingMode') || 'direct';
+        }
+        if ($mode eq 'proxy') {
+            main::INFOLOG && $log->is_info && $log->info(
+                "canDirectStream: 0 (streamingMode=proxy)"
+            );
+            return 0;
+        }
+    }
+
     # Browse URL: direct stream to unified daemon /track/{id}
     if ($url && $url =~ m{^spoton://(track|episode):([A-Za-z0-9]+)$}) {
         my $contentType = $1;
@@ -769,6 +795,17 @@ sub getMetadataFor {
         $canonical =~ s{^spoton:}{spoton://};
     }
 
+    # COMPAT-03: canonicalize daemon HTTP URLs (direct-stream or proxy path) to
+    # the same spoton://{type}:{id} cache key used by Browse. D-07: only
+    # /track/{ID} and /episode/{ID} — /stream (Connect) has no track ID and is
+    # served via pluginData('info'), not this cache. Must tolerate a trailing
+    # ?start_position=N (seek offset, appended by canDirectStreamSong and the
+    # new() sync-group proxy path) — without the optional group, canonicalization
+    # silently fails on every seeked playback.
+    if ($canonical && $canonical =~ m{^https?://[^/]+/(track|episode)/([A-Za-z0-9]+)(?:\?.*)?$}) {
+        $canonical = "spoton://$1:$2";
+    }
+
     my $meta = $cache->get('spoton_meta_' . md5_hex($canonical));
 
     # Fallback: try original URL if normalization didn't help
@@ -807,6 +844,11 @@ sub getIcon {
         my $canonical = $url;
         if ($canonical =~ m{^spoton:(?!//)}) {
             $canonical =~ s{^spoton:}{spoton://};
+        }
+        # COMPAT-03: same HTTP-to-spoton canonicalization as getMetadataFor(), so
+        # icon lookups for daemon HTTP URLs hit the same cache entry.
+        if ($canonical =~ m{^https?://[^/]+/(track|episode)/([A-Za-z0-9]+)(?:\?.*)?$}) {
+            $canonical = "spoton://$1:$2";
         }
         my $meta = $cache->get('spoton_meta_' . md5_hex($canonical));
         return $meta->{cover} if $meta && $meta->{cover} && $meta->{cover} ne '/html/images/cover.png';
