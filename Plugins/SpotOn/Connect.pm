@@ -1021,13 +1021,30 @@ sub _fetchTrackMetadata {
         my $album    = ($trackInfo->{album} || {})->{name} || '';
         my $duration = ($trackInfo->{duration_ms} || 0) / 1000;
         my $cover    = _largestImage(($trackInfo->{album} || {})->{images}) || IMG_TRACK;
+        my $logicalUrl = ($song->track && $song->track->url)
+            ? $song->track->url
+            : $song->streamUrl;
+        my $streamUrl = $song->streamUrl;
+        my $displayTitle = "$artist - $title";
 
         # Instant display update
+        # LMS/status paths usually key current_title by the logical
+        # spoton://connect-* URL, while some renderers key display metadata
+        # off the resolved stream URL. Set both keys when they differ.
+        require Slim::Music::Info;
         Slim::Music::Info::setCurrentTitle(
-            $song->streamUrl,
-            "$artist - $title",
+            $logicalUrl,
+            $displayTitle,
             $client
         );
+        if ($streamUrl && $streamUrl ne $logicalUrl) {
+            Slim::Music::Info::setCurrentTitle(
+                $streamUrl,
+                $displayTitle,
+                $client
+            );
+        }
+
 
         # Full metadata for Now Playing display
         require Plugins::SpotOn::Plugin;
@@ -1039,7 +1056,8 @@ sub _fetchTrackMetadata {
             album        => $album,
             duration     => $duration,
             cover        => $cover,
-            url          => $song->streamUrl,
+            icon         => $cover,
+            url          => $logicalUrl,
             bitrate      => $bitrate . 'k',
             originalType => $type_str,
             type         => $type_str,
