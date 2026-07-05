@@ -614,7 +614,10 @@ async fn unified_http_server(
 
                             // Wait for OGG headers before draining — on track
                             // transitions LMS reconnects before the sink has
-                            // buffered the new track's header pages.
+                            // buffered the new track's header pages. If the
+                            // headers are still missing, do not feed LMS an
+                            // invalid audio/ogg response; let it retry the
+                            // temporary stream instead.
                             if passthrough {
                                 if let Some(ref buf) = ogg_header_buf {
                                     let deadline = tokio::time::Instant::now()
@@ -627,13 +630,44 @@ async fn unified_http_server(
                                         if tokio::time::Instant::now() >= deadline {
                                             log::warn!(
                                                 "[spoton/unified] /stream: OGG headers \
-                                                 incomplete ({}/3) after 3s timeout",
+                                                 incomplete ({}/3) after 3s timeout; \
+                                                 returning 503 for retry",
                                                 n
                                             );
-                                            break;
+                                            if relay_gen.load(Ordering::Acquire) == my_relay_gen {
+                                                relay_active.store(false, Ordering::Release);
+                                            }
+                                            let body = Full::new(Bytes::new())
+                                                .map_err(|e| match e {})
+                                                .boxed();
+                                            let resp = Response::builder()
+                                                .status(StatusCode::SERVICE_UNAVAILABLE)
+                                                .header("Retry-After", "1")
+                                                .header("Content-Length", "0")
+                                                .body(body)
+                                                .expect("static 503 ogg-headers-incomplete builder");
+                                            return Ok(resp);
                                         }
                                         tokio::time::sleep(Duration::from_millis(20)).await;
                                     }
+                                } else {
+                                    log::warn!(
+                                        "[spoton/unified] /stream: OGG passthrough has no \
+                                         header buffer; returning 503 for retry"
+                                    );
+                                    if relay_gen.load(Ordering::Acquire) == my_relay_gen {
+                                        relay_active.store(false, Ordering::Release);
+                                    }
+                                    let body = Full::new(Bytes::new())
+                                        .map_err(|e| match e {})
+                                        .boxed();
+                                    let resp = Response::builder()
+                                        .status(StatusCode::SERVICE_UNAVAILABLE)
+                                        .header("Retry-After", "1")
+                                        .header("Content-Length", "0")
+                                        .body(body)
+                                        .expect("static 503 ogg-header-buffer-missing builder");
+                                    return Ok(resp);
                                 }
                             }
 
