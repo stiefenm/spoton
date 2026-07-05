@@ -89,6 +89,7 @@ fn advance_connect_track_generation(
     event: &PlayerEvent,
     current_track: &mut Option<String>,
     track_gen: &AtomicU64,
+    ogg_header_buf: Option<&Arc<std::sync::Mutex<Vec<Bytes>>>>,
 ) {
     if let PlayerEvent::TrackChanged { audio_item } = event {
         let new_id = audio_item.track_id.to_id();
@@ -101,6 +102,10 @@ fn advance_connect_track_generation(
                 new_id,
                 gen
             );
+            if let Some(buf) = ogg_header_buf {
+                let mut guard = buf.lock().unwrap_or_else(|e| e.into_inner());
+                guard.clear();
+            }
         }
     }
 }
@@ -1393,11 +1398,17 @@ pub async fn run_unified(
             let sa = Arc::clone(&spirc_active);
             let browse_cancel_lms = Arc::clone(&browse_cancel);
             let track_gen_lms = Arc::clone(&connect_track_gen);
+            let ogg_header_buf_lms = if passthrough { Some(Arc::clone(&ogg_header_buf)) } else { None };
             event_dispatcher_handle = Some(tokio::spawn(async move {
                 let mut current_track: Option<String> = None;
                 let mut current_sink_track: Option<String> = None;
                 while let Some(event) = event_chan.recv().await {
-                    advance_connect_track_generation(&event, &mut current_sink_track, &track_gen_lms);
+                    advance_connect_track_generation(
+                        &event,
+                        &mut current_sink_track,
+                        &track_gen_lms,
+                        ogg_header_buf_lms.as_ref(),
+                    );
 
                     // Track spirc_active for SessionConnected/Playing/TrackChanged
                     if matches!(event,
@@ -1441,10 +1452,16 @@ pub async fn run_unified(
             let mode_state_w = Arc::clone(&mode_state);
             let browse_cancel_w = Arc::clone(&browse_cancel);
             let track_gen_w = Arc::clone(&connect_track_gen);
+            let ogg_header_buf_w = if passthrough { Some(Arc::clone(&ogg_header_buf)) } else { None };
             event_dispatcher_handle = Some(tokio::spawn(async move {
                 let mut current_sink_track: Option<String> = None;
                 while let Some(event) = event_chan.recv().await {
-                    advance_connect_track_generation(&event, &mut current_sink_track, &track_gen_w);
+                    advance_connect_track_generation(
+                        &event,
+                        &mut current_sink_track,
+                        &track_gen_w,
+                        ogg_header_buf_w.as_ref(),
+                    );
 
                     if matches!(event,
                         PlayerEvent::SessionConnected { .. } |
@@ -1656,11 +1673,21 @@ pub async fn run_unified(
                                     let sa_d = Arc::clone(&spirc_active);
                                     let browse_cancel_d = Arc::clone(&browse_cancel);
                                     let track_gen_d = Arc::clone(&connect_track_gen);
+                                    let ogg_header_buf_d = if passthrough {
+                                        Some(Arc::clone(&ogg_header_buf))
+                                    } else {
+                                        None
+                                    };
                                     event_dispatcher_handle = Some(tokio::spawn(async move {
                                         let mut current_track: Option<String> = None;
                                         let mut current_sink_track: Option<String> = None;
                                         while let Some(event) = event_chan.recv().await {
-                                            advance_connect_track_generation(&event, &mut current_sink_track, &track_gen_d);
+                                            advance_connect_track_generation(
+                                                &event,
+                                                &mut current_sink_track,
+                                                &track_gen_d,
+                                                ogg_header_buf_d.as_ref(),
+                                            );
 
                                             if matches!(event,
                                                 PlayerEvent::SessionConnected { .. } |
@@ -1693,10 +1720,20 @@ pub async fn run_unified(
                                     let mode_state_d = Arc::clone(&mode_state);
                                     let browse_cancel_d = Arc::clone(&browse_cancel);
                                     let track_gen_d = Arc::clone(&connect_track_gen);
+                                    let ogg_header_buf_d = if passthrough {
+                                        Some(Arc::clone(&ogg_header_buf))
+                                    } else {
+                                        None
+                                    };
                                     event_dispatcher_handle = Some(tokio::spawn(async move {
                                         let mut current_sink_track: Option<String> = None;
                                         while let Some(event) = event_chan.recv().await {
-                                            advance_connect_track_generation(&event, &mut current_sink_track, &track_gen_d);
+                                            advance_connect_track_generation(
+                                                &event,
+                                                &mut current_sink_track,
+                                                &track_gen_d,
+                                                ogg_header_buf_d.as_ref(),
+                                            );
 
                                             if matches!(event,
                                                 PlayerEvent::SessionConnected { .. } |
