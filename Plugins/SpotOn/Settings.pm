@@ -54,6 +54,21 @@ sub new {
         \&_pkceManualHandler
     );
 
+    # Register ZeroConf playback-authorization pairing endpoints
+    # (GH #147 plan 65-02, D-02 primary path)
+    Slim::Web::Pages->addRawFunction(
+        'plugins/SpotOn/settings/playerauth/start',
+        \&_playerAuthStartHandler
+    );
+    Slim::Web::Pages->addRawFunction(
+        'plugins/SpotOn/settings/playerauth/status',
+        \&_playerAuthStatusHandler
+    );
+    Slim::Web::Pages->addRawFunction(
+        'plugins/SpotOn/settings/playerauth/cancel',
+        \&_playerAuthCancelHandler
+    );
+
     return $self;
 }
 
@@ -298,6 +313,32 @@ sub handler {
     # the template shows.
     $paramRef->{pkceConfigured} = _isPkceConfigured();
 
+    # GH #147 plan 65-02: playback-authorization state for the ACTIVE account.
+    # 'none'     -- no accounts at all (setup guide handles this case)
+    # 'required' -- flagged by the crash escalation (plan 65-01), OR the
+    #               account has PKCE tokens but no credentials.json yet
+    #               (fresh auth after the D-04 eager-derivation removal)
+    # 'ok'       -- otherwise
+    require Plugins::SpotOn::API::Credentials;
+    require Plugins::SpotOn::API::PKCE;
+    {
+        my $activeId = $paramRef->{activeAccount};
+        if (!$activeId) {
+            $paramRef->{playbackAuthState} = 'none';
+        }
+        elsif (Plugins::SpotOn::API::Credentials->needsPlaybackAuth($activeId)
+            || (!-f Plugins::SpotOn::API::Credentials->credentialsPathFor($activeId)
+                && Plugins::SpotOn::API::PKCE::loadTokens($activeId))) {
+            $paramRef->{playbackAuthState} = 'required';
+        }
+        else {
+            $paramRef->{playbackAuthState} = 'ok';
+        }
+    }
+    # Computed by the same single source of truth startPairing uses, so the
+    # on-page instructions show the exact device label the user must pick.
+    $paramRef->{pairingDeviceName} = Plugins::SpotOn::API::Credentials->pairingDeviceName();
+
     # D-04 Channel 2 (AUTH-07, Plan 03 Task 3): Settings migration banner --
     # global check across ALL known accounts (deliberate asymmetry vs.
     # Plugin.pm's OPML hint, which checks only the active account since
@@ -528,6 +569,77 @@ sub _pkceManualHandler {
 
         _pkceFinishAuth($httpClient, $response, $tokenData, $clientId, 1);
     });
+}
+
+# ============================================================
+# ZeroConf playback-authorization pairing (GH #147 plan 65-02)
+# /plugins/SpotOn/settings/playerauth/start (POST, CSRF-guarded)
+# Starts a --discover-once pairing helper for the given (or active) account.
+# accountId is validated with the same WR-03 discipline as removeAccount:
+# 8-char hex AND existence in the accounts pref, before it reaches any
+# filesystem path construction. Responses carry the symbolic reason enum
+# only, never raw stderr (T-65-07).
+# ============================================================
+sub _playerAuthStartHandler {
+    my ($httpClient, $response) = @_;
+
+    return unless _csrfCheck($httpClient, $response);
+
+    require Plugins::SpotOn::API::Credentials;
+
+    my $accountId = _postParam($response->request, 'accountId');
+    $accountId = $prefs->get('activeAccount')
+        unless defined $accountId && length $accountId;
+
+    my $accounts = $prefs->get('accounts') || {};
+    unless (defined $accountId
+        && $accountId =~ /\A[0-9a-f]{8}\z/
+        && exists $accounts->{$accountId}) {
+        _jsonResponse($httpClient, $response,
+            { status => 'error', reason => 'unknown_account' });
+        return;
+    }
+
+    my ($ok, $reason) = Plugins::SpotOn::API::Credentials->startPairing($accountId);
+
+    if ($ok) {
+        _jsonResponse($httpClient, $response, {
+            status     => 'ok',
+            deviceName => Plugins::SpotOn::API::Credentials->pairingDeviceName(),
+        });
+    } else {
+        _jsonResponse($httpClient, $response,
+            { status => 'error', reason => $reason });
+    }
+}
+
+# ============================================================
+# /plugins/SpotOn/settings/playerauth/status (GET, read-only)
+# JSON passthrough of Credentials->pairingStatus(). Same unguarded class as
+# diagnosticBundle: read-only, exposes symbolic state only (T-65-07).
+# ============================================================
+sub _playerAuthStatusHandler {
+    my ($httpClient, $response) = @_;
+
+    require Plugins::SpotOn::API::Credentials;
+    _jsonResponse($httpClient, $response,
+        Plugins::SpotOn::API::Credentials->pairingStatus());
+}
+
+# ============================================================
+# /plugins/SpotOn/settings/playerauth/cancel (POST, CSRF-guarded)
+# Cancels a running pairing (idempotent when idle). Also the target of the
+# pagehide keepalive request in basic.html (gotcha 6).
+# ============================================================
+sub _playerAuthCancelHandler {
+    my ($httpClient, $response) = @_;
+
+    return unless _csrfCheck($httpClient, $response);
+
+    require Plugins::SpotOn::API::Credentials;
+    Plugins::SpotOn::API::Credentials->cancelPairing();
+
+    _jsonResponse($httpClient, $response, { status => 'ok' });
 }
 
 # ============================================================

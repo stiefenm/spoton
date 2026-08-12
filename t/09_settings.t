@@ -358,10 +358,39 @@ sub deriveCredentials {
 }
 # WR-02: clearRateLimit stub (called by _pkceStoreAccount before deriveCredentials)
 sub clearRateLimit { }
+# GH #147 plan 65-02: handler() playbackAuthState/pairingDeviceName params +
+# playerauth endpoints consume the pairing API.
+our $next_needs_playback_auth = 0;
+our $next_pairing_status      = { state => 'idle', accountId => undef };
+our @start_pairing_calls      = ();
+our $next_start_pairing       = [1, undef];
+our $cancel_pairing_calls     = 0;
+sub needsPlaybackAuth  { return $next_needs_playback_auth }
+sub credentialsPathFor {
+    my ($class, $accountId) = @_;
+    require Slim::Utils::Prefs;
+    require File::Spec;
+    return File::Spec->catfile(
+        Slim::Utils::Prefs::preferences('server')->get('cachedir'),
+        'spoton', $accountId, 'credentials.json');
+}
+sub pairingDeviceName { return 'SpotOn Authorization (Test)' }
+sub startPairing {
+    my ($class, $accountId) = @_;
+    push @start_pairing_calls, $accountId;
+    return @{ $next_start_pairing };
+}
+sub pairingStatus { return $next_pairing_status }
+sub cancelPairing { $cancel_pairing_calls++ }
 sub reset_calls {
     $next_derive_ok = 1;
     $derive_call_count = 0;
     $last_derive_account = undef;
+    $next_needs_playback_auth = 0;
+    $next_pairing_status      = { state => 'idle', accountId => undef };
+    @start_pairing_calls      = ();
+    $next_start_pairing       = [1, undef];
+    $cancel_pairing_calls     = 0;
 }
 1;
 END

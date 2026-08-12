@@ -37,6 +37,17 @@
 	</div>
 	[% END %]
 
+	[% IF playbackAuthState == 'required' %]
+	<div style="background:rgba(255,165,0,0.08); border:1px solid orange; padding:12px 16px; margin-bottom:20px; border-radius:4px">
+		<strong style="color:orange">[% 'PLUGIN_SPOTON_PLAYER_AUTH_BANNER' | string %]</strong>
+		<p style="margin:8px 0 0 0">
+			<a href="#spoton-player-auth" style="font-weight:bold">
+				[% 'PLUGIN_SPOTON_PLAYER_AUTH_TITLE' | string %] &rarr;
+			</a>
+		</p>
+	</div>
+	[% END %]
+
 	<div style="background:rgba(66,133,244,0.08); border:1px solid rgba(66,133,244,0.3); padding:12px 16px; margin-bottom:20px; border-radius:4px">
 		<strong>[% 'PLUGIN_SPOTON_PLAYER_SETTINGS_LINK_TITLE' | string %]</strong>
 		<p style="margin:6px 0 0 0">[% 'PLUGIN_SPOTON_PLAYER_SETTINGS_LINK_DESC' | string %]</p>
@@ -148,6 +159,38 @@
 			[% 'PLUGIN_SPOTON_BUNDLED_ID_REVOKED' | string %]
 		</div>
 		[% END %]
+	[% END %]
+
+	<div id="spoton-player-auth"></div>
+	[% WRAPPER setting title="PLUGIN_SPOTON_PLAYER_AUTH_TITLE" desc="PLUGIN_SPOTON_PLAYER_AUTH_DESC" %]
+		<div style="margin-bottom:10px; font-size:0.9em">
+			[% IF playbackAuthState == 'required' %]
+			<span style="color: orange">&#9679; [% 'PLUGIN_SPOTON_PLAYER_AUTH_STATUS_REQUIRED' | string %]</span>
+			[% ELSE %]
+			<span style="color: green">&#9679; [% 'PLUGIN_SPOTON_PLAYER_AUTH_STATUS_OK' | string %]</span>
+			[% END %]
+		</div>
+
+		<p style="margin:0 0 6px 0; font-size:0.9em">[% 'PLUGIN_SPOTON_PLAYER_AUTH_INSTRUCTIONS' | string %]</p>
+		<p style="margin:0 0 12px 0">
+			<code style="background:rgba(128,128,128,0.1); padding:2px 6px; border-radius:3px">[% pairingDeviceName | html %]</code>
+		</p>
+
+		<p style="margin:0">
+			<button type="button" class="submit" id="playerAuthStartBtn" onclick="spotonPlayerAuthStart()"
+				data-waiting-text="[% 'PLUGIN_SPOTON_PLAYER_AUTH_WAITING' | string | html %]"
+				data-success-text="[% 'PLUGIN_SPOTON_PLAYER_AUTH_SUCCESS' | string | html %]"
+				data-failed-text="[% 'PLUGIN_SPOTON_PLAYER_AUTH_FAILED' | string | html %]"
+				data-timeout-text="[% 'PLUGIN_SPOTON_PLAYER_AUTH_TIMEOUT' | string | html %]"
+				data-mismatch-text="[% 'PLUGIN_SPOTON_PLAYER_AUTH_MISMATCH' | string | html %]">
+				[% 'PLUGIN_SPOTON_PLAYER_AUTH_START_BTN' | string %]
+			</button>
+			<button type="button" class="submit" id="playerAuthCancelBtn" style="display:none"
+				onclick="spotonPlayerAuthCancel()">
+				[% 'PLUGIN_SPOTON_PLAYER_AUTH_CANCEL_BTN' | string %]
+			</button>
+		</p>
+		<div id="player-auth-status" style="display:none; margin-top:10px"></div>
 	[% END %]
 
 	<hr style="margin:16px 0; border:0; border-top:1px solid rgba(128,128,128,0.25)"/>
@@ -341,6 +384,106 @@
 		};
 		xhr.send('callback_url=' + encodeURIComponent(callbackUrl));
 	}
+
+	// ============================================================
+	// Playback authorization: ZeroConf pairing (GH #147 plan 65-02)
+	// ============================================================
+	var spotonPlayerAuthPoll = null;
+
+	function spotonPlayerAuthResetUi() {
+		if (spotonPlayerAuthPoll) { clearInterval(spotonPlayerAuthPoll); spotonPlayerAuthPoll = null; }
+		var startBtn  = document.getElementById('playerAuthStartBtn');
+		var cancelBtn = document.getElementById('playerAuthCancelBtn');
+		if (startBtn)  { startBtn.disabled = false; }
+		if (cancelBtn) { cancelBtn.style.display = 'none'; }
+	}
+
+	function spotonPlayerAuthStart() {
+		var startBtn  = document.getElementById('playerAuthStartBtn');
+		var cancelBtn = document.getElementById('playerAuthCancelBtn');
+		var statusEl  = document.getElementById('player-auth-status');
+
+		var xhr = new XMLHttpRequest();
+		xhr.open('POST', '/plugins/SpotOn/settings/playerauth/start', true);
+		xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+		xhr.onload = function() {
+			var data;
+			try { data = JSON.parse(xhr.responseText); } catch(e) { data = null; }
+			if (xhr.status === 200 && data && data.status === 'ok') {
+				statusEl.textContent = startBtn.dataset.waitingText;
+				statusEl.style.display = 'block';
+				startBtn.disabled = true;
+				cancelBtn.style.display = 'inline-block';
+				spotonPlayerAuthPoll = setInterval(spotonPlayerAuthCheck, 2000);
+			} else {
+				statusEl.textContent = startBtn.dataset.failedText;
+				statusEl.style.display = 'block';
+			}
+		};
+		xhr.onerror = function() {
+			statusEl.textContent = startBtn.dataset.failedText;
+			statusEl.style.display = 'block';
+		};
+		xhr.send();
+	}
+
+	function spotonPlayerAuthCheck() {
+		var startBtn = document.getElementById('playerAuthStartBtn');
+		var statusEl = document.getElementById('player-auth-status');
+
+		var xhr = new XMLHttpRequest();
+		xhr.open('GET', '/plugins/SpotOn/settings/playerauth/status', true);
+		xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+		xhr.onload = function() {
+			var data;
+			try { data = JSON.parse(xhr.responseText); } catch(e) { data = null; }
+			if (!data || data.state === 'waiting') { return; }
+			if (data.state === 'success') {
+				spotonPlayerAuthResetUi();
+				statusEl.textContent = startBtn.dataset.successText;
+				statusEl.style.display = 'block';
+				window.location.reload();
+				return;
+			}
+			if (data.state === 'mismatch' || data.state === 'failed' || data.state === 'timeout') {
+				spotonPlayerAuthResetUi();
+				statusEl.textContent =
+					data.state === 'mismatch' ? startBtn.dataset.mismatchText :
+					data.state === 'timeout'  ? startBtn.dataset.timeoutText  :
+					startBtn.dataset.failedText;
+				statusEl.style.display = 'block';
+			}
+		};
+		xhr.send();
+	}
+
+	function spotonPlayerAuthCancel() {
+		var statusEl = document.getElementById('player-auth-status');
+		var xhr = new XMLHttpRequest();
+		xhr.open('POST', '/plugins/SpotOn/settings/playerauth/cancel', true);
+		xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+		xhr.onload = function() {
+			spotonPlayerAuthResetUi();
+			statusEl.style.display = 'none';
+		};
+		xhr.onerror = function() { spotonPlayerAuthResetUi(); };
+		xhr.send();
+	}
+
+	// Gotcha 6: cancel a running pairing when the user leaves the page.
+	// fetch+keepalive carries the X-Requested-With header (sendBeacon cannot),
+	// so the CSRF guard still passes. If this request is lost, the binary's
+	// own 15-minute self-timeout is the backstop (D-03, no Rust changes).
+	window.addEventListener('pagehide', function() {
+		if (!spotonPlayerAuthPoll) { return; }
+		try {
+			fetch('/plugins/SpotOn/settings/playerauth/cancel', {
+				method: 'POST',
+				keepalive: true,
+				headers: { 'X-Requested-With': 'XMLHttpRequest' }
+			});
+		} catch(e) {}
+	});
 
 	function spotonClearLogs() {
 		var btn = document.getElementById('clearLogsBtn');
