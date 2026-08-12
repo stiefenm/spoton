@@ -126,8 +126,8 @@ sub AUTOLOAD  { }
 1;
 END
 
-# Stub: Slim::Utils::Cache (unused directly by Credentials.pm -- rate limiting
-# is package-hash based, not cache based -- kept minimal in case of transitive need)
+# Stub: Slim::Utils::Cache (GH #147: Credentials.pm stores the persistent
+# playback-auth flag here -- in-memory hash with set/get/remove, TTL ignored)
 write_stub($stub_dir, 'Slim::Utils::Cache', <<'END');
 package Slim::Utils::Cache;
 my %_store;
@@ -297,6 +297,15 @@ BEGIN {
     *main::ISWINDOWS   = sub () { 0 };
     *main::ISMAC       = sub () { 0 };
     *main::PERFMON     = sub () { 0 };
+}
+
+# M5: SPOTON_CACHE_VERSION is defined in Plugin.pm (single source of truth);
+# Credentials.pm resolves it via a fully-qualified call at load time (GH #147
+# playback-auth flag cache). Production always compiles Plugin.pm first --
+# provide the constant for standalone loads (same pattern as t/09_settings.t).
+BEGIN {
+    package Plugins::SpotOn::Plugin;
+    use constant SPOTON_CACHE_VERSION => 4;
 }
 
 # ============================================================
@@ -620,6 +629,11 @@ require JSON::PP;
         'Test 9: isCredentialError matches "Could not validate credentials"');
     is(Plugins::SpotOn::API::Credentials->isCredentialError("No cached credentials in '/some/dir'. Run --authenticate or --discover-once first."), 1,
         'Test 9: isCredentialError matches lines starting with "No cached credentials in"');
+    # GH #147: Login5 provenance blockade signatures (Aug 10, 2026)
+    is(Plugins::SpotOn::API::Credentials->isCredentialError('Login failed with reason: INVALID_CREDENTIALS'), 1,
+        'Test 9: isCredentialError matches Login5 "INVALID_CREDENTIALS" (GH #147)');
+    is(Plugins::SpotOn::API::Credentials->isCredentialError('Connection failed: Login request was denied'), 1,
+        'Test 9: isCredentialError matches "Login request was denied" (GH #147)');
     is(Plugins::SpotOn::API::Credentials->isCredentialError('thread main panicked at src/main.rs:42'), 0,
         'Test 9: isCredentialError does NOT match a generic panic line');
 }
@@ -671,6 +685,40 @@ require JSON::PP;
     ok((grep { $_ eq '--token-login' } @args), 'Test 11b: spawn args contain --token-login');
     ok((grep { $_ eq '--token' } @args), 'Test 11b: spawn args contain --token (no token-env capability)');
     ok((grep { $_ eq 'tok-fresh' } @args), 'Test 11b: spawn args contain the token value (fallback path)');
+}
+
+# ============================================================
+# Test 13 (GH #147): playback-auth flag roundtrip
+# mark -> needsPlaybackAuth==1 -> playbackAuthReason eq 'credential_error'
+# -> clear -> needsPlaybackAuth==0
+# ============================================================
+{
+    my $accountId = 'acct_playback_auth';
+
+    is(Plugins::SpotOn::API::Credentials->needsPlaybackAuth($accountId), 0,
+        'Test 13: needsPlaybackAuth is 0 before marking');
+    is(Plugins::SpotOn::API::Credentials->playbackAuthReason($accountId), '',
+        'Test 13: playbackAuthReason is empty string before marking');
+
+    Plugins::SpotOn::API::Credentials->markNeedsPlaybackAuth($accountId, 'credential_error');
+
+    is(Plugins::SpotOn::API::Credentials->needsPlaybackAuth($accountId), 1,
+        'Test 13: needsPlaybackAuth is 1 after marking');
+    is(Plugins::SpotOn::API::Credentials->playbackAuthReason($accountId), 'credential_error',
+        'Test 13: playbackAuthReason returns the stored reason');
+
+    Plugins::SpotOn::API::Credentials->clearNeedsPlaybackAuth($accountId);
+
+    is(Plugins::SpotOn::API::Credentials->needsPlaybackAuth($accountId), 0,
+        'Test 13: needsPlaybackAuth is 0 after clearing');
+    is(Plugins::SpotOn::API::Credentials->playbackAuthReason($accountId), '',
+        'Test 13: playbackAuthReason returns empty string after clearing');
+
+    # Accounts are isolated: marking one account never flags another.
+    Plugins::SpotOn::API::Credentials->markNeedsPlaybackAuth('acct_other', 'credential_error');
+    is(Plugins::SpotOn::API::Credentials->needsPlaybackAuth($accountId), 0,
+        'Test 13: flag is per-account (marking another account does not flag this one)');
+    Plugins::SpotOn::API::Credentials->clearNeedsPlaybackAuth('acct_other');
 }
 
 # ============================================================

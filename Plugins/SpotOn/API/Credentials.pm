@@ -17,12 +17,20 @@ use warnings;
 use File::Spec::Functions qw(catdir catfile);
 use JSON::XS::VersionOneAndTwo;
 
+use Slim::Utils::Cache;
 use Slim::Utils::Log;
 use Slim::Utils::Prefs;
 use Slim::Utils::Timers;
 use Time::HiRes;
 
 use constant CREDENTIALS_FILE => 'credentials.json';
+
+# GH #147: persistent per-account "needs playback authorization" flag.
+# Deliberately a SEPARATE flag from TokenManager's REAUTH_FLAG_PREFIX --
+# needsReauth short-circuits TokenManager->getToken and would break the
+# still-working Web API (Browse/Search/Library). Playback is broken; the
+# Web API is not.
+use constant PLAYBACK_AUTH_FLAG_PREFIX => 'spoton_needs_playback_auth_';
 
 # M12-style async poll: 0.1s interval, 100 attempts (10s cap) -- mirrors
 # Daemon.pm's PORT_POLL_INTERVAL/PORT_POLL_MAX_ATTEMPTS.
@@ -41,6 +49,12 @@ use constant DERIVE_COOLDOWN_SECONDS => 1800; # 30 minutes
 my $log         = logger('plugin.spoton');
 my $prefs       = preferences('plugin.spoton');
 my $serverPrefs = preferences('server');
+
+# Cache instance for the playback-auth flag (GH #147). M5: cache version
+# lives in Plugin.pm (single source of truth). Plugin.pm is always compiled
+# first in production (this module is runtime-require'd) -- same pattern as
+# PKCE.pm's own cache instantiation.
+my $cache = Slim::Utils::Cache->new('spoton', Plugins::SpotOn::Plugin::SPOTON_CACHE_VERSION());
 
 # H3-style in-flight coalescing (Pitfall 3) -- keyed by accountId. Each value
 # is an arrayref of pending callbacks. Concurrent Eager/Lazy derivation
@@ -244,15 +258,71 @@ sub accountMismatch {
     return ($data->{username} ne $expectedUserId) ? 1 : 0;
 }
 
-# isCredentialError($class, $stderrText) (D-03)
+# isCredentialError($class, $stderrText) (D-03/D-05)
 # Matches the exact librespot-core error strings verified against the
 # vendored librespot-core source (connection/mod.rs::login_error_message()).
 # Assumption A2: recheck these strings on any librespot-core dependency bump.
+#
+# INVALID_CREDENTIALS / "Login request was denied" are the Login5 provenance
+# blockade signatures observed since Aug 10, 2026 (GH #147): Spotify's Login5
+# endpoint rejects stored credentials that were not minted with the Keymaster
+# client_id. Same runtime-detection strings Music Assistant matches on
+# (commit ec639766).
 sub isCredentialError {
     my ($class, $stderrText) = @_;
     return 0 unless defined $stderrText;
-    return $stderrText =~ /Bad credentials|Could not validate credentials|No cached credentials in/
+    return $stderrText =~ /Bad credentials|Could not validate credentials|No cached credentials in|INVALID_CREDENTIALS|Login request was denied/
         ? 1 : 0;
+}
+
+# ============================================================
+# Playback-auth flag API (GH #147)
+# Persistent per-account flag: the account's stored playback credentials
+# were rejected by Spotify Login5 (or are known wrong-provenance) and the
+# user must re-authorize playback (ZeroConf pairing / Keymaster browser
+# fallback, plans 65-02/65-03). Mirrors TokenManager's _markNeedsReauth
+# 'never'-TTL discipline but uses its OWN cache key prefix -- see the
+# PLAYBACK_AUTH_FLAG_PREFIX comment above for why needsReauth must NOT be
+# reused here.
+# ============================================================
+
+# markNeedsPlaybackAuth($class, $accountId, $reason)
+# Known reasons: 'credential_error' (Login5 rejection at daemon crash),
+# 'legacy_token_derived' (plan 65-03 upgrade migration).
+sub markNeedsPlaybackAuth {
+    my ($class, $accountId, $reason) = @_;
+    return unless defined $accountId && length $accountId;
+    $cache->set(PLAYBACK_AUTH_FLAG_PREFIX . $accountId,
+        { reason => ($reason // ''), ts => time() }, 'never');
+    main::INFOLOG && $log->info(
+        "Credentials: account " . _mask($accountId)
+        . " flagged as needing playback authorization (" . ($reason // '') . ")");
+}
+
+# needsPlaybackAuth($class, $accountId) -> 0|1
+sub needsPlaybackAuth {
+    my ($class, $accountId) = @_;
+    return 0 unless defined $accountId && length $accountId;
+    return $cache->get(PLAYBACK_AUTH_FLAG_PREFIX . $accountId) ? 1 : 0;
+}
+
+# playbackAuthReason($class, $accountId) -> reason string or ''
+sub playbackAuthReason {
+    my ($class, $accountId) = @_;
+    return '' unless defined $accountId && length $accountId;
+    my $flag = $cache->get(PLAYBACK_AUTH_FLAG_PREFIX . $accountId);
+    return (ref $flag eq 'HASH' && defined $flag->{reason}) ? $flag->{reason} : '';
+}
+
+# clearNeedsPlaybackAuth($class, $accountId)
+# Called by the plans 65-02/65-03 provisioning flows once the user has
+# completed a playback re-authorization.
+sub clearNeedsPlaybackAuth {
+    my ($class, $accountId) = @_;
+    return unless defined $accountId && length $accountId;
+    $cache->remove(PLAYBACK_AUTH_FLAG_PREFIX . $accountId);
+    main::INFOLOG && $log->info(
+        "Credentials: playback-auth flag cleared for account " . _mask($accountId));
 }
 
 # classifyAudioKeyError($class, $stderrText) (D-02)

@@ -375,9 +375,9 @@ sub _streamAlivePoll {
     for my $helper (values %helperInstances) {
         if (!$helper->alive) {
             # D-03: classify the crash BEFORE the generic restart -- a
-            # credential-rejection error gets the delete->re-derive->restart
-            # treatment (self-healing); anything else falls through to the
-            # existing plain restart path, unchanged.
+            # credential-rejection error escalates to the persistent
+            # playback-auth flag and the daemon stays down (GH #147 D-04);
+            # anything else falls through to the plain restart path.
             require Plugins::SpotOn::API::Credentials;
             my $tail = $helper->stderrTail(STDERR_TAIL_BYTES);
             if (Plugins::SpotOn::API::Credentials->isCredentialError($tail)) {
@@ -457,99 +457,69 @@ sub _streamAlivePoll {
 # account -- librespot-spoton/src/unified.rs constructs every post-startup
 # reconnect_cache WITHOUT a credentials_location ("Phase 14 (Credential
 # Isolation)", verified present at unified.rs L1261), making
-# Cache::save_credentials() a no-op for guest ZeroConf sessions. Perl-side
-# repair below only ever touches the account-scoped credentials.json for the
-# active PKCE account -- it never re-implements or interacts with that
-# guest-isolation guard.
+# Cache::save_credentials() a no-op for guest ZeroConf sessions.
 #
-# _handleCredentialCrash($class, $helper) (D-03/D-04)
+# _handleCredentialCrash($class, $helper) (D-03; GH #147 D-04)
 # Called when _streamAlivePoll's crash branch classifies the daemon's stderr
-# tail as a credential error (Credentials->isCredentialError). Deletes the
-# single credentials.json for the active PKCE account and re-derives from
-# fresh PKCE tokens, restarting the daemon transparently on success. A
-# permanent derivation failure (fresh token rejected by the AP) escalates to
-# the Phase 50 4-channel re-auth warning via TokenManager's PUBLIC
-# markNeedsReauth wrapper -- never the underscore-prefixed private method.
+# tail as a credential error (Credentials->isCredentialError). Escalates to
+# a persistent per-account playback-auth flag and stops the daemon. It never
+# deletes credentials.json and never mints new credentials from PKCE tokens
+# -- Spotify's Login5 endpoint rejects PKCE-provenance stored credentials
+# (Aug 10, 2026 blockade), so any automatic re-derive would only re-arm the
+# crash loop. Recovery is user-initiated: ZeroConf pairing or the Keymaster
+# browser fallback (plans 65-02/65-03) clear the flag.
 sub _handleCredentialCrash {
     my ($class, $helper) = @_;
 
-    my $activeAccountId = $prefs->get('activeAccount') || '';
+    my $activeAccountId = $helper->_accountId || $prefs->get('activeAccount') || '';
 
-    # WR-01: if the account is already flagged for re-auth (permanent
-    # failure), stop re-entering this handler every 5s poll cycle.
-    # Deregister the dead daemon so _streamAlivePoll stops finding it;
-    # the re-auth flow will re-create it on success.
-    if ($activeAccountId) {
-        require Plugins::SpotOn::API::TokenManager;
-        if (Plugins::SpotOn::API::TokenManager->needsReauth($activeAccountId)) {
-            main::INFOLOG && $log->is_info && $log->info(
-                "SpotOn Unified daemon for " . $helper->mac
-                . " — credential crash already escalated to re-auth for account "
-                . _maskAccountId($activeAccountId) . ", stopping poll"
-            );
-            $class->stopHelper($helper->mac);
-            return;
-        }
-    }
-
-    # Pitfall 4 / legacy flat-dir setup: credential repair requires a PKCE
-    # account. Phase 53 owns the broader legacy-migration UX (D-10) -- do
-    # not delete or derive anything here.
+    # Pitfall 4 / legacy flat-dir setup: playback-auth escalation requires a
+    # PKCE account. Phase 53 owns the broader legacy-migration UX (D-10).
     unless ($activeAccountId) {
         $log->warn(
             "SpotOn Unified daemon for " . $helper->mac . " crashed with a credential "
-            . "error, but no active PKCE account is configured -- skipping auto-repair "
+            . "error, but no active PKCE account is configured -- skipping escalation "
             . "(legacy flat-dir credential setups are not self-healed; see Phase 53)"
         );
         return;
     }
 
+    # WR-01: if the account is already flagged for re-auth (permanent token
+    # failure), stop re-entering this handler every 5s poll cycle.
+    # Deregister the dead daemon so _streamAlivePoll stops finding it;
+    # the re-auth flow will re-create it on success.
+    require Plugins::SpotOn::API::TokenManager;
+    if (Plugins::SpotOn::API::TokenManager->needsReauth($activeAccountId)) {
+        main::INFOLOG && $log->is_info && $log->info(
+            "SpotOn Unified daemon for " . $helper->mac
+            . " — credential crash already escalated to re-auth for account "
+            . _maskAccountId($activeAccountId) . ", stopping poll"
+        );
+        $class->stopHelper($helper->mac);
+        return;
+    }
+
+    # WR-01 (playback-auth variant): already flagged — stop the daemon and
+    # bail without re-logging the escalation warning every poll cycle.
+    require Plugins::SpotOn::API::Credentials;
+    if (Plugins::SpotOn::API::Credentials->needsPlaybackAuth($activeAccountId)) {
+        main::INFOLOG && $log->is_info && $log->info(
+            "SpotOn Unified daemon for " . $helper->mac
+            . " — credential crash already escalated to playback re-auth for account "
+            . _maskAccountId($activeAccountId) . ", stopping poll"
+        );
+        $class->stopHelper($helper->mac);
+        return;
+    }
+
     $log->warn(
-        "SpotOn Unified daemon for " . $helper->mac . " crashed with a credential error "
-        . "(account " . _maskAccountId($activeAccountId) . ") -- deleting credentials.json "
-        . "and re-deriving from PKCE tokens"
+        "SpotOn daemon for " . $helper->mac . " crashed with a credential error (account "
+        . _maskAccountId($activeAccountId) . ") — stored credentials rejected by Spotify "
+        . "Login5. Playback re-authorization required: open SpotOn Settings -> Authorize Playback."
     );
 
-    require Plugins::SpotOn::API::Credentials;
-    my $credFile = Plugins::SpotOn::API::Credentials->credentialsPathFor($activeAccountId);
-    unlink $credFile if -f $credFile;
-
-    Plugins::SpotOn::API::Credentials->deriveCredentials($activeAccountId, sub {
-        my ($ok, $reason) = @_;
-
-        if ($ok) {
-            main::INFOLOG && $log->is_info && $log->info(
-                "Credential re-derivation succeeded for account " . _maskAccountId($activeAccountId)
-                . " -- restarting daemon for " . $helper->mac
-            );
-            $class->startHelper($helper->mac);
-        }
-        elsif (($reason // '') eq 'derivation_failed') {
-            # The PKCE token was fresh but the AP rejected the exchange --
-            # permanent failure. Escalate via the PUBLIC wrapper (D-04);
-            # the daemon stays stopped because startHelper's pre-check finds
-            # no credentials.json and getToken short-circuits on needsReauth.
-            require Plugins::SpotOn::API::TokenManager;
-            Plugins::SpotOn::API::TokenManager->markNeedsReauth($activeAccountId, $reason);
-        }
-        elsif (($reason // '') eq 'no_token') {
-            # TokenManager already flagged needsReauth internally during its
-            # own refresh failure -- nothing more to do here than log.
-            $log->warn(
-                "Credential re-derivation for account " . _maskAccountId($activeAccountId)
-                . " could not obtain a token (already flagged for re-auth)"
-            );
-        }
-        else {
-            # rate_limited / spawn_failed / no_binary / binary_too_old --
-            # D-05's cooldown inside Credentials.pm prevents crash-loop
-            # hammering; the 60s watchdog owns any later retry.
-            $log->warn(
-                "Credential re-derivation for account " . _maskAccountId($activeAccountId)
-                . " failed ($reason) -- will retry via the next watchdog cycle"
-            );
-        }
-    });
+    Plugins::SpotOn::API::Credentials->markNeedsPlaybackAuth($activeAccountId, 'credential_error');
+    $class->stopHelper($helper->mac);
 }
 
 sub _cleanupOrphanedLogs {
@@ -598,6 +568,22 @@ sub startHelper {
     # $activeAccountId is empty (legacy flat-dir / pre-PKCE setup), neither
     # new branch applies — that cleanup is deferred to Phase 53 (D-10).
     my $activeAccountId = $prefs->get('activeAccount') || '';
+
+    # GH #147: playback-auth gate. An account flagged as needing playback
+    # authorization never gets a daemon start attempt -- prevents fresh
+    # crash cycles against Spotify's Login5 blockade (and pointless starts
+    # after the plan-03 migration flags legacy token-derived accounts).
+    if ($activeAccountId) {
+        require Plugins::SpotOn::API::Credentials;
+        if (Plugins::SpotOn::API::Credentials->needsPlaybackAuth($activeAccountId)) {
+            main::INFOLOG && $log->is_info && $log->info(
+                "Skipping Unified daemon for $clientId — account "
+                . _maskAccountId($activeAccountId) . " needs playback authorization"
+            );
+            return;
+        }
+    }
+
     my $cacheDir = $activeAccountId
         ? catdir($serverPrefs->get('cachedir'), 'spoton', $activeAccountId)
         : catdir($serverPrefs->get('cachedir'), 'spoton');
