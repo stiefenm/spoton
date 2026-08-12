@@ -39,6 +39,14 @@ use constant STAGGER_DELAY => 3;
 # daemon crash. Mirrors Credentials.pm's own bounded-read discipline.
 use constant STDERR_TAIL_BYTES => 8192;
 
+# GH #147 D-05: exponential backoff for non-credential crash restarts.
+# Without it, any persistent crash cause restarts the daemon every 5s
+# (STREAM_WATCHDOG_INTERVAL) forever. Resulting cadence for a persistently
+# crashing daemon: 5s, 10s, 20s, 40s, 80s, 160s, then every 300s.
+use constant CRASH_BACKOFF_BASE        => 5;    # seconds, first restart delay
+use constant CRASH_BACKOFF_MAX         => 300;  # cap between restart attempts
+use constant CRASH_BACKOFF_RESET_AFTER => 600;  # quiet/alive this long = recovered
+
 my $prefs       = preferences('plugin.spoton');
 my $serverPrefs = preferences('server');
 my $log         = logger('plugin.spoton');
@@ -59,6 +67,12 @@ my $crashLoopFlagsWereReset = 0;
 # package level because stopHelper DELETES the Daemon object — an object-level
 # timestamp would be erased by the very restart it is rate-limiting.
 my %lastHealthRestart;
+
+# GH #147 D-05: crash-restart backoff state keyed by daemon MAC. Package-level
+# for the same reason as %lastHealthRestart (H9): stopHelper deletes the
+# Daemon object, so object-level state would be erased by the very restart
+# it is rate-limiting. Values: { count, last_crash_at, next_allowed_at }.
+my %crashRestarts;
 
 # M10: subscription coderefs, kept so shutdown() can unsubscribe them —
 # anonymous subs passed inline can never be unregistered and accumulate
@@ -383,10 +397,42 @@ sub _streamAlivePoll {
             if (Plugins::SpotOn::API::Credentials->isCredentialError($tail)) {
                 $class->_handleCredentialCrash($helper);
             } else {
-                main::INFOLOG && $log->is_info && $log->info(
-                    "SpotOn Unified daemon crashed for " . $helper->mac . " - restarting via startHelper"
-                );
-                $class->startHelper($helper->mac);
+                # GH #147 D-05: exponential backoff for non-credential crash
+                # restarts -- a persistently crashing daemon no longer
+                # restarts every 5s forever.
+                my $now   = time();
+                my $state = $crashRestarts{ $helper->mac }
+                    ||= { count => 0, last_crash_at => 0, next_allowed_at => 0 };
+
+                # Quiet for CRASH_BACKOFF_RESET_AFTER = recovered; treat this
+                # crash as a fresh incident (time-based reset, complements the
+                # explicit health-check reset in _onHealthResponse).
+                if ($state->{last_crash_at}
+                    && $now - $state->{last_crash_at} > CRASH_BACKOFF_RESET_AFTER) {
+                    $state->{count}           = 0;
+                    $state->{next_allowed_at} = 0;
+                }
+
+                if ($now < $state->{next_allowed_at}) {
+                    main::DEBUGLOG && $log->is_debug && $log->debug(
+                        "SpotOn Unified daemon restart for " . $helper->mac
+                        . " suppressed by backoff, "
+                        . ($state->{next_allowed_at} - $now) . "s remaining"
+                    );
+                } else {
+                    $state->{count}++;
+                    $state->{last_crash_at} = $now;
+                    my $delay = CRASH_BACKOFF_BASE * (2 ** ($state->{count} - 1));
+                    $delay = CRASH_BACKOFF_MAX if $delay > CRASH_BACKOFF_MAX;
+                    $state->{next_allowed_at} = $now + $delay;
+
+                    main::INFOLOG && $log->is_info && $log->info(
+                        "SpotOn Unified daemon crashed for " . $helper->mac
+                        . " - restarting via startHelper (crash #" . $state->{count}
+                        . ", next restart no sooner than ${delay}s)"
+                    );
+                    $class->startHelper($helper->mac);
+                }
             }
         }
         elsif (main::DEBUGLOG && $log->is_debug) {
@@ -780,6 +826,11 @@ sub _onHealthResponse {
             sprintf('stale session (age=%ds, idle=%ds)', $json->{session_age_secs}, $json->{idle_secs}));
         return;
     }
+
+    # GH #147 D-05: daemon passed a full health check — explicit recovery
+    # signal; reset any crash-restart backoff state for this MAC (cheap
+    # complement to the time-based CRASH_BACKOFF_RESET_AFTER reset).
+    delete $crashRestarts{ $helper->mac };
 }
 
 sub _onHealthError {
