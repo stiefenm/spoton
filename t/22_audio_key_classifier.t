@@ -146,6 +146,19 @@ sub to_json   { JSON::PP::encode_json($_[0]) }
 1;
 END
 
+# Stub: Slim::Utils::Cache (GH #147: Credentials.pm stores the persistent
+# playback-auth flag here -- must shadow any system-installed Slim)
+write_stub($stub_dir, 'Slim::Utils::Cache', <<'END');
+package Slim::Utils::Cache;
+my %_store;
+sub new    { bless {}, shift }
+sub get    { $_store{$_[1]} }
+sub set    { $_store{$_[1]} = $_[2]; 1 }
+sub remove { delete $_store{$_[1]} }
+sub clear  { %_store = () }
+1;
+END
+
 # ============================================================
 # main:: constants (TRANSCODING, WEBUI, SCANNER, INFOLOG, etc.)
 # ============================================================
@@ -158,6 +171,15 @@ BEGIN {
     *main::ISWINDOWS   = sub () { 0 };
     *main::ISMAC       = sub () { 0 };
     *main::PERFMON     = sub () { 0 };
+}
+
+# M5: SPOTON_CACHE_VERSION is defined in Plugin.pm (single source of truth);
+# Credentials.pm resolves it via a fully-qualified call at load time (GH #147
+# playback-auth flag cache). Production always compiles Plugin.pm first --
+# provide the constant for standalone loads (same pattern as t/16).
+BEGIN {
+    package Plugins::SpotOn::Plugin;
+    use constant SPOTON_CACHE_VERSION => 4;
 }
 
 # ============================================================
