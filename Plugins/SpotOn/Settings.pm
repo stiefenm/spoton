@@ -69,6 +69,18 @@ sub new {
         \&_playerAuthCancelHandler
     );
 
+    # Keymaster browser-fallback playback authorization for mDNS-unreachable
+    # environments -- Docker, VLANs, pCP/IPv6 (GH #147 plan 65-03, D-02
+    # secondary path)
+    Slim::Web::Pages->addRawFunction(
+        'plugins/SpotOn/settings/playerauth/browser/start',
+        \&_playerAuthBrowserStartHandler
+    );
+    Slim::Web::Pages->addRawFunction(
+        'plugins/SpotOn/settings/playerauth/browser/manual',
+        \&_playerAuthBrowserManualHandler
+    );
+
     return $self;
 }
 
@@ -487,6 +499,18 @@ sub _pkceCallbackHandler {
         return;
     }
 
+    # T-65-11/T-65-13 (plan 65-03): reject purpose-tagged nonces -- a
+    # playerauth (Keymaster browser fallback) authorization must never
+    # complete through the account PKCE flow, whose finish path would
+    # overwrite the account's working Web API token file with the
+    # streaming-only Keymaster token pair.
+    if (($verifierData->{purpose} // '') ne '') {
+        $log->warn("Settings: PKCE callback — nonce belongs to the playback-authorization flow, rejected");
+        _renderPkceResultPage($httpClient, $response, string('PLUGIN_SPOTON_PKCE_ERROR'),
+            'This authorization belongs to the playback-authorization flow. Please paste it into the Authorize Playback section instead.', 1);
+        return;
+    }
+
     # D-04: read verifier/client_id/redirect_uri from the enriched cache
     # entry (stored at /pkce/start), not from live prefs -- race-free if the
     # user toggled bundled/custom mode mid-flow.
@@ -548,6 +572,16 @@ sub _pkceManualHandler {
     unless ($verifierData) {
         _jsonResponse($httpClient, $response,
             { status => 'error', message => 'Authorization session expired or already used' });
+        return;
+    }
+
+    # T-65-11/T-65-13 (plan 65-03): reject purpose-tagged nonces -- see the
+    # matching guard in _pkceCallbackHandler. Without this, pasting the
+    # playerauth loopback URL into THIS field would store the streaming-only
+    # Keymaster token pair over the account's working Web API tokens.
+    if (($verifierData->{purpose} // '') ne '') {
+        _jsonResponse($httpClient, $response,
+            { status => 'error', message => 'This URL belongs to the playback-authorization flow — paste it into the Authorize Playback section instead' });
         return;
     }
 
@@ -640,6 +674,173 @@ sub _playerAuthCancelHandler {
     Plugins::SpotOn::API::Credentials->cancelPairing();
 
     _jsonResponse($httpClient, $response, { status => 'ok' });
+}
+
+# ============================================================
+# Keymaster browser fallback (GH #147 plan 65-03, D-02 secondary path)
+# /plugins/SpotOn/settings/playerauth/browser/start (POST, CSRF-guarded)
+# For environments where mDNS pairing cannot work (Docker, VLANs, pCP/IPv6):
+# starts a PKCE authorization against Spotify's Keymaster client_id with
+# scope=streaming ONLY (the MA-verified recipe -- the 15 Web API scopes
+# belong to the account's own PKCE flow, not this one) and the loopback
+# redirect URI (gotcha 4: Spotify rejects non-loopback redirect URIs for
+# the Keymaster client_id, so the GitHub Pages relay is unusable here by
+# design). The resulting access token has the provenance Login5 accepts,
+# so --token-login derivation works again (deriveCredentialsFromToken).
+# ============================================================
+sub _playerAuthBrowserStartHandler {
+    my ($httpClient, $response) = @_;
+
+    return unless _csrfCheck($httpClient, $response);
+
+    require Plugins::SpotOn::API::PKCE;
+
+    # Resolve target account like playerauth/start: validated param or
+    # activeAccount (WR-03 discipline -- 8-char hex AND existence check
+    # before the id reaches any downstream use).
+    my $accountId = _postParam($response->request, 'accountId');
+    $accountId = $prefs->get('activeAccount')
+        unless defined $accountId && length $accountId;
+
+    my $accounts = $prefs->get('accounts') || {};
+    unless (defined $accountId
+        && $accountId =~ /\A[0-9a-f]{8}\z/
+        && exists $accounts->{$accountId}) {
+        _jsonResponse($httpClient, $response,
+            { status => 'error', reason => 'unknown_account' });
+        return;
+    }
+
+    # WR-04 discipline: cryptographic randomness for verifier and nonce --
+    # the nonce->verifier binding is the CSRF guard for the manual endpoint.
+    my $verifier  = Plugins::SpotOn::API::PKCE::generateCodeVerifier();
+    my $challenge = Plugins::SpotOn::API::PKCE::generateCodeChallenge($verifier);
+
+    require Crypt::OpenSSL::Random;
+    my $nonce = unpack('H16', Crypt::OpenSSL::Random::random_bytes(8));
+
+    # State only needs to round-trip the nonce back through the pasted URL;
+    # the embedded callback_url is never navigated to (the loopback redirect
+    # never reaches LMS -- copy-paste is the only completion path).
+    my $request = $response->request;
+    my $host    = ($request && $request->header('Host')) || 'localhost';
+    my $scheme  = ($request && $request->header('X-Forwarded-Proto')) || 'http';
+    my $callbackUrl = $scheme . '://' . $host . '/plugins/SpotOn/settings/pkce/callback';
+    my $state = Plugins::SpotOn::API::PKCE::buildState($callbackUrl, $nonce);
+
+    # purpose='playerauth' tags this nonce for the browser/manual handler
+    # ONLY (T-65-11): the regular PKCE flow's handlers reject it, and the
+    # manual handler below rejects untagged (regular-PKCE) nonces -- one-time
+    # verifiers can never be replayed across the two flows.
+    Plugins::SpotOn::API::PKCE::storeVerifier($nonce, {
+        verifier     => $verifier,
+        redirect_uri => Plugins::SpotOn::API::PKCE::LOOPBACK_REDIRECT_URI(),
+        client_id    => Plugins::SpotOn::API::PKCE::KEYMASTER_CLIENT_ID(),
+        account_id   => $accountId,
+        purpose      => 'playerauth',
+    });
+
+    my $authUrl = Plugins::SpotOn::API::PKCE::buildAuthorizationUrl(
+        Plugins::SpotOn::API::PKCE::KEYMASTER_CLIENT_ID(),
+        $challenge,
+        $state,
+        Plugins::SpotOn::API::PKCE::LOOPBACK_REDIRECT_URI(),
+        ['streaming'],
+    );
+
+    main::INFOLOG && $log->is_info && $log->info(
+        "Settings: playerauth browser fallback started [nonce=" . substr($nonce, 0, 8) . "...]");
+
+    _jsonResponse($httpClient, $response, { url => $authUrl, nonce => $nonce });
+}
+
+# ============================================================
+# /plugins/SpotOn/settings/playerauth/browser/manual (POST, CSRF-guarded)
+# Completion endpoint for the browser fallback: the user pastes the
+# 127.0.0.1 URL their browser landed on after approving. The pasted URL is
+# only ever parsed for its code/state query parameters -- never fetched or
+# redirected to (T-49-10). Exchanges the code with the cached Keymaster
+# client_id/verifier/redirect_uri, then derives Login5-accepted credentials
+# via deriveCredentialsFromToken.
+#
+# CRITICAL (T-65-13): the Keymaster token pair is used once for derivation
+# and discarded -- it must NEVER be persisted to the account's token file,
+# which holds the still-working Web API refresh token. There is deliberately
+# no token-persistence call anywhere in this handler (region gate in
+# t/09_settings.t / plan verify enforces this).
+# ============================================================
+sub _playerAuthBrowserManualHandler {
+    my ($httpClient, $response) = @_;
+
+    return unless _csrfCheck($httpClient, $response);
+
+    require Plugins::SpotOn::API::PKCE;
+
+    my $callbackUrl = _postParam($response->request, 'callback_url');
+    unless ($callbackUrl) {
+        _jsonResponse($httpClient, $response,
+            { status => 'error', reason => 'missing_url' });
+        return;
+    }
+
+    my %params = eval { URI->new($callbackUrl)->query_form };
+    if ($@ || !%params) {
+        _jsonResponse($httpClient, $response,
+            { status => 'error', reason => 'parse_error' });
+        return;
+    }
+
+    my $code  = $params{code};
+    my $state = $params{state};
+
+    unless ($code && $state) {
+        _jsonResponse($httpClient, $response,
+            { status => 'error', reason => 'missing_code' });
+        return;
+    }
+
+    my $verifierData = _pkceLoadVerifierDataFromState($state);
+
+    # REQUIRE purpose eq 'playerauth' (T-65-11): a nonce minted by the
+    # regular PKCE flow must never complete through this endpoint -- the two
+    # flows' one-time verifiers cannot be replayed across purposes.
+    unless ($verifierData && ($verifierData->{purpose} // '') eq 'playerauth') {
+        $log->warn("Settings: playerauth browser/manual -- no matching verifier for state "
+            . "(expired/reused/wrong flow)");
+        _jsonResponse($httpClient, $response,
+            { status => 'error', reason => 'session_expired' });
+        return;
+    }
+
+    my $verifier    = $verifierData->{verifier};
+    my $clientId    = $verifierData->{client_id};      # KEYMASTER_CLIENT_ID, cached at browser/start
+    my $redirectUri = $verifierData->{redirect_uri};   # loopback, cached at browser/start
+    my $accountId   = $verifierData->{account_id};
+
+    Plugins::SpotOn::API::PKCE::exchangeCode($code, $clientId, $verifier, $redirectUri, sub {
+        my ($tokenData, $err) = @_;
+
+        unless ($tokenData) {
+            $log->error("Settings: playerauth browser token exchange failed: " . ($err || 'unknown'));
+            _jsonResponse($httpClient, $response,
+                { status => 'error', reason => 'exchange_failed' });
+            return;
+        }
+
+        require Plugins::SpotOn::API::Credentials;
+        Plugins::SpotOn::API::Credentials->deriveCredentialsFromToken(
+            $accountId, $tokenData->{access_token}, sub {
+                my ($ok, $reason) = @_;
+
+                if ($ok) {
+                    _jsonResponse($httpClient, $response, { status => 'ok' });
+                } else {
+                    # Symbolic reason enum only (T-65-07) -- never stderr.
+                    _jsonResponse($httpClient, $response,
+                        { status => 'error', reason => $reason });
+                }
+            });
+    });
 }
 
 # ============================================================

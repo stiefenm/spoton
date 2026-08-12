@@ -595,8 +595,27 @@ SKIP: {
     # GH #147 D-04 (Plan 65-01): the eager derivation call site is removed --
     # PKCE auth must never mint playback credentials from the access token
     # (Login5 rejects wrong-provenance credentials). Whole-file guard: no
-    # derivation call site may remain anywhere in Settings.pm.
-    ok($src !~ /deriveCredentials/,           'Settings.pm: no derivation call site remains (GH #147 D-04)');
+    # automatic derivation call site may remain anywhere in Settings.pm.
+    # Plan 65-03 exception: deriveCredentialsFromToken is the USER-INITIATED
+    # Keymaster browser fallback (correct provenance, staging + D-01
+    # validation) -- the negative lookahead permits exactly that identifier
+    # while still banning the legacy deriveCredentials(...) call.
+    ok($src !~ /deriveCredentials(?!FromToken)/,
+        'Settings.pm: no automatic derivation call site remains (GH #147 D-04)');
+
+    # GH #147 plan 65-03 (T-65-13): the browser-fallback handlers must never
+    # persist the Keymaster token pair -- no token-storage call may appear in
+    # either handler body (comments excluded).
+    for my $handler (qw(_playerAuthBrowserStartHandler _playerAuthBrowserManualHandler)) {
+        my ($body) = $src =~ /(sub \Q$handler\E\b.*?)(?=\nsub \w|\z)/s;
+        my $code = join("\n", grep { !/^\s*#/ } split /\n/, ($body // ''));
+        ok(defined $body && $code !~ /storeTokens/,
+            "Settings.pm: $handler never persists tokens (T-65-13)");
+    }
+    # And exactly this fallback flow must consume deriveCredentialsFromToken.
+    my ($browser_manual_body) = $src =~ /(sub _playerAuthBrowserManualHandler\b.*?)(?=\nsub \w|\z)/s;
+    ok(defined $browser_manual_body && $browser_manual_body =~ /deriveCredentialsFromToken/,
+        'Settings.pm: browser/manual handler derives via deriveCredentialsFromToken (GH #147 plan 65-03)');
 
     # GH #147: _pkceStoreAccount's AJAX response signals the separate
     # playback-authorization step to the caller.

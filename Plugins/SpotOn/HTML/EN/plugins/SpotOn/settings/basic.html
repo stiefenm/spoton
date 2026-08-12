@@ -191,6 +191,30 @@
 			</button>
 		</p>
 		<div id="player-auth-status" style="display:none; margin-top:10px"></div>
+
+		<details style="margin-top:14px; padding-top:14px; border-top:1px solid rgba(128,128,128,0.2)">
+			<summary style="cursor:pointer"><strong>[% 'PLUGIN_SPOTON_PLAYER_AUTH_BROWSER_TITLE' | string %]</strong></summary>
+			<p style="margin:8px 0 8px 0; font-size:0.9em">[% 'PLUGIN_SPOTON_PLAYER_AUTH_BROWSER_DESC' | string %]</p>
+			<p style="margin:0 0 8px 0">
+				<button type="button" class="submit" id="playerAuthBrowserStartBtn"
+					onclick="spotonPlayerAuthBrowserStart()"
+					data-failed-text="[% 'PLUGIN_SPOTON_PLAYER_AUTH_BROWSER_FAILED' | string | html %]">
+					[% 'PLUGIN_SPOTON_PLAYER_AUTH_BROWSER_START_BTN' | string %]
+				</button>
+			</p>
+			<div id="player-auth-browser-paste" style="display:none">
+				<p style="margin:0 0 8px 0; font-size:0.9em; opacity:0.85">[% 'PLUGIN_SPOTON_PLAYER_AUTH_BROWSER_PASTE_HINT' | string %]</p>
+				<input type="text" id="player-auth-browser-url" class="stdedit" style="width:80%"
+					placeholder="http://127.0.0.1:18764/login?code=..."/>
+				<button type="button" class="submit" id="playerAuthBrowserSubmitBtn"
+					onclick="spotonPlayerAuthBrowserManual()"
+					data-failed-text="[% 'PLUGIN_SPOTON_PLAYER_AUTH_BROWSER_FAILED' | string | html %]"
+					data-mismatch-text="[% 'PLUGIN_SPOTON_PLAYER_AUTH_MISMATCH' | string | html %]">
+					[% 'PLUGIN_SPOTON_PLAYER_AUTH_BROWSER_SUBMIT_BTN' | string %]
+				</button>
+			</div>
+			<div id="player-auth-browser-status" style="display:none; margin-top:10px"></div>
+		</details>
 	[% END %]
 
 	<hr style="margin:16px 0; border:0; border-top:1px solid rgba(128,128,128,0.25)"/>
@@ -484,6 +508,73 @@
 			});
 		} catch(e) {}
 	});
+
+	// ============================================================
+	// Playback authorization: Keymaster browser fallback (GH #147 plan 65-03)
+	// For Docker/VLAN setups where the Spotify app cannot see the pairing
+	// device. No auto-reload timer: the loopback redirect never reaches LMS,
+	// so copy-paste is the only completion path (same rationale as the
+	// bundled-mode PKCE flow above).
+	// ============================================================
+	function spotonPlayerAuthBrowserStart() {
+		var btn      = document.getElementById('playerAuthBrowserStartBtn');
+		var pasteEl  = document.getElementById('player-auth-browser-paste');
+		var statusEl = document.getElementById('player-auth-browser-status');
+
+		var xhr = new XMLHttpRequest();
+		xhr.open('POST', '/plugins/SpotOn/settings/playerauth/browser/start', true);
+		xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+		xhr.onload = function() {
+			var data;
+			try { data = JSON.parse(xhr.responseText); } catch(e) { data = null; }
+			if (xhr.status === 200 && data && data.url) {
+				statusEl.style.display = 'none';
+				pasteEl.style.display = 'block';
+				window.open(data.url, '_blank');
+				return;
+			}
+			statusEl.textContent = btn.dataset.failedText;
+			statusEl.style.display = 'block';
+		};
+		xhr.onerror = function() {
+			statusEl.textContent = btn.dataset.failedText;
+			statusEl.style.display = 'block';
+		};
+		xhr.send();
+	}
+
+	function spotonPlayerAuthBrowserManual() {
+		var input    = document.getElementById('player-auth-browser-url');
+		var btn      = document.getElementById('playerAuthBrowserSubmitBtn');
+		var statusEl = document.getElementById('player-auth-browser-status');
+		var callbackUrl = input.value.trim();
+		if (!callbackUrl) { return; }
+
+		var xhr = new XMLHttpRequest();
+		xhr.open('POST', '/plugins/SpotOn/settings/playerauth/browser/manual', true);
+		xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+		xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+		xhr.onload = function() {
+			var data;
+			try { data = JSON.parse(xhr.responseText); } catch(e) { data = null; }
+			if (data && data.status === 'ok') {
+				window.location.reload();
+				return;
+			}
+			// Reason-mapped strings: account_mismatch reuses the plan 65-02
+			// mismatch text; everything else shows the generic failure text.
+			var reason = data && data.reason;
+			statusEl.textContent = (reason === 'account_mismatch')
+				? btn.dataset.mismatchText
+				: btn.dataset.failedText;
+			statusEl.style.display = 'block';
+		};
+		xhr.onerror = function() {
+			statusEl.textContent = btn.dataset.failedText;
+			statusEl.style.display = 'block';
+		};
+		xhr.send('callback_url=' + encodeURIComponent(callbackUrl));
+	}
 
 	function spotonClearLogs() {
 		var btn = document.getElementById('clearLogsBtn');
