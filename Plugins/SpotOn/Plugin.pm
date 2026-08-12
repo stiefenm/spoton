@@ -119,6 +119,7 @@ sub initPlugin {
         diagnosticMode       => 0,     # #3: diagnostic logging toggle, default off
         streamingMode        => 'direct', # COMPAT-01: global streaming mode default (direct|proxy); per-player override lives in same-name client pref (GH #96)
         recentSearches => [],
+        credProvenanceMigrated => 0,   # GH #147 plan 65-03: one-shot legacy-credential provenance migration marker
     });
 
     # D-02: cacheSchemaVersion guard — log when cache namespace version was bumped
@@ -353,6 +354,30 @@ sub _refreshAllTokens {
 sub _startUnifiedDaemons {
     require Plugins::SpotOn::Connect;
     Plugins::SpotOn::Connect->initConnectHandlers();
+
+    # GH #147 plan 65-03 (scope item 6): one-shot provenance migration.
+    # Runs exactly once, and BEFORE the first DaemonManager->init() below --
+    # ordering matters: the playback-auth flags must exist before the first
+    # startHelper evaluation, so no daemon ever launches against blockaded
+    # legacy credentials (zero doomed starts on first boot after upgrade).
+    # A credentials.json WITHOUT the playbackCredSource marker (written only
+    # by the plan 65-02/65-03 install paths) is provably legacy token-derived
+    # -- wrong provenance, rejected by Login5 since Aug 10, 2026. Accounts
+    # without any credentials.json are skipped (nothing to invalidate; the
+    # plan 65-01 startHelper missing-file path already handles them).
+    if ( !$prefs->get('credProvenanceMigrated') ) {
+        require Plugins::SpotOn::API::Credentials;
+        my $accounts = $prefs->get('accounts') || {};
+        for my $id (keys %{$accounts}) {
+            next unless -f Plugins::SpotOn::API::Credentials->credentialsPathFor($id);
+            next if $accounts->{$id}{playbackCredSource};
+            Plugins::SpotOn::API::Credentials->markNeedsPlaybackAuth($id, 'legacy_token_derived');
+            $log->info("Provenance migration: account " . substr($id, 0, 4) . '****'
+                . " has legacy token-derived playback credentials -- flagged for re-authorization (GH #147)");
+        }
+        $prefs->set('credProvenanceMigrated', 1);
+    }
+
     require Plugins::SpotOn::Unified::DaemonManager;
     Plugins::SpotOn::Unified::DaemonManager->init();
 }
@@ -495,6 +520,29 @@ sub handleFeed {
             name => cstring($client, 'PLUGIN_SPOTON_REAUTH_REQUIRED'),
             type => 'textarea',
         };
+    }
+
+    # GH #147 plan 65-03 (scope item 7): playback-authorization hint -- shown
+    # when the ACTIVE account has working PKCE tokens (Browse/Search/Library
+    # keep working) but its playback credentials are flagged (crash escalation
+    # or legacy provenance migration) or missing entirely (fresh PKCE auth
+    # after the D-04 eager-derivation removal). Follows the precedence
+    # discipline above: never stacks with the migration hint (a migration
+    # account has no PKCE tokens yet, so the loadTokens gate also excludes it).
+    # The rest of the menu stays -- only playback is affected, and the hint
+    # says so.
+    if ( !$showingMigrationHint && $activeAccountId ) {
+        require Plugins::SpotOn::API::Credentials;
+        require Plugins::SpotOn::API::PKCE;
+        if ( Plugins::SpotOn::API::PKCE::loadTokens($activeAccountId)
+            && ( Plugins::SpotOn::API::Credentials->needsPlaybackAuth($activeAccountId)
+                || !-f Plugins::SpotOn::API::Credentials->credentialsPathFor($activeAccountId) ) )
+        {
+            push @items, {
+                name => cstring($client, 'PLUGIN_SPOTON_PLAYBACK_AUTH_REQUIRED'),
+                type => 'textarea',
+            };
+        }
     }
 
     # Rate-limit hint (D-12): show when the API is throttled

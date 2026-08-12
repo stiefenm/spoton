@@ -3131,3 +3131,94 @@ PLUGIN_SPOTON_PLAYER_AUTH_MISMATCH
 	NO	Spotify-kontoen i appen din samsvarer ikke med den valgte SpotOn-kontoen. Bytt konto i Spotify-appen eller i SpotOn, og prøv igjen.
 	PL	Konto Spotify w Twojej aplikacji nie zgadza się z wybranym kontem SpotOn. Przełącz konto w aplikacji Spotify lub w SpotOn, a następnie spróbuj ponownie.
 	SV	Spotify-kontot i din app matchar inte det valda SpotOn-kontot. Byt konto i Spotify-appen eller i SpotOn och försök igen.
+
+PLUGIN_SPOTON_PLAYBACK_AUTH_REQUIRED
+	CS	Je vyžadována autorizace přehrávání: Spotify odmítlo uložené přihlašovací údaje pro přehrávání. Otevřete Nastavení LMS > Pokročilé > SpotOn > Autorizovat přehrávání. Procházení nadále funguje.
+	DA	Afspilningsgodkendelse påkrævet: Spotify afviste de gemte afspilningslegitimationer. Åbn LMS-indstillinger > Avanceret > SpotOn > Godkend afspilning. Gennemsyn virker stadig.
+	DE	Wiedergabe-Autorisierung erforderlich: Spotify hat die gespeicherten Wiedergabe-Anmeldedaten abgelehnt. Öffne LMS-Einstellungen > Erweitert > SpotOn > Wiedergabe autorisieren. Durchsuchen funktioniert weiterhin.
+	EN	Playback authorization required: Spotify rejected the stored playback credentials. Open LMS Settings > Advanced > SpotOn > Authorize Playback. Browsing still works.
+	ES	Se requiere autorización de reproducción: Spotify rechazó las credenciales de reproducción almacenadas. Abra Configuración de LMS > Avanzado > SpotOn > Autorizar reproducción. La navegación sigue funcionando.
+	FR	Autorisation de lecture requise : Spotify a rejeté les identifiants de lecture enregistrés. Ouvrez Réglages LMS > Avancé > SpotOn > Autoriser la lecture. La navigation fonctionne toujours.
+	IT	Autorizzazione alla riproduzione richiesta: Spotify ha rifiutato le credenziali di riproduzione memorizzate. Apri Impostazioni LMS > Avanzate > SpotOn > Autorizza la riproduzione. La navigazione continua a funzionare.
+	NL	Afspeelautorisatie vereist: Spotify heeft de opgeslagen afspeelreferenties geweigerd. Open LMS-instellingen > Geavanceerd > SpotOn > Afspelen autoriseren. Bladeren werkt nog steeds.
+	NO	Avspillingsautorisasjon kreves: Spotify avviste den lagrede avspillingslegitimasjonen. Åpne LMS-innstillinger > Avansert > SpotOn > Autoriser avspilling. Blaing fungerer fortsatt.
+	PL	Wymagana autoryzacja odtwarzania: Spotify odrzuciło zapisane poświadczenia odtwarzania. Otwórz Ustawienia LMS > Zaawansowane > SpotOn > Autoryzuj odtwarzanie. Przeglądanie nadal działa.
+	SV	Uppspelningsauktorisering krävs: Spotify avvisade de sparade uppspelningsuppgifterna. Öppna LMS-inställningar > Avancerat > SpotOn > Auktorisera uppspelning. Bläddring fungerar fortfarande.
+
+PLUGIN_SPOTON_PLAYER_AUTH_BROWSER_TITLE
+	CS	Záložní řešení přes prohlížeč (Docker / VLAN / bez mDNS)
+	DA	Browser-nødløsning (Docker / VLAN / ingen mDNS)
+	DE	Browser-Fallback (Docker / VLAN / kein mDNS)
+	EN	Browser fallback (Docker / VLAN / no mDNS)
+	ES	Alternativa por navegador (Docker / VLAN / sin mDNS)
+	FR	Solution de repli par navigateur (Docker / VLAN / pas de mDNS)
+	IT	Alternativa tramite browser (Docker / VLAN / senza mDNS)
+	NL	Browser-alternatief (Docker / VLAN / geen mDNS)
+	NO	Nettleser-reserveløsning (Docker / VLAN / ingen mDNS)
+	PL	Rozwiązanie awaryjne przez przeglądarkę (Docker / VLAN / brak mDNS)
+	SV	Reservlösning via webbläsare (Docker / VLAN / ingen mDNS)
+
+PLUGIN_SPOTON_PLAYER_AUTH_BROWSER_DESC
+	CS	Použijte, když aplikace Spotify nevidí párovací zařízení (Docker, VLAN nebo jiná síťová nastavení): autorizujte místo toho v prohlížeči.
+	DA	Brug denne, når Spotify-appen ikke kan se parringsenheden (Docker, VLAN eller andre netværksopsætninger): godkend i browseren i stedet.
+	DE	Verwende dies, wenn die Spotify-App das Kopplungsgerät nicht sehen kann (Docker, VLAN oder andere Netzwerk-Setups): autorisiere stattdessen im Browser.
+	EN	Use this when the Spotify app cannot see the pairing device (Docker, VLAN or other network setups): authorize in the browser instead.
+	ES	Úselo cuando la aplicación de Spotify no pueda ver el dispositivo de emparejamiento (Docker, VLAN u otras configuraciones de red): autorice en el navegador en su lugar.
+	FR	À utiliser lorsque l'application Spotify ne voit pas l'appareil d'appairage (Docker, VLAN ou autres configurations réseau) : autorisez dans le navigateur à la place.
+	IT	Da usare quando l'app di Spotify non riesce a vedere il dispositivo di abbinamento (Docker, VLAN o altre configurazioni di rete): autorizza invece nel browser.
+	NL	Gebruik dit wanneer de Spotify-app het koppelingsapparaat niet kan zien (Docker, VLAN of andere netwerkconfiguraties): autoriseer in plaats daarvan in de browser.
+	NO	Bruk dette når Spotify-appen ikke kan se paringsenheten (Docker, VLAN eller andre nettverksoppsett): autoriser i nettleseren i stedet.
+	PL	Użyj, gdy aplikacja Spotify nie widzi urządzenia parującego (Docker, VLAN lub inne konfiguracje sieci): zamiast tego autoryzuj w przeglądarce.
+	SV	Använd detta när Spotify-appen inte kan se parkopplingsenheten (Docker, VLAN eller andra nätverkskonfigurationer): auktorisera i webbläsaren i stället.
+
+PLUGIN_SPOTON_PLAYER_AUTH_BROWSER_START_BTN
+	CS	Autorizovat v prohlížeči
+	DA	Godkend i browser
+	DE	Im Browser autorisieren
+	EN	Authorize in Browser
+	ES	Autorizar en el navegador
+	FR	Autoriser dans le navigateur
+	IT	Autorizza nel browser
+	NL	Autoriseren in browser
+	NO	Autoriser i nettleser
+	PL	Autoryzuj w przeglądarce
+	SV	Auktorisera i webbläsaren
+
+PLUGIN_SPOTON_PLAYER_AUTH_BROWSER_PASTE_HINT
+	CS	Po schválení prohlížeč zobrazí nedostupnou stránku 127.0.0.1 — to je očekávané. Zkopírujte celou adresu z adresního řádku a vložte ji níže.
+	DA	Efter godkendelsen viser browseren en utilgængelig 127.0.0.1-side — det er forventet. Kopiér hele adressen fra adresselinjen, og indsæt den nedenfor.
+	DE	Nach der Bestätigung zeigt der Browser eine nicht erreichbare 127.0.0.1-Seite — das ist so vorgesehen. Kopiere die vollständige Adresse aus der Adressleiste und füge sie unten ein.
+	EN	After approving, the browser shows an unreachable 127.0.0.1 page — that is expected. Copy the full address from the address bar and paste it below.
+	ES	Tras aprobar, el navegador muestra una página 127.0.0.1 inaccesible — es lo esperado. Copie la dirección completa de la barra de direcciones y péguela abajo.
+	FR	Après l'approbation, le navigateur affiche une page 127.0.0.1 inaccessible — c'est normal. Copiez l'adresse complète depuis la barre d'adresse et collez-la ci-dessous.
+	IT	Dopo l'approvazione, il browser mostra una pagina 127.0.0.1 irraggiungibile — è previsto. Copia l'indirizzo completo dalla barra degli indirizzi e incollalo qui sotto.
+	NL	Na goedkeuring toont de browser een onbereikbare 127.0.0.1-pagina — dat is de bedoeling. Kopieer het volledige adres uit de adresbalk en plak het hieronder.
+	NO	Etter godkjenning viser nettleseren en utilgjengelig 127.0.0.1-side — det er forventet. Kopier hele adressen fra adresselinjen, og lim den inn nedenfor.
+	PL	Po zatwierdzeniu przeglądarka wyświetli niedostępną stronę 127.0.0.1 — tak ma być. Skopiuj pełny adres z paska adresu i wklej go poniżej.
+	SV	Efter godkännandet visar webbläsaren en onåbar 127.0.0.1-sida — det är väntat. Kopiera hela adressen från adressfältet och klistra in den nedan.
+
+PLUGIN_SPOTON_PLAYER_AUTH_BROWSER_SUBMIT_BTN
+	CS	Dokončit autorizaci
+	DA	Fuldfør godkendelse
+	DE	Autorisierung abschließen
+	EN	Complete Authorization
+	ES	Completar autorización
+	FR	Terminer l'autorisation
+	IT	Completa l'autorizzazione
+	NL	Autorisatie voltooien
+	NO	Fullfør autorisering
+	PL	Zakończ autoryzację
+	SV	Slutför auktorisering
+
+PLUGIN_SPOTON_PLAYER_AUTH_BROWSER_FAILED
+	CS	Autorizace se nezdařila. Zkuste to znovu, nebo použijte párování ZeroConf výše.
+	DA	Godkendelse mislykkedes. Prøv igen, eller brug ZeroConf-parring ovenfor.
+	DE	Autorisierung fehlgeschlagen. Bitte versuche es erneut oder nutze die ZeroConf-Kopplung oben.
+	EN	Authorization failed. Please try again, or use ZeroConf pairing above.
+	ES	La autorización falló. Inténtelo de nuevo o use el emparejamiento ZeroConf de arriba.
+	FR	Échec de l'autorisation. Réessayez, ou utilisez l'appairage ZeroConf ci-dessus.
+	IT	Autorizzazione non riuscita. Riprova, oppure usa l'abbinamento ZeroConf qui sopra.
+	NL	Autorisatie mislukt. Probeer het opnieuw of gebruik de ZeroConf-koppeling hierboven.
+	NO	Autorisering mislyktes. Prøv igjen, eller bruk ZeroConf-paring ovenfor.
+	PL	Autoryzacja nie powiodła się. Spróbuj ponownie lub użyj parowania ZeroConf powyżej.
+	SV	Auktoriseringen misslyckades. Försök igen eller använd ZeroConf-parkoppling ovan.
