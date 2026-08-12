@@ -44,6 +44,16 @@ use constant GITHUB_PAGES_REDIRECT_URI => 'https://stiefenm.github.io/spoton/aut
 # no IANA registration, simpler for copy-paste UX and SSH tunnel docs.
 use constant LOOPBACK_REDIRECT_URI => 'http://127.0.0.1:18764/login';
 
+# Spotify's internal Keymaster client_id — the provenance Login5 now requires
+# for stored playback credentials (GH #147, D-02 secondary path). Access
+# tokens minted with this client_id (scope: streaming, loopback redirect
+# only — Spotify rejects non-loopback redirect URIs for it, gotcha 4) yield
+# --token-login credentials that Login5 accepts (Music Assistant recipe,
+# commit ec639766). Same value the Rust side uses as DISCOVERY_CLIENT_ID
+# (main.rs); duplicated deliberately: D-03 forbids Rust changes and Perl
+# cannot read Rust constants.
+use constant KEYMASTER_CLIENT_ID => '65b708073fc0480ea92a077233ca87bd';
+
 # 15 OAuth scopes required for Browse/Library/Player + credential derivation.
 # 'streaming' is CRITICAL — without it, credential derivation (token-login)
 # fails at the AP handshake (see credential-bridge.md).
@@ -126,14 +136,18 @@ sub parseState {
 # OAuth endpoints
 # ============================================================
 
-# buildAuthorizationUrl($clientId, $codeChallenge, $stateStr, $redirectUri)
+# buildAuthorizationUrl($clientId, $codeChallenge, $stateStr, $redirectUri, $scopes)
 # Returns the full Spotify authorization URL for the browser to open.
 # $redirectUri is caller-supplied (D-02): GITHUB_PAGES_REDIRECT_URI for a
 # custom Client ID, LOOPBACK_REDIRECT_URI for the bundled (ncspot) Client ID.
+# $scopes is an optional arrayref (GH #147 plan 65-03: the Keymaster browser
+# fallback requests ['streaming'] only); when omitted, behavior is identical
+# to before — the full PKCE_SCOPES list is used, so existing callers are
+# unchanged.
 sub buildAuthorizationUrl {
-    my ($clientId, $codeChallenge, $stateStr, $redirectUri) = @_;
+    my ($clientId, $codeChallenge, $stateStr, $redirectUri, $scopes) = @_;
 
-    my $scope = join(' ', @{ PKCE_SCOPES() });
+    my $scope = join(' ', @{ $scopes || PKCE_SCOPES() });
 
     my $url = 'https://accounts.spotify.com/authorize'
         . '?client_id=' . uri_escape($clientId)

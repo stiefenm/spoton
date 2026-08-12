@@ -282,6 +282,19 @@ sub reset_stub {
 END
 
 # ============================================================
+# Stub: Plugins::SpotOn::Unified::DaemonManager -- scheduleInit counter
+# (GH #147 plan 65-03: _installPairedCredentials calls scheduleInit after a
+# successful keymaster-path install; same stub shape as t/24_player_auth.t)
+# ============================================================
+write_stub($stub_dir, 'Plugins::SpotOn::Unified::DaemonManager', <<'END');
+package Plugins::SpotOn::Unified::DaemonManager;
+our $schedule_init_calls = 0;
+sub scheduleInit { $schedule_init_calls++ }
+sub reset_calls  { $schedule_init_calls = 0 }
+1;
+END
+
+# ============================================================
 # main:: constants (TRANSCODING, WEBUI, SCANNER, INFOLOG, etc.)
 # ============================================================
 BEGIN {
@@ -324,6 +337,7 @@ Slim::Utils::Log->import();
 require Proc::Background;
 require Plugins::SpotOn::Helper;
 require Plugins::SpotOn::API::TokenManager;
+require Plugins::SpotOn::Unified::DaemonManager;
 
 # ============================================================
 # Load the module under test (RED: this MUST fail until Task 2 creates it)
@@ -722,12 +736,147 @@ require JSON::PP;
 }
 
 # ============================================================
+# Test 14 (GH #147 plan 65-03): deriveCredentialsFromToken
+# Keymaster browser-fallback token path: caller-supplied token, staging-dir
+# isolation (derive-tmp), shared _installPairedCredentials finalizer with
+# D-01 username validation + provenance marking.
+# ============================================================
+
+# Helper: write a staging credentials.json the way the subprocess would.
+sub seed_staging_credentials {
+    my ($stagingDir, $data) = @_;
+    make_path($stagingDir) unless -d $stagingDir;
+    my $file = catfile($stagingDir, 'credentials.json');
+    open(my $fh, '>', $file) or die "seed_staging_credentials: $!";
+    print $fh JSON::PP::encode_json($data);
+    close($fh);
+    return $file;
+}
+
+# (a) Happy path: matching-username staging credentials install into the live
+# account dir with provenance 'keymaster'; playback-auth flag cleared.
+{
+    reset_all();
+    Plugins::SpotOn::Unified::DaemonManager::reset_calls();
+    my $accountId  = 'acct_fromtoken';
+    my $stagingDir = catdir($cache_dir, 'spoton', $accountId, 'derive-tmp');
+    preferences('plugin.spoton')->set('accounts', {
+        $accountId => { spotifyUserId => 'userK' },
+    });
+    Plugins::SpotOn::API::Credentials->markNeedsPlaybackAuth($accountId, 'legacy_token_derived');
+
+    $Proc::Background::on_new = sub {
+        seed_staging_credentials($stagingDir,
+            { username => 'userK', auth_type => 1, auth_data => 'QUJD' });
+    };
+
+    my ($ok, $reason);
+    Plugins::SpotOn::API::Credentials->deriveCredentialsFromToken(
+        $accountId, 'tok-keymaster-secret', sub { ($ok, $reason) = @_ });
+
+    is($ok, 1, 'Test 14a: happy path resolves ok=1');
+    is($reason, undef, 'Test 14a: happy path resolves with no failure reason');
+
+    my $liveFile = catfile($cache_dir, 'spoton', $accountId, 'credentials.json');
+    ok(-f $liveFile, 'Test 14a: credentials.json installed into the live account dir');
+    ok(!-f catfile($stagingDir, 'credentials.json'),
+        'Test 14a: staging credentials.json purged after install');
+
+    my $accounts = preferences('plugin.spoton')->get('accounts');
+    is($accounts->{$accountId}{playbackCredSource}, 'keymaster',
+        'Test 14a: provenance marker playbackCredSource=keymaster recorded');
+
+    is(Plugins::SpotOn::API::Credentials->needsPlaybackAuth($accountId), 0,
+        'Test 14a: playback-auth flag cleared after successful install');
+
+    is($Plugins::SpotOn::Unified::DaemonManager::schedule_init_calls, 1,
+        'Test 14a: DaemonManager scheduleInit called once');
+
+    # Spawn contract: staging dir (NOT the live account dir) as --cache;
+    # token never in argv (token-env capability is on by default).
+    is(scalar(@Proc::Background::spawns), 1, 'Test 14a: exactly one spawn recorded');
+    my @args = @{ $Proc::Background::spawns[0] };
+    ok((grep { $_ eq '--token-login' } @args), 'Test 14a: spawn args contain --token-login');
+    ok((grep { $_ eq $stagingDir } @args),
+        'Test 14a: spawn args contain the derive-tmp STAGING dir as --cache target');
+    ok(!(grep { $_ eq 'tok-keymaster-secret' } @args),
+        'Test 14a: spawn args do NOT contain the token value (CR-01 env var path)');
+}
+
+# (b) Mismatch: wrong-username staging credentials yield account_mismatch and
+# the live credentials.json stays byte-identical.
+{
+    reset_all();
+    Plugins::SpotOn::Unified::DaemonManager::reset_calls();
+    my $accountId  = 'acct_fromtoken_mm';
+    my $stagingDir = catdir($cache_dir, 'spoton', $accountId, 'derive-tmp');
+    preferences('plugin.spoton')->set('accounts', {
+        $accountId => { spotifyUserId => 'userK' },
+    });
+
+    my $liveFile = seed_credentials($accountId,
+        { username => 'userK', auth_type => 1, auth_data => 'T0xE' });
+    my $liveBefore = do { open(my $fh, '<', $liveFile) or die $!; local $/; <$fh> };
+
+    $Proc::Background::on_new = sub {
+        seed_staging_credentials($stagingDir,
+            { username => 'userWRONG', auth_type => 1, auth_data => 'QUJD' });
+    };
+
+    my ($ok, $reason);
+    Plugins::SpotOn::API::Credentials->deriveCredentialsFromToken(
+        $accountId, 'tok-keymaster-secret', sub { ($ok, $reason) = @_ });
+
+    is($ok, 0, 'Test 14b: mismatched username resolves ok=0');
+    is($reason, 'account_mismatch', 'Test 14b: mismatched username resolves reason=account_mismatch (D-01)');
+
+    my $liveAfter = do { open(my $fh, '<', $liveFile) or die $!; local $/; <$fh> };
+    is($liveAfter, $liveBefore, 'Test 14b: live credentials.json is byte-identical (never touched)');
+    ok(!-f catfile($stagingDir, 'credentials.json'),
+        'Test 14b: staging credentials.json purged after mismatch');
+
+    my $accounts = preferences('plugin.spoton')->get('accounts');
+    ok(!$accounts->{$accountId}{playbackCredSource},
+        'Test 14b: no provenance marker recorded on mismatch');
+    is($Plugins::SpotOn::Unified::DaemonManager::schedule_init_calls, 0,
+        'Test 14b: scheduleInit NOT called on mismatch');
+}
+
+# (c) D-05 rate-limit gate applies to the new entry point too: 3 failures
+# within the window -> 4th call is rate_limited with no spawn.
+{
+    reset_all();
+    my $accountId = 'acct_fromtoken_rl';
+    preferences('plugin.spoton')->set('accounts', {
+        $accountId => { spotifyUserId => 'userK' },
+    });
+
+    for my $i (1..3) {
+        my ($ok, $reason);
+        Plugins::SpotOn::API::Credentials->deriveCredentialsFromToken(
+            $accountId, 'tok-keymaster-secret', sub { ($ok, $reason) = @_ });
+        is($ok, 0, "Test 14c: failure attempt $i resolves ok=0");
+        is($reason, 'derivation_failed', "Test 14c: failure attempt $i resolves reason=derivation_failed");
+    }
+
+    my $spawnsBefore = scalar(@Proc::Background::spawns);
+    my ($ok4, $reason4);
+    Plugins::SpotOn::API::Credentials->deriveCredentialsFromToken(
+        $accountId, 'tok-keymaster-secret', sub { ($ok4, $reason4) = @_ });
+
+    is($ok4, 0, 'Test 14c: 4th call after 3 failures resolves ok=0');
+    is($reason4, 'rate_limited', 'Test 14c: 4th call after 3 failures resolves reason=rate_limited');
+    is(scalar(@Proc::Background::spawns), $spawnsBefore,
+        'Test 14c: rate-limited call does not spawn a new subprocess');
+}
+
+# ============================================================
 # Test 12 (T-29-07): no logged line ever contains the full token value
 # ============================================================
 {
-    my @offending = grep { /tok-fresh/ } @Slim::Utils::Log::logged;
+    my @offending = grep { /tok-fresh|tok-keymaster-secret/ } @Slim::Utils::Log::logged;
     is(scalar(@offending), 0,
-        'Test 12: no captured log line contains the full access token value (T-29-07)');
+        'Test 12: no captured log line contains any full access token value (T-29-07/T-65-09)');
 }
 
 done_testing();
