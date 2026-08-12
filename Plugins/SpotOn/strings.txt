@@ -2962,3 +2962,172 @@ PLUGIN_SPOTON_CLEAR_SEARCH_HISTORY
 	NO	Tøm søkehistorikk
 	PL	Wyczyść historię wyszukiwania
 	SV	Rensa sökhistorik
+
+PLUGIN_SPOTON_PLAYER_AUTH_TITLE
+	CS	Autorizovat přehrávání
+	DA	Godkend afspilning
+	DE	Wiedergabe autorisieren
+	EN	Authorize Playback
+	ES	Autorizar reproducción
+	FR	Autoriser la lecture
+	IT	Autorizza la riproduzione
+	NL	Afspelen autoriseren
+	NO	Autoriser avspilling
+	PL	Autoryzuj odtwarzanie
+	SV	Auktorisera uppspelning
+
+PLUGIN_SPOTON_PLAYER_AUTH_DESC
+	CS	Spotify nyní vyžaduje přihlašovací údaje pro přehrávání předané oficiální aplikací Spotify. Procházení a vyhledávání nejsou ovlivněny.
+	DA	Spotify kræver nu afspilningslegitimation, der overdrages af den officielle Spotify-app. Gennemsyn og søgning påvirkes ikke.
+	DE	Spotify verlangt jetzt Wiedergabe-Anmeldedaten, die von der offiziellen Spotify-App übergeben werden. Durchsuchen und Suche sind nicht betroffen.
+	EN	Spotify now requires playback credentials handed over by the official Spotify app. Browsing and search are unaffected.
+	ES	Spotify ahora requiere credenciales de reproducción entregadas por la aplicación oficial de Spotify. La navegación y la búsqueda no se ven afectadas.
+	FR	Spotify exige désormais des identifiants de lecture transmis par l'application officielle Spotify. La navigation et la recherche ne sont pas affectées.
+	IT	Spotify ora richiede credenziali di riproduzione fornite dall'app ufficiale di Spotify. Navigazione e ricerca non sono interessate.
+	NL	Spotify vereist nu afspeelreferenties die door de officiële Spotify-app worden overgedragen. Bladeren en zoeken worden niet beïnvloed.
+	NO	Spotify krever nå avspillingslegitimasjon som overleveres av den offisielle Spotify-appen. Blaing og søk påvirkes ikke.
+	PL	Spotify wymaga teraz poświadczeń odtwarzania przekazywanych przez oficjalną aplikację Spotify. Przeglądanie i wyszukiwanie działają bez zmian.
+	SV	Spotify kräver nu uppspelningsuppgifter som lämnas över av den officiella Spotify-appen. Bläddring och sökning påverkas inte.
+
+PLUGIN_SPOTON_PLAYER_AUTH_BANNER
+	CS	Je vyžadována autorizace přehrávání — Spotify odmítlo uložené přihlašovací údaje pro přehrávání. Dokončete párování níže, abyste obnovili přehrávání.
+	DA	Afspilningsgodkendelse påkrævet — Spotify afviste de gemte afspilningslegitimationer. Gennemfør parringen nedenfor for at gendanne afspilningen.
+	DE	Wiedergabe-Autorisierung erforderlich — Spotify hat die gespeicherten Wiedergabe-Anmeldedaten abgelehnt. Führe die Kopplung unten durch, um die Wiedergabe wiederherzustellen.
+	EN	Playback authorization required — Spotify rejected the stored playback credentials. Complete the pairing below to restore playback.
+	ES	Se requiere autorización de reproducción — Spotify rechazó las credenciales de reproducción almacenadas. Complete el emparejamiento a continuación para restaurar la reproducción.
+	FR	Autorisation de lecture requise — Spotify a rejeté les identifiants de lecture enregistrés. Effectuez l'appairage ci-dessous pour rétablir la lecture.
+	IT	Autorizzazione alla riproduzione richiesta — Spotify ha rifiutato le credenziali di riproduzione memorizzate. Completa l'abbinamento qui sotto per ripristinare la riproduzione.
+	NL	Afspeelautorisatie vereist — Spotify heeft de opgeslagen afspeelreferenties geweigerd. Voltooi de koppeling hieronder om het afspelen te herstellen.
+	NO	Avspillingsautorisasjon kreves — Spotify avviste den lagrede avspillingslegitimasjonen. Fullfør paringen nedenfor for å gjenopprette avspillingen.
+	PL	Wymagana autoryzacja odtwarzania — Spotify odrzuciło zapisane poświadczenia odtwarzania. Ukończ parowanie poniżej, aby przywrócić odtwarzanie.
+	SV	Uppspelningsauktorisering krävs — Spotify avvisade de sparade uppspelningsuppgifterna. Slutför parkopplingen nedan för att återställa uppspelningen.
+
+PLUGIN_SPOTON_PLAYER_AUTH_STATUS_OK
+	CS	Přehrávání autorizováno
+	DA	Afspilning godkendt
+	DE	Wiedergabe autorisiert
+	EN	Playback authorized
+	ES	Reproducción autorizada
+	FR	Lecture autorisée
+	IT	Riproduzione autorizzata
+	NL	Afspelen geautoriseerd
+	NO	Avspilling autorisert
+	PL	Odtwarzanie autoryzowane
+	SV	Uppspelning auktoriserad
+
+PLUGIN_SPOTON_PLAYER_AUTH_STATUS_REQUIRED
+	CS	Je vyžadována autorizace přehrávání
+	DA	Afspilningsgodkendelse påkrævet
+	DE	Wiedergabe-Autorisierung erforderlich
+	EN	Playback authorization required
+	ES	Se requiere autorización de reproducción
+	FR	Autorisation de lecture requise
+	IT	Autorizzazione alla riproduzione richiesta
+	NL	Afspeelautorisatie vereist
+	NO	Avspillingsautorisasjon kreves
+	PL	Wymagana autoryzacja odtwarzania
+	SV	Uppspelningsauktorisering krävs
+
+PLUGIN_SPOTON_PLAYER_AUTH_INSTRUCTIONS
+	CS	1) Otevřete aplikaci Spotify na telefonu nebo počítači ve stejné síti jako tento server. 2) Spusťte přehrávání libovolné skladby — seznam zařízení se zobrazí pouze při aktivním přehrávání. 3) Otevřete nabídku zařízení a vyberte zařízení zobrazené níže.
+	DA	1) Åbn Spotify-appen på en telefon eller computer på samme netværk som denne server. 2) Start afspilning af et vilkårligt nummer — enhedslisten vises kun under aktiv afspilning. 3) Åbn enhedsmenuen, og vælg enheden, der vises nedenfor.
+	DE	1) Öffne die Spotify-App auf einem Handy oder Computer im selben Netzwerk wie dieser Server. 2) Starte die Wiedergabe eines beliebigen Titels — die Geräteliste erscheint nur bei aktiver Wiedergabe. 3) Öffne das Gerätemenü und wähle das unten angezeigte Gerät.
+	EN	1) Open the Spotify app on a phone or computer on the same network as this server. 2) Start playing any track — the device list only appears during active playback. 3) Open the devices menu and select the device shown below.
+	ES	1) Abra la aplicación de Spotify en un teléfono u ordenador en la misma red que este servidor. 2) Comience a reproducir cualquier canción — la lista de dispositivos solo aparece durante la reproducción activa. 3) Abra el menú de dispositivos y seleccione el dispositivo que se muestra a continuación.
+	FR	1) Ouvrez l'application Spotify sur un téléphone ou un ordinateur du même réseau que ce serveur. 2) Lancez la lecture d'un titre quelconque — la liste des appareils n'apparaît que pendant une lecture active. 3) Ouvrez le menu des appareils et sélectionnez l'appareil affiché ci-dessous.
+	IT	1) Apri l'app di Spotify su un telefono o computer nella stessa rete di questo server. 2) Avvia la riproduzione di un brano qualsiasi — l'elenco dei dispositivi appare solo durante la riproduzione attiva. 3) Apri il menu dei dispositivi e seleziona il dispositivo mostrato qui sotto.
+	NL	1) Open de Spotify-app op een telefoon of computer in hetzelfde netwerk als deze server. 2) Start het afspelen van een willekeurig nummer — de apparatenlijst verschijnt alleen tijdens actief afspelen. 3) Open het apparatenmenu en selecteer het hieronder getoonde apparaat.
+	NO	1) Åpne Spotify-appen på en telefon eller datamaskin i samme nettverk som denne serveren. 2) Start avspilling av et hvilket som helst spor — enhetslisten vises bare under aktiv avspilling. 3) Åpne enhetsmenyen, og velg enheten som vises nedenfor.
+	PL	1) Otwórz aplikację Spotify na telefonie lub komputerze w tej samej sieci co ten serwer. 2) Rozpocznij odtwarzanie dowolnego utworu — lista urządzeń pojawia się tylko podczas aktywnego odtwarzania. 3) Otwórz menu urządzeń i wybierz urządzenie pokazane poniżej.
+	SV	1) Öppna Spotify-appen på en telefon eller dator i samma nätverk som den här servern. 2) Starta uppspelning av valfri låt — enhetslistan visas bara under aktiv uppspelning. 3) Öppna enhetsmenyn och välj enheten som visas nedan.
+
+PLUGIN_SPOTON_PLAYER_AUTH_START_BTN
+	CS	Zahájit párování
+	DA	Start parring
+	DE	Kopplung starten
+	EN	Start Pairing
+	ES	Iniciar emparejamiento
+	FR	Démarrer l'appairage
+	IT	Avvia abbinamento
+	NL	Koppeling starten
+	NO	Start paring
+	PL	Rozpocznij parowanie
+	SV	Starta parkoppling
+
+PLUGIN_SPOTON_PLAYER_AUTH_CANCEL_BTN
+	CS	Zrušit
+	DA	Annullér
+	DE	Abbrechen
+	EN	Cancel
+	ES	Cancelar
+	FR	Annuler
+	IT	Annulla
+	NL	Annuleren
+	NO	Avbryt
+	PL	Anuluj
+	SV	Avbryt
+
+PLUGIN_SPOTON_PLAYER_AUTH_WAITING
+	CS	Čekání na aplikaci Spotify… vyberte zařízení zobrazené výše a nechte tuto stránku otevřenou.
+	DA	Venter på Spotify-appen … vælg enheden, der vises ovenfor, og hold denne side åben.
+	DE	Warte auf die Spotify-App … wähle das oben angezeigte Gerät und lasse diese Seite geöffnet.
+	EN	Waiting for the Spotify app… select the device shown above, then keep this page open.
+	ES	Esperando la aplicación de Spotify… seleccione el dispositivo que se muestra arriba y mantenga esta página abierta.
+	FR	En attente de l'application Spotify… sélectionnez l'appareil affiché ci-dessus, puis laissez cette page ouverte.
+	IT	In attesa dell'app di Spotify… seleziona il dispositivo mostrato sopra e tieni aperta questa pagina.
+	NL	Wachten op de Spotify-app… selecteer het hierboven getoonde apparaat en houd deze pagina open.
+	NO	Venter på Spotify-appen … velg enheten som vises ovenfor, og hold denne siden åpen.
+	PL	Oczekiwanie na aplikację Spotify… wybierz urządzenie pokazane powyżej i pozostaw tę stronę otwartą.
+	SV	Väntar på Spotify-appen … välj enheten som visas ovan och håll den här sidan öppen.
+
+PLUGIN_SPOTON_PLAYER_AUTH_SUCCESS
+	CS	Přehrávání autorizováno — přehrávače se restartují.
+	DA	Afspilning godkendt — afspillere genstartes.
+	DE	Wiedergabe autorisiert — Player werden neu gestartet.
+	EN	Playback authorized — restarting players.
+	ES	Reproducción autorizada — reiniciando reproductores.
+	FR	Lecture autorisée — redémarrage des lecteurs.
+	IT	Riproduzione autorizzata — riavvio dei lettori in corso.
+	NL	Afspelen geautoriseerd — spelers worden opnieuw gestart.
+	NO	Avspilling autorisert — spillere startes på nytt.
+	PL	Odtwarzanie autoryzowane — trwa ponowne uruchamianie odtwarzaczy.
+	SV	Uppspelning auktoriserad — spelare startas om.
+
+PLUGIN_SPOTON_PLAYER_AUTH_FAILED
+	CS	Párování se nezdařilo. Zkontrolujte, zda jsou tento server a vaše aplikace Spotify ve stejné síti, a zkuste to znovu.
+	DA	Parring mislykkedes. Kontrollér, at denne server og din Spotify-app er på samme netværk, og prøv igen.
+	DE	Kopplung fehlgeschlagen. Prüfe, ob dieser Server und deine Spotify-App im selben Netzwerk sind, und versuche es erneut.
+	EN	Pairing failed. Check that this server and your Spotify app are on the same network, then try again.
+	ES	El emparejamiento falló. Compruebe que este servidor y su aplicación de Spotify estén en la misma red e inténtelo de nuevo.
+	FR	Échec de l'appairage. Vérifiez que ce serveur et votre application Spotify sont sur le même réseau, puis réessayez.
+	IT	Abbinamento non riuscito. Verifica che questo server e la tua app di Spotify siano nella stessa rete, quindi riprova.
+	NL	Koppeling mislukt. Controleer of deze server en uw Spotify-app zich in hetzelfde netwerk bevinden en probeer het opnieuw.
+	NO	Paring mislyktes. Kontroller at denne serveren og Spotify-appen din er i samme nettverk, og prøv igjen.
+	PL	Parowanie nie powiodło się. Sprawdź, czy ten serwer i aplikacja Spotify są w tej samej sieci, a następnie spróbuj ponownie.
+	SV	Parkopplingen misslyckades. Kontrollera att den här servern och din Spotify-app är i samma nätverk och försök igen.
+
+PLUGIN_SPOTON_PLAYER_AUTH_TIMEOUT
+	CS	Časový limit párování vypršel po 15 minutách. Až budete připraveni, spusťte je znovu.
+	DA	Parringen fik timeout efter 15 minutter. Start igen, når du er klar.
+	DE	Zeitüberschreitung bei der Kopplung nach 15 Minuten. Starte sie erneut, wenn du bereit bist.
+	EN	Pairing timed out after 15 minutes. Start again when ready.
+	ES	El emparejamiento expiró después de 15 minutos. Inícielo de nuevo cuando esté listo.
+	FR	L'appairage a expiré après 15 minutes. Relancez-le quand vous êtes prêt.
+	IT	L'abbinamento è scaduto dopo 15 minuti. Riavvialo quando sei pronto.
+	NL	De koppeling is na 15 minuten verlopen. Start opnieuw wanneer u er klaar voor bent.
+	NO	Paringen fikk tidsavbrudd etter 15 minutter. Start på nytt når du er klar.
+	PL	Limit czasu parowania upłynął po 15 minutach. Rozpocznij ponownie, gdy będziesz gotowy.
+	SV	Parkopplingen fick timeout efter 15 minuter. Starta igen när du är redo.
+
+PLUGIN_SPOTON_PLAYER_AUTH_MISMATCH
+	CS	Účet Spotify ve vaší aplikaci neodpovídá vybranému účtu SpotOn. Přepněte účet v aplikaci Spotify nebo v SpotOn a zkuste to znovu.
+	DA	Spotify-kontoen i din app stemmer ikke overens med den valgte SpotOn-konto. Skift konto i Spotify-appen eller i SpotOn, og prøv igen.
+	DE	Das Spotify-Konto in deiner App stimmt nicht mit dem ausgewählten SpotOn-Konto überein. Wechsle das Konto in der Spotify-App oder in SpotOn und versuche es erneut.
+	EN	The Spotify account in your app does not match the selected SpotOn account. Switch accounts in the Spotify app or in SpotOn, then retry.
+	ES	La cuenta de Spotify en su aplicación no coincide con la cuenta de SpotOn seleccionada. Cambie de cuenta en la aplicación de Spotify o en SpotOn e inténtelo de nuevo.
+	FR	Le compte Spotify de votre application ne correspond pas au compte SpotOn sélectionné. Changez de compte dans l'application Spotify ou dans SpotOn, puis réessayez.
+	IT	L'account Spotify nella tua app non corrisponde all'account SpotOn selezionato. Cambia account nell'app di Spotify o in SpotOn, quindi riprova.
+	NL	Het Spotify-account in uw app komt niet overeen met het geselecteerde SpotOn-account. Wissel van account in de Spotify-app of in SpotOn en probeer het opnieuw.
+	NO	Spotify-kontoen i appen din samsvarer ikke med den valgte SpotOn-kontoen. Bytt konto i Spotify-appen eller i SpotOn, og prøv igjen.
+	PL	Konto Spotify w Twojej aplikacji nie zgadza się z wybranym kontem SpotOn. Przełącz konto w aplikacji Spotify lub w SpotOn, a następnie spróbuj ponownie.
+	SV	Spotify-kontot i din app matchar inte det valda SpotOn-kontot. Byt konto i Spotify-appen eller i SpotOn och försök igen.
