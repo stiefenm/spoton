@@ -48,6 +48,16 @@ use constant MAX_DERIVE_FAILURES    => 3;
 use constant DERIVE_FAILURE_WINDOW  => 300;   # 5 minutes
 use constant DERIVE_COOLDOWN_SECONDS => 1800; # 30 minutes
 
+# GH #147 plan 65-02: ZeroConf pairing (D-02 primary path). The user picks
+# the announced "SpotOn Authorization (<library>)" device in their Spotify
+# app while playing a track; the official app hands over Keymaster-provenance
+# credentials that Login5 accepts. Poll every 2s; the Rust binary exits on
+# its own after 900s (--discover-once self-timeout), 930s is our backstop
+# margin before we force-kill a hung helper.
+use constant PAIRING_POLL_INTERVAL   => 2;
+use constant PAIRING_TIMEOUT_SECONDS => 930;
+use constant PAIRING_STAGING_SUBDIR  => 'pairing-tmp';
+
 my $log         = logger('plugin.spoton');
 my $prefs       = preferences('plugin.spoton');
 my $serverPrefs = preferences('server');
@@ -66,6 +76,12 @@ my %_deriveInflight;
 # D-05 rate-limit state -- keyed by accountId.
 my %_deriveFailures;      # accountId => arrayref of failure epochs
 my %_deriveCooldownUntil; # accountId => epoch until which derivation is blocked
+
+# GH #147 plan 65-02: single global pairing slot -- only ONE ZeroConf mDNS
+# announcement at a time (one pairing name on the LAN). Keys:
+#   proc, accountId, stagingDir, state, startedAt
+# state: idle | waiting | success | failed | mismatch | timeout
+my %_pairing;
 
 # ============================================================
 # Public class methods
@@ -353,6 +369,143 @@ sub classifyAudioKeyError {
 }
 
 # ============================================================
+# ZeroConf pairing engine (GH #147 plan 65-02, D-02 primary path)
+# All async -- Proc::Background + Slim::Utils::Timers, never blocking
+# (LMS is single-threaded; mirrors the _pollDerivation shape above).
+# Success detection is FILE-BASED ONLY: the username is read from the
+# staging credentials.json, never from subprocess stdout (Windows
+# stdout-piping precedent, commit 9874835).
+# ============================================================
+
+# pairingDeviceName($class)
+# Gotcha 1: the pairing device name must differ from every Connect player
+# name so the user cannot pick a regular player by mistake. Computed here
+# (single source of truth) and reused by Settings.pm for the on-page
+# instructions so the user sees the exact label to look for.
+sub pairingDeviceName {
+    my ($class) = @_;
+
+    my $libraryName = eval {
+        require Slim::Utils::Misc;
+        Slim::Utils::Misc::getLibraryName();
+    };
+    $libraryName = 'LMS' unless defined $libraryName && length $libraryName;
+
+    my $name = 'SpotOn Authorization (' . $libraryName . ')';
+    $name = substr($name, 0, 60) if length($name) > 60;
+    return $name;
+}
+
+# startPairing($class, $accountId)
+# -> (1) on started, or (0, $reason) with reason in:
+#    already_running | unknown_account | no_binary | no_capability | spawn_failed
+sub startPairing {
+    my ($class, $accountId) = @_;
+
+    # Single global slot: one mDNS announcement at a time.
+    if (($_pairing{state} // '') eq 'waiting') {
+        return (0, 'already_running');
+    }
+
+    my $accounts = $prefs->get('accounts') || {};
+    unless (defined $accountId && length $accountId && $accounts->{$accountId}) {
+        $log->warn("Credentials: pairing requested for unknown account " . _mask($accountId));
+        return (0, 'unknown_account');
+    }
+
+    require Plugins::SpotOn::Helper;
+    my $helperPath = Plugins::SpotOn::Helper->get();
+    unless ($helperPath) {
+        $log->warn("Credentials: no SpotOn helper binary found for pairing (account " . _mask($accountId) . ")");
+        return (0, 'no_binary');
+    }
+    unless (Plugins::SpotOn::Helper->getCapability('discover-once')) {
+        $log->warn("Credentials: SpotOn binary lacks discover-once capability -- "
+            . "please update the SpotOn binary (account " . _mask($accountId) . ")");
+        return (0, 'no_capability');
+    }
+
+    my $name = $class->pairingDeviceName();
+
+    # D-01 isolation: pairing output lands in a staging dir first -- a wrong
+    # user's pairing must never touch the live credentials.json.
+    my $stagingDir = catdir(_accountDir($accountId), PAIRING_STAGING_SUBDIR);
+    unless (-d $stagingDir) {
+        require File::Path;
+        # IN-02: owner-only perms; mode is advisory on Windows (ignored).
+        File::Path::make_path($stagingDir, { mode => 0700 });
+    }
+    my $staleFile = catfile($stagingDir, CREDENTIALS_FILE);
+    unlink $staleFile if -f $staleFile;
+
+    require Proc::Background;
+    my $proc = eval {
+        Proc::Background->new(
+            { 'die_upon_destroy' => 1 },
+            $helperPath, '-n', $name,
+            '--cache', $stagingDir,
+            '--discover-once',
+        );
+    };
+    if ($@ || !$proc) {
+        # T-29-07/T-51-05 discipline: masked accountId only, never the
+        # command line.
+        $log->error("Credentials: pairing spawn failed for account " . _mask($accountId));
+        return (0, 'spawn_failed');
+    }
+
+    %_pairing = (
+        proc       => $proc,
+        accountId  => $accountId,
+        stagingDir => $stagingDir,
+        state      => 'waiting',
+        startedAt  => time(),
+    );
+
+    main::INFOLOG && $log->info(
+        "Credentials: ZeroConf pairing started for account " . _mask($accountId)
+        . " (device name '$name')");
+
+    Slim::Utils::Timers::setTimer(\%_pairing, Time::HiRes::time() + PAIRING_POLL_INTERVAL, \&_pollPairing);
+    return (1);
+}
+
+# pairingStatus($class)
+# -> { state => 'idle'|'waiting'|'success'|'failed'|'mismatch'|'timeout',
+#      accountId => $id_or_undef }
+# Exposes symbolic state only (T-65-07) -- never stderr or usernames.
+sub pairingStatus {
+    my ($class) = @_;
+    return {
+        state     => $_pairing{state} || 'idle',
+        accountId => $_pairing{accountId},
+    };
+}
+
+# cancelPairing($class)
+# Kill + cleanup, state -> idle. Idempotent when idle, so Plugin shutdown
+# paths and the Settings pagehide handler can call it unconditionally
+# (gotcha 6; the binary's own 900s self-timeout is the backstop if this is
+# never reached).
+sub cancelPairing {
+    my ($class) = @_;
+
+    Slim::Utils::Timers::killTimers(\%_pairing, \&_pollPairing);
+
+    if ($_pairing{proc} && eval { $_pairing{proc}->alive }) {
+        eval { $_pairing{proc}->die };
+    }
+    _cleanupPairingStaging();
+
+    if (($_pairing{state} // 'idle') ne 'idle') {
+        main::INFOLOG && $log->info(
+            "Credentials: pairing cancelled (account " . _mask($_pairing{accountId}) . ")");
+    }
+    %_pairing = ( state => 'idle' );
+    return 1;
+}
+
+# ============================================================
 # Private helpers
 # ============================================================
 
@@ -398,6 +551,148 @@ sub _pollDerivation {
         _recordFailure($accountId);
         $resolve->(0, 'derivation_failed');
     }
+}
+
+# _pollPairing()
+# Timer callback -- completion continuation for the --discover-once
+# subprocess. Re-arms every PAIRING_POLL_INTERVAL seconds while the helper
+# is alive and within the timeout window.
+sub _pollPairing {
+    # Guard against a stale timer firing after cancelPairing already reset
+    # the slot (killTimers should prevent this, belt-and-braces).
+    return unless ($_pairing{state} // '') eq 'waiting';
+
+    my $proc    = $_pairing{proc};
+    my $elapsed = time() - ($_pairing{startedAt} || 0);
+    my $alive   = $proc && eval { $proc->alive };
+
+    if ($alive && $elapsed < PAIRING_TIMEOUT_SECONDS) {
+        Slim::Utils::Timers::setTimer(\%_pairing, Time::HiRes::time() + PAIRING_POLL_INTERVAL, \&_pollPairing);
+        return;
+    }
+
+    if ($alive) {
+        # Past the binary's own 900s self-timeout plus margin and it is
+        # still alive -- force-kill the hung helper.
+        eval { $proc->die };
+        $log->warn("Credentials: pairing timed out for account " . _mask($_pairing{accountId}));
+        $_pairing{state} = 'timeout';
+        _cleanupPairingStaging();
+        return;
+    }
+
+    # Helper exited. FILE-BASED success detection only (never stdout).
+    my $stagingFile = catfile($_pairing{stagingDir}, CREDENTIALS_FILE);
+    if (-f $stagingFile) {
+        my ($ok, $reason) = _installPairedCredentials(
+            $_pairing{accountId}, $_pairing{stagingDir}, 'zeroconf');
+        $_pairing{state} = $ok                                       ? 'success'
+                         : ($reason && $reason eq 'account_mismatch') ? 'mismatch'
+                         :                                              'failed';
+    } else {
+        # Exit without a credentials file: binary failure or its own
+        # 15-minute timeout (both exit 1, both leave no file).
+        main::INFOLOG && $log->info(
+            "Credentials: pairing helper exited without credentials for account "
+            . _mask($_pairing{accountId}));
+        $_pairing{state} = 'failed';
+    }
+
+    # Leftover staging must never be mistaken for live credentials.
+    _cleanupPairingStaging();
+}
+
+# _installPairedCredentials($accountId, $stagingDir, $source)
+# Shared finalizer -- plan 65-03 reuses it for the Keymaster token path, so
+# it carries no ZeroConf-specific assumptions. $source: 'zeroconf' | 'keymaster'.
+# -> (1) or (0, 'account_mismatch'|'invalid_credentials'|'install_failed')
+sub _installPairedCredentials {
+    my ($accountId, $stagingDir, $source) = @_;
+
+    my $stagingFile = catfile($stagingDir, CREDENTIALS_FILE);
+
+    # Validate with the same rules as verifyCredentials: never trust the
+    # subprocess exit code alone (Security V5/T-51-02).
+    my $data = eval {
+        open(my $fh, '<', $stagingFile) or die "open failed: $!";
+        local $/;
+        my $json = <$fh>;
+        close($fh);
+        from_json($json);
+    };
+    if ($@ || !$data
+        || ($data->{auth_type} // -1) != 1
+        || !($data->{username}  && length $data->{username})
+        || !($data->{auth_data} && length $data->{auth_data})) {
+        $log->warn("Credentials: staged pairing credentials invalid for account "
+            . _mask($accountId) . " -- not installed");
+        return (0, 'invalid_credentials');
+    }
+
+    # D-01 username validation: a wrong Spotify user's pairing must never
+    # persist into this account. Fail-closed when the expected user ID is
+    # unknown. Same comparison accountMismatch uses.
+    my $accounts = $prefs->get('accounts') || {};
+    my $expected = $accounts->{$accountId} ? $accounts->{$accountId}{spotifyUserId} : undef;
+    unless (defined $expected && length $expected && $data->{username} eq $expected) {
+        $log->warn("Credentials: paired Spotify user " . _maskUser($data->{username})
+            . " does not match account " . _mask($accountId)
+            . " (expected " . _maskUser($expected) . ") -- credentials NOT installed (D-01)");
+        return (0, 'account_mismatch');
+    }
+
+    # Install atomically into the per-account layout (Pitfall 4: never the
+    # legacy flat dir).
+    my $accountDir = _accountDir($accountId);
+    unless (-d $accountDir) {
+        require File::Path;
+        File::Path::make_path($accountDir, { mode => 0700 });
+    }
+    my $target = __PACKAGE__->credentialsPathFor($accountId);
+    # Windows rename does not overwrite -- unlink the target first.
+    unlink $target if -f $target;
+    unless (rename($stagingFile, $target)) {
+        # Cross-volume edge (staging and target on different filesystems).
+        require File::Copy;
+        unless (File::Copy::move($stagingFile, $target)) {
+            $log->error("Credentials: failed to install paired credentials for account "
+                . _mask($accountId) . ": $!");
+            return (0, 'install_failed');
+        }
+    }
+    # T-51-03 defense-in-depth: the Rust binary controls the creation mode.
+    chmod(0600, $target) if -f $target;
+
+    # Record provenance: plan 65-03's migration treats accounts WITHOUT this
+    # marker as legacy token-derived.
+    $accounts->{$accountId}{playbackCredSource} = $source;
+    $prefs->set('accounts', $accounts);
+
+    __PACKAGE__->clearNeedsPlaybackAuth($accountId);
+
+    # Daemons start within ~2s instead of waiting for the 60s watchdog.
+    require Plugins::SpotOn::Unified::DaemonManager;
+    Plugins::SpotOn::Unified::DaemonManager->scheduleInit();
+
+    main::INFOLOG && $log->info(
+        "Credentials: paired credentials installed for account " . _mask($accountId)
+        . " (source=$source)");
+    return (1);
+}
+
+# _cleanupPairingStaging()
+# Removes the staging credentials.json (if still present, e.g. after a
+# mismatch) and the staging dir itself. Leftover staging must never be
+# mistaken for live credentials.
+sub _cleanupPairingStaging {
+    my $dir = $_pairing{stagingDir} or return;
+
+    my $file = catfile($dir, CREDENTIALS_FILE);
+    unlink $file if -f $file;
+    rmdir $dir;  # only succeeds when empty -- exactly what we want
+
+    delete $_pairing{stagingDir};
+    delete $_pairing{proc};
 }
 
 # _resolveInflight($accountId, $ok, $reason)
@@ -503,6 +798,15 @@ sub _mask {
     my ($accountId) = @_;
     return 'unknown' unless defined $accountId && length $accountId;
     return substr($accountId, 0, 4) . '****';
+}
+
+# _maskUser($username)
+# T-65-07: masked Spotify username for the D-01 mismatch warn line --
+# first 3 chars + '****', never the full username.
+sub _maskUser {
+    my ($username) = @_;
+    return 'unknown' unless defined $username && length $username;
+    return substr($username, 0, 3) . '****';
 }
 
 1;
