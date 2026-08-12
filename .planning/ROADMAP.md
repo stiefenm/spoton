@@ -373,6 +373,18 @@ Plans:
 - [x] 64-01-PLAN.md — Rust: PassthroughMixer in unified.rs + --check capability + librespot dev pin refresh (#1722 verified included)
 - [x] 64-02-PLAN.md — Perl: capability-gated Daemon.pm volume arg simplification + CHANGELOG + live volume verification on dev LMS
 
+### Phase 65: ZeroConf Credential Provenance Fix (Login5 Outage)
+
+**Goal:** Restore playback after Spotify's Login5 StoredCredential blockade (Aug 10, 2026) by switching credential provisioning from PKCE-derived `--token-login` to ZeroConf-paired `--discover-once`. Stop the daemon crash-loop caused by unrecognized INVALID_CREDENTIALS errors. Provide browser-based fallback for environments where mDNS is unavailable (Docker, VLANs).
+**Requirements**: GH #147
+**Depends on:** None (hotfix, independent of v2.3 Library Integration)
+**Plans:** 3 plans
+
+Plans:
+- [ ] 65-01-PLAN.md — Crash-loop fix: extend isCredentialError, playback-auth flag, restart backoff, defuse all PKCE auto-derive paths
+- [ ] 65-02-PLAN.md — ZeroConf pairing: --discover-once engine, Authorize Playback Settings UI with 2s polling, strings (11 languages)
+- [ ] 65-03-PLAN.md — Browser fallback (Keymaster PKCE + --token-login), upgrade migration, OPML hint, strings (11 languages)
+
 ---
 *Roadmap created: 2026-05-26*
-*Last updated: 2026-08-08 — Phase 64 complete*
+*Last updated: 2026-08-12 — Phase 65 added (Login5 outage fix)*
