@@ -7,9 +7,11 @@ package Plugins::SpotOn::API::Credentials;
 # Plugins::SpotOn::Unified::Daemon's _pollPortFile shape -- Pitfall 2: never
 # use blocking backticks/system() here, LMS is single-threaded).
 #
-# Consumed by both the Settings-eager call site (immediately after PKCE auth)
-# and the DaemonManager-lazy call site (safety-net before daemon start) --
-# wired in plans 02/03.
+# GH #147 / CONTEXT D-04: since the Aug 10, 2026 Login5 provenance blockade,
+# PKCE-derived stored credentials are rejected by Spotify. ALL automatic
+# call sites of the derivation path have been removed (Settings eager,
+# DaemonManager crash-repair and lazy safety-net). The sub itself is
+# retained for plan 65-03's Keymaster browser-fallback token path.
 
 use strict;
 use warnings;
@@ -73,6 +75,12 @@ my %_deriveCooldownUntil; # accountId => epoch until which derivation is blocked
 # cb signature: ($ok, $reason). $reason is undef on success, else one of:
 #   no_token | no_binary | binary_too_old | spawn_failed | derivation_failed
 #   | rate_limited
+#
+# GH #147 / CONTEXT D-04: retained for the plan 65-03 token-path refactor
+# (Keymaster browser fallback reuses the shared spawn/poll machinery). This
+# sub has ZERO production callers and MUST NOT be re-wired to automatic call
+# sites -- PKCE-provenance credentials are rejected by Spotify Login5, so an
+# automatic re-derive only re-arms the crash loop.
 sub deriveCredentials {
     my ($class, $accountId, $cb) = @_;
 

@@ -656,66 +656,38 @@ sub _pkceStoreAccount {
         # intentionally not signaled — rows carry no daemon-derived content.
         Plugins::SpotOn::HomeExtras::refresh() if $INC{'Plugins/SpotOn/HomeExtras.pm'};
 
-        # D-01: eagerly derive librespot credentials right here, while the
-        # PKCE access token is guaranteed fresh (it was exchanged seconds
-        # ago) -- this is the primary, user-facing trigger for AUTH-03
-        # credential derivation (RESEARCH Pitfall 6 / Open Question 2).
-        require Plugins::SpotOn::API::Credentials;
-        # WR-02: clear D-05 rate-limit cooldown before deriving -- a fresh
-        # user-initiated PKCE exchange is exactly the event the cooldown
-        # should yield to. Without this, 3 prior derivation failures would
-        # block the re-auth's eager derivation for up to 30 minutes.
-        Plugins::SpotOn::API::Credentials->clearRateLimit($accountId);
-        Plugins::SpotOn::API::Credentials->deriveCredentials($accountId, sub {
-            my ($ok, $reason) = @_;
+        # GH #147 / D-04: PKCE auth no longer mints playback credentials
+        # from the access token -- Spotify Login5 rejects wrong-provenance
+        # stored credentials, so playback credentials are created only by
+        # user-initiated flows (ZeroConf pairing / Keymaster browser
+        # fallback, plans 65-02/65-03).
+        #
+        # scheduleInit stays: harmless without playback credentials
+        # (startHelper skips accounts without a usable credentials.json),
+        # and required so an account that ALREADY has valid ZeroConf-paired
+        # credentials gets its daemon after a token re-auth (D-06/D-07:
+        # unconditional trigger, never the first-account-only
+        # $needsDaemonStart conditional in _storeAccountPrefs; Pitfall 6).
+        require Plugins::SpotOn::Unified::DaemonManager;
+        Plugins::SpotOn::Unified::DaemonManager->scheduleInit();
 
-            if ($ok) {
-                # D-06: trigger the daemon start unconditionally on
-                # derivation success -- do NOT rely on
-                # _storeAccountPrefs's $needsDaemonStart conditional above,
-                # which only fires for the very first account ever
-                # configured. Without this, "Add Another Account" and
-                # re-auth flows would otherwise wait up to 60s for the
-                # watchdog to notice the new credentials (Pitfall 6). This
-                # also covers D-07: DaemonManager's existing account-change
-                # detection in initHelpers/startHelper restarts any daemon
-                # already running with stale credentials.
-                require Plugins::SpotOn::Unified::DaemonManager;
-                Plugins::SpotOn::Unified::DaemonManager->scheduleInit();
+        require Plugins::SpotOn::API::Client;
+        unless (Plugins::SpotOn::API::Client->limitsProbed()) {
+            Plugins::SpotOn::API::Client->probeEndpointLimits($accountId, sub {});
+        }
 
-                require Plugins::SpotOn::API::Client;
-                unless (Plugins::SpotOn::API::Client->limitsProbed()) {
-                    Plugins::SpotOn::API::Client->probeEndpointLimits($accountId, sub {});
-                }
-
-                if ($isJson) {
-                    _jsonResponse($httpClient, $response,
-                        { status => 'ok', accountId => $accountId, connectReady => 1 });
-                } else {
-                    _renderPkceResultPage($httpClient, $response,
-                        string('PLUGIN_SPOTON_PKCE_SUCCESS'),
-                        string('PLUGIN_SPOTON_PKCE_SUCCESS'), 0);
-                }
-            } else {
-                # D-02: a derivation failure is a warning, not a blocking
-                # error -- tokens are already stored and Browse/Search work
-                # via the PKCE access token (Phase 50). Never reflect the
-                # raw $reason into the user-facing page (T-51-10); log only
-                # a masked accountId.
-                $log->warn("Settings: PKCE credential derivation failed for account "
-                    . "$maskedId ($reason) -- Connect unavailable, account creation not blocked");
-
-                if ($isJson) {
-                    _jsonResponse($httpClient, $response,
-                        { status => 'ok', accountId => $accountId, connectReady => 0,
-                          warning => string('PLUGIN_SPOTON_CONNECT_DERIVE_FAILED') });
-                } else {
-                    _renderPkceResultPage($httpClient, $response,
-                        string('PLUGIN_SPOTON_PKCE_SUCCESS'),
-                        string('PLUGIN_SPOTON_CONNECT_DERIVE_FAILED'), 1);
-                }
-            }
-        });
+        # Respond immediately: token auth is complete; playback authorization
+        # is a separate user step (plan 65-02 adds the Settings banner that
+        # surfaces it -- no new user-facing strings here).
+        if ($isJson) {
+            _jsonResponse($httpClient, $response,
+                { status => 'ok', accountId => $accountId, connectReady => 0,
+                  playbackAuthRequired => 1 });
+        } else {
+            _renderPkceResultPage($httpClient, $response,
+                string('PLUGIN_SPOTON_PKCE_SUCCESS'),
+                string('PLUGIN_SPOTON_PKCE_SUCCESS'), 0);
+        }
     });
 }
 

@@ -609,10 +609,10 @@ sub startHelper {
     # Without this, librespot starts, finds no credentials, and exits immediately —
     # triggering crash-loop detection => 30min disable => retry, filling logs with noise.
     #
-    # Pitfall 4 (Phase 51): the D-08 mismatch repair and D-01 lazy safety-net
-    # below operate EXCLUSIVELY on the account-scoped path. When
-    # $activeAccountId is empty (legacy flat-dir / pre-PKCE setup), neither
-    # new branch applies — that cleanup is deferred to Phase 53 (D-10).
+    # Pitfall 4 (Phase 51): the D-08 mismatch repair and the GH #147
+    # missing-credentials hint below operate EXCLUSIVELY on the account-scoped
+    # path. When $activeAccountId is empty (legacy flat-dir / pre-PKCE setup),
+    # neither branch applies — that cleanup is deferred to Phase 53 (D-10).
     my $activeAccountId = $prefs->get('activeAccount') || '';
 
     # GH #147: playback-auth gate. An account flagged as needing playback
@@ -637,57 +637,37 @@ sub startHelper {
 
     if ($activeAccountId && -f $credFile) {
         # D-08: PKCE account is authoritative. A credentials.json belonging to
-        # a different Spotify user is deleted and re-derived without user
-        # confirmation. Delete ONLY the single file — pkce_tokens.json in the
-        # same account directory must survive (Anti-Pattern: no remove_tree).
+        # a different Spotify user is deleted without user confirmation; the
+        # daemon start is then skipped until the user re-authorizes playback
+        # (GH #147 D-04). Delete ONLY the single file — pkce_tokens.json in
+        # the same account directory must survive (Anti-Pattern: no remove_tree).
         require Plugins::SpotOn::API::Credentials;
         if (Plugins::SpotOn::API::Credentials->accountMismatch($activeAccountId)) {
             main::INFOLOG && $log->is_info && $log->info(
                 "Credentials for account " . _maskAccountId($activeAccountId)
-                . " belong to a different Spotify user — deleting and re-deriving "
-                . "from the active PKCE account (D-08)"
+                . " belong to a different Spotify user — deleting (D-08); "
+                . "playback authorization required"
             );
             unlink $credFile;
         }
     }
 
     if (! -f $credFile) {
-        # D-01: lazy safety-net. When credentials.json is missing but PKCE
-        # tokens exist for the active account, self-heal by deriving fresh
-        # credentials and retrying startHelper on success. Token freshness is
-        # guaranteed inside deriveCredentials via TokenManager->getToken
-        # (Pitfall 5) — never read/pass tokens here.
+        # GH #147 / D-04: no automatic credential minting from PKCE tokens --
+        # Spotify Login5 rejects wrong-provenance stored credentials, so the
+        # old lazy self-heal would only produce doomed credentials and re-arm
+        # the crash loop. Playback credentials come exclusively from
+        # user-initiated flows (ZeroConf pairing / Keymaster browser
+        # fallback, plans 65-02/65-03). When PKCE tokens exist, point the
+        # user at the re-authorization step.
         if ($activeAccountId) {
             require Plugins::SpotOn::API::PKCE;
             if (Plugins::SpotOn::API::PKCE::loadTokens($activeAccountId)) {
-                require Plugins::SpotOn::API::Credentials;
                 main::INFOLOG && $log->is_info && $log->info(
-                    "No cached credentials for $clientId (account "
+                    "No playback credentials for $clientId (account "
                     . _maskAccountId($activeAccountId)
-                    . ") — deriving from PKCE tokens (D-01 lazy safety-net)"
+                    . ") — playback authorization required (Settings -> Authorize Playback)"
                 );
-                Plugins::SpotOn::API::Credentials->deriveCredentials($activeAccountId, sub {
-                    my ($ok, $reason) = @_;
-                    if ($ok) {
-                        main::INFOLOG && $log->is_info && $log->info(
-                            "Lazy credential derivation succeeded for account "
-                            . _maskAccountId($activeAccountId) . " — retrying daemon start for $clientId"
-                        );
-                        $class->startHelper($clientId);
-                    } else {
-                        # No needsReauth flagging here — the lazy path fires at
-                        # LMS startup where transient failures are likely.
-                        # Retries are watchdog-driven (60s initHelpers cycle)
-                        # and rate-limited by D-05's cooldown inside
-                        # Credentials.pm. Permanent token failures ('no_token')
-                        # are already flagged by TokenManager internally.
-                        $log->warn(
-                            "Lazy credential derivation failed for account "
-                            . _maskAccountId($activeAccountId) . " ($reason) — daemon start for $clientId deferred"
-                        );
-                    }
-                });
-                return;
             }
         }
 

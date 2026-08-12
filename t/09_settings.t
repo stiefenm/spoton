@@ -342,7 +342,9 @@ sub reset_calls {
 1;
 END
 
-# Stub: Plugins::SpotOn::API::Credentials (D-01 eager derivation call site — Plan 51-03)
+# Stub: Plugins::SpotOn::API::Credentials — since Plan 65-01 (GH #147 D-04)
+# the derivation path has NO production callers; the counter below is a
+# regression guard asserting _pkceStoreAccount never calls it again.
 write_stub($stub_dir, 'Plugins::SpotOn::API::Credentials', <<'END');
 package Plugins::SpotOn::API::Credentials;
 our $next_derive_ok = 1;
@@ -561,18 +563,17 @@ SKIP: {
     ok($src =~ /paramRef->\{'warning'\}/,     q{Settings.pm: $paramRef->{'warning'} assignment present});
     ok($src =~ /clearNeedsReauth/,            'Settings.pm: clearNeedsReauth called on successful PKCE auth');
 
-    # Plan 51-03: D-01 eager derivation call site
-    ok($src =~ /deriveCredentials/,           'Settings.pm: deriveCredentials called in _pkceStoreAccount');
+    # GH #147 D-04 (Plan 65-01): the eager derivation call site is removed --
+    # PKCE auth must never mint playback credentials from the access token
+    # (Login5 rejects wrong-provenance credentials). Whole-file guard: no
+    # derivation call site may remain anywhere in Settings.pm.
+    ok($src !~ /deriveCredentials/,           'Settings.pm: no derivation call site remains (GH #147 D-04)');
 
-    # Plan 51-03 D-02: the failure branch must reference the new warning
-    # i18n key. Scoped to _pkceStoreAccount's own body (rather than the
-    # whole file) since the JSON/HTML output itself can't be inspected for
-    # the real translated string under the shared Slim::Utils::Strings stub
-    # (single-arg string() calls resolve to '' -- see D-08 Channel 2 note
-    # above).
+    # GH #147: _pkceStoreAccount's AJAX response signals the separate
+    # playback-authorization step to the caller.
     my ($pkce_store_body) = $src =~ /(sub _pkceStoreAccount\b.*?)(?=\nsub \w|\z)/s;
-    ok(defined $pkce_store_body && $pkce_store_body =~ /PLUGIN_SPOTON_CONNECT_DERIVE_FAILED/,
-        'Settings.pm: _pkceStoreAccount failure branch references PLUGIN_SPOTON_CONNECT_DERIVE_FAILED');
+    ok(defined $pkce_store_body && $pkce_store_body =~ /playbackAuthRequired/,
+        'Settings.pm: _pkceStoreAccount JSON response carries playbackAuthRequired (GH #147)');
 
     # prefs() should NOT include clientId
     ok($src =~ /sub prefs[^}]+return[^}]+(?!clientId)[^}]+}/s,
@@ -628,34 +629,29 @@ SKIP: {
 }
 
 # ============================================================
-# Plan 51-03: D-01 eager derivation + D-06 unconditional daemon start
-# Exercises the real _pkceStoreAccount directly against stubbed
+# GH #147 D-04 (Plan 65-01): PKCE auth completes WITHOUT credential
+# derivation. Exercises the real _pkceStoreAccount directly against stubbed
 # Credentials/DaemonManager/TokenManager collaborators. Runs after AUTH-06
 # (which depends on a pristine 'accounts'/'activeAccount' prefs state via
 # its own init() call) since this block deliberately mutates both keys.
 # ============================================================
 SKIP: {
-    skip "Settings.pm module required for eager derivation test", 6
+    skip "Settings.pm module required for PKCE store-account test", 6
         unless eval { require Plugins::SpotOn::Settings; 1 };
 
     require Plugins::SpotOn::API::Credentials;
     require Plugins::SpotOn::API::TokenManager;
     require Plugins::SpotOn::Unified::DaemonManager;
     require Slim::Web::HTTP;
+    require JSON::PP;
 
     my $spotonPrefs = Slim::Utils::Prefs::preferences('plugin.spoton');
 
-    # (a) + (b): a successful derivation calls deriveCredentials exactly
-    # once and triggers scheduleInit unconditionally (Pitfall 6 regression
-    # guard) -- even though activeAccount is ALREADY set before the flow,
-    # which means _storeAccountPrefs's own $needsDaemonStart conditional
-    # would NOT have fired on its own.
     {
         $spotonPrefs->set('accounts', {});
         $spotonPrefs->set('activeAccount', 'existingacct');
 
         $Plugins::SpotOn::API::Credentials::derive_call_count            = 0;
-        $Plugins::SpotOn::API::Credentials::next_derive_ok                = 1;
         $Plugins::SpotOn::Unified::DaemonManager::schedule_init_calls     = 0;
         @Plugins::SpotOn::API::TokenManager::store_account_prefs_calls    = ();
         @Slim::Web::HTTP::http_responses                                  = ();
@@ -667,43 +663,25 @@ SKIP: {
             'client123', 'spotifyUserA', 'Test User A', 1,
         );
 
-        is($Plugins::SpotOn::API::Credentials::derive_call_count, 1,
-            'Plan51-03: _pkceStoreAccount calls deriveCredentials exactly once on success');
+        is($Plugins::SpotOn::API::Credentials::derive_call_count, 0,
+            'Plan65-01 D-04: _pkceStoreAccount never calls the derivation path (GH #147)');
         is($Plugins::SpotOn::Unified::DaemonManager::schedule_init_calls, 1,
-            'Plan51-03 Pitfall 6: scheduleInit fires unconditionally even though activeAccount was already set');
-
-        my $storedAccountId = $Plugins::SpotOn::API::Credentials::last_derive_account;
-        ok($storedAccountId && exists $spotonPrefs->get('accounts')->{$storedAccountId},
-            'Plan51-03: account creation completed alongside successful derivation');
+            'Plan65-01: scheduleInit still fires unconditionally (Pitfall 6 regression guard)');
         is(scalar(@Plugins::SpotOn::API::TokenManager::store_account_prefs_calls), 1,
-            'Plan51-03: _storeAccountPrefs invoked exactly once for the flow');
-    }
+            'Plan65-01: _storeAccountPrefs invoked exactly once for the flow');
 
-    # (c): derivation failure does not roll back account creation, and does
-    # NOT trigger scheduleInit (content of the rendered warning string is
-    # covered by the structure assertion above, not output capture -- see
-    # that assertion's comment for why).
-    {
-        $spotonPrefs->set('accounts', {});
-        $spotonPrefs->set('activeAccount', '');
-
-        $Plugins::SpotOn::API::Credentials::derive_call_count        = 0;
-        $Plugins::SpotOn::API::Credentials::next_derive_ok            = 0;
-        $Plugins::SpotOn::Unified::DaemonManager::schedule_init_calls = 0;
-        @Slim::Web::HTTP::http_responses                              = ();
-
-        my $response = FakeSettingsResponse->new;
-        Plugins::SpotOn::Settings::_pkceStoreAccount(
-            'http_client_b', $response,
-            { access_token => 'tok2', refresh_token => 'rtok2', expires_in => 3600, scope => 'x' },
-            'client123', 'spotifyUserB', 'Test User B', 1,
-        );
-
-        my $storedAccountId = $Plugins::SpotOn::API::Credentials::last_derive_account;
+        my $storedAccountId = $Plugins::SpotOn::API::TokenManager::store_account_prefs_calls[0];
         ok($storedAccountId && exists $spotonPrefs->get('accounts')->{$storedAccountId},
-            'Plan51-03 D-02: account creation NOT rolled back when derivation fails');
-        is($Plugins::SpotOn::Unified::DaemonManager::schedule_init_calls, 0,
-            'Plan51-03 D-06: scheduleInit NOT called when derivation fails');
+            'Plan65-01: account creation completed without derivation');
+
+        # AJAX response carries the playback-auth signal for the JS caller.
+        my $payload = eval {
+            JSON::PP::decode_json(${ $Slim::Web::HTTP::http_responses[0][2] });
+        } || {};
+        is($payload->{playbackAuthRequired}, 1,
+            'Plan65-01: JSON response has playbackAuthRequired=1 (GH #147)');
+        is($payload->{connectReady}, 0,
+            'Plan65-01: JSON response has connectReady=0 (playback not yet authorized)');
     }
 }
 
