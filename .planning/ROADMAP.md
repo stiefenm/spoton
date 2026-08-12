@@ -378,12 +378,13 @@ Plans:
 **Goal:** Restore playback after Spotify's Login5 StoredCredential blockade (Aug 10, 2026) by switching credential provisioning from PKCE-derived `--token-login` to ZeroConf-paired `--discover-once`. Stop the daemon crash-loop caused by unrecognized INVALID_CREDENTIALS errors. Provide browser-based fallback for environments where mDNS is unavailable (Docker, VLANs).
 **Requirements**: GH #147
 **Depends on:** None (hotfix, independent of v2.3 Library Integration)
-**Plans:** 3 plans
+**Plans:** 3/3 plans executed
 
 Plans:
-- [ ] 65-01-PLAN.md — Crash-loop fix: extend isCredentialError, playback-auth flag, restart backoff, defuse all PKCE auto-derive paths
-- [ ] 65-02-PLAN.md — ZeroConf pairing: --discover-once engine, Authorize Playback Settings UI with 2s polling, strings (11 languages)
-- [ ] 65-03-PLAN.md — Browser fallback (Keymaster PKCE + --token-login), upgrade migration, OPML hint, strings (11 languages)
+
+- [x] 65-01-PLAN.md — Crash-loop fix: extend isCredentialError, playback-auth flag, restart backoff, defuse all PKCE auto-derive paths
+- [x] 65-02-PLAN.md — ZeroConf pairing: --discover-once engine, Authorize Playback Settings UI with 2s polling, strings (11 languages)
+- [x] 65-03-PLAN.md — Browser fallback (Keymaster PKCE + --token-login), upgrade migration, OPML hint, strings (11 languages)
 
 ---
 *Roadmap created: 2026-05-26*
