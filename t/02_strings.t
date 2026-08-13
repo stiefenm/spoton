@@ -149,6 +149,8 @@ SKIP: {
         PLUGIN_SPOTON_PLAYER_AUTH_BROWSER_PASTE_HINT
         PLUGIN_SPOTON_PLAYER_AUTH_BROWSER_SUBMIT_BTN
         PLUGIN_SPOTON_PLAYER_AUTH_BROWSER_FAILED
+        PLUGIN_SPOTON_CUSTOM_APP_TITLE
+        PLUGIN_SPOTON_DEFAULT_AUTH_INFO
     );
 
     # Obsolete keys that must NOT be present
@@ -225,6 +227,12 @@ SKIP: {
     for my $key (@pkce_removed_keys) {
         ok(!$has_en{$key} && !$has_de{$key}, "$key is removed (PKCE flow removed in Plan 04.3-03)");
     }
+
+    # Plan 65-04: the bundled-mode info line is obsolete — the default PKCE
+    # identity is no longer a shared community Client ID, and the template
+    # now shows PLUGIN_SPOTON_DEFAULT_AUTH_INFO instead.
+    ok(!$has_en{'PLUGIN_SPOTON_BUNDLED_MODE_INFO'} && !$has_de{'PLUGIN_SPOTON_BUNDLED_MODE_INFO'},
+        'PLUGIN_SPOTON_BUNDLED_MODE_INFO is removed (Keymaster default, Plan 65-04)');
 
     # Verify correct indentation: lines must use Tab, not spaces
     my $bad_indent = 0;
