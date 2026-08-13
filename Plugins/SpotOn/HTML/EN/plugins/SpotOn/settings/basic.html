@@ -45,11 +45,13 @@
 				[% 'PLUGIN_SPOTON_PKCE_CONNECT_BTN' | string %]
 			</button>
 		</p>
+		[% IF customClientId %]
 		<p style="margin:8px 0 0 0; font-size:0.9em">
 			<a href="#spoton-player-auth">
 				[% 'PLUGIN_SPOTON_PLAYER_AUTH_TITLE' | string %] &rarr;
 			</a>
 		</p>
+		[% END %]
 	</div>
 	[% END %]
 
@@ -106,32 +108,29 @@
 		<label for="pref_normalization">[% 'PLUGIN_SPOTON_NORMALIZATION_LABEL' | string %]</label>
 	[% END %]
 
+	[% IF customClientId %]
 	[% WRAPPER setting title="PLUGIN_SPOTON_CLIENT_ID_SETTINGS" desc="PLUGIN_SPOTON_CLIENT_ID_DESC" %]
-		[% IF clientIdMode == 'bundled' %]
-		<div style="color: green; margin-bottom:10px">
-			[% 'PLUGIN_SPOTON_DEFAULT_AUTH_INFO' | string %]
-		</div>
-		[% ELSIF clientIdMode == 'custom' AND quotaState == 'devmode' %]
+		[% IF quotaState == 'devmode' %]
 		<div style="color: orange; margin-bottom:10px">
 			[% 'PLUGIN_SPOTON_DEVMODE_QUOTA_WARNING' | string %]
 		</div>
 		[% END %]
 
-		<details [% IF customClientId %]open [% END %]style="margin-top:4px">
-			<summary style="cursor:pointer">[% 'PLUGIN_SPOTON_CUSTOM_APP_TITLE' | string %]</summary>
-			<input type="text" class="stdedit" name="pref_clientId" id="pref_clientId"
-			       style="margin-top:8px"
-			       value="[% customClientId | html %]"
-			       placeholder="[% 'PLUGIN_SPOTON_CLIENT_ID_PLACEHOLDER' | string %]"/>
+		<input type="text" class="stdedit" name="pref_clientId" id="pref_clientId"
+		       value="[% customClientId | html %]"
+		       placeholder="[% 'PLUGIN_SPOTON_CLIENT_ID_PLACEHOLDER' | string %]"/>
 
-			<details style="margin-top:10px">
-				<summary style="cursor:pointer">[% 'PLUGIN_SPOTON_CLIENT_ID_WIZARD_TITLE' | string %]</summary>
-				<p style="margin:8px 0 4px 0; font-size:0.9em; opacity:0.85">[% 'PLUGIN_SPOTON_SETUP_DEVAPP_DESC' | string %]</p>
-				<p style="margin:0; font-size:0.85em">
-					<code style="background:rgba(128,128,128,0.1); padding:2px 6px; border-radius:3px">[% redirectUri | html %]</code>
-				</p>
-			</details>
+		<details style="margin-top:10px">
+			<summary style="cursor:pointer">[% 'PLUGIN_SPOTON_CLIENT_ID_WIZARD_TITLE' | string %]</summary>
+			<p style="margin:8px 0 4px 0; font-size:0.9em; opacity:0.85">[% 'PLUGIN_SPOTON_SETUP_DEVAPP_DESC' | string %]</p>
+			<p style="margin:0; font-size:0.85em">
+				<code style="background:rgba(128,128,128,0.1); padding:2px 6px; border-radius:3px">[% redirectUri | html %]</code>
+			</p>
 		</details>
+		<p style="margin:8px 0 0 0; font-size:0.85em; opacity:0.7">
+			<a href="#" onclick="document.getElementById('pref_clientId').value=''; return false;">[% 'PLUGIN_SPOTON_CUSTOM_APP_REMOVE' | string %]</a>
+		</p>
+	[% END %]
 	[% END %]
 
 	[% WRAPPER setting title="PLUGIN_SPOTON_PKCE_AUTH" desc="PLUGIN_SPOTON_PKCE_AUTH_DESC" %]
@@ -171,6 +170,7 @@
 		[% END %]
 	[% END %]
 
+	[% IF customClientId OR playbackAuthState == 'required' %]
 	<div id="spoton-player-auth"></div>
 	[% WRAPPER setting title="PLUGIN_SPOTON_PLAYER_AUTH_TITLE" desc="PLUGIN_SPOTON_PLAYER_AUTH_DESC" %]
 		<div style="margin-bottom:10px; font-size:0.9em">
@@ -225,6 +225,7 @@
 			</div>
 			<div id="player-auth-browser-status" style="display:none; margin-top:10px"></div>
 		</details>
+	[% END %]
 	[% END %]
 
 	<hr style="margin:16px 0; border:0; border-top:1px solid rgba(128,128,128,0.25)"/>

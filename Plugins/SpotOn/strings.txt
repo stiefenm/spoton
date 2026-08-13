@@ -1064,6 +1064,19 @@ PLUGIN_SPOTON_CUSTOM_APP_TITLE
 	PL	Zaawansowane: użyj własnej aplikacji Spotify Developer
 	SV	Avancerat: Använd din egen Spotify Developer App
 
+PLUGIN_SPOTON_CUSTOM_APP_REMOVE
+	CS	Odebrat vlastní App ID a použít výchozí režim
+	DA	Fjern tilpasset App-ID og brug standardtilstand
+	DE	Eigene App-ID entfernen und Standardmodus verwenden
+	EN	Remove custom App ID and use default mode
+	ES	Eliminar App ID personalizado y usar modo predeterminado
+	FR	Supprimer l'ID d'app personnalisé et utiliser le mode par défaut
+	IT	Rimuovi l'ID app personalizzato e usa la modalità predefinita
+	NL	Aangepaste App-ID verwijderen en standaardmodus gebruiken
+	NO	Fjern tilpasset App-ID og bruk standardmodus
+	PL	Usuń niestandardowe App ID i użyj trybu domyślnego
+	SV	Ta bort anpassat App-ID och använd standardläge
+
 PLUGIN_SPOTON_DEFAULT_AUTH_INFO
 	CS	Výchozí režim: SpotOn se autorizuje prostřednictvím identity vlastní desktopové aplikace Spotify — není potřeba žádná Spotify Developer App. Jedna autorizace zpřístupní procházení, přehrávání i Spotify Connect.
 	DA	Standardtilstand: SpotOn godkender via Spotifys egen desktop-app-identitet — ingen Spotify Developer App påkrævet. Én godkendelse aktiverer gennemsyn, afspilning og Spotify Connect.
