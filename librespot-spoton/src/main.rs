@@ -8,6 +8,7 @@
 // Modes:
 //   --check          : Print capability manifest (Phase 1 contract, unchanged)
 //   --authenticate   : Acquire credentials via username/password, write credentials.json
+//   --get-token      : Read cached credentials, return Web API token JSON to stdout
 //   --token-login    : Acquire reusable credentials from OAuth access token, write credentials.json
 //   --discover-once  : ZeroConf mDNS announcement, wait for Spotify App connection, write credentials.json
 //   --unified        : Combined Browse+Connect daemon (one process, one port, optional Spirc)
@@ -19,6 +20,11 @@
 // --authenticate contract (for Settings.pm):
 //   Command: spoton -n 'SpotOn' --username <u> --password <p> --authenticate --cache <dir>
 //   stdout: "authorized" on success
+//   exit 0 on success, non-zero on failure
+//
+// --get-token contract (for TokenManager.pm):
+//   Command: spoton -n 'SpotOn' --cache <dir> --get-token [--scope <scopes>]
+//   stdout: {"accessToken":"<token>","expiresIn":<seconds>}
 //   exit 0 on success, non-zero on failure
 //
 // --token-login contract (for TokenManager.pm):
@@ -55,6 +61,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 enum Mode {
     Check,
     Authenticate,
+    GetToken,      // Phase 65-05: restored Keymaster Mercury token retrieval
     TokenLogin,    // Phase 04.2: credential provisioning from OAuth access token
     DiscoverOnce,  // Phase 04.3: ZeroConf mDNS credential acquisition
     Unified,       // Phase 29: combined Browse+Connect daemon (one process, one port)
@@ -88,6 +95,8 @@ async fn main() {
     let mut password = String::new();
     let mut token_str = String::new();
     let mut cache_dir = String::new();
+    let mut scope = String::new();
+    let mut client_id = String::new();
 
     // Connect / unified mode variables
     let mut player_mac = String::new();
@@ -121,6 +130,9 @@ async fn main() {
             }
             "--authenticate" => {
                 mode = Mode::Authenticate;
+            }
+            "--get-token" => {
+                mode = Mode::GetToken;
             }
             "--token-login" => {
                 mode = Mode::TokenLogin;
@@ -238,6 +250,18 @@ async fn main() {
                     i += 1;
                 }
             }
+            "--scope" => {
+                if i + 1 < args.len() {
+                    scope = args[i + 1].clone();
+                    i += 1;
+                }
+            }
+            "--client-id" => {
+                if i + 1 < args.len() {
+                    client_id = args[i + 1].clone();
+                    i += 1;
+                }
+            }
             _ => {
                 // Ignore unknown flags for forward compatibility
             }
@@ -269,6 +293,7 @@ async fn main() {
                 "autoplay": true,
                 "browse": true,           // Phase 28: persistent Browse daemon capability
                 "discover-once": true,
+                "get-token": true,
                 "lms-auth": true,
                 "ogg-direct": has_passthrough,
                 "passthrough": has_passthrough,
@@ -305,6 +330,24 @@ async fn main() {
                 }
                 Err(e) => {
                     eprintln!("Authentication failed: {}", e);
+                    process::exit(1);
+                }
+            }
+        }
+
+        Mode::GetToken => {
+            if cache_dir.is_empty() {
+                eprintln!("Error: --cache is required for --get-token");
+                eprintln!("Usage: spoton -n 'SpotOn' --cache <dir> --get-token [--scope <scopes>]");
+                process::exit(1);
+            }
+
+            match run_get_token(&cache_dir, &scope, &client_id).await {
+                Ok(_) => {
+                    process::exit(0);
+                }
+                Err(e) => {
+                    eprintln!("Token retrieval failed: {}", e);
                     process::exit(1);
                 }
             }
@@ -450,6 +493,79 @@ async fn run_token_login(
     // store_credentials=true: librespot-core connects, receives reusable_auth_credentials
     // from Spotify AP, and writes credentials.json to cache_dir automatically
     session.connect(credentials, true).await?;
+
+    Ok(())
+}
+
+/// Read cached credentials from cache_dir, connect to Spotify, and
+/// retrieve a Web API access token via Keymaster/Mercury protocol.
+/// Prints JSON to stdout:
+///   {"accessToken":"<token>","expiresIn":<seconds>}
+async fn run_get_token(
+    cache_dir: &str,
+    scope: &str,
+    client_id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Load cached credentials from credentials.json in cache_dir
+    let cache = Cache::new(Some(cache_dir), None::<&str>, None::<&str>, None)?;
+
+    let credentials = match cache.credentials() {
+        Some(c) => c,
+        None => {
+            return Err(format!(
+                "No cached credentials found in '{}'. Run --authenticate first.",
+                cache_dir
+            )
+            .into());
+        }
+    };
+
+    let session_config = SessionConfig::default();
+    let session = Session::new(session_config, None);
+
+    // Connect using cached credentials (store_credentials=false — already stored)
+    session.connect(credentials, false).await?;
+
+    // Determine scopes to request
+    let scopes_str = if scope.is_empty() {
+        // Default scopes required by SpotOn plugin
+        "user-read-private,user-read-email,user-library-read,user-library-modify,\
+         user-read-playback-state,user-modify-playback-state,user-read-currently-playing,\
+         user-read-recently-played,user-top-read,user-read-playback-position,\
+         playlist-read-private,playlist-read-collaborative,\
+         playlist-modify-public,playlist-modify-private,\
+         user-follow-read,user-follow-modify"
+            .to_string()
+    } else {
+        scope.to_string()
+    };
+
+    // Get token via Keymaster/Mercury protocol
+    let token = if client_id.is_empty() {
+        session.token_provider().get_token(&scopes_str).await?
+    } else {
+        session.token_provider().get_token_with_client_id(&scopes_str, client_id).await?
+    };
+
+    // expires_in is a Duration — convert to whole seconds for the JSON contract
+    let expires_in_secs = token.expires_in.as_secs();
+
+    // Print JSON to stdout as required by TokenManager.pm
+    // Contract: {"accessToken":"<token>","expiresIn":<seconds>}
+    let json = serde_json::json!({
+        "accessToken": token.access_token,
+        "expiresIn": expires_in_secs,
+    });
+    println!("{}", json);
+
+    // SPOTON_TOKEN_FILE: Windows services have broken stdout piping in
+    // Proc::Background. When set, write the token JSON to a file directly.
+    if let Ok(token_file) = std::env::var("SPOTON_TOKEN_FILE") {
+        if let Ok(mut f) = std::fs::File::create(&token_file) {
+            use std::io::Write;
+            let _ = writeln!(f, "{}", json);
+        }
+    }
 
     Ok(())
 }
