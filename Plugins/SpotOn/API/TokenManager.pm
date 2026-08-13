@@ -19,13 +19,6 @@ use constant TOKEN_REFRESH_TIMER   => 45 * 60;   # 45 minute proactive refresh c
 use constant SPOTIFY_ME_URL        => 'https://api.spotify.com/v1/me';
 # M1: cache flag prefix for the persistent (TTL 'never') re-auth marker (D-08).
 use constant REAUTH_FLAG_PREFIX    => 'spoton_needs_reauth_';
-# Import SPOTON_DEFAULT_CLIENT_ID from Client.pm (single source of truth — D-04).
-# Using require + direct call avoids circular compile-time dependency
-# (TokenManager is require'd by Client.pm at runtime via _doFlavouredRequest).
-use constant SPOTON_DEFAULT_CLIENT_ID => do {
-    require Plugins::SpotOn::API::Client;
-    Plugins::SpotOn::API::Client::SPOTON_DEFAULT_CLIENT_ID();
-};
 
 my $log   = logger('plugin.spoton');
 my $prefs = preferences('plugin.spoton');
@@ -178,7 +171,7 @@ sub needsReauth {
 # Public query (D-06): returns the reason string stored in the {reason, ts}
 # hashref written by _markNeedsReauth() for this account's persistent
 # re-auth flag, or undef if no flag is set. Lets Plugin.pm/Settings.pm
-# distinguish bundled_id_unavailable (bundled ncspot Client ID revoked) from
+# distinguish bundled_id_unavailable (default/bundled Client ID rejected) from
 # custom_id_invalid or other reasons (e.g. invalid_grant/token_rejected) for
 # targeted display messaging.
 sub reauthReason {
@@ -363,9 +356,14 @@ sub _refreshToken {
         return;
     }
 
+    # PKCE spec: refresh must use the ISSUING client_id — the stored
+    # per-token client_id always wins (pre-migration accounts hold tokens
+    # minted with the retired bundled default or a custom ID; those still
+    # rotate fine). Final fallback is the Keymaster ID, the default PKCE
+    # identity since plan 65-04.
     my $clientId = $stored->{client_id}
         || $prefs->get('clientId')
-        || SPOTON_DEFAULT_CLIENT_ID;
+        || Plugins::SpotOn::API::PKCE::KEYMASTER_CLIENT_ID();
 
     Plugins::SpotOn::API::PKCE::refreshAccessToken($stored->{refresh_token}, $clientId, sub {
         my ($tokenData, $err, $errorDetail) = @_;
@@ -382,13 +380,15 @@ sub _refreshToken {
             # (revoked or unknown) -- Spotify returns this on HTTP 401. This
             # is distinct from invalid_grant (the user revoked SpotOn's
             # access) and needs a targeted message: if the rejected ID is
-            # the bundled ncspot ID, tell the user to switch to their own
-            # Client ID; if it's already a custom ID, tell them it's invalid.
+            # the user's configured custom ID, tell them it's invalid;
+            # anything else (Keymaster default or a retired bundled ID
+            # stored with an old token) maps to bundled_id_unavailable.
             # Checked BEFORE the invalid_grant/400 branch below.
             if ($oauthError && $oauthError eq 'invalid_client') {
-                my $reason = ($clientId eq SPOTON_DEFAULT_CLIENT_ID)
-                    ? 'bundled_id_unavailable'
-                    : 'custom_id_invalid';
+                my $customId = $prefs->get('clientId') || '';
+                my $reason = ($customId && $clientId eq $customId)
+                    ? 'custom_id_invalid'
+                    : 'bundled_id_unavailable';
                 $class->_markNeedsReauth($accountId, $reason);
             }
             # M-6: HTTP 400 on the token endpoint is practically always a

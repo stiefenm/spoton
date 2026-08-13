@@ -409,17 +409,23 @@ sub _pkceStartHandler {
 
     return unless _csrfCheck($httpClient, $response);
 
-    # D-01: bundled (ncspot) Client-ID is now a full-access default — no
-    # gate. clientId pref empty => bundled mode, filled => custom mode.
+    # clientId pref empty => default (Keymaster loopback) mode, filled =>
+    # custom mode (GH #147 plan 65-04).
     my $clientId  = _pkceClientId();
     my $isBundled = $prefs->get('clientId') ? 0 : 1;
 
     require Plugins::SpotOn::API::PKCE;
 
-    # D-02: bundled mode uses the fixed loopback redirect URI (copy-paste
-    # primary path, D-03); custom mode keeps the existing GitHub Pages relay.
+    # Default mode uses the dynamic loopback redirect pointing at LMS's own
+    # pkce/callback endpoint (plan 65-04): the redirect CAN reach LMS when
+    # the browser runs on the LMS host; copy-paste remains the path for
+    # remote browsers. Custom mode keeps the GitHub Pages relay (custom
+    # Developer Apps register it as their redirect URI, per user decision).
+    # Scopes stay the full PKCE_SCOPES default — the Keymaster token must
+    # carry both the Web API scopes and 'streaming' so ONE token serves
+    # /me + Web API + --token-login derivation.
     my $redirectUri = $isBundled
-        ? Plugins::SpotOn::API::PKCE::LOOPBACK_REDIRECT_URI()
+        ? Plugins::SpotOn::API::PKCE::loopbackCallbackRedirectUri()
         : Plugins::SpotOn::API::PKCE::GITHUB_PAGES_REDIRECT_URI();
 
     my $verifier  = Plugins::SpotOn::API::PKCE::generateCodeVerifier();
@@ -452,8 +458,10 @@ sub _pkceStartHandler {
         "Settings: PKCE auth flow started [nonce=" . substr($nonce, 0, 8) . "..."
         . ", mode=" . ($isBundled ? 'bundled' : 'custom') . "]");
 
-    # D-03: bundled flag tells the JS to skip the 30s auto-reload timer --
-    # the loopback redirect never reaches LMS, so copy-paste is the only path.
+    # 'bundled' now means "Keymaster loopback mode" and is kept for JS
+    # payload compatibility only — since plan 65-04 the loopback redirect
+    # CAN reach LMS (browser on the LMS host), so the JS always arms the
+    # reload timer and no longer branches on this flag.
     _jsonResponse($httpClient, $response, { url => $authUrl, nonce => $nonce, bundled => ($isBundled ? 1 : 0) });
 }
 
@@ -969,12 +977,6 @@ sub _pkceStoreAccount {
         # intentionally not signaled — rows carry no daemon-derived content.
         Plugins::SpotOn::HomeExtras::refresh() if $INC{'Plugins/SpotOn/HomeExtras.pm'};
 
-        # GH #147 / D-04: PKCE auth no longer mints playback credentials
-        # from the access token -- Spotify Login5 rejects wrong-provenance
-        # stored credentials, so playback credentials are created only by
-        # user-initiated flows (ZeroConf pairing / Keymaster browser
-        # fallback, plans 65-02/65-03).
-        #
         # scheduleInit stays: harmless without playback credentials
         # (startHelper skips accounts without a usable credentials.json),
         # and required so an account that ALREADY has valid ZeroConf-paired
@@ -989,17 +991,56 @@ sub _pkceStoreAccount {
             Plugins::SpotOn::API::Client->probeEndpointLimits($accountId, sub {});
         }
 
-        # Respond immediately: token auth is complete; playback authorization
-        # is a separate user step (plan 65-02 adds the Settings banner that
-        # surfaces it -- no new user-facing strings here).
-        if ($isJson) {
-            _jsonResponse($httpClient, $response,
-                { status => 'ok', accountId => $accountId, connectReady => 0,
-                  playbackAuthRequired => 1 });
+        # GH #147 plan 65-04 (amends D-04's blanket removal): PKCE auth DOES
+        # mint playback credentials again, but ONLY from a Keymaster-
+        # provenance token, only once, only at user-initiated auth
+        # completion. A Keymaster-minted full-scope access token is exactly
+        # what Login5 accepts (spike 2026-08-13), so the exchanged token
+        # feeds deriveCredentialsFromToken (65-03: staging isolation, D-01
+        # username validation, provenance marking, clearNeedsPlaybackAuth,
+        # scheduleInit and the D-05 rate limit all live inside that
+        # finalizer). Crash paths remain fully defused (65-01) — a custom-ID
+        # token is NEVER derived (wrong provenance would recreate the GH
+        # #147 blockade). The access token appears in no log line and is
+        # persisted nowhere beyond the storeTokens call above (T-65-09).
+        my $respond = sub {
+            my ($connectReady) = @_;
+            if ($isJson) {
+                _jsonResponse($httpClient, $response,
+                    { status => 'ok', accountId => $accountId,
+                      connectReady => ($connectReady ? 1 : 0),
+                      playbackAuthRequired => ($connectReady ? 0 : 1) });
+            } else {
+                # HTML path renders the normal success page either way:
+                # token auth IS complete; the Settings banner and both
+                # fallback paths cover a failed derivation.
+                _renderPkceResultPage($httpClient, $response,
+                    string('PLUGIN_SPOTON_PKCE_SUCCESS'),
+                    string('PLUGIN_SPOTON_PKCE_SUCCESS'), 0);
+            }
+        };
+
+        if ($clientId eq Plugins::SpotOn::API::PKCE::KEYMASTER_CLIENT_ID()) {
+            require Plugins::SpotOn::API::Credentials;
+            Plugins::SpotOn::API::Credentials->deriveCredentialsFromToken(
+                $accountId, $tokenData->{access_token}, sub {
+                    my ($ok, $reason) = @_;
+                    unless ($ok) {
+                        # ONE warn, masked accountId + symbolic reason only
+                        # (T-65-07/T-50-01) — Web API works either way; the
+                        # banner and both fallback paths cover playback.
+                        $log->warn("Settings: automatic playback-credential derivation "
+                            . "failed for account $maskedId (" . ($reason // 'unknown')
+                            . ") -- playback authorization required");
+                    }
+                    $respond->($ok ? 1 : 0);
+                });
         } else {
-            _renderPkceResultPage($httpClient, $response,
-                string('PLUGIN_SPOTON_PKCE_SUCCESS'),
-                string('PLUGIN_SPOTON_PKCE_SUCCESS'), 0);
+            # Custom Client ID: no derivation call of any kind — a
+            # non-Keymaster token has the wrong provenance and would mint
+            # blockaded credentials (D-04). Playback auth stays a separate
+            # user step (pairing / browser fallback).
+            $respond->(0);
         }
     });
 }
@@ -1007,15 +1048,19 @@ sub _pkceStoreAccount {
 # ============================================================
 # _pkceClientId()
 # Resolves the Client-ID to use for PKCE requests: the user's own Spotify
-# Developer App Client-ID if configured, otherwise SpotOn's bundled default
-# (same fallback logic as the rest of the codebase, e.g. TokenManager.pm).
+# Developer App Client-ID if configured, otherwise Spotify's Keymaster
+# client_id (GH #147 plan 65-04, user decision after spike 2026-08-13:
+# Keymaster accepts PKCE with the full Web API scope list and shows as
+# "Spotify for Desktop" on the consent page). A Keymaster-minted token has
+# the provenance Login5 accepts, so one authorization serves Web API access
+# AND playback-credential derivation.
 # ============================================================
 sub _pkceClientId {
     my $custom = $prefs->get('clientId');
     return $custom if $custom;
 
-    require Plugins::SpotOn::API::Client;
-    return Plugins::SpotOn::API::Client::SPOTON_DEFAULT_CLIENT_ID();
+    require Plugins::SpotOn::API::PKCE;
+    return Plugins::SpotOn::API::PKCE::KEYMASTER_CLIENT_ID();
 }
 
 # ============================================================

@@ -38,10 +38,11 @@ sub _decode_base64url {
 # instance (edge cases A-D from urknall #176). Used for custom (own) Client ID.
 use constant GITHUB_PAGES_REDIRECT_URI => 'https://stiefenm.github.io/spoton/auth/';
 
-# Loopback redirect URI for the bundled (ncspot) Client ID — D-02. Mirrors
-# ncspot's own registered pattern (http://127.0.0.1:{port}/login). Spotify
-# allows any port for loopback IPs (RFC 8252). Fixed port 18764: high port,
-# no IANA registration, simpler for copy-paste UX and SSH tunnel docs.
+# Fixed loopback redirect URI used by the playerauth browser fallback
+# (GH #147 plan 65-03). Spotify allows any port for loopback IPs (RFC 8252).
+# Fixed port 18764: high port, no IANA registration, simpler for copy-paste
+# UX and SSH tunnel docs. The account PKCE flow uses the dynamic
+# loopbackCallbackRedirectUri() below instead (plan 65-04).
 use constant LOOPBACK_REDIRECT_URI => 'http://127.0.0.1:18764/login';
 
 # Spotify's internal Keymaster client_id — the provenance Login5 now requires
@@ -136,10 +137,27 @@ sub parseState {
 # OAuth endpoints
 # ============================================================
 
+# loopbackCallbackRedirectUri()
+# Dynamic loopback redirect URI pointing at LMS's own pkce/callback endpoint
+# (GH #147 plan 65-04). Keymaster accepts ANY 127.0.0.1 redirect URI (spike
+# 2026-08-13), so the redirect can target the real _pkceCallbackHandler:
+# when the browser runs on the LMS host, the redirect completes the flow
+# automatically; otherwise the user copy-pastes the URL from the address
+# bar into the manual fallback field. Reads the live LMS httpport so the
+# URI stays correct across port changes.
+sub loopbackCallbackRedirectUri {
+    return 'http://127.0.0.1:' . (preferences('server')->get('httpport') || 9000)
+        . '/plugins/SpotOn/settings/pkce/callback';
+}
+
 # buildAuthorizationUrl($clientId, $codeChallenge, $stateStr, $redirectUri, $scopes)
 # Returns the full Spotify authorization URL for the browser to open.
 # $redirectUri is caller-supplied (D-02): GITHUB_PAGES_REDIRECT_URI for a
-# custom Client ID, LOOPBACK_REDIRECT_URI for the bundled (ncspot) Client ID.
+# custom Client ID, loopbackCallbackRedirectUri() for the default account
+# flow (plan 65-04), LOOPBACK_REDIRECT_URI for the playerauth browser
+# fallback. The redirect used at exchange is guaranteed byte-identical to
+# the one used here because both handlers read redirect_uri from the
+# enriched verifier cache entry (phase-49 D-04 discipline).
 # $scopes is an optional arrayref (GH #147 plan 65-03: the Keymaster browser
 # fallback requests ['streaming'] only); when omitted, behavior is identical
 # to before — the full PKCE_SCOPES list is used, so existing callers are

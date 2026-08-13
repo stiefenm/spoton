@@ -927,17 +927,25 @@ SKIP: {
     }
 
     # (F) Permanent regression guard (review finding #5, AUTH-07): TokenManager.pm
-    # source must never re-introduce a "keymaster" reference (case-insensitive).
+    # source must never re-introduce the retired Keymaster HTTP token service
+    # (Mercury hm://keymaster minting, removed in Phase 53).
+    # Plan 65-04 refinement: PKCE::KEYMASTER_CLIENT_ID() is now the legitimate
+    # refresh-fallback client_id (the default PKCE identity since GH #147) --
+    # the guard whitelists exactly that identifier in non-comment code and
+    # keeps banning every other "keymaster" reference.
     {
         open(my $src_fh, '<', $tm_module) or die "cannot read $tm_module: $!";
         local $/;
         my $source = <$src_fh>;
         close($src_fh);
 
-        my @hits = ($source =~ /keymaster/gi);
+        my $code = join("\n", grep { !/^\s*#/ } split /\n/, $source);
+        $code =~ s/KEYMASTER_CLIENT_ID//g;
+
+        my @hits = ($code =~ /keymaster/gi);
         is(scalar(@hits), 0,
-            'AUTH-07 regression guard: TokenManager.pm source contains zero case-insensitive '
-            . '"keymaster" references');
+            'AUTH-07 regression guard: TokenManager.pm has no keymaster reference beyond '
+            . 'PKCE::KEYMASTER_CLIENT_ID (refined in plan 65-04)');
     }
 }
 
