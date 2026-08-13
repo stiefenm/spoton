@@ -53,6 +53,12 @@ sub new {
         'plugins/SpotOn/settings/pkce/manual',
         \&_pkceManualHandler
     );
+    # Keymaster loopback redirect: Spotify's Keymaster client_id only
+    # whitelists `/login` as redirect path. Route it to the same handler.
+    Slim::Web::Pages->addRawFunction(
+        'login',
+        \&_pkceCallbackHandler
+    );
 
     # Register ZeroConf playback-authorization pairing endpoints
     # (GH #147 plan 65-02, D-02 primary path)

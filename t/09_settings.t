@@ -808,8 +808,8 @@ SKIP: {
     like($payload->{url}, qr/client_id=65b708073fc0480ea92a077233ca87bd/,
         'Plan65-04: default-mode auth URL carries the Keymaster client_id');
     like($payload->{url},
-        qr{redirect_uri=http%3A%2F%2F127\.0\.0\.1%3A9005%2Fplugins%2FSpotOn%2Fsettings%2Fpkce%2Fcallback},
-        'Plan65-04: default-mode redirect_uri is the dynamic loopback-to-LMS pkce/callback');
+        qr{redirect_uri=http%3A%2F%2F127\.0\.0\.1%3A9005%2Flogin},
+        'Plan65-04: default-mode redirect_uri is loopback /login (Keymaster whitelist)');
     is($payload->{bundled}, 1,
         'Plan65-04: bundled payload field kept for JS compatibility');
     ok($payload->{nonce},

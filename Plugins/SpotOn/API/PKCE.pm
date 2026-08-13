@@ -138,16 +138,13 @@ sub parseState {
 # ============================================================
 
 # loopbackCallbackRedirectUri()
-# Dynamic loopback redirect URI pointing at LMS's own pkce/callback endpoint
-# (GH #147 plan 65-04). Keymaster accepts ANY 127.0.0.1 redirect URI (spike
-# 2026-08-13), so the redirect can target the real _pkceCallbackHandler:
-# when the browser runs on the LMS host, the redirect completes the flow
-# automatically; otherwise the user copy-pastes the URL from the address
-# bar into the manual fallback field. Reads the live LMS httpport so the
-# URI stays correct across port changes.
+# Dynamic loopback redirect URI for the Keymaster PKCE flow (GH #147, plan
+# 65-04). The Keymaster client_id whitelists only the path `/login` on
+# 127.0.0.1 — any port is accepted but the path must be exactly `/login`.
+# LMS registers a raw handler for this path in Settings.pm.
 sub loopbackCallbackRedirectUri {
     return 'http://127.0.0.1:' . (preferences('server')->get('httpport') || 9000)
-        . '/plugins/SpotOn/settings/pkce/callback';
+        . '/login';
 }
 
 # buildAuthorizationUrl($clientId, $codeChallenge, $stateStr, $redirectUri, $scopes)
