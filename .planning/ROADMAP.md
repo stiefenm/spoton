@@ -378,7 +378,7 @@ Plans:
 **Goal:** Restore playback after Spotify's Login5 StoredCredential blockade (Aug 10, 2026) by switching credential provisioning from PKCE-derived `--token-login` to ZeroConf-paired `--discover-once`. Stop the daemon crash-loop caused by unrecognized INVALID_CREDENTIALS errors. Provide browser-based fallback for environments where mDNS is unavailable (Docker, VLANs).
 **Requirements**: GH #147
 **Depends on:** None (hotfix, independent of v2.3 Library Integration)
-**Plans:** 4/4 plans executed
+**Plans:** 4/8 plans executed
 
 Plans:
 
@@ -386,6 +386,10 @@ Plans:
 - [x] 65-02-PLAN.md — ZeroConf pairing: --discover-once engine, Authorize Playback Settings UI with 2s polling, strings (11 languages)
 - [x] 65-03-PLAN.md — Browser fallback (Keymaster PKCE + --token-login), upgrade migration, OPML hint, strings (11 languages)
 - [x] 65-04-PLAN.md — Keymaster PKCE unification: one auth step yields Web API tokens + auto-derived playback credentials; loopback-to-LMS redirect; Custom App collapsed to advanced; strings (11 languages)
+- [ ] 65-05-PLAN.md — ZeroConf-only auth, gate: restore --get-token (revert d7fd566) + live hypothesis test (Keymaster Mercury token from ZeroConf creds vs api.spotify.com) — STOP gate for 06-08
+- [ ] 65-06-PLAN.md — Token engine: TokenManager --get-token subprocess replaces PKCE refresh; unified auth flag; pairing creates accounts (setup mode)
+- [ ] 65-07-PLAN.md — One auth surface: remove PKCE + Custom App from Settings/basic.html, pairing as primary Connect action, strings (11 languages)
+- [ ] 65-08-PLAN.md — Migration + retirement: pkce_retired one-shot flagging, consolidated OPML hint, credentials-based Status, PKCE.pm marked fallback-only, strings cleanup (11 languages)
 
 ---
 *Roadmap created: 2026-05-26*
