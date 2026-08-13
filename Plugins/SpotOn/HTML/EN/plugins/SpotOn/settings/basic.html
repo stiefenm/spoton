@@ -41,7 +41,12 @@
 	<div style="background:rgba(255,165,0,0.08); border:1px solid orange; padding:12px 16px; margin-bottom:20px; border-radius:4px">
 		<strong style="color:orange">[% 'PLUGIN_SPOTON_PLAYER_AUTH_BANNER' | string %]</strong>
 		<p style="margin:8px 0 0 0">
-			<a href="#spoton-player-auth" style="font-weight:bold">
+			<button type="button" class="submit" onclick="spotonPkceStart()">
+				[% 'PLUGIN_SPOTON_PKCE_CONNECT_BTN' | string %]
+			</button>
+		</p>
+		<p style="margin:8px 0 0 0; font-size:0.9em">
+			<a href="#spoton-player-auth">
 				[% 'PLUGIN_SPOTON_PLAYER_AUTH_TITLE' | string %] &rarr;
 			</a>
 		</p>
@@ -104,23 +109,28 @@
 	[% WRAPPER setting title="PLUGIN_SPOTON_CLIENT_ID_SETTINGS" desc="PLUGIN_SPOTON_CLIENT_ID_DESC" %]
 		[% IF clientIdMode == 'bundled' %]
 		<div style="color: green; margin-bottom:10px">
-			[% 'PLUGIN_SPOTON_BUNDLED_MODE_INFO' | string %]
+			[% 'PLUGIN_SPOTON_DEFAULT_AUTH_INFO' | string %]
 		</div>
 		[% ELSIF clientIdMode == 'custom' AND quotaState == 'devmode' %]
 		<div style="color: orange; margin-bottom:10px">
 			[% 'PLUGIN_SPOTON_DEVMODE_QUOTA_WARNING' | string %]
 		</div>
 		[% END %]
-		<input type="text" class="stdedit" name="pref_clientId" id="pref_clientId"
-		       value="[% customClientId | html %]"
-		       placeholder="[% 'PLUGIN_SPOTON_CLIENT_ID_PLACEHOLDER' | string %]"/>
 
-		<details style="margin-top:10px">
-			<summary style="cursor:pointer">[% 'PLUGIN_SPOTON_CLIENT_ID_WIZARD_TITLE' | string %]</summary>
-			<p style="margin:8px 0 4px 0; font-size:0.9em; opacity:0.85">[% 'PLUGIN_SPOTON_SETUP_DEVAPP_DESC' | string %]</p>
-			<p style="margin:0; font-size:0.85em">
-				<code style="background:rgba(128,128,128,0.1); padding:2px 6px; border-radius:3px">[% redirectUri | html %]</code>
-			</p>
+		<details [% IF customClientId %]open [% END %]style="margin-top:4px">
+			<summary style="cursor:pointer">[% 'PLUGIN_SPOTON_CUSTOM_APP_TITLE' | string %]</summary>
+			<input type="text" class="stdedit" name="pref_clientId" id="pref_clientId"
+			       style="margin-top:8px"
+			       value="[% customClientId | html %]"
+			       placeholder="[% 'PLUGIN_SPOTON_CLIENT_ID_PLACEHOLDER' | string %]"/>
+
+			<details style="margin-top:10px">
+				<summary style="cursor:pointer">[% 'PLUGIN_SPOTON_CLIENT_ID_WIZARD_TITLE' | string %]</summary>
+				<p style="margin:8px 0 4px 0; font-size:0.9em; opacity:0.85">[% 'PLUGIN_SPOTON_SETUP_DEVAPP_DESC' | string %]</p>
+				<p style="margin:0; font-size:0.85em">
+					<code style="background:rgba(128,128,128,0.1); padding:2px 6px; border-radius:3px">[% redirectUri | html %]</code>
+				</p>
+			</details>
 		</details>
 	[% END %]
 
@@ -146,7 +156,7 @@
 			<p style="margin:0 0 4px 0"><strong>[% 'PLUGIN_SPOTON_PKCE_MANUAL_TITLE' | string %]</strong></p>
 			<p style="margin:0 0 8px 0; font-size:0.9em">[% 'PLUGIN_SPOTON_PKCE_MANUAL_DESC' | string %]</p>
 			<input type="text" id="pkce-manual-url" class="stdedit" style="width:80%"
-				placeholder="http://..."/>
+				placeholder="http://127.0.0.1:9000/plugins/SpotOn/settings/pkce/callback?code=...&amp;state=..."/>
 			<button type="button" class="submit"
 				id="pkceManualBtn" onclick="spotonPkceManual()"
 				data-error-text="[% 'PLUGIN_SPOTON_PKCE_ERROR' | string | html %]">
@@ -355,18 +365,15 @@
 					// auto-redirect may not reach this LMS instance (edge case D).
 					fallbackEl.style.display = 'block';
 					window.open(data.url, '_blank');
-					// D-03: in bundled mode the loopback redirect (127.0.0.1) never
-					// reaches this LMS instance, so a browser-side auto-callback can
-					// never complete -- copy-paste is the only path. A 30s reload
-					// would just interrupt the user mid-paste, so skip the timer.
-					if (!data.bundled) {
-						// No AJAX way to know the browser-side redirect finished —
-						// reload once as a fallback so a completed auth shows up.
-						var reloadTimer = setTimeout(function() { window.location.reload(); }, 30000);
-						var manualInput = document.getElementById('pkce-manual-url');
-						if (manualInput) {
-							manualInput.addEventListener('focus', function() { clearTimeout(reloadTimer); });
-						}
+					// Plan 65-04: the reload timer is ALWAYS armed. In default
+					// (Keymaster loopback) mode the redirect reaches LMS when the
+					// browser runs on the LMS host — the reload then shows the
+					// connected account. Remote-browser users click into the paste
+					// field, which cancels the timer (no mid-paste interruption).
+					var reloadTimer = setTimeout(function() { window.location.reload(); }, 30000);
+					var manualInput = document.getElementById('pkce-manual-url');
+					if (manualInput) {
+						manualInput.addEventListener('focus', function() { clearTimeout(reloadTimer); });
 					}
 					return;
 				}
