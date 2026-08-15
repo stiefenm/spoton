@@ -296,13 +296,19 @@ sub decodeExternalHelperPath { $_[1] }
 END
 
 # Stub: File::Spec::Functions
+# catdir/catfile are inherited by File::Spec from File::Spec::Unix -- a
+# direct typeglob alias (\&File::Spec::catdir) does not resolve inherited
+# methods, so it must call through as a class method instead (Plan 66-02
+# Task 2: exercising _collectAuthHealth directly now requires this path,
+# via PKCE.pm's _accountDir -- previously latent because getAccountIds()
+# always returned an empty list).
 write_stub($stub_dir, 'File::Spec::Functions', <<'END');
 package File::Spec::Functions;
 use parent 'Exporter';
 use File::Spec ();
 our @EXPORT_OK = qw(catdir catfile);
-*catdir  = \&File::Spec::catdir;
-*catfile = \&File::Spec::catfile;
+sub catdir  { return File::Spec->catdir(@_); }
+sub catfile { return File::Spec->catfile(@_); }
 1;
 END
 
@@ -377,10 +383,42 @@ sub helperInstances { () }
 1;
 END
 
-# Stub: Plugins::SpotOn::API::TokenManager (needed by Status.pm _collectTokens)
+# Stub: Plugins::SpotOn::API::TokenManager (needed by Status.pm
+# _collectTokens/_statusDataHandler's authHealth loop). @fake_account_ids is
+# controllable by tests that need _statusDataHandler to iterate a fixture
+# account (Plan 66-02 Task 2 D-08 coverage); defaults to empty like before.
 write_stub($stub_dir, 'Plugins::SpotOn::API::TokenManager', <<'END');
 package Plugins::SpotOn::API::TokenManager;
-sub getAccountIds { () }
+our @fake_account_ids = ();
+our %fake_needs_reauth = ();
+our %fake_needs_migration = ();
+sub getAccountIds { return @fake_account_ids }
+sub needsReauth { my ($class, $accountId) = @_; return $fake_needs_reauth{$accountId} // 0; }
+sub accountNeedsMigration { my ($class, $accountId) = @_; return $fake_needs_migration{$accountId} // 0; }
+1;
+END
+
+# Stub: Plugins::SpotOn::API::Credentials (needed by Status.pm
+# _collectAuthHealth's playback indicator, Plan 66-02 Task 2 D-08). Every
+# accessor is a controllable fixture keyed by accountId, mirroring the real
+# module's passive-read contract (no outbound calls).
+write_stub($stub_dir, 'Plugins::SpotOn::API::Credentials', <<'END');
+package Plugins::SpotOn::API::Credentials;
+our %fake_verify_credentials = ();   # accountId => hashref | undef
+our %fake_needs_playback_auth = ();  # accountId => 0|1
+our %fake_playback_auth_reason = (); # accountId => reason string
+sub verifyCredentials {
+    my ($class, $accountId) = @_;
+    return $fake_verify_credentials{$accountId};
+}
+sub needsPlaybackAuth {
+    my ($class, $accountId) = @_;
+    return $fake_needs_playback_auth{$accountId} // 0;
+}
+sub playbackAuthReason {
+    my ($class, $accountId) = @_;
+    return $fake_playback_auth_reason{$accountId} // '';
+}
 1;
 END
 
@@ -392,6 +430,10 @@ package Plugins::SpotOn::API::WebPlayer;
 sub statusSnapshot {
     return { state => 'valid', spDcPresent => 1, spDcMasked => 'AQDx****' };
 }
+# Needed by Status.pm _collectAuthHealth's spDc indicator (Plan 66-02 Task 2:
+# now exercised directly, previously latent -- see TokenManager stub note).
+sub state         { return 'empty' }
+sub spDcMaskedPreview { return '' }
 1;
 END
 
@@ -419,7 +461,7 @@ require Plugins::SpotOn::Plugin;
 # Tests
 # ============================================================
 
-plan tests => 16;
+plan tests => 27;
 
 # Test 1: Status.pm compiles
 require_ok('Plugins::SpotOn::Status');
@@ -505,3 +547,69 @@ my @madeForYouKeys = $statusData && ref $statusData->{madeForYou} eq 'HASH'
     ? sort keys %{$statusData->{madeForYou}} : ();
 is_deeply(\@madeForYouKeys, [sort qw(state spDcPresent spDcMasked hashConfigured)],
     'Test 12: madeForYou carries only state/spDcPresent/spDcMasked/hashConfigured -- no access_token/client_token/raw sp_dc fields');
+
+# ============================================================
+# Tests 13-19: _collectAuthHealth playback indicator (D-08, GH #147 plan
+# 66-02 Task 2) -- direct-call coverage of the 6th auth-health indicator.
+# ============================================================
+require Plugins::SpotOn::API::Credentials;
+
+# Fixture account WITH valid playback credentials, paired via ZeroConf.
+%Plugins::SpotOn::API::Credentials::fake_verify_credentials = (
+    fixtureAcct1 => { auth_type => 1, username => 'leaked_secret_username', auth_data => 'leaked_secret_auth_data_xyz' },
+);
+%Plugins::SpotOn::API::Credentials::fake_needs_playback_auth  = (fixtureAcct1 => 0);
+%Plugins::SpotOn::API::Credentials::fake_playback_auth_reason = (fixtureAcct1 => '');
+
+my $healthWithCreds = Plugins::SpotOn::Status::_collectAuthHealth('fixtureAcct1');
+ok(ref $healthWithCreds eq 'HASH' && ref $healthWithCreds->{playback} eq 'HASH',
+    'Test 13: _collectAuthHealth returns a playback block');
+
+my @playbackKeys = sort keys %{$healthWithCreds->{playback}};
+is_deeply(\@playbackKeys, [sort qw(hasCredentials needsAuth reason source)],
+    'Test 14: playback block carries exactly hasCredentials/needsAuth/reason/source');
+
+is($healthWithCreds->{playback}{hasCredentials}, 1,
+    'Test 15: account with valid credentials.json reports hasCredentials 1');
+
+# Fixture account WITHOUT any credentials.json (verifyCredentials returns undef).
+my $healthNoCreds = Plugins::SpotOn::Status::_collectAuthHealth('fixtureAcct2');
+is($healthNoCreds->{playback}{hasCredentials}, 0,
+    'Test 16: account without credentials.json reports hasCredentials 0');
+
+# ============================================================
+# Tests 17-23: full _statusDataHandler response, D-08/T-66-05 -- the
+# playback block must reach the browser through the same passive/no-secrets
+# discipline as the other authHealth indicators, and must never leak the
+# fixture's username/auth_data.
+# ============================================================
+@Plugins::SpotOn::API::TokenManager::fake_account_ids = ('fixtureAcct1', 'fixtureAcct2');
+
+@Slim::Web::HTTP::http_responses = ();
+my $fake_response2 = FakeStatusResponse->new;
+Plugins::SpotOn::Status::_statusDataHandler('fake_http_client', $fake_response2);
+
+my $bytesRef2 = $Slim::Web::HTTP::http_responses[-1][2];
+my $jsonText  = $$bytesRef2;
+my $statusData2 = eval { JSON::PP::decode_json($jsonText) };
+
+ok($statusData2 && ref $statusData2->{authHealth} eq 'HASH' && $statusData2->{authHealth}{fixtureAcct1},
+    'Test 17: full status payload includes authHealth for the fixture account');
+
+is($statusData2->{authHealth}{fixtureAcct1}{playback}{hasCredentials}, 1,
+    'Test 18: full payload playback block for fixtureAcct1 reports hasCredentials 1');
+
+is($statusData2->{authHealth}{fixtureAcct1}{playback}{source}, '',
+    'Test 19: fixtureAcct1 has no playbackCredSource pref set -- source defaults to empty string');
+
+is($statusData2->{authHealth}{fixtureAcct2}{playback}{hasCredentials}, 0,
+    'Test 20: full payload playback block for fixtureAcct2 (no credentials) reports hasCredentials 0');
+
+unlike($jsonText, qr/auth_data/,
+    'Test 21: serialized status payload never contains the literal "auth_data" key');
+
+unlike($jsonText, qr/leaked_secret_auth_data_xyz/,
+    'Test 22: serialized status payload never leaks the fixture credential value');
+
+unlike($jsonText, qr/leaked_secret_username/,
+    'Test 23: serialized status payload never leaks the fixture username');

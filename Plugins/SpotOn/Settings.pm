@@ -353,6 +353,16 @@ sub handler {
         else {
             $paramRef->{playbackAuthState} = 'ok';
         }
+
+        # 66-02 D-08: source of the active account's playback credentials
+        # ('zeroconf' | 'keymaster' | '' when unset/legacy) -- lets the
+        # template show which pairing path last provisioned playback,
+        # without a second Credentials.pm round-trip (the marker lives on
+        # the accounts pref entry itself, written by _installPairedCredentials).
+        $paramRef->{playbackCredSource} =
+            ($activeId && $paramRef->{accounts}{$activeId})
+            ? ($paramRef->{accounts}{$activeId}{playbackCredSource} || '')
+            : '';
     }
     # Computed by the same single source of truth startPairing uses, so the
     # on-page instructions show the exact device label the user must pick.
