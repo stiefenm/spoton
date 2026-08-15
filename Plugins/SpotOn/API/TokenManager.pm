@@ -358,12 +358,16 @@ sub _refreshToken {
 
     # PKCE spec: refresh must use the ISSUING client_id — the stored
     # per-token client_id always wins (pre-migration accounts hold tokens
-    # minted with the retired bundled default or a custom ID; those still
-    # rotate fine). Final fallback is the Keymaster ID, the default PKCE
-    # identity since plan 65-04.
+    # minted with a retired default or a custom ID; those still rotate fine,
+    # including tokens minted during the unreleased 65-04 window, which keep
+    # rotating via their stored Keymaster client_id until re-auth). Final
+    # fallback is the bundled Extended-Quota default again (phase 66 revert,
+    # D-01) — not the Keymaster ID, which shares its rate-limit bucket
+    # globally.
+    require Plugins::SpotOn::API::Client;
     my $clientId = $stored->{client_id}
         || $prefs->get('clientId')
-        || Plugins::SpotOn::API::PKCE::KEYMASTER_CLIENT_ID();
+        || Plugins::SpotOn::API::Client::SPOTON_DEFAULT_CLIENT_ID();
 
     Plugins::SpotOn::API::PKCE::refreshAccessToken($stored->{refresh_token}, $clientId, sub {
         my ($tokenData, $err, $errorDetail) = @_;
@@ -381,9 +385,10 @@ sub _refreshToken {
             # is distinct from invalid_grant (the user revoked SpotOn's
             # access) and needs a targeted message: if the rejected ID is
             # the user's configured custom ID, tell them it's invalid;
-            # anything else (Keymaster default or a retired bundled ID
-            # stored with an old token) maps to bundled_id_unavailable.
-            # Checked BEFORE the invalid_grant/400 branch below.
+            # anything else (the bundled Extended-Quota default, or a
+            # retired identity stored with an old token) maps to
+            # bundled_id_unavailable. Checked BEFORE the invalid_grant/400
+            # branch below.
             if ($oauthError && $oauthError eq 'invalid_client') {
                 my $customId = $prefs->get('clientId') || '';
                 my $reason = ($customId && $clientId eq $customId)
