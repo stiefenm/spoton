@@ -627,6 +627,14 @@ SKIP: {
     ok($src !~ /deriveCredentials(?!FromToken)/,
         'Settings.pm: no automatic derivation call site remains (GH #147 D-04)');
 
+    # Plan 66-01 (D-04): the uncommitted 65-05 session workarounds (temp-
+    # account pending-userId marker + its background resolution retry sub)
+    # must never reappear -- whole-file guard.
+    ok($src !~ /_pending_/,
+        'Settings.pm: no pending-account marker remains (66-01 D-04)');
+    ok($src !~ /_pkceResolvePendingAccount/,
+        'Settings.pm: no pending-account resolution sub remains (66-01 D-04)');
+
     # GH #147 plan 65-03 (T-65-13): the browser-fallback handlers must never
     # persist the Keymaster token pair -- no token-storage call may appear in
     # either handler body (comments excluded).
@@ -758,34 +766,36 @@ SKIP: {
 }
 
 # ============================================================
-# GH #147 plan 65-04 (a): _pkceClientId resolves to the Keymaster client_id
-# when no custom Client ID is configured (ncspot bundled default retired).
+# GH #147 plan 66-01 (a): _pkceClientId resolves to the bundled ncspot
+# Extended-Quota client_id when no custom Client ID is configured (D-01,
+# Keymaster retired as PKCE default).
 # ============================================================
 SKIP: {
     skip "Settings.pm module required for _pkceClientId test", 3
         unless eval { require Plugins::SpotOn::Settings; 1 };
 
-    require Plugins::SpotOn::API::PKCE;
+    require Plugins::SpotOn::API::Client;
     my $spotonPrefs = Slim::Utils::Prefs::preferences('plugin.spoton');
 
     $spotonPrefs->set('clientId', '');
     my $defaultId = Plugins::SpotOn::Settings::_pkceClientId();
-    like($defaultId, qr/^65b70807/,
-        'Plan65-04: empty clientId pref resolves to the 65b70807-prefixed Keymaster ID');
-    is($defaultId, Plugins::SpotOn::API::PKCE::KEYMASTER_CLIENT_ID(),
-        'Plan65-04: _pkceClientId default matches PKCE::KEYMASTER_CLIENT_ID');
+    like($defaultId, qr/^d420a117/,
+        'Plan66-01: empty clientId pref resolves to the d420a117-prefixed ncspot ID');
+    is($defaultId, Plugins::SpotOn::API::Client::SPOTON_DEFAULT_CLIENT_ID(),
+        'Plan66-01: _pkceClientId default matches Client::SPOTON_DEFAULT_CLIENT_ID');
 
     $spotonPrefs->set('clientId', 'customid1234customid1234customid');
     is(Plugins::SpotOn::Settings::_pkceClientId(), 'customid1234customid1234customid',
-        'Plan65-04: custom clientId pref wins over the Keymaster default');
+        'Plan66-01: custom clientId pref wins over the bundled default');
 
     $spotonPrefs->set('clientId', '');
 }
 
 # ============================================================
-# GH #147 plan 65-04 (b): pkce/start payload — default mode carries the
-# Keymaster client_id and the dynamic loopback-to-LMS redirect (stubbed
-# httpport 9005); custom mode keeps the GitHub Pages relay.
+# GH #147 plan 66-01 (b): pkce/start payload — default mode carries the
+# bundled ncspot Extended-Quota client_id and the dynamic loopback-to-LMS
+# redirect (stubbed httpport 9005, unchanged since 65-04); custom mode keeps
+# the GitHub Pages relay.
 # ============================================================
 SKIP: {
     skip "Settings.pm module required for pkce/start payload test", 6
@@ -795,7 +805,7 @@ SKIP: {
     require JSON::PP;
     my $spotonPrefs = Slim::Utils::Prefs::preferences('plugin.spoton');
 
-    # Default (Keymaster loopback) mode
+    # Default (bundled ncspot) mode
     $spotonPrefs->set('clientId', '');
     @Slim::Web::HTTP::http_responses = ();
     my $response = FakeSettingsResponse->new(
@@ -805,15 +815,15 @@ SKIP: {
     my $payload = eval {
         JSON::PP::decode_json(${ $Slim::Web::HTTP::http_responses[0][2] });
     } || {};
-    like($payload->{url}, qr/client_id=65b708073fc0480ea92a077233ca87bd/,
-        'Plan65-04: default-mode auth URL carries the Keymaster client_id');
+    like($payload->{url}, qr/client_id=d420a117a32841c2b3474932e49fb54b/,
+        'Plan66-01: default-mode auth URL carries the bundled ncspot client_id');
     like($payload->{url},
         qr{redirect_uri=http%3A%2F%2F127\.0\.0\.1%3A9005%2Flogin},
-        'Plan65-04: default-mode redirect_uri is loopback /login (Keymaster whitelist)');
+        'Plan66-01: default-mode redirect_uri is the dynamic loopback /login (unchanged)');
     is($payload->{bundled}, 1,
-        'Plan65-04: bundled payload field kept for JS compatibility');
+        'Plan66-01: bundled payload field is 1');
     ok($payload->{nonce},
-        'Plan65-04: pkce/start payload still carries a nonce');
+        'Plan66-01: pkce/start payload still carries a nonce');
 
     # Custom mode keeps the GitHub Pages relay
     $spotonPrefs->set('clientId', 'customid1234customid1234customid');
@@ -826,32 +836,34 @@ SKIP: {
         JSON::PP::decode_json(${ $Slim::Web::HTTP::http_responses[0][2] });
     } || {};
     like($payload->{url}, qr/client_id=customid1234customid1234customid/,
-        'Plan65-04: custom-mode auth URL carries the custom client_id');
+        'Plan66-01: custom-mode auth URL carries the custom client_id');
     like($payload->{url}, qr{redirect_uri=https%3A%2F%2Fstiefenm\.github\.io%2Fspoton%2Fauth%2F},
-        'Plan65-04: custom-mode redirect_uri stays the GitHub Pages relay');
+        'Plan66-01: custom-mode redirect_uri stays the GitHub Pages relay');
 
     $spotonPrefs->set('clientId', '');
 }
 
 # ============================================================
-# GH #147 plan 65-04 (c): _pkceStoreAccount auto-derive tail — a Keymaster-
-# provenance token derives playback credentials exactly once via
-# deriveCredentialsFromToken; a custom-ID token NEVER derives (D-04).
+# GH #147 plan 66-01 (c): _pkceStoreAccount performs ZERO derivation for ANY
+# client_id (D-02) — neither a bundled-default-ID token nor a custom-ID
+# token ever calls deriveCredentialsFromToken/deriveCredentials. The JSON
+# response for an account without a stubbed credentials.json honestly
+# reports playbackAuthRequired=1/connectReady=0 (ZeroConf pairing required).
 # ============================================================
 SKIP: {
-    skip "Settings.pm module required for auto-derive tail test", 10
+    skip "Settings.pm module required for zero-derivation tail test", 8
         unless eval { require Plugins::SpotOn::Settings; 1 };
 
     require Plugins::SpotOn::API::Credentials;
-    require Plugins::SpotOn::API::PKCE;
+    require Plugins::SpotOn::API::Client;
     require Plugins::SpotOn::Unified::DaemonManager;
     require Slim::Web::HTTP;
     require JSON::PP;
 
     my $spotonPrefs = Slim::Utils::Prefs::preferences('plugin.spoton');
-    my $keymasterId = Plugins::SpotOn::API::PKCE::KEYMASTER_CLIENT_ID();
+    my $bundledId    = Plugins::SpotOn::API::Client::SPOTON_DEFAULT_CLIENT_ID();
 
-    # (c1) Keymaster path, derive succeeds -> connectReady=1
+    # (c1) Bundled-default-ID token records ZERO derive calls
     {
         $spotonPrefs->set('accounts', {});
         $spotonPrefs->set('activeAccount', 'existingacct');
@@ -861,52 +873,26 @@ SKIP: {
 
         my $response = FakeSettingsResponse->new;
         Plugins::SpotOn::Settings::_pkceStoreAccount(
-            'http_client_km', $response,
-            { access_token => 'kmtok1', refresh_token => 'kmrtok1', expires_in => 3600, scope => 'x' },
-            $keymasterId, 'spotifyUserKM', 'KM User', 1,
+            'http_client_bundled', $response,
+            { access_token => 'bundledtok1', refresh_token => 'bundledrtok1', expires_in => 3600, scope => 'x' },
+            $bundledId, 'spotifyUserBundled', 'Bundled User', 1,
         );
 
-        is(scalar(@Plugins::SpotOn::API::Credentials::derive_from_token_calls), 1,
-            'Plan65-04: Keymaster-clientId path calls deriveCredentialsFromToken exactly once');
-        is($Plugins::SpotOn::API::Credentials::derive_from_token_calls[0][1], 'kmtok1',
-            'Plan65-04: derivation receives the exchanged access_token');
+        is(scalar(@Plugins::SpotOn::API::Credentials::derive_from_token_calls), 0,
+            'Plan66-01: bundled-ID path records ZERO deriveCredentialsFromToken calls (D-02)');
         is($Plugins::SpotOn::API::Credentials::derive_call_count, 0,
-            'Plan65-04: legacy deriveCredentials path stays untouched (0 calls)');
+            'Plan66-01: bundled-ID path records ZERO legacy deriveCredentials calls (D-02)');
 
         my $payload = eval {
             JSON::PP::decode_json(${ $Slim::Web::HTTP::http_responses[0][2] });
         } || {};
-        is($payload->{connectReady}, 1,
-            'Plan65-04: derive ok -> connectReady=1');
-        is($payload->{playbackAuthRequired}, 0,
-            'Plan65-04: derive ok -> playbackAuthRequired=0');
-    }
-
-    # (c2) Keymaster path, derive fails -> auth still succeeds, playback flagged
-    {
-        Plugins::SpotOn::API::Credentials::reset_calls();
-        $Plugins::SpotOn::API::Credentials::next_derive_from_token = [0, 'derivation_failed'];
-        @Slim::Web::HTTP::http_responses = ();
-
-        my $response = FakeSettingsResponse->new;
-        Plugins::SpotOn::Settings::_pkceStoreAccount(
-            'http_client_km2', $response,
-            { access_token => 'kmtok2', refresh_token => 'kmrtok2', expires_in => 3600, scope => 'x' },
-            $keymasterId, 'spotifyUserKM', 'KM User', 1,
-        );
-
-        my $payload = eval {
-            JSON::PP::decode_json(${ $Slim::Web::HTTP::http_responses[0][2] });
-        } || {};
-        is($payload->{status}, 'ok',
-            'Plan65-04: derive failure still responds auth-success (Web API works)');
-        is($payload->{playbackAuthRequired}, 1,
-            'Plan65-04: derive failure -> playbackAuthRequired=1');
         is($payload->{connectReady}, 0,
-            'Plan65-04: derive failure -> connectReady=0');
+            'Plan66-01: bundled-ID fresh account -> connectReady=0 (honest state)');
+        is($payload->{playbackAuthRequired}, 1,
+            'Plan66-01: bundled-ID fresh account -> playbackAuthRequired=1 (ZeroConf pairing required)');
     }
 
-    # (c3) Custom clientId path records ZERO derive calls (D-04 / T-65-17)
+    # (c2) Custom clientId path also records ZERO derive calls (D-02)
     {
         Plugins::SpotOn::API::Credentials::reset_calls();
         @Slim::Web::HTTP::http_responses = ();
@@ -919,13 +905,15 @@ SKIP: {
         );
 
         is(scalar(@Plugins::SpotOn::API::Credentials::derive_from_token_calls), 0,
-            'Plan65-04: custom-clientId path records ZERO deriveCredentialsFromToken calls (D-04)');
+            'Plan66-01: custom-clientId path records ZERO deriveCredentialsFromToken calls (D-02)');
+        is($Plugins::SpotOn::API::Credentials::derive_call_count, 0,
+            'Plan66-01: custom-clientId path records ZERO legacy deriveCredentials calls (D-02)');
 
         my $payload = eval {
             JSON::PP::decode_json(${ $Slim::Web::HTTP::http_responses[0][2] });
         } || {};
         is($payload->{playbackAuthRequired}, 1,
-            'Plan65-04: custom-clientId path responds playbackAuthRequired=1');
+            'Plan66-01: custom-clientId path responds playbackAuthRequired=1');
     }
 }
 

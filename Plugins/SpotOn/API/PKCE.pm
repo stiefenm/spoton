@@ -41,16 +41,20 @@ use constant GITHUB_PAGES_REDIRECT_URI => 'https://stiefenm.github.io/spoton/aut
 # Fixed loopback redirect URI used by the playerauth browser fallback
 # (GH #147 plan 65-03). Spotify allows any port for loopback IPs (RFC 8252).
 # Fixed port 18764: high port, no IANA registration, simpler for copy-paste
-# UX and SSH tunnel docs. The account PKCE flow uses the dynamic
-# loopbackCallbackRedirectUri() below instead (plan 65-04).
+# UX and SSH tunnel docs. Fixed-port URI for the playerauth browser fallback
+# only -- the account PKCE flow uses the dynamic
+# loopbackCallbackRedirectUri() below.
 use constant LOOPBACK_REDIRECT_URI => 'http://127.0.0.1:18764/login';
 
-# Spotify's internal Keymaster client_id — the provenance Login5 now requires
-# for stored playback credentials (GH #147, D-02 secondary path). Access
-# tokens minted with this client_id (scope: streaming, loopback redirect
-# only — Spotify rejects non-loopback redirect URIs for it, gotcha 4) yield
-# --token-login credentials that Login5 accepts (Music Assistant recipe,
-# commit ec639766). Same value the Rust side uses as DISCOVERY_CLIENT_ID
+# Spotify's internal Keymaster client_id -- used ONLY by the playerauth
+# browser fallback (65-03) to mint streaming-scope tokens whose derived
+# credentials Login5 accepts (Music Assistant recipe, commit ec639766). It
+# is NOT the PKCE account identity: its rate-limit bucket is shared globally
+# with every librespot/Spotify Desktop user, which is the phase 66 revert
+# reason (GH #147, severe 429 blockade). Access tokens minted with this
+# client_id (scope: streaming, loopback redirect only — Spotify rejects
+# non-loopback redirect URIs for it, gotcha 4) yield --token-login
+# credentials. Same value the Rust side uses as DISCOVERY_CLIENT_ID
 # (main.rs); duplicated deliberately: D-03 forbids Rust changes and Perl
 # cannot read Rust constants.
 use constant KEYMASTER_CLIENT_ID => '65b708073fc0480ea92a077233ca87bd';
@@ -138,10 +142,11 @@ sub parseState {
 # ============================================================
 
 # loopbackCallbackRedirectUri()
-# Dynamic loopback redirect URI for the Keymaster PKCE flow (GH #147, plan
-# 65-04). The Keymaster client_id whitelists only the path `/login` on
-# 127.0.0.1 — any port is accepted but the path must be exactly `/login`.
-# LMS registers a raw handler for this path in Settings.pm.
+# Dynamic loopback redirect for the DEFAULT account PKCE flow (GH #147,
+# D-01). The `/login` path is whitelisted for both the bundled identity and
+# the playerauth fallback's Keymaster identity -- any loopback port is
+# accepted (RFC 8252). LMS registers a raw handler for this path in
+# Settings.pm.
 sub loopbackCallbackRedirectUri {
     return 'http://127.0.0.1:' . (preferences('server')->get('httpport') || 9000)
         . '/login';
