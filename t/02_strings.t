@@ -151,6 +151,13 @@ SKIP: {
         PLUGIN_SPOTON_PLAYER_AUTH_BROWSER_FAILED
         PLUGIN_SPOTON_CUSTOM_APP_TITLE
         PLUGIN_SPOTON_DEFAULT_AUTH_INFO
+        PLUGIN_SPOTON_SETTINGS_ACCOUNT_SECTION
+        PLUGIN_SPOTON_SETUP_SPDC_TITLE
+        PLUGIN_SPOTON_SETUP_SPDC_DESC
+        PLUGIN_SPOTON_SETUP_PATHFINDER_TITLE
+        PLUGIN_SPOTON_SETUP_PATHFINDER_DESC
+        PLUGIN_SPOTON_PLAYER_AUTH_SOURCE_ZEROCONF
+        PLUGIN_SPOTON_PLAYER_AUTH_SOURCE_BROWSER
     );
 
     # Obsolete keys that must NOT be present
@@ -233,6 +240,21 @@ SKIP: {
     # now shows PLUGIN_SPOTON_DEFAULT_AUTH_INFO instead.
     ok(!$has_en{'PLUGIN_SPOTON_BUNDLED_MODE_INFO'} && !$has_de{'PLUGIN_SPOTON_BUNDLED_MODE_INFO'},
         'PLUGIN_SPOTON_BUNDLED_MODE_INFO is removed (Keymaster default, Plan 65-04)');
+
+    # Plan 66-03: the 66-02 Settings reorg removed the standalone Browse-setup
+    # and Made-For-You-setup guide steps and the custom-Developer-App title
+    # (the reworded guide now covers account + playback + sp_dc + Pathfinder
+    # in four steps; the Custom App section is header-less inside details).
+    my @phase66_removed_keys = qw(
+        PLUGIN_SPOTON_SETUP_BROWSE_TITLE
+        PLUGIN_SPOTON_SETUP_BROWSE_DESC
+        PLUGIN_SPOTON_SETUP_DEVAPP_TITLE
+        PLUGIN_SPOTON_MADE_FOR_YOU_SECTION
+    );
+    for my $key (@phase66_removed_keys) {
+        ok(!$has_en{$key} && !$has_de{$key},
+            "$key is removed (Settings reorg, Plan 66-03)");
+    }
 
     # Verify correct indentation: lines must use Tab, not spaces
     my $bad_indent = 0;
