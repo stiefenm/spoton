@@ -418,12 +418,45 @@ footer {
             nameRow.appendChild(nameLbl);
             body.appendChild(nameRow);
 
-            // PKCE Status
+            // Web API Token (renamed from "PKCE Status", D-08): three states
+            // so "no token yet" (Missing) reads distinctly from "token
+            // present but rejected" (Re-auth required).
             var pkce = h.pkce || {};
-            var pkceOk = pkce.hasToken && !pkce.needsReauth;
-            body.appendChild(createMetricRow('PKCE Status', pkceOk ? 'Valid' : 'Re-auth required',
-                pkceOk ? 'dot-alive' : 'dot-dead'));
+            var webApiLabel, webApiClass;
+            if (pkce.hasToken && !pkce.needsReauth) {
+                webApiLabel = 'Valid';
+                webApiClass = 'dot-alive';
+            } else if (pkce.hasToken && pkce.needsReauth) {
+                webApiLabel = 'Re-auth required';
+                webApiClass = 'dot-dead';
+            } else {
+                webApiLabel = 'Missing';
+                webApiClass = 'dot-dead';
+            }
+            body.appendChild(createMetricRow('Web API Token', webApiLabel, webApiClass));
             body.appendChild(createMetricRow('Last API Call', formatRelTime(pkce.lastApiCall)));
+
+            // Playback Credentials (D-08, GH #147 plan 66-02): the OTHER
+            // half of the auth chain -- independent of the Web API token
+            // above. Shows the pairing source and a clear next step when
+            // missing.
+            var playback = h.playback || {};
+            var pbLabel, pbClass;
+            if (playback.needsAuth || !playback.hasCredentials) {
+                pbLabel = 'Missing — authorize playback in SpotOn Settings';
+                if (playback.reason) { pbLabel += ' (' + playback.reason + ')'; }
+                pbClass = 'dot-dead';
+            } else if (playback.source === 'zeroconf') {
+                pbLabel = 'Paired (Spotify app)';
+                pbClass = 'dot-alive';
+            } else if (playback.source === 'keymaster') {
+                pbLabel = 'Paired (browser fallback)';
+                pbClass = 'dot-alive';
+            } else {
+                pbLabel = 'Legacy (token-derived) — re-pairing recommended';
+                pbClass = 'dot-warn';
+            }
+            body.appendChild(createMetricRow('Playback Credentials', pbLabel, pbClass));
 
             // sp_dc Status
             var spDc = h.spDc || {};

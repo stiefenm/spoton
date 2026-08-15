@@ -218,13 +218,14 @@ sub _collectTokens {
 
 # ============================================================
 # _collectAuthHealth($accountId)
-# D-01/D-02/D-03 (moved from Settings.pm): passive, read-only aggregation of
-# the 5 per-account auth chain health indicators consumed by the Status
-# page's Auth Health card (status.html). Every value here comes from a
-# cache/prefs/accessor query -- this helper NEVER makes an outbound HTTP/API
-# call (T-54-02/T-54-06 threat mitigation). Returns a hashref with keys:
-# pkce, spDc, connect, migration, audioKey. Self-contained (require's its
-# own collaborators) rather than relying on _statusDataHandler's requires.
+# D-01/D-02/D-03/D-08 (moved from Settings.pm): passive, read-only
+# aggregation of the 6 per-account auth chain health indicators consumed by
+# the Status page's Auth Health card (status.html). Every value here comes
+# from a cache/prefs/accessor query -- this helper NEVER makes an outbound
+# HTTP/API call (T-54-02/T-54-06 threat mitigation). Returns a hashref with
+# keys: pkce, spDc, connect, migration, audioKey, playback. Self-contained
+# (require's its own collaborators) rather than relying on
+# _statusDataHandler's requires.
 # ============================================================
 sub _collectAuthHealth {
     my ($accountId) = @_;
@@ -232,6 +233,7 @@ sub _collectAuthHealth {
     require Plugins::SpotOn::API::PKCE;
     require Plugins::SpotOn::API::TokenManager;
     require Plugins::SpotOn::API::WebPlayer;
+    require Plugins::SpotOn::API::Credentials;
     require Plugins::SpotOn::Unified::DaemonManager;
 
     my %health;
@@ -279,6 +281,23 @@ sub _collectAuthHealth {
     # persists permanently (TTL 'never', written by DaemonManager Plan 54-01).
     $health{audioKey} = {
         state => $cache->get("spoton_audiokey_state_" . $accountId) || 'ok',
+    };
+
+    # 6. Playback Credentials (D-08, GH #147 plan 66-02) -- the Web API
+    # token (indicator 1 above) and the librespot playback credentials are
+    # two independent halves of SpotOn's auth chain; this indicator answers
+    # "can this account actually stream" separately from "can this account
+    # call the Web API". hasCredentials is a passive local file read
+    # (verifyCredentials never touches the network); source is the
+    # provenance marker written by _installPairedCredentials ('zeroconf' |
+    # 'keymaster' | '' for unset/legacy accounts). Never include username or
+    # auth_data from the credentials file in this payload (T-66-05).
+    my $accountsPref = $prefs->get('accounts') || {};
+    $health{playback} = {
+        hasCredentials => (Plugins::SpotOn::API::Credentials->verifyCredentials($accountId) ? 1 : 0),
+        needsAuth      => Plugins::SpotOn::API::Credentials->needsPlaybackAuth($accountId),
+        reason         => Plugins::SpotOn::API::Credentials->playbackAuthReason($accountId),
+        source         => ($accountsPref->{$accountId} && $accountsPref->{$accountId}{playbackCredSource}) || '',
     };
 
     return \%health;
