@@ -378,7 +378,7 @@ Plans:
 **Goal:** Restore playback after Spotify's Login5 StoredCredential blockade (Aug 10, 2026) by switching credential provisioning from PKCE-derived `--token-login` to ZeroConf-paired `--discover-once`. Stop the daemon crash-loop caused by unrecognized INVALID_CREDENTIALS errors. Provide browser-based fallback for environments where mDNS is unavailable (Docker, VLANs).
 **Requirements**: GH #147
 **Depends on:** None (hotfix, independent of v2.3 Library Integration)
-**Plans:** 4/8 plans executed
+**Plans:** 5/5 plans executed (65-06..65-08 cancelled — STOP gate)
 
 Plans:
 
@@ -386,11 +386,24 @@ Plans:
 - [x] 65-02-PLAN.md — ZeroConf pairing: --discover-once engine, Authorize Playback Settings UI with 2s polling, strings (11 languages)
 - [x] 65-03-PLAN.md — Browser fallback (Keymaster PKCE + --token-login), upgrade migration, OPML hint, strings (11 languages)
 - [x] 65-04-PLAN.md — Keymaster PKCE unification: one auth step yields Web API tokens + auto-derived playback credentials; loopback-to-LMS redirect; Custom App collapsed to advanced; strings (11 languages)
-- [ ] 65-05-PLAN.md — ZeroConf-only auth, gate: restore --get-token (revert d7fd566) + live hypothesis test (Keymaster Mercury token from ZeroConf creds vs api.spotify.com) — STOP gate for 06-08
-- [ ] 65-06-PLAN.md — Token engine: TokenManager --get-token subprocess replaces PKCE refresh; unified auth flag; pairing creates accounts (setup mode)
-- [ ] 65-07-PLAN.md — One auth surface: remove PKCE + Custom App from Settings/basic.html, pairing as primary Connect action, strings (11 languages)
-- [ ] 65-08-PLAN.md — Migration + retirement: pkce_retired one-shot flagging, consolidated OPML hint, credentials-based Status, PKCE.pm marked fallback-only, strings cleanup (11 languages)
+- [x] 65-05-PLAN.md — ZeroConf-only auth, gate: restore --get-token (revert d7fd566) + live hypothesis test (Keymaster Mercury token from ZeroConf creds vs api.spotify.com) — STOP gate for 06-08
+- [~] 65-06-PLAN.md — CANCELLED (65-05 STOP gate: Mercury Keymaster 403 disproves the PKCE-elimination hypothesis)
+- [~] 65-07-PLAN.md — CANCELLED (65-05 STOP gate) — Settings reorg scope superseded by Phase 66
+- [~] 65-08-PLAN.md — CANCELLED (65-05 STOP gate)
+
+### Phase 66: Two-Step Auth Revert + Settings Reorganization
+
+**Goal:** Eliminate the severe 429 rate limiting introduced by 65-04's Keymaster PKCE default (shared global rate-limit bucket) by reverting to the ncspot Extended Quota Client ID for Web API tokens, making ZeroConf pairing the required playback-credential step again (two-step auth), reverting the 65-05-session /me workarounds at the source, reorganizing the Settings page into clear Onboarding/Account/Global/Diagnostics sections, and updating the Auth Health dashboard to show Web API token and playback credential status separately.
+**Requirements**: GH #147
+**Depends on:** Phase 65 (plans 65-01..65-05)
+**Plans:** 3 plans
+
+Plans:
+
+- [ ] 66-01-PLAN.md — Auth revert: ncspot Extended Quota ID as PKCE default, zero derivation from account tokens, 65-05 workaround revert, TokenManager fallback, test gates
+- [ ] 66-02-PLAN.md — Settings UI reorganization (4-step onboarding, Account/Global/Diagnostics sections, always-visible pairing, collapsed Custom App) + Auth Health playback indicators
+- [ ] 66-03-PLAN.md — Strings: two-step auth messaging, new section/guide/source keys, obsolete key removal (11 languages)
 
 ---
 *Roadmap created: 2026-05-26*
-*Last updated: 2026-08-12 — Phase 65 added (Login5 outage fix)*
+*Last updated: 2026-08-15 — Phase 66 added (429 revert + Settings reorg); 65-06..08 cancelled per 65-05 STOP gate*
