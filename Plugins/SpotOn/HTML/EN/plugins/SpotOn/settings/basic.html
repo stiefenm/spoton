@@ -8,14 +8,14 @@
 		<p style="margin:0 0 4px 0"><strong>1. [% 'PLUGIN_SPOTON_SETUP_PKCE_TITLE' | string %]</strong></p>
 		<p style="margin:0 0 12px 0">[% 'PLUGIN_SPOTON_SETUP_PKCE_DESC' | string %]</p>
 
-		<p style="margin:0 0 4px 0"><strong>2. [% 'PLUGIN_SPOTON_SETUP_BROWSE_TITLE' | string %]</strong></p>
-		<p style="margin:0 0 12px 0">[% 'PLUGIN_SPOTON_SETUP_BROWSE_DESC' | string %]</p>
-
-		<p style="margin:0 0 4px 0"><strong>3. [% 'PLUGIN_SPOTON_SETUP_PLAYBACK_TITLE' | string %]</strong></p>
+		<p style="margin:0 0 4px 0"><strong>2. [% 'PLUGIN_SPOTON_SETUP_PLAYBACK_TITLE' | string %]</strong></p>
 		<p style="margin:0 0 12px 0">[% 'PLUGIN_SPOTON_SETUP_PLAYBACK_DESC' | string %]</p>
 
-		<p style="margin:0 0 4px 0"><strong>4. [% 'PLUGIN_SPOTON_SETUP_DEVAPP_TITLE' | string %]</strong></p>
-		<p style="margin:0; font-size:0.9em">[% 'PLUGIN_SPOTON_SETUP_DEVAPP_DESC' | string %]</p>
+		<p style="margin:0 0 4px 0"><strong>3. [% 'PLUGIN_SPOTON_SETUP_SPDC_TITLE' | string %]</strong></p>
+		<p style="margin:0 0 12px 0">[% 'PLUGIN_SPOTON_SETUP_SPDC_DESC' | string %]</p>
+
+		<p style="margin:0 0 4px 0"><strong>4. [% 'PLUGIN_SPOTON_SETUP_PATHFINDER_TITLE' | string %]</strong></p>
+		<p style="margin:0; font-size:0.9em">[% 'PLUGIN_SPOTON_SETUP_PATHFINDER_DESC' | string %]</p>
 		<hr style="margin:12px 0; border:0; border-top:1px solid rgba(128,128,128,0.2)"/>
 		<p style="margin:0; font-size:0.85em; opacity:0.7">
 			[% 'PLUGIN_SPOTON_SETUP_TROUBLESHOOT_HINT' | string %]
@@ -41,17 +41,10 @@
 	<div style="background:rgba(255,165,0,0.08); border:1px solid orange; padding:12px 16px; margin-bottom:20px; border-radius:4px">
 		<strong style="color:orange">[% 'PLUGIN_SPOTON_PLAYER_AUTH_BANNER' | string %]</strong>
 		<p style="margin:8px 0 0 0">
-			<button type="button" class="submit" onclick="spotonPkceStart()">
-				[% 'PLUGIN_SPOTON_PKCE_CONNECT_BTN' | string %]
-			</button>
-		</p>
-		[% IF customClientId %]
-		<p style="margin:8px 0 0 0; font-size:0.9em">
-			<a href="#spoton-player-auth">
+			<a href="#spoton-player-auth" style="font-weight:bold">
 				[% 'PLUGIN_SPOTON_PLAYER_AUTH_TITLE' | string %] &rarr;
 			</a>
 		</p>
-		[% END %]
 	</div>
 	[% END %]
 
@@ -72,66 +65,7 @@
 	</div>
 
 	<hr style="margin:16px 0; border:0; border-top:1px solid rgba(128,128,128,0.25)"/>
-	<h2>[% 'PLUGIN_SPOTON_SETTINGS_GLOBAL_SECTION' | string %]</h2>
-
-	[% WRAPPER setting title="PLUGIN_SPOTON_BINARY_STATUS" desc="" %]
-		[% IF binaryPath %]
-			<p>[% binaryPath | html %] (v[% binaryVersion | html %])</p>
-		[% ELSE %]
-			<div style="color: red">[% 'PLUGIN_SPOTON_BINARY_MISSING' | string %]</div>
-			[% IF isMac %]
-			<div style="color: orange; margin-top:8px">
-				[% 'PLUGIN_SPOTON_GATEKEEPER_HINT' | string %]
-			</div>
-			[% END %]
-		[% END %]
-	[% END %]
-
-	[% WRAPPER setting title="PLUGIN_SPOTON_BITRATE" desc="" %]
-		<select class="stdedit" name="pref_bitrate" id="pref_bitrate">
-			<option value="320" [% IF prefs.pref_bitrate == 320 %]selected[% END %]>320 kbps</option>
-			<option value="160" [% IF prefs.pref_bitrate == 160 %]selected[% END %]>160 kbps</option>
-			<option value="96"  [% IF prefs.pref_bitrate == 96  %]selected[% END %]>96 kbps</option>
-		</select>
-	[% END %]
-
-	[% WRAPPER setting title="PLUGIN_SPOTON_STREAMING_MODE_GLOBAL" desc="PLUGIN_SPOTON_STREAMING_MODE_GLOBAL_DESC" %]
-		<select class="stdedit" name="pref_streamingMode" id="pref_streamingMode">
-			<option value="direct" [% IF globalStreamingMode == 'direct' %]selected[% END %]>[% 'PLUGIN_SPOTON_STREAMING_MODE_DIRECT' | string %]</option>
-			<option value="proxy"  [% IF globalStreamingMode == 'proxy'  %]selected[% END %]>[% 'PLUGIN_SPOTON_STREAMING_MODE_PROXY'  | string %]</option>
-		</select>
-	[% END %]
-
-	[% WRAPPER setting title="PLUGIN_SPOTON_NORMALIZATION" desc="PLUGIN_SPOTON_NORMALIZATION_DESC" %]
-		<input type="checkbox" class="stdedit" name="pref_normalization" id="pref_normalization"
-			value="1" [% IF prefs.pref_normalization %]checked[% END %]/>
-		<label for="pref_normalization">[% 'PLUGIN_SPOTON_NORMALIZATION_LABEL' | string %]</label>
-	[% END %]
-
-	[% IF customClientId %]
-	[% WRAPPER setting title="PLUGIN_SPOTON_CLIENT_ID_SETTINGS" desc="PLUGIN_SPOTON_CLIENT_ID_DESC" %]
-		[% IF quotaState == 'devmode' %]
-		<div style="color: orange; margin-bottom:10px">
-			[% 'PLUGIN_SPOTON_DEVMODE_QUOTA_WARNING' | string %]
-		</div>
-		[% END %]
-
-		<input type="text" class="stdedit" name="pref_clientId" id="pref_clientId"
-		       value="[% customClientId | html %]"
-		       placeholder="[% 'PLUGIN_SPOTON_CLIENT_ID_PLACEHOLDER' | string %]"/>
-
-		<details style="margin-top:10px">
-			<summary style="cursor:pointer">[% 'PLUGIN_SPOTON_CLIENT_ID_WIZARD_TITLE' | string %]</summary>
-			<p style="margin:8px 0 4px 0; font-size:0.9em; opacity:0.85">[% 'PLUGIN_SPOTON_SETUP_DEVAPP_DESC' | string %]</p>
-			<p style="margin:0; font-size:0.85em">
-				<code style="background:rgba(128,128,128,0.1); padding:2px 6px; border-radius:3px">[% redirectUri | html %]</code>
-			</p>
-		</details>
-		<p style="margin:8px 0 0 0; font-size:0.85em; opacity:0.7">
-			<a href="#" onclick="document.getElementById('pref_clientId').value=''; return false;">[% 'PLUGIN_SPOTON_CUSTOM_APP_REMOVE' | string %]</a>
-		</p>
-	[% END %]
-	[% END %]
+	<h2>[% 'PLUGIN_SPOTON_SETTINGS_ACCOUNT_SECTION' | string %]</h2>
 
 	[% WRAPPER setting title="PLUGIN_SPOTON_PKCE_AUTH" desc="PLUGIN_SPOTON_PKCE_AUTH_DESC" %]
 		<p>
@@ -170,7 +104,6 @@
 		[% END %]
 	[% END %]
 
-	[% IF customClientId OR playbackAuthState == 'required' %]
 	<div id="spoton-player-auth"></div>
 	[% WRAPPER setting title="PLUGIN_SPOTON_PLAYER_AUTH_TITLE" desc="PLUGIN_SPOTON_PLAYER_AUTH_DESC" %]
 		<div style="margin-bottom:10px; font-size:0.9em">
@@ -178,6 +111,11 @@
 			<span style="color: orange">&#9679; [% 'PLUGIN_SPOTON_PLAYER_AUTH_STATUS_REQUIRED' | string %]</span>
 			[% ELSE %]
 			<span style="color: green">&#9679; [% 'PLUGIN_SPOTON_PLAYER_AUTH_STATUS_OK' | string %]</span>
+			[% IF playbackCredSource == 'zeroconf' %]
+			<span style="opacity:0.7; margin-left:6px">([% 'PLUGIN_SPOTON_PLAYER_AUTH_SOURCE_ZEROCONF' | string %])</span>
+			[% ELSIF playbackCredSource == 'keymaster' %]
+			<span style="opacity:0.7; margin-left:6px">([% 'PLUGIN_SPOTON_PLAYER_AUTH_SOURCE_BROWSER' | string %])</span>
+			[% END %]
 			[% END %]
 		</div>
 
@@ -226,10 +164,6 @@
 			<div id="player-auth-browser-status" style="display:none; margin-top:10px"></div>
 		</details>
 	[% END %]
-	[% END %]
-
-	<hr style="margin:16px 0; border:0; border-top:1px solid rgba(128,128,128,0.25)"/>
-	<h2>[% 'PLUGIN_SPOTON_MADE_FOR_YOU_SECTION' | string %]</h2>
 
 	[% WRAPPER setting title="PLUGIN_SPOTON_SP_DC" desc="PLUGIN_SPOTON_SP_DC_DESC" %]
 		[% IF madeForYouState == 'expired' %]
@@ -273,6 +207,37 @@
 		</details>
 	[% END %]
 
+	[% WRAPPER setting title="PLUGIN_SPOTON_CLIENT_ID_SETTINGS" desc="PLUGIN_SPOTON_CLIENT_ID_DESC" %]
+		[% IF clientIdMode == 'bundled' %]
+		<p style="margin:0 0 10px 0; font-size:0.9em; opacity:0.8">[% 'PLUGIN_SPOTON_DEFAULT_AUTH_INFO' | string %]</p>
+		[% END %]
+
+		<details[% IF customClientId %] open[% END %]>
+			<summary style="cursor:pointer">[% 'PLUGIN_SPOTON_CUSTOM_APP_TITLE' | string %]</summary>
+
+			[% IF quotaState == 'devmode' %]
+			<div style="color: orange; margin:10px 0">
+				[% 'PLUGIN_SPOTON_DEVMODE_QUOTA_WARNING' | string %]
+			</div>
+			[% END %]
+
+			<input type="text" class="stdedit" name="pref_clientId" id="pref_clientId"
+			       value="[% customClientId | html %]"
+			       placeholder="[% 'PLUGIN_SPOTON_CLIENT_ID_PLACEHOLDER' | string %]" style="margin-top:10px"/>
+
+			<details style="margin-top:10px">
+				<summary style="cursor:pointer">[% 'PLUGIN_SPOTON_CLIENT_ID_WIZARD_TITLE' | string %]</summary>
+				<p style="margin:8px 0 4px 0; font-size:0.9em; opacity:0.85">[% 'PLUGIN_SPOTON_SETUP_DEVAPP_DESC' | string %]</p>
+				<p style="margin:0; font-size:0.85em">
+					<code style="background:rgba(128,128,128,0.1); padding:2px 6px; border-radius:3px">[% redirectUri | html %]</code>
+				</p>
+			</details>
+			<p style="margin:8px 0 0 0; font-size:0.85em; opacity:0.7">
+				<a href="#" onclick="document.getElementById('pref_clientId').value=''; return false;">[% 'PLUGIN_SPOTON_CUSTOM_APP_REMOVE' | string %]</a>
+			</p>
+		</details>
+	[% END %]
+
 	[% WRAPPER setting title="PLUGIN_SPOTON_ACCOUNT_SETTINGS" desc="" %]
 		[% IF accounts.keys.size > 0 %]
 			<table style="width:100%">
@@ -305,6 +270,43 @@
 		[% ELSE %]
 			<p>[% 'PLUGIN_SPOTON_ACCOUNT_NONE' | string %]</p>
 		[% END %]
+	[% END %]
+
+	<hr style="margin:16px 0; border:0; border-top:1px solid rgba(128,128,128,0.25)"/>
+	<h2>[% 'PLUGIN_SPOTON_SETTINGS_GLOBAL_SECTION' | string %]</h2>
+
+	[% WRAPPER setting title="PLUGIN_SPOTON_BINARY_STATUS" desc="" %]
+		[% IF binaryPath %]
+			<p>[% binaryPath | html %] (v[% binaryVersion | html %])</p>
+		[% ELSE %]
+			<div style="color: red">[% 'PLUGIN_SPOTON_BINARY_MISSING' | string %]</div>
+			[% IF isMac %]
+			<div style="color: orange; margin-top:8px">
+				[% 'PLUGIN_SPOTON_GATEKEEPER_HINT' | string %]
+			</div>
+			[% END %]
+		[% END %]
+	[% END %]
+
+	[% WRAPPER setting title="PLUGIN_SPOTON_BITRATE" desc="" %]
+		<select class="stdedit" name="pref_bitrate" id="pref_bitrate">
+			<option value="320" [% IF prefs.pref_bitrate == 320 %]selected[% END %]>320 kbps</option>
+			<option value="160" [% IF prefs.pref_bitrate == 160 %]selected[% END %]>160 kbps</option>
+			<option value="96"  [% IF prefs.pref_bitrate == 96  %]selected[% END %]>96 kbps</option>
+		</select>
+	[% END %]
+
+	[% WRAPPER setting title="PLUGIN_SPOTON_STREAMING_MODE_GLOBAL" desc="PLUGIN_SPOTON_STREAMING_MODE_GLOBAL_DESC" %]
+		<select class="stdedit" name="pref_streamingMode" id="pref_streamingMode">
+			<option value="direct" [% IF globalStreamingMode == 'direct' %]selected[% END %]>[% 'PLUGIN_SPOTON_STREAMING_MODE_DIRECT' | string %]</option>
+			<option value="proxy"  [% IF globalStreamingMode == 'proxy'  %]selected[% END %]>[% 'PLUGIN_SPOTON_STREAMING_MODE_PROXY'  | string %]</option>
+		</select>
+	[% END %]
+
+	[% WRAPPER setting title="PLUGIN_SPOTON_NORMALIZATION" desc="PLUGIN_SPOTON_NORMALIZATION_DESC" %]
+		<input type="checkbox" class="stdedit" name="pref_normalization" id="pref_normalization"
+			value="1" [% IF prefs.pref_normalization %]checked[% END %]/>
+		<label for="pref_normalization">[% 'PLUGIN_SPOTON_NORMALIZATION_LABEL' | string %]</label>
 	[% END %]
 
 	<hr style="margin:16px 0; border:0; border-top:1px solid rgba(128,128,128,0.25)"/>
