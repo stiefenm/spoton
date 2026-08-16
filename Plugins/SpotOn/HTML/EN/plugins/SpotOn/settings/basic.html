@@ -104,6 +104,40 @@
 		[% END %]
 	[% END %]
 
+	[% WRAPPER setting title="PLUGIN_SPOTON_ACCOUNT_SETTINGS" desc="" %]
+		[% IF accounts.keys.size > 0 %]
+			<table style="width:100%">
+			[% FOREACH id IN accounts.keys %]
+				<tr>
+					<td>[% accounts.$id.displayName | html %]</td>
+					<td>
+						[% IF id == activeAccount %]
+							<strong>[% 'PLUGIN_SPOTON_ACCOUNT_ACTIVE' | string %]</strong>
+						[% ELSE %]
+							<input type="hidden" name="switchAccount" value="[% id | html %]" disabled/>
+							<input type="submit" value="[% 'PLUGIN_SPOTON_ACCOUNT_SWITCH' | string %]"
+								onclick="this.previousElementSibling.disabled=false"/>
+						[% END %]
+					</td>
+					<td>
+						<input type="hidden" name="removeAccount" value="[% id | html %]" disabled/>
+						<input type="submit" value="[% 'PLUGIN_SPOTON_ACCOUNT_REMOVE' | string %]"
+							onclick="return confirm('[% 'PLUGIN_SPOTON_ACCOUNT_REMOVE_CONFIRM' | string %]') && (this.previousElementSibling.disabled=false,true)"/>
+					</td>
+				</tr>
+			[% END %]
+			</table>
+
+			<p>
+				<button type="button" class="submit" onclick="spotonPkceStart()">
+					[% 'PLUGIN_SPOTON_ADD_ANOTHER' | string %]
+				</button>
+			</p>
+		[% ELSE %]
+			<p>[% 'PLUGIN_SPOTON_ACCOUNT_NONE' | string %]</p>
+		[% END %]
+	[% END %]
+
 	<div id="spoton-player-auth"></div>
 	[% WRAPPER setting title="PLUGIN_SPOTON_PLAYER_AUTH_TITLE" desc="PLUGIN_SPOTON_PLAYER_AUTH_DESC" %]
 		<div style="margin-bottom:10px; font-size:0.9em">
@@ -236,40 +270,6 @@
 				<a href="#" onclick="document.getElementById('pref_clientId').value=''; return false;">[% 'PLUGIN_SPOTON_CUSTOM_APP_REMOVE' | string %]</a>
 			</p>
 		</details>
-	[% END %]
-
-	[% WRAPPER setting title="PLUGIN_SPOTON_ACCOUNT_SETTINGS" desc="" %]
-		[% IF accounts.keys.size > 0 %]
-			<table style="width:100%">
-			[% FOREACH id IN accounts.keys %]
-				<tr>
-					<td>[% accounts.$id.displayName | html %]</td>
-					<td>
-						[% IF id == activeAccount %]
-							<strong>[% 'PLUGIN_SPOTON_ACCOUNT_ACTIVE' | string %]</strong>
-						[% ELSE %]
-							<input type="hidden" name="switchAccount" value="[% id | html %]" disabled/>
-							<input type="submit" value="[% 'PLUGIN_SPOTON_ACCOUNT_SWITCH' | string %]"
-								onclick="this.previousElementSibling.disabled=false"/>
-						[% END %]
-					</td>
-					<td>
-						<input type="hidden" name="removeAccount" value="[% id | html %]" disabled/>
-						<input type="submit" value="[% 'PLUGIN_SPOTON_ACCOUNT_REMOVE' | string %]"
-							onclick="return confirm('[% 'PLUGIN_SPOTON_ACCOUNT_REMOVE_CONFIRM' | string %]') && (this.previousElementSibling.disabled=false,true)"/>
-					</td>
-				</tr>
-			[% END %]
-			</table>
-
-			<p>
-				<button type="button" class="submit" onclick="spotonPkceStart()">
-					[% 'PLUGIN_SPOTON_ADD_ANOTHER' | string %]
-				</button>
-			</p>
-		[% ELSE %]
-			<p>[% 'PLUGIN_SPOTON_ACCOUNT_NONE' | string %]</p>
-		[% END %]
 	[% END %]
 
 	<hr style="margin:16px 0; border:0; border-top:1px solid rgba(128,128,128,0.25)"/>
