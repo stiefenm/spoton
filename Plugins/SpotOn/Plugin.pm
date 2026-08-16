@@ -174,7 +174,7 @@ sub initPlugin {
                 }
             });
         };
-        $probeLimits->(90);
+        $probeLimits->(15);
     }
 
     $VERSION = $class->_pluginDataFor('version');

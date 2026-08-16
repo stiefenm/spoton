@@ -117,9 +117,13 @@ sub limitsProbed { return $_limitsProbed }
 sub probeEndpointLimits {
     my ($class, $accountId, $doneCb, %opts) = @_;
     return $doneCb->() if $_limitsProbed && !$opts{force};
-    # Skip probe while rate-limited — probe calls would 429 and extend the window
+    # Skip probe while rate-limited — probe calls would 429 and extend the window.
+    # Retry once after 30s so the probe eventually runs.
     if ($cache->get('spoton_rate_limit') && !$opts{force}) {
-        main::INFOLOG && $log->info("Client: limit probe deferred (rate-limited), keeping defaults");
+        main::INFOLOG && $log->info("Client: limit probe deferred (rate-limited), retry in 30s");
+        Slim::Utils::Timers::setTimer(undef, Time::HiRes::time() + 30, sub {
+            $class->probeEndpointLimits($accountId, sub {}) unless $_limitsProbed;
+        });
         return $doneCb->();
     }
     # C1: clear blocked endpoints on forced re-probe so healed endpoints are re-discovered
