@@ -29,13 +29,15 @@ SpotOn is not a fork or a competitor. It is a from-scratch rewrite designed arou
 - **Made For You** — Daily Mixes, Discover Weekly, Daylist, Release Radar with locale-aware sorting
 - **Don't Stop The Music** — Automatic queue extension with multi-artist search, diversity pool from your top tracks, and anti-bubble deduplication
 - **Material Skin Integration** — Menu icons for all navigation entries, fallback artwork for grid/cover-view compatibility, and optional home-screen rows (Recently Played, Top Tracks, Made For You, Main Menu, Playlists)
+- **Auth Health Dashboard** — Status page shows Web API token and playback credentials separately with credential source and remediation guidance
 - **Multi-Account** — Switch between Spotify accounts without re-authentication
 
 ## Requirements
 
 - LMS 8.0+ (LMS 9.x recommended)
 - Spotify Premium account
-- Spotify Developer App — **recommended**. SpotOn authenticates via PKCE OAuth (browser-based login). Creating your own Client ID takes a couple of minutes at [developer.spotify.com](https://developer.spotify.com/dashboard) — the setup wizard in **SpotOn Settings** walks you through it, including the redirect URI to register. If you don't want to create a Developer App, SpotOn ships a bundled fallback Client ID — just leave the Client ID field empty in Settings and authenticate via the copy-paste flow.
+- **Two-step setup:** (1) Connect your Spotify account via browser login (PKCE OAuth), (2) Authorize Playback by selecting SpotOn in your Spotify app (like connecting to a speaker). Both steps are guided in SpotOn Settings.
+- Spotify Developer App — **optional**. SpotOn ships a bundled Client ID that works out of the box. If you prefer your own, the setup wizard in **SpotOn Settings** walks you through creating one at [developer.spotify.com](https://developer.spotify.com/dashboard).
 - Supported platforms: x86_64 Linux, i386 Linux, aarch64 Linux (Pi 4+), armhf Linux (Pi 2/3), arm Linux, x86_64 Windows, macOS (Universal Binary: Intel + Apple Silicon). On macOS, if you download the binary manually (not via LMS plugin manager), you may need to run `xattr -d com.apple.quarantine /path/to/spoton` in Terminal before first use.
 
 ## Installation
