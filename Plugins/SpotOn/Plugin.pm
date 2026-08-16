@@ -288,6 +288,10 @@ sub shutdownPlugin {
     }
     %_pauseRequestedAt = ();
 
+    if ($INC{'Plugins/SpotOn/API/Credentials.pm'}) {
+        Plugins::SpotOn::API::Credentials->cancelPairing();
+    }
+
     if ($INC{'Plugins/SpotOn/Unified/DaemonManager.pm'}) {
         require Plugins::SpotOn::Unified::DaemonManager;
         Plugins::SpotOn::Unified::DaemonManager->shutdown();

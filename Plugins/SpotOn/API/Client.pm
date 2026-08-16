@@ -83,6 +83,7 @@ my %_detectedLimits = (
 my %_blockedEndpoints;
 my $_limitsProbed = 0;
 my $_limitsLastProbed = 0;
+my $_probeInflight = 0;
 use constant REPROBE_COOLDOWN_S => 3600 * 6;
 
 # ============================================================
@@ -102,7 +103,9 @@ sub reset {
     );
     %_blockedEndpoints = ();
     $_limitsProbed      = 0;
+    $_probeInflight     = 0;
     $_limitsLastProbed  = 0;
+    Slim::Utils::Timers::killTimers(undef, \&_probeRetry);
     main::INFOLOG && $log->info("Client: counters and limit detection reset");
 }
 
@@ -114,20 +117,26 @@ sub getLimit {
 
 sub limitsProbed { return $_limitsProbed }
 
+sub _probeRetry {
+    my ($class, $accountId) = @_;
+    $class->probeEndpointLimits($accountId, sub {}) unless $_limitsProbed;
+}
+
 sub probeEndpointLimits {
     my ($class, $accountId, $doneCb, %opts) = @_;
     return $doneCb->() if $_limitsProbed && !$opts{force};
+    return $doneCb->() if $_probeInflight && !$opts{force};
     # Skip probe while rate-limited — probe calls would 429 and extend the window.
-    # Retry once after 30s so the probe eventually runs.
+    # Retry after 30s so the probe eventually runs.
     if ($cache->get('spoton_rate_limit') && !$opts{force}) {
         main::INFOLOG && $log->info("Client: limit probe deferred (rate-limited), retry in 30s");
-        Slim::Utils::Timers::setTimer(undef, Time::HiRes::time() + 30, sub {
-            $class->probeEndpointLimits($accountId, sub {}) unless $_limitsProbed;
-        });
+        Slim::Utils::Timers::killTimers(undef, \&_probeRetry);
+        Slim::Utils::Timers::setTimer(undef, Time::HiRes::time() + 30, \&_probeRetry, $class, $accountId);
         return $doneCb->();
     }
     # C1: clear blocked endpoints on forced re-probe so healed endpoints are re-discovered
     %_blockedEndpoints = () if $opts{force};
+    $_probeInflight = 1;
     $_limitsProbed = 0;
 
     my @classes = (
@@ -148,6 +157,7 @@ sub probeEndpointLimits {
     $probeNext = sub {
         if ($probeIdx >= scalar @classes) {
             $_limitsProbed = 1;
+            $_probeInflight = 0;
             $_limitsLastProbed = time();
             main::INFOLOG && $log->info(sprintf(
                 "Client: API limits detected — search=%d library=%d artist_albums=%d album_tracks=%d playlist_items=%d",
@@ -210,6 +220,7 @@ sub probeEndpointLimits {
                 main::INFOLOG && $log->info("Client: limit probe aborted (401 unauthorized), keeping defaults for remaining classes");
                 # C2: restore probed state so lazy re-probe remains functional
                 $_limitsProbed = 1;
+                $_probeInflight = 0;
                 undef $probeNext;
                 $doneCb->();
                 return;

@@ -57,7 +57,7 @@ sub new {
     # default identity and the playerauth Keymaster fallback whitelist only
     # this path). Route it to the PKCE callback handler.
     Slim::Web::Pages->addRawFunction(
-        'login',
+        qr{^login$},
         \&_pkceCallbackHandler
     );
 
@@ -854,6 +854,7 @@ sub _playerAuthBrowserManualHandler {
         }
 
         require Plugins::SpotOn::API::Credentials;
+        Plugins::SpotOn::API::Credentials->clearRateLimit($accountId);
         Plugins::SpotOn::API::Credentials->deriveCredentialsFromToken(
             $accountId, $tokenData->{access_token}, sub {
                 my ($ok, $reason) = @_;

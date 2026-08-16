@@ -2702,19 +2702,6 @@ PLUGIN_SPOTON_PKCE_POPUP_NOTE
 	PL	Uwaga: przeglądarka musi zezwalać na wyskakujące okna dla tej strony. Jeśli nic się nie dzieje, sprawdź blokowanie wyskakujących okien.
 	SV	Observera: din webbläsare måste tillåta popup-fönster för denna sida. Om inget händer, kontrollera din popup-blockerare.
 
-PLUGIN_SPOTON_CONNECT_DERIVE_FAILED
-	CS	Účet byl připojen, ale Spotify Connect zatím není k dispozici — zkuste to prosím znovu na stránce nastavení SpotOnu.
-	DA	Kontoen blev tilsluttet, men Spotify Connect er endnu ikke tilgængeligt — prøv venligst igen fra SpotOn-indstillingerne.
-	DE	Konto verbunden, aber Spotify Connect ist noch nicht verfügbar — bitte über die SpotOn-Einstellungen erneut versuchen.
-	EN	Account connected, but Spotify Connect is not available yet — please retry from the SpotOn settings page.
-	ES	Cuenta conectada, pero Spotify Connect aún no está disponible — inténtalo de nuevo desde la página de configuración de SpotOn.
-	FR	Compte connecté, mais Spotify Connect n'est pas encore disponible — veuillez réessayer depuis la page des paramètres de SpotOn.
-	IT	Account connesso, ma Spotify Connect non è ancora disponibile — riprova dalla pagina delle impostazioni di SpotOn.
-	NL	Account verbonden, maar Spotify Connect is nog niet beschikbaar — probeer het opnieuw via de SpotOn-instellingenpagina.
-	NO	Kontoen ble koblet til, men Spotify Connect er ikke tilgjengelig ennå — prøv igjen fra SpotOn-innstillingene.
-	PL	Konto zostało połączone, ale Spotify Connect nie jest jeszcze dostępne — spróbuj ponownie na stronie ustawień SpotOn.
-	SV	Kontot anslöts, men Spotify Connect är inte tillgängligt än — försök igen från SpotOns inställningssida.
-
 PLUGIN_SPOTON_PKCE_MANUAL_TITLE
 	CS	Ruční autorizace
 	DA	Manuel godkendelse

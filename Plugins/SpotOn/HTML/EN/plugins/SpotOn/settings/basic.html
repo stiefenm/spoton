@@ -89,7 +89,7 @@
 			<p style="margin:0 0 4px 0"><strong>[% 'PLUGIN_SPOTON_PKCE_MANUAL_TITLE' | string %]</strong></p>
 			<p style="margin:0 0 8px 0; font-size:0.9em">[% 'PLUGIN_SPOTON_PKCE_MANUAL_DESC' | string %]</p>
 			<input type="text" id="pkce-manual-url" class="stdedit" style="width:80%"
-				placeholder="http://127.0.0.1:9000/plugins/SpotOn/settings/pkce/callback?code=...&amp;state=..."/>
+				placeholder="http://127.0.0.1:9005/login?code=...&amp;state=..."/>
 			<button type="button" class="submit"
 				id="pkceManualBtn" onclick="spotonPkceManual()"
 				data-error-text="[% 'PLUGIN_SPOTON_PKCE_ERROR' | string | html %]">
@@ -472,6 +472,7 @@
 			var data;
 			try { data = JSON.parse(xhr.responseText); } catch(e) { data = null; }
 			if (!data || data.state === 'waiting') { return; }
+			if (data.state === 'idle') { spotonPlayerAuthResetUi(); return; }
 			if (data.state === 'success') {
 				spotonPlayerAuthResetUi();
 				statusEl.textContent = startBtn.dataset.successText;
