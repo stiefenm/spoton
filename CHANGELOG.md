@@ -5,6 +5,31 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.5.0] - 2026-08-16
+
+### Added
+- **Authorize Playback (ZeroConf pairing)** — a new "Authorize Playback" section in Settings lets you pair SpotOn with the Spotify app via mDNS discovery. Start pairing, then select the shown device in your Spotify app. This replaces the previous auto-derivation approach and is required once per account for playback and Spotify Connect. ([#147](https://github.com/stiefenm/spoton/issues/147))
+- **Browser fallback for playback authorization** — for networks where the Spotify app can't discover SpotOn via mDNS (Docker, VLANs), a browser-based authorization flow is available as a nested option inside the Authorize Playback section.
+- **Auth Health dashboard** — the Status page now shows "Web API Token" and "Playback Credentials" as separate rows with credential source (Spotify app pairing / browser authorization) and clear remediation guidance when either is missing.
+- **Provenance migration** — existing accounts from pre-3.5 are automatically tagged with their credential source on first startup; no re-authorization needed.
+- **`--get-token` mode restored in librespot binary** — the capability manifest now includes `get_token: true` for integrations that need Web API tokens from librespot.
+- **OPML playback-auth hint** — when playback credentials are missing, the browse menu shows a non-blocking hint directing the user to SpotOn Settings instead of failing silently.
+
+### Changed
+- **Settings page reorganized into three sections** — Account (authorization, pairing, sp_dc, Pathfinder, Custom App), Global Settings, Diagnostics. The Custom Developer App control is always visible as a collapsed details element (no longer hidden behind a preference). ([#147](https://github.com/stiefenm/spoton/issues/147))
+- **Two-step authorization model** — step 1 connects your Spotify account (Web API), step 2 authorizes playback via pairing. All UI text across 11 languages reflects this model. ([#147](https://github.com/stiefenm/spoton/issues/147))
+- **Default PKCE identity switched to ncspot Extended Quota Client ID** — the previous default shared a global rate-limit bucket with all librespot and Spotify Desktop users, causing 429 errors. The new default has its own dedicated bucket. ([#147](https://github.com/stiefenm/spoton/issues/147))
+- **Onboarding guide updated** — four steps: Connect Account, Authorize Playback, optional sp_dc cookie, optional Pathfinder hash. The Developer App step was removed (not needed for default mode).
+
+### Fixed
+- **429 rate limiting on /me and Web API calls** — eliminated by switching from the shared Keymaster Client ID to the ncspot Extended Quota ID with its own rate-limit bucket. ([#147](https://github.com/stiefenm/spoton/issues/147))
+- **Credential crash-loop auto-derivation removed** — daemon credential crashes now escalate to a playback-auth flag with exponential backoff instead of silently re-deriving credentials in a loop. ([#147](https://github.com/stiefenm/spoton/issues/147))
+- **Limit probe no longer competes with user requests after 429** — the endpoint limit detection now checks for active rate-limit state before firing and retries after 30s, preventing probe calls from extending a 429 window.
+- **Pairing status poll no longer runs forever on server reset** — the polling JS now handles the `idle` state as a terminal condition, resetting the UI instead of polling indefinitely.
+- **Browser fallback 30-minute cooldown cleared on fresh authorization** — a new OAuth round-trip now resets the derive rate limiter so users aren't stuck waiting after transient failures.
+- **`/login` raw handler anchored** — the LMS raw function handler now uses an anchored regex (`qr{^login$}`) preventing it from hijacking unrelated URLs containing "login" in their path.
+- **Pairing cleanup on plugin shutdown** — `cancelPairing()` is now called during `shutdownPlugin` to stop the mDNS helper and polling timer.
+
 ## [3.4.0] - 2026-08-08
 
 ### Added
