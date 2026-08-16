@@ -396,13 +396,13 @@ Plans:
 **Goal:** Eliminate the severe 429 rate limiting introduced by 65-04's Keymaster PKCE default (shared global rate-limit bucket) by reverting to the ncspot Extended Quota Client ID for Web API tokens, making ZeroConf pairing the required playback-credential step again (two-step auth), reverting the 65-05-session /me workarounds at the source, reorganizing the Settings page into clear Onboarding/Account/Global/Diagnostics sections, and updating the Auth Health dashboard to show Web API token and playback credential status separately.
 **Requirements**: GH #147
 **Depends on:** Phase 65 (plans 65-01..65-05)
-**Plans:** 3 plans
+**Plans:** 3/3 plans complete
 
 Plans:
 
-- [ ] 66-01-PLAN.md — Auth revert: ncspot Extended Quota ID as PKCE default, zero derivation from account tokens, 65-05 workaround revert, TokenManager fallback, test gates
-- [ ] 66-02-PLAN.md — Settings UI reorganization (4-step onboarding, Account/Global/Diagnostics sections, always-visible pairing, collapsed Custom App) + Auth Health playback indicators
-- [ ] 66-03-PLAN.md — Strings: two-step auth messaging, new section/guide/source keys, obsolete key removal (11 languages)
+- [x] 66-01-PLAN.md — Auth revert: ncspot Extended Quota ID as PKCE default, zero derivation from account tokens, 65-05 workaround revert, TokenManager fallback, test gates
+- [x] 66-02-PLAN.md — Settings UI reorganization (4-step onboarding, Account/Global/Diagnostics sections, always-visible pairing, collapsed Custom App) + Auth Health playback indicators
+- [x] 66-03-PLAN.md — Strings: two-step auth messaging, new section/guide/source keys, obsolete key removal (11 languages)
 
 ---
 *Roadmap created: 2026-05-26*

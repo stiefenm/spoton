@@ -1,0 +1,34 @@
+{
+  "version": "1.0",
+  "timestamp": "2026-08-16T19:02:33.348Z",
+  "phase": "66",
+  "phase_name": "settings-auth-reorg",
+  "phase_dir": ".planning/phases/66-settings-auth-reorg",
+  "plan": null,
+  "task": null,
+  "total_tasks": null,
+  "status": "complete",
+  "completed_tasks": [
+    {"id": "66-01", "name": "Two-step auth revert — ncspot PKCE default, zero derivation", "status": "done", "commit": "8de1281, 5bb10d8"},
+    {"id": "66-02", "name": "Settings reorg — 3 sections, Auth Health, always-visible pairing", "status": "done", "commit": "f9c209e, 052febb"},
+    {"id": "66-03", "name": "i18n — 7 new + 7 reworded keys, 11 languages", "status": "done", "commit": "90e9f55, 0229bc9"},
+    {"id": "review", "name": "Fable-5 code review findings H2, M1-M3, L1-L2, L4", "status": "done", "commit": "496e53a"},
+    {"id": "probe-fix", "name": "Probe rate-limit guard with 30s retry", "status": "done", "commit": "7fd6eec"},
+    {"id": "release", "name": "v3.5.0 released — tag, CI, repo.xml, docs, forum, triage", "status": "done", "commit": "16097ec, 6d57657, f2da8f0"}
+  ],
+  "remaining_tasks": [],
+  "blockers": [],
+  "async_jobs": [],
+  "human_actions_pending": [
+    {"action": "Monitor #147 for user confirmation that v3.5.0 fixes the issue", "context": "waiting-user label set, comment posted", "blocking": false}
+  ],
+  "decisions": [
+    {"decision": "ncspot Extended Quota Client ID as PKCE default (D-01)", "rationale": "Keymaster ID shares global rate-limit bucket, causes 429s", "phase": "66"},
+    {"decision": "Zero derivation from account PKCE tokens (D-02)", "rationale": "login5 rejects PKCE-provenance credentials since Aug 10", "phase": "66"},
+    {"decision": "Probe delay stays at 15s, rate-limit guard is the fix", "rationale": "90s puts probe exactly where users search; guard prevents 429 competition", "phase": "66"},
+    {"decision": "Account Settings moved directly after Connect authorization", "rationale": "User feedback: account table belongs right after the PKCE connect step", "phase": "66"}
+  ],
+  "uncommitted_files": [".planning/ROADMAP.md"],
+  "next_action": "Check #147 for user confirmations. Next phase candidates: 58/59 (Connect bugfixes) or 62 (Browse Endpoints + Connect Queue).",
+  "context_notes": "Phase 66 complete, v3.5.0 released. Two-step auth model (PKCE + ZeroConf pairing) is the new architecture. Forum announcement posted. Triage done — 7 forum posts processed, #147 commented. Obsidian vault synced. All 963 tests pass."
+}
