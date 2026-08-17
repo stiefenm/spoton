@@ -1196,7 +1196,7 @@ dependencies = [
 [[package]]
 name = "librespot-audio"
 version = "0.8.0"
-source = "git+https://github.com/librespot-org/librespot?branch=dev#9c7d75615fc093bdcbdb29adbce3fed38c531852"
+source = "git+https://github.com/stiefenm/librespot?branch=fix%2Faudio-key-retry-and-clean-failure#279615baa3c5fad57733bfea95500264841ef390"
 dependencies = [
  "aes",
  "bytes",
@@ -1205,7 +1205,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
- "librespot-core",
+ "librespot-core 0.8.0 (git+https://github.com/stiefenm/librespot?branch=fix%2Faudio-key-retry-and-clean-failure)",
  "log",
  "tempfile",
  "thiserror 2.0.18",
@@ -1215,12 +1215,12 @@ dependencies = [
 [[package]]
 name = "librespot-connect"
 version = "0.8.0"
-source = "git+https://github.com/librespot-org/librespot?branch=dev#9c7d75615fc093bdcbdb29adbce3fed38c531852"
+source = "git+https://github.com/stiefenm/librespot?branch=fix%2Faudio-key-retry-and-clean-failure#279615baa3c5fad57733bfea95500264841ef390"
 dependencies = [
  "futures-util",
- "librespot-core",
+ "librespot-core 0.8.0 (git+https://github.com/stiefenm/librespot?branch=fix%2Faudio-key-retry-and-clean-failure)",
  "librespot-playback",
- "librespot-protocol",
+ "librespot-protocol 0.8.0 (git+https://github.com/stiefenm/librespot?branch=fix%2Faudio-key-retry-and-clean-failure)",
  "log",
  "protobuf",
  "rand 0.9.4",
@@ -1254,8 +1254,8 @@ dependencies = [
  "hyper-proxy2",
  "hyper-rustls 0.27.9",
  "hyper-util",
- "librespot-oauth",
- "librespot-protocol",
+ "librespot-oauth 0.8.0 (git+https://github.com/librespot-org/librespot?branch=dev)",
+ "librespot-protocol 0.8.0 (git+https://github.com/librespot-org/librespot?branch=dev)",
  "log",
  "nonzero_ext",
  "num-bigint",
@@ -1289,6 +1289,62 @@ dependencies = [
 ]
 
 [[package]]
+name = "librespot-core"
+version = "0.8.0"
+source = "git+https://github.com/stiefenm/librespot?branch=fix%2Faudio-key-retry-and-clean-failure#279615baa3c5fad57733bfea95500264841ef390"
+dependencies = [
+ "aes",
+ "base64",
+ "byteorder",
+ "bytes",
+ "data-encoding",
+ "flate2",
+ "form_urlencoded",
+ "futures-core",
+ "futures-util",
+ "governor",
+ "hmac",
+ "http",
+ "http-body-util",
+ "httparse",
+ "hyper",
+ "hyper-proxy2",
+ "hyper-rustls 0.27.9",
+ "hyper-util",
+ "librespot-oauth 0.8.0 (git+https://github.com/stiefenm/librespot?branch=fix%2Faudio-key-retry-and-clean-failure)",
+ "librespot-protocol 0.8.0 (git+https://github.com/stiefenm/librespot?branch=fix%2Faudio-key-retry-and-clean-failure)",
+ "log",
+ "nonzero_ext",
+ "num-bigint",
+ "num-derive",
+ "num-integer",
+ "num-traits",
+ "pbkdf2",
+ "pin-project-lite",
+ "priority-queue",
+ "protobuf",
+ "protobuf-json-mapping",
+ "quick-xml",
+ "rand 0.9.4",
+ "rand_distr",
+ "rsa",
+ "serde",
+ "serde_json",
+ "sha1",
+ "shannon",
+ "sysinfo",
+ "thiserror 2.0.18",
+ "time",
+ "tokio",
+ "tokio-stream",
+ "tokio-tungstenite",
+ "tokio-util",
+ "url",
+ "uuid",
+ "vergen-gitcl",
+]
+
+[[package]]
 name = "librespot-discovery"
 version = "0.8.0"
 dependencies = [
@@ -1304,7 +1360,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "libmdns",
- "librespot-core",
+ "librespot-core 0.8.0 (git+https://github.com/librespot-org/librespot?branch=dev)",
  "log",
  "rand 0.9.4",
  "serde_json",
@@ -1317,12 +1373,12 @@ dependencies = [
 [[package]]
 name = "librespot-metadata"
 version = "0.8.0"
-source = "git+https://github.com/librespot-org/librespot?branch=dev#9c7d75615fc093bdcbdb29adbce3fed38c531852"
+source = "git+https://github.com/stiefenm/librespot?branch=fix%2Faudio-key-retry-and-clean-failure#279615baa3c5fad57733bfea95500264841ef390"
 dependencies = [
  "async-trait",
  "bytes",
- "librespot-core",
- "librespot-protocol",
+ "librespot-core 0.8.0 (git+https://github.com/stiefenm/librespot?branch=fix%2Faudio-key-retry-and-clean-failure)",
+ "librespot-protocol 0.8.0 (git+https://github.com/stiefenm/librespot?branch=fix%2Faudio-key-retry-and-clean-failure)",
  "log",
  "protobuf",
  "serde",
@@ -1345,14 +1401,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "librespot-oauth"
+version = "0.8.0"
+source = "git+https://github.com/stiefenm/librespot?branch=fix%2Faudio-key-retry-and-clean-failure#279615baa3c5fad57733bfea95500264841ef390"
+dependencies = [
+ "log",
+ "oauth2",
+ "open",
+ "reqwest",
+ "thiserror 2.0.18",
+ "url",
+]
+
+[[package]]
 name = "librespot-playback"
 version = "0.8.0"
-source = "git+https://github.com/librespot-org/librespot?branch=dev#9c7d75615fc093bdcbdb29adbce3fed38c531852"
+source = "git+https://github.com/stiefenm/librespot?branch=fix%2Faudio-key-retry-and-clean-failure#279615baa3c5fad57733bfea95500264841ef390"
 dependencies = [
  "form_urlencoded",
  "futures-util",
  "librespot-audio",
- "librespot-core",
+ "librespot-core 0.8.0 (git+https://github.com/stiefenm/librespot?branch=fix%2Faudio-key-retry-and-clean-failure)",
  "librespot-metadata",
  "log",
  "ogg",
@@ -1370,6 +1439,15 @@ dependencies = [
 name = "librespot-protocol"
 version = "0.8.0"
 source = "git+https://github.com/librespot-org/librespot?branch=dev#9c7d75615fc093bdcbdb29adbce3fed38c531852"
+dependencies = [
+ "protobuf",
+ "protobuf-codegen",
+]
+
+[[package]]
+name = "librespot-protocol"
+version = "0.8.0"
+source = "git+https://github.com/stiefenm/librespot?branch=fix%2Faudio-key-retry-and-clean-failure#279615baa3c5fad57733bfea95500264841ef390"
 dependencies = [
  "protobuf",
  "protobuf-codegen",
@@ -2518,7 +2596,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "librespot-connect",
- "librespot-core",
+ "librespot-core 0.8.0 (git+https://github.com/stiefenm/librespot?branch=fix%2Faudio-key-retry-and-clean-failure)",
  "librespot-discovery",
  "librespot-playback",
  "log",

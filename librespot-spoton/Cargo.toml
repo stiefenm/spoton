@@ -1,6 +1,6 @@
 [package]
 name = "spoton"
-version = "3.0.1"
+version = "3.0.2"
 edition = "2021"
 authors = ["SpotOn Contributors"]
 description = "SpotOn librespot integration binary for LMS"
@@ -17,10 +17,10 @@ name = "spoton"
 path = "src/main.rs"
 
 [dependencies]
-librespot-core      = { git = "https://github.com/librespot-org/librespot", branch = "dev", default-features = false, features = ["rustls-tls-native-roots"] }
-librespot-connect   = { git = "https://github.com/librespot-org/librespot", branch = "dev", default-features = false, features = ["rustls-tls-native-roots"] }
+librespot-core      = { git = "https://github.com/stiefenm/librespot", branch = "fix/audio-key-retry-and-clean-failure", default-features = false, features = ["rustls-tls-native-roots"] }
+librespot-connect   = { git = "https://github.com/stiefenm/librespot", branch = "fix/audio-key-retry-and-clean-failure", default-features = false, features = ["rustls-tls-native-roots"] }
 librespot-discovery = { path = "librespot-discovery-patched", default-features = false, features = ["with-libmdns", "rustls-tls-native-roots"] }
-librespot-playback  = { git = "https://github.com/librespot-org/librespot", branch = "dev", default-features = false, features = ["passthrough-decoder", "rustls-tls-native-roots"] }
+librespot-playback  = { git = "https://github.com/stiefenm/librespot", branch = "fix/audio-key-retry-and-clean-failure", default-features = false, features = ["passthrough-decoder", "rustls-tls-native-roots"] }
 serde_json     = "1"
 tokio          = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "signal"] }
 futures-util   = "0.3"
