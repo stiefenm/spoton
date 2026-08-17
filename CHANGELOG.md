@@ -5,6 +5,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.5.2] - 2026-08-17
+
+### Fixed
+- **Audio key timeout no longer drops the session** — librespot now retries audio key requests up to 2 times on timeout after AP reconnects, and fails the track cleanly instead of feeding encrypted bytes to the decoder. Previously, a single 1500ms timeout after an access-point reconnect would cause "continuing without decryption" → decoder failure → session drop. Binary rebuilt with patched librespot (`spoton v3.0.2`). ([#150](https://github.com/stiefenm/spoton/issues/150), upstream [librespot#1742](https://github.com/librespot-org/librespot/pull/1742))
+
 ## [3.5.1] - 2026-08-17
 
 ### Fixed

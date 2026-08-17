@@ -104,8 +104,8 @@ version = "0.10"
 optional = true
 
 [dependencies.librespot-core]
-git = "https://github.com/librespot-org/librespot"
-branch = "dev"
+git = "https://github.com/stiefenm/librespot"
+branch = "fix/audio-key-retry-v2"
 default-features = false
 
 [dependencies.log]
