@@ -1,34 +1,38 @@
 {
   "version": "1.0",
-  "timestamp": "2026-08-16T19:02:33.348Z",
-  "phase": "66",
-  "phase_name": "settings-auth-reorg",
-  "phase_dir": ".planning/phases/66-settings-auth-reorg",
+  "timestamp": "2026-08-17T06:46:53.355Z",
+  "phase": null,
+  "phase_name": null,
+  "phase_dir": null,
   "plan": null,
   "task": null,
   "total_tasks": null,
-  "status": "complete",
+  "status": "paused",
   "completed_tasks": [
-    {"id": "66-01", "name": "Two-step auth revert — ncspot PKCE default, zero derivation", "status": "done", "commit": "8de1281, 5bb10d8"},
-    {"id": "66-02", "name": "Settings reorg — 3 sections, Auth Health, always-visible pairing", "status": "done", "commit": "f9c209e, 052febb"},
-    {"id": "66-03", "name": "i18n — 7 new + 7 reworded keys, 11 languages", "status": "done", "commit": "90e9f55, 0229bc9"},
-    {"id": "review", "name": "Fable-5 code review findings H2, M1-M3, L1-L2, L4", "status": "done", "commit": "496e53a"},
-    {"id": "probe-fix", "name": "Probe rate-limit guard with 30s retry", "status": "done", "commit": "7fd6eec"},
-    {"id": "release", "name": "v3.5.0 released — tag, CI, repo.xml, docs, forum, triage", "status": "done", "commit": "16097ec, 6d57657, f2da8f0"}
+    {"id": "triage-close", "name": "Close #147 (davison confirmed fix) and #148 (duplicate)", "status": "done"},
+    {"id": "triage-label", "name": "Label and comment #149 (idle guard) and #150 (audio key timeout)", "status": "done"},
+    {"id": "260817-ana", "name": "Quick fix #149 + #150: idle guard on health restart + audio key timeout detection", "status": "done", "commit": "4ba5247"},
+    {"id": "release-351", "name": "Release v3.5.1 (Perl-only: idle guard + classifier)", "status": "done", "commit": "22823dd"},
+    {"id": "upstream-pr", "name": "Upstream librespot PR #1743: audio key retry + clean track failure", "status": "done"},
+    {"id": "fork-pin", "name": "Pin Cargo.toml to stiefenm/librespot fork (fix/audio-key-retry-v2)", "status": "done", "commit": "5662815"},
+    {"id": "release-352", "name": "Release v3.5.2 (binary rebuild with patched librespot v3.0.2)", "status": "done", "commit": "b1ab884"},
+    {"id": "local-deploy", "name": "Deploy v3.0.2 binary to dev LMS, regression test OK", "status": "done"}
   ],
   "remaining_tasks": [],
   "blockers": [],
   "async_jobs": [],
   "human_actions_pending": [
-    {"action": "Monitor #147 for user confirmation that v3.5.0 fixes the issue", "context": "waiting-user label set, comment posted", "blocking": false}
+    {"action": "Monitor librespot-org/librespot#1743 for merge — then revert Cargo.toml to upstream dev", "context": "Temporary fork pin, memory project_librespot_fork_pin.md tracks this", "blocking": false},
+    {"action": "Monitor #149 and #150 for Rouzax confirmation (waiting-user)", "context": "Real-world validation of AP drop fixes", "blocking": false}
   ],
   "decisions": [
-    {"decision": "ncspot Extended Quota Client ID as PKCE default (D-01)", "rationale": "Keymaster ID shares global rate-limit bucket, causes 429s", "phase": "66"},
-    {"decision": "Zero derivation from account PKCE tokens (D-02)", "rationale": "login5 rejects PKCE-provenance credentials since Aug 10", "phase": "66"},
-    {"decision": "Probe delay stays at 15s, rate-limit guard is the fix", "rationale": "90s puts probe exactly where users search; guard prevents 429 competition", "phase": "66"},
-    {"decision": "Account Settings moved directly after Connect authorization", "rationale": "User feedback: account table belongs right after the PKCE connect step", "phase": "66"}
+    {"decision": "v3.5.1 for Perl-only fixes (idle guard + classifier)", "rationale": "Patch bump, no binary change", "phase": "quick"},
+    {"decision": "v3.5.2 for binary rebuild with librespot fork", "rationale": "Audio key retry needs patched binary", "phase": "quick"},
+    {"decision": "Fork based on commit 9c7d756 (not dev HEAD) to avoid API breaking changes", "rationale": "Our Rust code was written against 9c7d756, dev HEAD has infallible API changes", "phase": "quick"},
+    {"decision": "librespot-discovery-patched also pinned to fork", "rationale": "Must share same librespot-core source to avoid type mismatches", "phase": "quick"},
+    {"decision": "Librespot dev HEAD API upgrade deferred to own phase", "rationale": "19 compile errors from infallible to_base62/to_uri changes, needs dedicated work", "phase": "future"}
   ],
-  "uncommitted_files": [".planning/ROADMAP.md"],
-  "next_action": "Check #147 for user confirmations. Next phase candidates: 58/59 (Connect bugfixes) or 62 (Browse Endpoints + Connect Queue).",
-  "context_notes": "Phase 66 complete, v3.5.0 released. Two-step auth model (PKCE + ZeroConf pairing) is the new architecture. Forum announcement posted. Triage done — 7 forum posts processed, #147 commented. Obsidian vault synced. All 963 tests pass."
+  "uncommitted_files": [],
+  "next_action": "Check librespot#1743 PR status. Check #149/#150 for Rouzax response. Then decide next phase: 59-02 (Connect review findings), 62 (Browse + Queue), or librespot dev HEAD upgrade.",
+  "context_notes": "Productive session: full triage cycle, two releases (v3.5.1 Perl + v3.5.2 binary), upstream librespot PR, fork pin with discovery patch alignment. STATE.md is stale (says Phase 58 planning, but 58 is complete since 2026-07-23). Two new memories: librespot-fork-pin and librespot-dev-upgrade."
 }
