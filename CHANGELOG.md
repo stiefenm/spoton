@@ -5,6 +5,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.5.1] - 2026-08-17
+
+### Fixed
+- **Health check no longer restarts daemon mid-playback on AP drops** — Signal 1 (`session_valid=false`) now defers daemon restart while actively playing (`idle_secs ≤ 30`). Transient Spotify access-point reconnects no longer kill active Connect sessions. ([#149](https://github.com/stiefenm/spoton/issues/149))
+- **Audio key response timeout now detected by Auth Health** — `classifyAudioKeyError` recognizes client-side key timeouts after AP reconnects and surfaces them in the Status page. Previously these failures were invisible to all monitoring. ([#150](https://github.com/stiefenm/spoton/issues/150))
+
 ## [3.5.0] - 2026-08-16
 
 ### Added
