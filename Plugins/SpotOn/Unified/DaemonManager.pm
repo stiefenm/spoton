@@ -463,6 +463,11 @@ sub _streamAlivePoll {
                         # gives generous margin for auto-clear back to 'ok'.
                         $cache->set($cacheKey, 'throttled', 600);
                     }
+                    elsif ($state eq 'timeout') {
+                        # GH #150: client-side audio key timeout after AP reconnect
+                        # -- transient, self-clears on next successful key exchange.
+                        $cache->set($cacheKey, 'timeout', 300);
+                    }
                 }
             }
             # GH #141: classifier returned undef — no error signature in current
@@ -793,7 +798,10 @@ sub _onHealthResponse {
     }
 
     # Signal 1: librespot explicitly reports dead session
-    if (!$json->{session_valid}) {
+    # GH #149: idle guard — defer restart while actively playing/streaming.
+    # A genuinely dead session stops producing audio on its own, idle_secs
+    # climbs past the threshold, and the restart proceeds on a later cycle.
+    if (!$json->{session_valid} && ($json->{idle_secs} // 0) > 30) {
         $class->_restartForHealth($helper, 'session_valid=false');
         return;
     }

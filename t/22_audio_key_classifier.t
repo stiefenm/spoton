@@ -231,4 +231,16 @@ is(Plugins::SpotOn::API::Credentials->classifyAudioKeyError("error audio key 0 1
     'denied',
     'Test 7: when both signatures are present, permanent denial takes priority');
 
+is(Plugins::SpotOn::API::Credentials->classifyAudioKeyError('Audio key response timeout'),
+    'timeout',
+    'Test 8: exact "Audio key response timeout" classifies as timeout');
+
+is(Plugins::SpotOn::API::Credentials->classifyAudioKeyError("reconnect output\nERROR librespot_core::audio_key] Audio key response timeout\nmore output"),
+    'timeout',
+    'Test 9: "Audio key response timeout" embedded in stderr noise classifies as timeout');
+
+is(Plugins::SpotOn::API::Credentials->classifyAudioKeyError("error audio key 0 1\nAudio key response timeout"),
+    'denied',
+    'Test 10: denied takes priority over timeout');
+
 done_testing();

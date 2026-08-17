@@ -435,6 +435,7 @@ sub classifyAudioKeyError {
 
     return 'denied'   if $stderrText =~ /error audio key 0 1/;
     return 'throttled' if $stderrText =~ /error audio key 0 2/;
+    return 'timeout'  if $stderrText =~ /Audio key response timeout/;
     return undef;
 }
 
