@@ -92,6 +92,19 @@ rm -rf /config/cache/spoton/<accountId>/
 
 If the Status page shows `API Limits: Search 10 | Library 10 | Playlists 20` (or similarly low values), your app has restricted limits — SpotOn will still work, just with smaller page sizes.
 
+### Frequent rate limiting (HTTP 429)
+
+**Symptoms:** OPML menus show "Spotify requests throttled -- please wait", the Status page shows a nonzero 429 count, or playback/browsing is intermittently interrupted.
+
+**Cause:** By default SpotOn uses a bundled Client ID (`d420a117...`) borrowed from the open-source ncspot project. This ID is shared across all SpotOn installations and all ncspot users worldwide. Under peak usage across that shared population, the aggregate API quota can be exhausted, triggering Spotify's 429 rate limiter — even if your own individual usage is light. A/B testing (same account, same library, identical request pattern) confirmed the bundled ID produces 429s under load where a private Client ID does not.
+
+**Solutions:**
+
+1. **Recommended: Create your own Spotify Developer App.** Go to the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard), create an app, and enter its Client ID in SpotOn Settings. Your own app has a private rate-limit bucket that is not shared with anyone else. The setup wizard in SpotOn Settings walks through the required steps (Redirect URI, Client ID entry).
+2. **If 429s are intermittent and brief**, SpotOn automatically backs off and retries — waiting a few seconds usually resolves it without any action needed.
+
+**Note:** Since v3.6.0, SpotOn skips the startup API-limit probe when using the bundled Client ID (the limits are known constants), saving 8 requests from the shared quota on every LMS restart.
+
 ### "Made For You" playlists missing or empty
 
 **Symptoms:** The "Made For You" section under SpotOn > Home is empty or doesn't appear. Daily Mixes, Discover Weekly, and other algorithmic playlists are not shown.
