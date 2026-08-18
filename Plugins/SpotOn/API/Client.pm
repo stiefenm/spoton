@@ -1492,6 +1492,18 @@ sub _doRequest {
                     }
                     $log->warn("Client: 429 rate limited for ${retryAfter}s on $cleanPath");
                     $log->warn("[DIAG] api_429: endpoint=$cleanPath retry_after=${retryAfter}s") if $prefs->get('diagnosticMode');
+
+                    # GH #155: Auto-retry once after Retry-After delay
+                    if (!$params->{_retryAttempt}) {
+                        $params->{_retryAttempt} = 1;
+                        $log->warn("Client: auto-retry $cleanPath in ${retryAfter}s (GH #155)");
+                        Slim::Utils::Timers::setTimer(undef, time() + $retryAfter, sub {
+                            $cache->remove('spoton_rate_limit');
+                            $class->_doRequest($method, $cleanPath, $params, $userCb);
+                        });
+                        return;
+                    }
+
                     $userCb->(undef, { error => 'rate_limited', code => 429 });
                     return;
                 }
