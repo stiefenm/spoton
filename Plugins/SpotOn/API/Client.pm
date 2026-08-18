@@ -84,6 +84,7 @@ my %_blockedEndpoints;
 my $_limitsProbed = 0;
 my $_limitsLastProbed = 0;
 my $_probeInflight = 0;
+my @_retryTimers;
 use constant REPROBE_COOLDOWN_S => 3600 * 6;
 
 # ============================================================
@@ -106,6 +107,8 @@ sub reset {
     $_probeInflight     = 0;
     $_limitsLastProbed  = 0;
     Slim::Utils::Timers::killTimers(undef, \&_probeRetry);
+    for my $t (@_retryTimers) { Slim::Utils::Timers::killTimers($t, \&_429retry); }
+    @_retryTimers = ();
     main::INFOLOG && $log->info("Client: counters and limit detection reset");
 }
 
@@ -120,6 +123,14 @@ sub limitsProbed { return $_limitsProbed }
 sub _probeRetry {
     my ($class, $accountId) = @_;
     $class->probeEndpointLimits($accountId, sub {}) unless $_limitsProbed;
+}
+
+# GH #155: Named timer callback for 429 auto-retry — killable via reset().
+# setTimer passes ($obj, $retryCb) where $retryCb is the closure from the 429 handler.
+sub _429retry {
+    my ($obj, $retryCb) = @_;
+    @_retryTimers = grep { $_ != $obj } @_retryTimers;
+    $retryCb->() if $retryCb;
 }
 
 sub probeEndpointLimits {
@@ -799,7 +810,7 @@ sub pathfinderHome {
 
     # Isolated Web-Player rate pool (Pitfall 5, T-52-04) -- never the shared
     # 'spoton_rate_limit' key checked by _request().
-    if ($cache->get(WP_RATE_LIMIT_KEY)) {
+    if (!$params->{_retryAttempt} && $cache->get(WP_RATE_LIMIT_KEY)) {
         $log->debug('Client: pathfinderHome short-circuited (cached rate limit)');
         $cb->(undef, { error => 'rate_limited_local', code => 429 });
         return;
@@ -889,12 +900,13 @@ sub pathfinderHome {
                     }
                     $log->warn("Client: pathfinderHome 429 rate limited for ${retryAfter}s (Web-Player pool)");
 
-                    # GH #155: Auto-retry once after Retry-After delay
-                    if (!$params->{_retryAttempt}) {
+                    # GH #155: Auto-retry once after Retry-After delay (short windows only)
+                    if (!$params->{_retryAttempt} && $retryAfter <= 30) {
                         $params->{_retryAttempt} = 1;
                         $log->warn("Client: pathfinderHome auto-retry in ${retryAfter}s (GH #155)");
-                        Slim::Utils::Timers::setTimer(undef, time() + $retryAfter, sub {
-                            $cache->remove(WP_RATE_LIMIT_KEY);
+                        my $obj = {};
+                        push @_retryTimers, $obj;
+                        Slim::Utils::Timers::setTimer($obj, Time::HiRes::time() + $retryAfter + 1, \&_429retry, sub {
                             $class->pathfinderHome($accountId, $params, $cb);
                         });
                         return;
@@ -1139,7 +1151,7 @@ sub getWebPlayerPlaylistItems {
     return $cb->(undef, { error => 'invalid_id' })
         unless $playlistId && $playlistId =~ /^[A-Za-z0-9]{1,40}$/;
 
-    if ($cache->get(WP_RATE_LIMIT_KEY)) {
+    if (!$params->{_retryAttempt} && $cache->get(WP_RATE_LIMIT_KEY)) {
         $log->debug('Client: getWebPlayerPlaylistItems short-circuited (cached rate limit)');
         $cb->(undef, { error => 'rate_limited_local', code => 429 });
         return;
@@ -1220,12 +1232,13 @@ sub getWebPlayerPlaylistItems {
                     }
                     $log->warn("Client: getWebPlayerPlaylistItems 429 rate limited for ${retryAfter}s (Web-Player pool)");
 
-                    # GH #155: Auto-retry once after Retry-After delay
-                    if (!$params->{_retryAttempt}) {
+                    # GH #155: Auto-retry once after Retry-After delay (short windows only)
+                    if (!$params->{_retryAttempt} && $retryAfter <= 30) {
                         $params->{_retryAttempt} = 1;
                         $log->warn("Client: getWebPlayerPlaylistItems auto-retry in ${retryAfter}s (GH #155)");
-                        Slim::Utils::Timers::setTimer(undef, time() + $retryAfter, sub {
-                            $cache->remove(WP_RATE_LIMIT_KEY);
+                        my $obj = {};
+                        push @_retryTimers, $obj;
+                        Slim::Utils::Timers::setTimer($obj, Time::HiRes::time() + $retryAfter + 1, \&_429retry, sub {
                             $class->getWebPlayerPlaylistItems($accountId, $playlistId, $params, $cb);
                         });
                         return;
@@ -1517,13 +1530,21 @@ sub _doRequest {
                     $log->warn("Client: 429 rate limited for ${retryAfter}s on $cleanPath");
                     $log->warn("[DIAG] api_429: endpoint=$cleanPath retry_after=${retryAfter}s") if $prefs->get('diagnosticMode');
 
-                    # GH #155: Auto-retry once after Retry-After delay
-                    if (!$params->{_retryAttempt}) {
+                    # GH #155: Auto-retry once after Retry-After delay (short windows only, skip probes)
+                    if (!$params->{_retryAttempt} && !$params->{_probeCall} && $retryAfter <= 30) {
                         $params->{_retryAttempt} = 1;
+                        $apiRequestCount++;
                         $log->warn("Client: auto-retry $cleanPath in ${retryAfter}s (GH #155)");
-                        Slim::Utils::Timers::setTimer(undef, time() + $retryAfter, sub {
-                            $cache->remove('spoton_rate_limit');
-                            $class->_doRequest($method, $cleanPath, $params, $userCb);
+                        my $obj = {};
+                        push @_retryTimers, $obj;
+                        Slim::Utils::Timers::setTimer($obj, Time::HiRes::time() + $retryAfter + 1, \&_429retry, sub {
+                            eval {
+                                $class->_doRequest($method, $cleanPath, $params, $userCb);
+                                1;
+                            } or do {
+                                $log->error("Client: 429 retry failed for $cleanPath: $@");
+                                $userCb->(undef, { error => 'internal_error' });
+                            };
                         });
                         return;
                     }
