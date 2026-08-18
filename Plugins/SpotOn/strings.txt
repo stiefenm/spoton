@@ -817,6 +817,19 @@ PLUGIN_SPOTON_NO_RESULTS
 	PL	Brak wyników
 	SV	Inga resultat
 
+PLUGIN_SPOTON_RATE_LIMITED
+	CS	Dočasně omezeno — zkuste to prosím za chvíli znovu
+	DA	Midlertidigt hastighedsbegrænset — prøv venligst igen om lidt
+	DE	Vorübergehend gedrosselt — bitte in Kürze erneut versuchen
+	EN	Temporarily rate limited — please try again shortly
+	ES	Temporalmente limitado — por favor, inténtelo de nuevo en breve
+	FR	Temporairement limité — veuillez réessayer dans un instant
+	IT	Temporaneamente limitato — riprovare tra poco
+	NL	Tijdelijk beperkt — probeer het zo opnieuw
+	NO	Midlertidig hastighetsbegrenset — prøv igjen om litt
+	PL	Tymczasowo ograniczono — spróbuj ponownie za chwilę
+	SV	Tillfälligt hastighetsbegränsad — försök igen om en stund
+
 PLUGIN_SPOTON_ARTIST_VIEW
 	CS	SpotOn: Zobrazit interpreta
 	DA	SpotOn: Vis kunstner

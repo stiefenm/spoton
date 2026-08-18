@@ -1227,12 +1227,22 @@ sub _trackItem {
 # old hardcoded PLUGIN_SPOTON_NO_RESULTS item construction. Distinguishes
 # "authentication required" (v2.x migration pending OR PKCE refresh
 # rejected) from a genuine empty result set.
-# SECURITY (T-53-05, mirrors T-51-10/T-52-02): $err is accepted but NEVER
-# interpolated into the returned name/string -- only fixed, pre-translated
-# cstring() keys are returned. $err is reserved for future server-side
-# logging only.
+# SECURITY (T-53-05, mirrors T-51-10/T-52-02): $err->{error} is matched
+# against known constants (rate_limited*), never interpolated into the
+# returned name/string -- only fixed, pre-translated cstring() keys are
+# returned.
 sub _authRequiredItem {
     my ($client, $accountId, $err) = @_;
+
+    # GH #155: surface rate-limit errors as a clear message instead of
+    # the confusing "No results" that gives zero diagnostic clue.
+    if ($err && ref $err eq 'HASH' && ($err->{error} || '') =~ /^rate_limited/) {
+        return {
+            name => cstring($client, 'PLUGIN_SPOTON_RATE_LIMITED'),
+            type => 'textarea',
+        };
+    }
+
     require Plugins::SpotOn::API::TokenManager;
 
     my $needsAuth = Plugins::SpotOn::API::TokenManager->accountNeedsMigration($accountId)

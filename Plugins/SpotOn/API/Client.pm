@@ -811,7 +811,7 @@ sub pathfinderHome {
     # Isolated Web-Player rate pool (Pitfall 5, T-52-04) -- never the shared
     # 'spoton_rate_limit' key checked by _request().
     if (!$params->{_retryAttempt} && $cache->get(WP_RATE_LIMIT_KEY)) {
-        $log->debug('Client: pathfinderHome short-circuited (cached rate limit)');
+        main::INFOLOG && $log->info('Client: pathfinderHome short-circuited (cached rate limit)');
         $cb->(undef, { error => 'rate_limited_local', code => 429 });
         return;
     }
@@ -1152,7 +1152,7 @@ sub getWebPlayerPlaylistItems {
         unless $playlistId && $playlistId =~ /^[A-Za-z0-9]{1,40}$/;
 
     if (!$params->{_retryAttempt} && $cache->get(WP_RATE_LIMIT_KEY)) {
-        $log->debug('Client: getWebPlayerPlaylistItems short-circuited (cached rate limit)');
+        main::INFOLOG && $log->info('Client: getWebPlayerPlaylistItems short-circuited (cached rate limit)');
         $cb->(undef, { error => 'rate_limited_local', code => 429 });
         return;
     }
@@ -1361,8 +1361,23 @@ sub _request {
     $cleanPath =~ s{^/}{};
 
     # Step 2: Rate-limit check — single key, no flavor suffix (D-04).
-    if ($cache->get('spoton_rate_limit')) {
-        $log->debug("Client: request to $cleanPath short-circuited (cached rate limit)");
+    # GH #155 follow-up: defer concurrent requests until the rate-limit
+    # window closes instead of returning an empty page immediately.
+    # The cache value is the expiry timestamp (set in the 429 handler).
+    if (my $retryUntil = $cache->get('spoton_rate_limit')) {
+        my $remaining = $retryUntil - Time::HiRes::time();
+        if ($remaining > 0 && $remaining <= 30 && !$params->{_deferred}
+            && lc($method) eq 'get' && !$params->{_probeCall}) {
+            $params->{_deferred} = 1;
+            main::INFOLOG && $log->info(sprintf("Client: request to %s deferred %.1fs (rate-limited, GH #155)", $cleanPath, $remaining));
+            my $obj = {};
+            push @_retryTimers, $obj;
+            Slim::Utils::Timers::setTimer($obj, $retryUntil + 1 + rand(2), \&_429retry, sub {
+                $class->_request($method, $path, $params, $cb);
+            });
+            return;
+        }
+        main::INFOLOG && $log->info("Client: request to $cleanPath short-circuited (cached rate limit)");
         $cb->(undef, { error => 'rate_limited_local', code => 429 });
         return;
     }
@@ -1522,7 +1537,9 @@ sub _doRequest {
                     $retryAfter = 300 if $retryAfter > 300;
 
                     # Single rate-limit key — no flavor suffix (D-04).
-                    $cache->set('spoton_rate_limit', 1, $retryAfter);
+                    # Value is the expiry timestamp so _request() can defer
+                    # concurrent requests to retry after the window closes.
+                    $cache->set('spoton_rate_limit', Time::HiRes::time() + $retryAfter, $retryAfter);
                     $api429Count++;
                     if ($INC{'Plugins/SpotOn/Status.pm'}) {
                         Plugins::SpotOn::Status->recordError('warn', 'API', "429 on $cleanPath");
