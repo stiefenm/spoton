@@ -1142,18 +1142,6 @@ PLUGIN_SPOTON_CUSTOM_QUOTA_OK
 	PL	Używasz własnego Client ID — prywatny limit API, bez współdzielonych limitów zapytań.
 	SV	Du använder ditt eget Client-ID — privat API-kvot, inga delade hastighetsgränser.
 
-PLUGIN_SPOTON_DEVMODE_QUOTA_WARNING
-	CS	Vaše Spotify Developer App je v režimu Dev Mode s omezeným přístupem k API (méně výsledků vyhledávání, některé endpointy nedostupné). Odstraňte výše uvedené Client ID a použijte místo toho vestavěný režim Extended Quota.
-	DA	Din Spotify Developer App er i Dev Mode med begrænset API-adgang (færre søgeresultater, nogle endpoints utilgængelige). Fjern dit Client-ID ovenfor for i stedet at bruge den medfølgende Extended Quota-tilstand.
-	DE	Deine Spotify Developer App befindet sich im Dev Mode mit eingeschränktem API-Zugriff (reduzierte Suchergebnisse, manche Endpunkte nicht verfügbar). Entferne oben deine Client-ID, um stattdessen den integrierten Extended-Quota-Modus zu nutzen.
-	EN	Your Spotify Developer App is in Dev Mode with restricted API access (reduced search results, some endpoints unavailable). Remove your Client ID above to use the bundled Extended Quota mode instead.
-	ES	Tu App de Spotify Developer está en Dev Mode con acceso API restringido (resultados de búsqueda reducidos, algunos endpoints no disponibles). Elimina tu Client ID arriba para usar en su lugar el modo Extended Quota incluido.
-	FR	Votre application Spotify Developer est en Dev Mode avec un accès API restreint (résultats de recherche réduits, certains endpoints indisponibles). Supprimez votre Client ID ci-dessus pour utiliser à la place le mode Extended Quota intégré.
-	IT	La tua Spotify Developer App è in Dev Mode con accesso API limitato (risultati di ricerca ridotti, alcuni endpoint non disponibili). Rimuovi il Client ID sopra per usare invece la modalità Extended Quota inclusa.
-	NL	Uw Spotify Developer App staat in Dev Mode met beperkte API-toegang (minder zoekresultaten, sommige endpoints niet beschikbaar). Verwijder uw Client-ID hierboven om in plaats daarvan de meegeleverde Extended Quota-modus te gebruiken.
-	NO	Din Spotify Developer App er i Dev Mode med begrenset API-tilgang (færre søkeresultater, enkelte endepunkter utilgjengelige). Fjern Client-ID-en din ovenfor for å bruke den medfølgende Extended Quota-modusen i stedet.
-	PL	Twoja aplikacja Spotify Developer działa w trybie Dev Mode z ograniczonym dostępem do API (mniej wyników wyszukiwania, niektóre endpointy niedostępne). Usuń powyższe Client ID, aby zamiast tego korzystać z wbudowanego trybu Extended Quota.
-	SV	Din Spotify Developer App är i Dev Mode med begränsad API-åtkomst (färre sökresultat, vissa endpoints otillgängliga). Ta bort ditt Client-ID ovan för att istället använda det medföljande Extended Quota-läget.
 
 PLUGIN_SPOTON_BUNDLED_ID_REVOKED
 	CS	Sdílené Spotify Client ID již není k dispozici. Vytvořte prosím vlastní Spotify Developer App a zadejte její Client ID výše pro obnovení přístupu.
@@ -2793,18 +2781,6 @@ PLUGIN_SPOTON_PKCE_MANUAL_BTN
 	PL	Wyślij adres URL zwrotny
 	SV	Skicka callback-URL
 
-PLUGIN_SPOTON_PKCE_REDIRECT_NOTE
-	CS	Důležité: Přidejte https://stiefenm.github.io/spoton/auth/ jako Redirect URI v nastavení vaší Spotify Developer App.
-	DA	Vigtigt: Tilføj https://stiefenm.github.io/spoton/auth/ som Redirect URI i indstillingerne for din Spotify Developer App.
-	DE	Wichtig: Füge https://stiefenm.github.io/spoton/auth/ als Redirect-URI in den Einstellungen deiner Spotify Developer App hinzu.
-	EN	Important: Add https://stiefenm.github.io/spoton/auth/ as a Redirect URI in your Spotify Developer App settings.
-	ES	Importante: añade https://stiefenm.github.io/spoton/auth/ como Redirect URI en la configuración de tu App de Desarrollador de Spotify.
-	FR	Important : ajoutez https://stiefenm.github.io/spoton/auth/ comme URI de redirection dans les paramètres de votre application développeur Spotify.
-	IT	Importante: aggiungi https://stiefenm.github.io/spoton/auth/ come Redirect URI nelle impostazioni della tua Spotify Developer App.
-	NL	Belangrijk: voeg https://stiefenm.github.io/spoton/auth/ toe als Redirect URI in de instellingen van uw Spotify Developer App.
-	NO	Viktig: Legg til https://stiefenm.github.io/spoton/auth/ som Redirect URI i innstillingene for Spotify Developer-appen din.
-	PL	Ważne: dodaj https://stiefenm.github.io/spoton/auth/ jako Redirect URI w ustawieniach swojej aplikacji Spotify Developer.
-	SV	Viktigt: Lägg till https://stiefenm.github.io/spoton/auth/ som Redirect URI i inställningarna för din Spotify Developer App.
 
 PLUGIN_SPOTON_SETUP_PKCE_TITLE
 	CS	Připojte svůj účet Spotify

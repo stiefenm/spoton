@@ -121,7 +121,6 @@ SKIP: {
         PLUGIN_SPOTON_PKCE_MANUAL_TITLE
         PLUGIN_SPOTON_PKCE_MANUAL_DESC
         PLUGIN_SPOTON_PKCE_MANUAL_BTN
-        PLUGIN_SPOTON_PKCE_REDIRECT_NOTE
         PLUGIN_SPOTON_SETUP_PKCE_TITLE
         PLUGIN_SPOTON_SETUP_PKCE_DESC
         PLUGIN_SPOTON_REAUTH_REQUIRED
@@ -260,9 +259,15 @@ SKIP: {
             "$key is removed (Settings reorg, Plan 66-03)");
     }
 
-    # Phase 67: DEFAULT_AUTH_INFO replaced by BUNDLED_SHARED_QUOTA_HINT
-    ok(!$has_en{'PLUGIN_SPOTON_DEFAULT_AUTH_INFO'} && !$has_de{'PLUGIN_SPOTON_DEFAULT_AUTH_INFO'},
-        'PLUGIN_SPOTON_DEFAULT_AUTH_INFO is removed (replaced by BUNDLED_SHARED_QUOTA_HINT, Phase 67)');
+    # Phase 67: removed strings
+    for my $key (qw(
+        PLUGIN_SPOTON_DEFAULT_AUTH_INFO
+        PLUGIN_SPOTON_DEVMODE_QUOTA_WARNING
+        PLUGIN_SPOTON_PKCE_REDIRECT_NOTE
+    )) {
+        ok(!$has_en{$key} && !$has_de{$key},
+            "$key is removed (Phase 67 Client ID UX cleanup)");
+    }
 
     # Verify correct indentation: lines must use Tab, not spaces
     my $bad_indent = 0;
