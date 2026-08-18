@@ -404,6 +404,17 @@ Plans:
 - [x] 66-02-PLAN.md — Settings UI reorganization (4-step onboarding, Account/Global/Diagnostics sections, always-visible pairing, collapsed Custom App) + Auth Health playback indicators
 - [x] 66-03-PLAN.md — Strings: two-step auth messaging, new section/guide/source keys, obsolete key removal (11 languages)
 
+### Phase 67: Bundled ID & Auth Redirect UX
+
+**Goal:** Fix /login redirect handler bug (qr{} regex-as-hash-key → 404), overhaul bundled ID UX to communicate shared-bucket degradation, recommend custom Client ID as primary path
+**Requirements**: GH #147 (rate-limit root cause), D-01..D-05
+**Depends on:** Phase 66
+**Plans:** 1 plan
+
+Plans:
+
+- [ ] 67-01-PLAN.md — /login fix, probe skip for bundled ID, Settings UX reframing, i18n (11 langs), TROUBLESHOOTING.md, forum reply
+
 ---
 *Roadmap created: 2026-05-26*
-*Last updated: 2026-08-15 — Phase 66 added (429 revert + Settings reorg); 65-06..08 cancelled per 65-05 STOP gate*
+*Last updated: 2026-08-18 — Phase 67 planned (1 plan: /login fix + bundled ID UX + probe skip)*
