@@ -5,6 +5,22 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.5.3] - 2026-08-18
+
+### Fixed
+- **`/login` handler no longer returns 404** — the handler registration used a regex object as a hash key, which stringified to `(?^:^login$)` instead of matching `login`. Now uses a plain string key. ([D-01](https://github.com/stiefenm/spoton/issues/147))
+- **Local rate-limit short-circuits now distinguishable from real 429s** — a single Spotify 429 no longer cascades into phantom 429s on unrelated endpoints. Local cache-based short-circuits are tagged as `rate_limited_local` with debug logging, making the Status page's 429 count accurate. ([#152](https://github.com/stiefenm/spoton/issues/152))
+- **Classic Skin Settings page reloads after OAuth** — the PKCE success popup now redirects the opener tab back to Settings, so the connected account state is immediately visible without a manual page reload.
+
+### Changed
+- **Bundled Client ID skips startup limit probe** — SpotOn no longer sends 8 API requests to detect endpoint limits on every LMS restart when using the bundled Client ID. The limits are known constants for the shared ncspot Extended Quota app. Saves API quota across 138+ installations. The `force` re-probe option remains available.
+- **Settings UX clearly communicates shared vs. private API quota** — bundled mode shows an amber shared-quota warning recommending a personal Client ID; custom mode shows a green private-quota confirmation. The Client ID input is now directly visible (not inside a collapsed section), and a re-authorization hint appears when accounts are already connected.
+- **Client ID description reframed** — bundled mode is presented as "works out of the box but shared", custom mode as "recommended for the best experience" (previously: bundled as default, custom as "advanced").
+- **i18n: 4 new + 3 reworded string keys** across all 11 languages (CS, DA, DE, EN, ES, FR, IT, NL, NO, PL, SV) with genuine translations.
+
+### Added
+- **TROUBLESHOOTING.md: rate-limit section** — explains the shared-bucket cause of frequent 429s and recommends creating a personal Spotify Developer App.
+
 ## [3.5.2] - 2026-08-17
 
 ### Fixed
