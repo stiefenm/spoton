@@ -243,11 +243,17 @@
 
 	[% WRAPPER setting title="PLUGIN_SPOTON_CLIENT_ID_SETTINGS" desc="PLUGIN_SPOTON_CLIENT_ID_DESC" %]
 		[% IF clientIdMode == 'bundled' %]
-		<p style="margin:0 0 10px 0; font-size:0.9em; opacity:0.8">[% 'PLUGIN_SPOTON_DEFAULT_AUTH_INFO' | string %]</p>
+		<div style="color: orange; margin:0 0 10px 0; font-size:0.9em">
+			[% 'PLUGIN_SPOTON_BUNDLED_SHARED_QUOTA_HINT' | string %]
+		</div>
+		[% ELSE %]
+		<div style="color: green; margin:0 0 10px 0; font-size:0.9em">
+			[% 'PLUGIN_SPOTON_CUSTOM_QUOTA_OK' | string %]
+		</div>
 		[% END %]
 
-		<details[% IF customClientId %] open[% END %]>
-			<summary style="cursor:pointer">[% 'PLUGIN_SPOTON_CUSTOM_APP_TITLE' | string %]</summary>
+		<details[% IF customClientId || clientIdMode == 'bundled' %] open[% END %]>
+			<summary style="cursor:pointer">[% IF clientIdMode == 'bundled' %][% 'PLUGIN_SPOTON_CUSTOM_APP_SETUP' | string %][% ELSE %][% 'PLUGIN_SPOTON_CUSTOM_APP_TITLE' | string %][% END %]</summary>
 
 			[% IF quotaState == 'devmode' %]
 			<div style="color: orange; margin:10px 0">

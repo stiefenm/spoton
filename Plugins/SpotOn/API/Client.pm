@@ -126,6 +126,22 @@ sub probeEndpointLimits {
     my ($class, $accountId, $doneCb, %opts) = @_;
     return $doneCb->() if $_limitsProbed && !$opts{force};
     return $doneCb->() if $_probeInflight && !$opts{force};
+
+    # D-04: the bundled Client ID has known, stable Extended Quota limits --
+    # skip the probe entirely and hardcode them. Saves 8 API requests from
+    # the shared ncspot bucket on every LMS restart across all bundled-ID
+    # installations. force => 1 (manual re-probe) bypasses this guard.
+    if (!$prefs->get('clientId') && !$opts{force}) {
+        %_detectedLimits = (
+            search => 50, library => 50, artist_albums => 50,
+            album_tracks => 50, playlist_items => 100,
+        );
+        $_limitsProbed     = 1;
+        $_limitsLastProbed = time();
+        main::INFOLOG && $log->info("Client: bundled ID — using known limits (probe skipped)");
+        return $doneCb->();
+    }
+
     # Skip probe while rate-limited — probe calls would 429 and extend the window.
     # Retry after 30s so the probe eventually runs.
     if ($cache->get('spoton_rate_limit') && !$opts{force}) {

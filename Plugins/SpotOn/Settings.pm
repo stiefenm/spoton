@@ -57,7 +57,7 @@ sub new {
     # default identity and the playerauth Keymaster fallback whitelist only
     # this path). Route it to the PKCE callback handler.
     Slim::Web::Pages->addRawFunction(
-        qr{^login$},
+        'login',
         \&_pkceCallbackHandler
     );
 
