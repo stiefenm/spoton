@@ -257,35 +257,32 @@ Items carried forward from previous milestones:
 | 260723-fkg | Fix #126: Connect seek/change progress bar resync | 2026-07-23 | 5d91cd8 | [260723-fkg](./quick/260723-fkg-fix-126-connect-seek-change-progress-bar/) |
 | 260727-a1w | HomeExtra rows Main Menu + Playlists for Material Skin (#132) | 2026-07-27 | 93630bb | [260727-a1w](./quick/260727-a1w-add-homeextra-scrolled-rows-for-material/) |
 | 260817-ana | Fix #149 + #150: Daemon resilience on AP drops (idle guard + key timeout) | 2026-08-17 | 4ba5247 | [260817-ana](./quick/260817-ana-daemon-resilience-ap-drops/) |
+| 260818-qaw | Fix #155: Auto-retry on 429 in Client.pm | 2026-08-18 | a3a972a | [260818-qaw](./quick/260818-qaw-fix-155-auto-retry-on-429-in-client-pm/) |
+| 260818-v1l | Fix #155 follow-up: 429 deferral + rate-limited UX + logging | 2026-08-18 | 60a5ffb | [260818-v1l](./quick/260818-v1l-fix-155-rate-limited-local-visibility/) |
 
 ## Session Continuity
 
 **Resume file:** None
 
-**Last session:** 2026-08-13T18:19:16.615Z
-**Stopped at:** Completed 65-05-PLAN.md (HYPOTHESIS FAILED — checkpoint pending)
-**Completed this session (2026-08-08):**
+**Last session:** 2026-08-18
+**Stopped at:** v3.5.7 released (Fix #155 follow-up: 429 deferral)
+**Completed this session (2026-08-18):**
 
-- Resumed from Phase 64 mid-verification (HANDOFF at live volume test)
-- #136 closed (woorszt confirmed fix)
-- Phase 64 UAT: PCM/OGG parity 0.34dB, slider sync, fixed-output — all PASS
-- Phase 64 SUMMARY written, ROADMAP updated
-- PR #145 (urknall, Search History) reviewed with Fable 5 (21 findings: 2H, 4M, 10L, 5I)
-- PR #145 merged with 6 fixes: H-01 value-based delete, H-02 validation, M-01 clear-all OPML, M-02 Q=1, L-03 pref rename, L-09 tests
-- cachetime => 0 on history items (stale XMLBrowser cache fix)
-- PR closed with detailed review explanation to urknall
-- Search History live-tested on dev LMS (add, dedup, delete, clear-all — all PASS)
-- Released v3.4.0 (Phase 64 + PR #145), CI binary rebuild, repo.xml SHA updated
-- #144 commented + closed
-- README.md updated (search history in features)
-- New issue #146 from urknall (health check daemon restart — informational, upstream PRs pending)
+- Reviewed lmore377/librespot device auth commit (RFC 8628) — saved as watch item
+- Created GH #156 (OGG metadata strip) from urknall chat + added parse-before-strip detail
+- Fixed #155 follow-up: rate_limited_local deferral + UX message + logging upgrade
+- Fable 5 code review (0H 1M 2L 4I) — all findings fixed
+- Deployed to dev LMS, smoke test + 15-request burst test passed
+- Released v3.5.7 (Perl-only), repo.xml SHA updated
+- Replied to woorszt on #155 (root cause + fix explanation)
+- Request queue idea saved for Phase 38 Library Import
 
 **Next action:**
 
-1. Check #143 woorszt response (waiting-user since v3.3.4)
-2. Triage #146 (labels, response)
-3. Decide next phase priority (58/59/62)
+1. Check #155/#149/#150 for user responses
+2. Phase 62 (Browse Endpoints + Connect Queue) is the only unplanned open phase
+3. #154 (librespot log integration) and #156 (OGG metadata strip) queued as future work
 
 ---
 *State initialized: 2026-05-26*
-*Last updated: 2026-08-08 — Phase 64 complete, v3.4.0 released*
+*Last updated: 2026-08-18 — v3.5.7 released, #155 429 deferral shipped*

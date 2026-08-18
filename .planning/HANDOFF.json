@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "timestamp": "2026-08-17T06:46:53.355Z",
+  "timestamp": "2026-08-18T20:47:34.701Z",
   "phase": null,
   "phase_name": null,
   "phase_dir": null,
@@ -9,30 +9,34 @@
   "total_tasks": null,
   "status": "paused",
   "completed_tasks": [
-    {"id": "triage-close", "name": "Close #147 (davison confirmed fix) and #148 (duplicate)", "status": "done"},
-    {"id": "triage-label", "name": "Label and comment #149 (idle guard) and #150 (audio key timeout)", "status": "done"},
-    {"id": "260817-ana", "name": "Quick fix #149 + #150: idle guard on health restart + audio key timeout detection", "status": "done", "commit": "4ba5247"},
-    {"id": "release-351", "name": "Release v3.5.1 (Perl-only: idle guard + classifier)", "status": "done", "commit": "22823dd"},
-    {"id": "upstream-pr", "name": "Upstream librespot PR #1743: audio key retry + clean track failure", "status": "done"},
-    {"id": "fork-pin", "name": "Pin Cargo.toml to stiefenm/librespot fork (fix/audio-key-retry-v2)", "status": "done", "commit": "5662815"},
-    {"id": "release-352", "name": "Release v3.5.2 (binary rebuild with patched librespot v3.0.2)", "status": "done", "commit": "b1ab884"},
-    {"id": "local-deploy", "name": "Deploy v3.0.2 binary to dev LMS, regression test OK", "status": "done"}
+    {"id": "resume", "name": "Session resumed, state restored from HANDOFF.json", "status": "done"},
+    {"id": "device-auth-review", "name": "Reviewed lmore377/librespot device auth commit (RFC 8628)", "status": "done"},
+    {"id": "device-auth-memory", "name": "Saved device auth flow as watch item in memory", "status": "done"},
+    {"id": "issue-156", "name": "Created GH #156 (OGG metadata strip) from urknall chat", "status": "done"},
+    {"id": "issue-156-comment", "name": "Added urknall's parse-before-strip pipeline detail to #156", "status": "done"},
+    {"id": "260818-v1l", "name": "Fix #155 follow-up: rate_limited_local deferral + UX + logging", "status": "done", "commit": "60a5ffb"},
+    {"id": "review-v1l", "name": "Fable 5 code review — 0H 1M 2L 4I, all fixed", "status": "done", "commit": "60a5ffb"},
+    {"id": "deploy-dev", "name": "Deployed to dev LMS, smoke test + 15-request burst test passed", "status": "done"},
+    {"id": "release-357", "name": "Release v3.5.7 (Perl-only: 429 deferral + rate-limited UX)", "status": "done", "commit": "1713df6"},
+    {"id": "comment-155", "name": "Reply to woorszt on #155 (root cause + fix explanation)", "status": "done"}
   ],
   "remaining_tasks": [],
   "blockers": [],
   "async_jobs": [],
   "human_actions_pending": [
     {"action": "Monitor librespot-org/librespot#1743 for merge — then revert Cargo.toml to upstream dev", "context": "Temporary fork pin, memory project_librespot_fork_pin.md tracks this", "blocking": false},
-    {"action": "Monitor #149 and #150 for Rouzax confirmation (waiting-user)", "context": "Real-world validation of AP drop fixes", "blocking": false}
+    {"action": "Monitor #149 and #150 for Rouzax confirmation (waiting-user)", "context": "Real-world validation of AP drop fixes from v3.5.1/v3.5.2", "blocking": false},
+    {"action": "Monitor #155 for woorszt confirmation of v3.5.7 deferral behavior", "context": "v3.5.7 shipped, waiting for real-world validation", "blocking": false},
+    {"action": "Monitor lmore377/librespot device auth for upstream PR", "context": "RFC 8628 device flow, only works with desktop client ID, memory project_device_auth_flow.md", "blocking": false}
   ],
   "decisions": [
-    {"decision": "v3.5.1 for Perl-only fixes (idle guard + classifier)", "rationale": "Patch bump, no binary change", "phase": "quick"},
-    {"decision": "v3.5.2 for binary rebuild with librespot fork", "rationale": "Audio key retry needs patched binary", "phase": "quick"},
-    {"decision": "Fork based on commit 9c7d756 (not dev HEAD) to avoid API breaking changes", "rationale": "Our Rust code was written against 9c7d756, dev HEAD has infallible API changes", "phase": "quick"},
-    {"decision": "librespot-discovery-patched also pinned to fork", "rationale": "Must share same librespot-core source to avoid type mismatches", "phase": "quick"},
-    {"decision": "Librespot dev HEAD API upgrade deferred to own phase", "rationale": "19 compile errors from infallible to_base62/to_uri changes, needs dedicated work", "phase": "future"}
+    {"decision": "429 deferral only for GET requests, writes keep fail-fast", "rationale": "Stale play/pause/seek firing seconds late would mutate playback state unexpectedly (Fable 5 M-01)", "phase": "quick"},
+    {"decision": "Probe calls excluded from deferral", "rationale": "Probes have their own deferral mechanism, mixing would stall probe chain (Fable 5 L-01)", "phase": "quick"},
+    {"decision": "Random jitter on deferred timers", "rationale": "Prevents thundering herd when multiple deferred requests fire at window close (Fable 5 L-02)", "phase": "quick"},
+    {"decision": "spoton_rate_limit stores expiry timestamp instead of 1", "rationale": "_request() needs to compute remaining wait time for deferral scheduling", "phase": "quick"},
+    {"decision": "Request queue idea parked for Phase 38", "rationale": "Current defer+retry+concurrency-cap covers woorszt's scenario; full queue is overkill now but relevant for Library Import", "phase": "future"}
   ],
   "uncommitted_files": [],
-  "next_action": "Check librespot#1743 PR status. Check #149/#150 for Rouzax response. Then decide next phase: 59-02 (Connect review findings), 62 (Browse + Queue), or librespot dev HEAD upgrade.",
-  "context_notes": "Productive session: full triage cycle, two releases (v3.5.1 Perl + v3.5.2 binary), upstream librespot PR, fork pin with discovery patch alignment. STATE.md is stale (says Phase 58 planning, but 58 is complete since 2026-07-23). Two new memories: librespot-fork-pin and librespot-dev-upgrade."
+  "next_action": "Check #155/#149/#150 for user responses. Phase 62 (Browse Endpoints + Connect Queue) is the only unplanned open phase. #154 (librespot log integration) and #156 (OGG metadata strip) queued as future work. Device auth flow (lmore377 fork) being watched.",
+  "context_notes": "Productive session: woorszt's #155 follow-up diagnosed (rate_limited_local short-circuit at debug level), fixed with deferral + UX message + logging upgrade, Fable 5 reviewed (all findings fixed), deployed, released as v3.5.7. Also: created #156 from urknall chat (OGG 0x81 metadata strip with parse-before-strip requirement), reviewed lmore377 device auth commit (RFC 8628, parked as watch item). Request queue idea saved for Phase 38 Library Import."
 }
