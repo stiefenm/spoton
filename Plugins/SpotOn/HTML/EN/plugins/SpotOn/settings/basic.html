@@ -93,20 +93,16 @@
 		</div>
 		[% END %]
 
-		<details style="margin-top:10px"[% IF clientIdMode == 'bundled' %] open[% END %]>
-			<summary style="cursor:pointer">[% IF clientIdMode == 'bundled' %][% 'PLUGIN_SPOTON_CUSTOM_APP_SETUP' | string %][% ELSE %][% 'PLUGIN_SPOTON_CUSTOM_APP_TITLE' | string %][% END %]</summary>
-
-			<details style="margin-top:10px">
-				<summary style="cursor:pointer">[% 'PLUGIN_SPOTON_CLIENT_ID_WIZARD_TITLE' | string %]</summary>
-				<p style="margin:8px 0 4px 0; font-size:0.9em; opacity:0.85">[% 'PLUGIN_SPOTON_SETUP_DEVAPP_DESC' | string %]</p>
-				<p style="margin:0; font-size:0.85em">
-					<code style="background:rgba(128,128,128,0.1); padding:2px 6px; border-radius:3px">[% redirectUri | html %]</code>
-				</p>
-			</details>
-			<p style="margin:8px 0 0 0; font-size:0.85em; opacity:0.7">
-				<a href="#" onclick="document.getElementById('pref_clientId').value=''; return false;">[% 'PLUGIN_SPOTON_CUSTOM_APP_REMOVE' | string %]</a>
+		<details style="margin-top:10px">
+			<summary style="cursor:pointer">[% 'PLUGIN_SPOTON_CLIENT_ID_WIZARD_TITLE' | string %]</summary>
+			<p style="margin:8px 0 4px 0; font-size:0.9em; opacity:0.85">[% 'PLUGIN_SPOTON_SETUP_DEVAPP_DESC' | string %]</p>
+			<p style="margin:0; font-size:0.85em">
+				<code style="background:rgba(128,128,128,0.1); padding:2px 6px; border-radius:3px">[% redirectUri | html %]</code>
 			</p>
 		</details>
+		<p style="margin:8px 0 0 0; font-size:0.85em; opacity:0.7">
+			<a href="#" onclick="document.getElementById('pref_clientId').value=''; return false;">[% 'PLUGIN_SPOTON_CUSTOM_APP_REMOVE' | string %]</a>
+		</p>
 	[% END %]
 
 	[% WRAPPER setting title="PLUGIN_SPOTON_PKCE_AUTH" desc="PLUGIN_SPOTON_PKCE_AUTH_DESC" %]

@@ -1091,17 +1091,17 @@ PLUGIN_SPOTON_CLIENT_ID_REAUTH_HINT
 	SV	Ändring av Client-ID kräver ny auktorisering av alla anslutna konton.
 
 PLUGIN_SPOTON_CUSTOM_APP_REMOVE
-	CS	Odebrat vlastní App ID a použít výchozí režim
-	DA	Fjern tilpasset App-ID og brug standardtilstand
-	DE	Eigene App-ID entfernen und Standardmodus verwenden
-	EN	Remove custom App ID and use default mode
-	ES	Eliminar App ID personalizado y usar modo predeterminado
-	FR	Supprimer l'ID d'app personnalisé et utiliser le mode par défaut
-	IT	Rimuovi l'ID app personalizzato e usa la modalità predefinita
-	NL	Aangepaste App-ID verwijderen en standaardmodus gebruiken
-	NO	Fjern tilpasset App-ID og bruk standardmodus
-	PL	Usuń niestandardowe App ID i użyj trybu domyślnego
-	SV	Ta bort anpassat App-ID och använd standardläge
+	CS	Odebrat vlastní App ID a použít integrované ID
+	DA	Fjern tilpasset App-ID og brug det integrerede ID
+	DE	Eigene App-ID entfernen und integrierte ID verwenden
+	EN	Remove custom App ID and use bundled ID
+	ES	Eliminar App ID personalizado y usar el ID integrado
+	FR	Supprimer l'ID d'app personnalisé et utiliser l'ID intégré
+	IT	Rimuovi l'ID app personalizzato e usa l'ID integrato
+	NL	Aangepaste App-ID verwijderen en ingebouwde ID gebruiken
+	NO	Fjern tilpasset App-ID og bruk det integrerte ID-et
+	PL	Usuń niestandardowe App ID i użyj wbudowanego ID
+	SV	Ta bort anpassat App-ID och använd det inbyggda ID:t
 
 PLUGIN_SPOTON_BUNDLED_SHARED_QUOTA_HINT
 	CS	Vestavěné Client ID je sdíleno napříč všemi instalacemi SpotOn. Během špičkového vytížení může docházet k omezování rychlosti požadavků. Pro nejlepší zážitek si níže vytvořte vlastní Spotify Developer App.
@@ -1806,17 +1806,17 @@ PLUGIN_SPOTON_SETUP_PATHFINDER_DESC
 	SV	Vissa redaktionella spellistor behöver en Pathfinder-frågehash från Spotifys webbspelare. Lägg bara till detta om vissa spellistor inte går att ladda — se hjälptexten bredvid fältet nedan.
 
 PLUGIN_SPOTON_SETUP_DEVAPP_DESC
-	CS	Volitelné, pokročilé: potřebné jen v případě, že dáváte přednost vlastní Spotify Developer App (vlastní Client ID s přesměrováním přes GitHub Pages). 1. Otevřete developer.spotify.com/dashboard a přihlaste se. 2. Vytvořte novou aplikaci (na názvu nezáleží). 3. V nastavení aplikace přidejte Redirect URI zobrazené v Nastavení SpotOn. 4. Zkopírujte Client ID a vložte jej do pole Client ID.
-	DA	Valgfrit, avanceret: kun nødvendigt, hvis du foretrækker din egen Spotify Developer App (eget Client-ID med GitHub Pages-omdirigering). 1. Gå til developer.spotify.com/dashboard og log ind. 2. Opret en ny app (navnet er ligegyldigt). 3. Tilføj i appens indstillinger den Redirect URI, der vises i SpotOn-indstillingerne. 4. Kopiér Client-ID'et, og indsæt det i Client-ID-feltet.
-	DE	Optional, für Fortgeschrittene: nur nötig, wenn du deine eigene Spotify Developer App bevorzugst (eigene Client-ID mit GitHub-Pages-Redirect). 1. Öffne developer.spotify.com/dashboard und melde dich an. 2. Erstelle eine neue App (der Name spielt keine Rolle). 3. Füge in den App-Einstellungen die Redirect-URI hinzu, die in den SpotOn-Einstellungen angezeigt wird. 4. Kopiere die Client-ID und füge sie in das Client-ID-Feld ein.
-	EN	Optional, advanced: only needed if you prefer your own Spotify Developer App (custom Client ID with GitHub Pages redirect). 1. Go to developer.spotify.com/dashboard and log in. 2. Create a new app (any name works). 3. In the app's settings, add the Redirect URI shown in SpotOn Settings. 4. Copy the Client ID and paste it into the Client ID field.
-	ES	Opcional, avanzado: solo se necesita si prefieres tu propia App de Spotify Developer (Client ID personalizado con redirección de GitHub Pages). 1. Ve a developer.spotify.com/dashboard e inicia sesión. 2. Crea una nueva app (el nombre no importa). 3. En la configuración de la app, añade el Redirect URI que se muestra en los Ajustes de SpotOn. 4. Copia el Client ID y pégalo en el campo Client ID.
-	FR	Optionnel, avancé : nécessaire uniquement si vous préférez votre propre application Spotify Developer (Client ID personnalisé avec redirection GitHub Pages). 1. Rendez-vous sur developer.spotify.com/dashboard et connectez-vous. 2. Créez une nouvelle application (le nom importe peu). 3. Dans les paramètres de l'application, ajoutez le Redirect URI affiché dans les Paramètres de SpotOn. 4. Copiez le Client ID et collez-le dans le champ Client ID.
-	IT	Facoltativo, avanzato: necessario solo se preferisci la tua Spotify Developer App (Client ID personalizzato con redirect GitHub Pages). 1. Vai su developer.spotify.com/dashboard ed effettua l'accesso. 2. Crea una nuova app (il nome non è importante). 3. Nelle impostazioni dell'app, aggiungi il Redirect URI mostrato nelle Impostazioni di SpotOn. 4. Copia il Client ID e incollalo nel campo Client ID.
-	NL	Optioneel, geavanceerd: alleen nodig als u de voorkeur geeft aan uw eigen Spotify Developer App (eigen Client-ID met GitHub Pages-omleiding). 1. Ga naar developer.spotify.com/dashboard en log in. 2. Maak een nieuwe app aan (de naam maakt niet uit). 3. Voeg in de app-instellingen de Redirect URI toe die in de SpotOn-instellingen wordt weergegeven. 4. Kopieer het Client-ID en plak het in het Client-ID-veld.
-	NO	Valgfritt, avansert: bare nødvendig hvis du foretrekker din egen Spotify Developer App (egendefinert Client-ID med GitHub Pages-omdirigering). 1. Gå til developer.spotify.com/dashboard og logg inn. 2. Opprett en ny app (navnet spiller ingen rolle). 3. Legg til Redirect URI-en som vises i SpotOn-innstillingene, i appens innstillinger. 4. Kopier Client-ID-en og lim den inn i Client-ID-feltet.
-	PL	Opcjonalne, zaawansowane: potrzebne tylko wtedy, gdy wolisz własną aplikację Spotify Developer (własne Client ID z przekierowaniem GitHub Pages). 1. Wejdź na developer.spotify.com/dashboard i zaloguj się. 2. Utwórz nową aplikację (nazwa nie ma znaczenia). 3. W ustawieniach aplikacji dodaj Redirect URI pokazany w Ustawieniach SpotOn. 4. Skopiuj Client ID i wklej je w pole Client ID.
-	SV	Valfritt, avancerat: behövs bara om du föredrar din egen Spotify Developer App (eget Client-ID med GitHub Pages-omdirigering). 1. Gå till developer.spotify.com/dashboard och logga in. 2. Skapa en ny app (namnet spelar ingen roll). 3. Lägg till den Redirect URI som visas i SpotOns inställningar i appens inställningar. 4. Kopiera Client-ID och klistra in det i Client-ID-fältet.
+	CS	1. Otevřete developer.spotify.com/dashboard a přihlaste se. 2. Vytvořte novou aplikaci (na názvu nezáleží). 3. V nastavení aplikace přidejte níže uvedenou Redirect URI. 4. Zkopírujte Client ID a vložte jej do pole výše.
+	DA	1. Gå til developer.spotify.com/dashboard og log ind. 2. Opret en ny app (navnet er ligegyldigt). 3. Tilføj nedenstående Redirect URI i appens indstillinger. 4. Kopiér Client-ID'et, og indsæt det i feltet ovenfor.
+	DE	1. Öffne developer.spotify.com/dashboard und melde dich an. 2. Erstelle eine neue App (der Name spielt keine Rolle). 3. Füge in den App-Einstellungen die unten angezeigte Redirect-URI hinzu. 4. Kopiere die Client-ID und füge sie in das Feld oben ein.
+	EN	1. Go to developer.spotify.com/dashboard and log in. 2. Create a new app (any name works). 3. In the app's settings, add the Redirect URI shown below. 4. Copy the Client ID and paste it into the field above.
+	ES	1. Ve a developer.spotify.com/dashboard e inicia sesión. 2. Crea una nueva app (el nombre no importa). 3. En la configuración de la app, añade el Redirect URI que se muestra abajo. 4. Copia el Client ID y pégalo en el campo de arriba.
+	FR	1. Rendez-vous sur developer.spotify.com/dashboard et connectez-vous. 2. Créez une nouvelle application (le nom importe peu). 3. Dans les paramètres de l'application, ajoutez le Redirect URI affiché ci-dessous. 4. Copiez le Client ID et collez-le dans le champ ci-dessus.
+	IT	1. Vai su developer.spotify.com/dashboard ed effettua l'accesso. 2. Crea una nuova app (il nome non è importante). 3. Nelle impostazioni dell'app, aggiungi il Redirect URI mostrato qui sotto. 4. Copia il Client ID e incollalo nel campo qui sopra.
+	NL	1. Ga naar developer.spotify.com/dashboard en log in. 2. Maak een nieuwe app aan (de naam maakt niet uit). 3. Voeg in de app-instellingen de hieronder weergegeven Redirect URI toe. 4. Kopieer het Client-ID en plak het in het veld hierboven.
+	NO	1. Gå til developer.spotify.com/dashboard og logg inn. 2. Opprett en ny app (navnet spiller ingen rolle). 3. Legg til Redirect URI-en som vises nedenfor, i appens innstillinger. 4. Kopier Client-ID-en og lim den inn i feltet ovenfor.
+	PL	1. Wejdź na developer.spotify.com/dashboard i zaloguj się. 2. Utwórz nową aplikację (nazwa nie ma znaczenia). 3. W ustawieniach aplikacji dodaj Redirect URI pokazany poniżej. 4. Skopiuj Client ID i wklej je w pole powyżej.
+	SV	1. Gå till developer.spotify.com/dashboard och logga in. 2. Skapa en ny app (namnet spelar ingen roll). 3. Lägg till Redirect URI som visas nedan i appens inställningar. 4. Kopiera Client-ID och klistra in det i fältet ovan.
 
 PLUGIN_SPOTON_DSTM_HINT
 	CS	Tip: Automatické přehrávání (Don't Stop The Music) se konfiguruje v Nastavení přehrávače > Don't Stop The Music. Vyberte „SpotOn doporučení".
