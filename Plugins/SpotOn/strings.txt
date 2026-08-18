@@ -1103,19 +1103,6 @@ PLUGIN_SPOTON_CUSTOM_APP_REMOVE
 	PL	Usuń niestandardowe App ID i użyj trybu domyślnego
 	SV	Ta bort anpassat App-ID och använd standardläge
 
-PLUGIN_SPOTON_DEFAULT_AUTH_INFO
-	CS	SpotOn funguje bez dalšího nastavení — není potřeba žádná Spotify Developer App. Nastavení dokončí dvě autorizace: připojení účtu a poté autorizace přehrávání.
-	DA	SpotOn fungerer med det samme — ingen Spotify Developer App er nødvendig. To godkendelser fuldfører opsætningen: tilslut din konto, og godkend derefter afspilning.
-	DE	SpotOn funktioniert sofort — keine Spotify Developer App nötig. Zwei Autorisierungen schließen die Einrichtung ab: zuerst dein Konto verbinden, dann die Wiedergabe autorisieren.
-	EN	SpotOn works out of the box — no Spotify Developer App needed. Two authorizations complete the setup: connect your account, then authorize playback.
-	ES	SpotOn funciona desde el primer momento — no se necesita una App de Spotify Developer. Dos autorizaciones completan la configuración: conectar tu cuenta y luego autorizar la reproducción.
-	FR	SpotOn fonctionne immédiatement — aucune application Spotify Developer requise. Deux autorisations complètent la configuration : connecter votre compte, puis autoriser la lecture.
-	IT	SpotOn funziona subito — nessuna Spotify Developer App necessaria. Due autorizzazioni completano la configurazione: collegare l'account, quindi autorizzare la riproduzione.
-	NL	SpotOn werkt direct — geen Spotify Developer App nodig. Twee autorisaties voltooien de installatie: uw account verbinden en vervolgens afspelen autoriseren.
-	NO	SpotOn fungerer med en gang — ingen Spotify Developer App er nødvendig. To autorisasjoner fullfører oppsettet: koble til kontoen din, og autoriser deretter avspilling.
-	PL	SpotOn działa od razu — nie jest wymagana aplikacja Spotify Developer. Konfigurację kończą dwie autoryzacje: połączenie konta, a następnie autoryzacja odtwarzania.
-	SV	SpotOn fungerar direkt — ingen Spotify Developer App behövs. Två auktoriseringar slutför installationen: anslut ditt konto och auktorisera sedan uppspelning.
-
 PLUGIN_SPOTON_BUNDLED_SHARED_QUOTA_HINT
 	CS	Vestavěné Client ID je sdíleno napříč všemi instalacemi SpotOn. Během špičkového vytížení může docházet k omezování rychlosti požadavků. Pro nejlepší zážitek si níže vytvořte vlastní Spotify Developer App.
 	DA	Det medfølgende Client-ID deles på tværs af alle SpotOn-installationer. Der kan forekomme hastighedsbegrænsning i spidsbelastningsperioder. For den bedste oplevelse bør du oprette din egen Spotify Developer App nedenfor.

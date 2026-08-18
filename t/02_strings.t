@@ -153,7 +153,6 @@ SKIP: {
         PLUGIN_SPOTON_BUNDLED_SHARED_QUOTA_HINT
         PLUGIN_SPOTON_CUSTOM_QUOTA_OK
         PLUGIN_SPOTON_CLIENT_ID_REAUTH_HINT
-        PLUGIN_SPOTON_DEFAULT_AUTH_INFO
         PLUGIN_SPOTON_SETTINGS_ACCOUNT_SECTION
         PLUGIN_SPOTON_SETUP_SPDC_TITLE
         PLUGIN_SPOTON_SETUP_SPDC_DESC
@@ -259,6 +258,10 @@ SKIP: {
         ok(!$has_en{$key} && !$has_de{$key},
             "$key is removed (Settings reorg, Plan 66-03)");
     }
+
+    # Phase 67: DEFAULT_AUTH_INFO replaced by BUNDLED_SHARED_QUOTA_HINT
+    ok(!$has_en{'PLUGIN_SPOTON_DEFAULT_AUTH_INFO'} && !$has_de{'PLUGIN_SPOTON_DEFAULT_AUTH_INFO'},
+        'PLUGIN_SPOTON_DEFAULT_AUTH_INFO is removed (replaced by BUNDLED_SHARED_QUOTA_HINT, Phase 67)');
 
     # Verify correct indentation: lines must use Tab, not spaces
     my $bad_indent = 0;

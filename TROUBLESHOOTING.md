@@ -103,7 +103,7 @@ If the Status page shows `API Limits: Search 10 | Library 10 | Playlists 20` (or
 1. **Recommended: Create your own Spotify Developer App.** Go to the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard), create an app, and enter its Client ID in SpotOn Settings. Your own app has a private rate-limit bucket that is not shared with anyone else. The setup wizard in SpotOn Settings walks through the required steps (Redirect URI, Client ID entry).
 2. **If 429s are intermittent and brief**, SpotOn automatically backs off and retries — waiting a few seconds usually resolves it without any action needed.
 
-**Note:** Since v3.6.0, SpotOn skips the startup API-limit probe when using the bundled Client ID (the limits are known constants), saving 8 requests from the shared quota on every LMS restart.
+**Note:** Recent versions of SpotOn skip the startup API-limit probe when using the bundled Client ID (the limits are known constants), saving 8 requests from the shared quota on every LMS restart.
 
 ### "Made For You" playlists missing or empty
 
