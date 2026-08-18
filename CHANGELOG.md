@@ -5,6 +5,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.5.7] - 2026-08-18
+
+### Fixed
+- **Concurrent Browse requests during a 429 window no longer show empty pages** — when one request triggers a 429, other Browse (GET) requests arriving during the Retry-After window are now deferred and retried automatically after the window closes (with jitter to prevent bursts), instead of returning an instant "No results" page with no log trace. Write requests (play/pause/seek/volume) keep fail-fast behavior. ([#155](https://github.com/stiefenm/spoton/issues/155))
+- **Rate-limit short-circuits now visible in server.log** — upgraded from debug to info level across all three API pipelines, making the "invisible empty page" pattern diagnosable at normal log verbosity.
+- **"Temporarily rate limited" message instead of "No results"** — when a request is rate-limited and cannot be deferred, the OPML menu now shows a localized explanation (11 languages) instead of the confusing generic "No results".
+
 ## [3.5.6] - 2026-08-18
 
 ### Fixed
