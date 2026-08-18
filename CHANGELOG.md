@@ -5,6 +5,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.5.4] - 2026-08-18
+
+### Fixed
+- **Client ID section moved to top of Account Settings** — the shared-quota warning and custom ID input are now the first item users see, instead of being buried below Pathfinder Hash.
+
 ## [3.5.3] - 2026-08-18
 
 ### Fixed
