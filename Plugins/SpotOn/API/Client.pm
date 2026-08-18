@@ -800,7 +800,8 @@ sub pathfinderHome {
     # Isolated Web-Player rate pool (Pitfall 5, T-52-04) -- never the shared
     # 'spoton_rate_limit' key checked by _request().
     if ($cache->get(WP_RATE_LIMIT_KEY)) {
-        $cb->(undef, { error => 'rate_limited', code => 429 });
+        $log->debug('Client: pathfinderHome short-circuited (cached rate limit)');
+        $cb->(undef, { error => 'rate_limited_local', code => 429 });
         return;
     }
 
@@ -1127,7 +1128,8 @@ sub getWebPlayerPlaylistItems {
         unless $playlistId && $playlistId =~ /^[A-Za-z0-9]{1,40}$/;
 
     if ($cache->get(WP_RATE_LIMIT_KEY)) {
-        $cb->(undef, { error => 'rate_limited', code => 429 });
+        $log->debug('Client: getWebPlayerPlaylistItems short-circuited (cached rate limit)');
+        $cb->(undef, { error => 'rate_limited_local', code => 429 });
         return;
     }
 
@@ -1323,7 +1325,8 @@ sub _request {
 
     # Step 2: Rate-limit check — single key, no flavor suffix (D-04).
     if ($cache->get('spoton_rate_limit')) {
-        $cb->(undef, { error => 'rate_limited', code => 429 });
+        $log->debug("Client: request to $cleanPath short-circuited (cached rate limit)");
+        $cb->(undef, { error => 'rate_limited_local', code => 429 });
         return;
     }
 
