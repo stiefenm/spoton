@@ -888,6 +888,18 @@ sub pathfinderHome {
                         Plugins::SpotOn::Status->recordError('warn', 'API', '429 on pathfinder/v2/query');
                     }
                     $log->warn("Client: pathfinderHome 429 rate limited for ${retryAfter}s (Web-Player pool)");
+
+                    # GH #155: Auto-retry once after Retry-After delay
+                    if (!$params->{_retryAttempt}) {
+                        $params->{_retryAttempt} = 1;
+                        $log->warn("Client: pathfinderHome auto-retry in ${retryAfter}s (GH #155)");
+                        Slim::Utils::Timers::setTimer(undef, time() + $retryAfter, sub {
+                            $cache->remove(WP_RATE_LIMIT_KEY);
+                            $class->pathfinderHome($accountId, $params, $cb);
+                        });
+                        return;
+                    }
+
                     $cb->(undef, { error => 'rate_limited', code => 429 });
                     return;
                 }
@@ -1207,6 +1219,18 @@ sub getWebPlayerPlaylistItems {
                         Plugins::SpotOn::Status->recordError('warn', 'API', '429 on pathfinder fetchPlaylistContents');
                     }
                     $log->warn("Client: getWebPlayerPlaylistItems 429 rate limited for ${retryAfter}s (Web-Player pool)");
+
+                    # GH #155: Auto-retry once after Retry-After delay
+                    if (!$params->{_retryAttempt}) {
+                        $params->{_retryAttempt} = 1;
+                        $log->warn("Client: getWebPlayerPlaylistItems auto-retry in ${retryAfter}s (GH #155)");
+                        Slim::Utils::Timers::setTimer(undef, time() + $retryAfter, sub {
+                            $cache->remove(WP_RATE_LIMIT_KEY);
+                            $class->getWebPlayerPlaylistItems($accountId, $playlistId, $params, $cb);
+                        });
+                        return;
+                    }
+
                     $cb->(undef, { error => 'rate_limited', code => 429 });
                     return;
                 }
