@@ -5,6 +5,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.5.6] - 2026-08-18
+
+### Fixed
+- **Transparent auto-retry on 429 rate limits** — when Spotify returns a 429 with a short Retry-After (≤30s), SpotOn now waits and retries once automatically instead of showing an instant "no result" page. Covers all three API pipelines (Browse, Pathfinder Home, Web Player Playlists). A second consecutive 429 still fails fast as before. ([#155](https://github.com/stiefenm/spoton/issues/155))
+
 ## [3.5.5] - 2026-08-18
 
 ### Changed
