@@ -67,6 +67,48 @@
 	<hr style="margin:16px 0; border:0; border-top:1px solid rgba(128,128,128,0.25)"/>
 	<h2>[% 'PLUGIN_SPOTON_SETTINGS_ACCOUNT_SECTION' | string %]</h2>
 
+	[% WRAPPER setting title="PLUGIN_SPOTON_CLIENT_ID_SETTINGS" desc="PLUGIN_SPOTON_CLIENT_ID_DESC" %]
+		[% IF clientIdMode == 'bundled' %]
+		<div style="color: orange; margin:0 0 10px 0; font-size:0.9em">
+			[% 'PLUGIN_SPOTON_BUNDLED_SHARED_QUOTA_HINT' | string %]
+		</div>
+		[% ELSE %]
+		<div style="color: green; margin:0 0 10px 0; font-size:0.9em">
+			[% 'PLUGIN_SPOTON_CUSTOM_QUOTA_OK' | string %]
+		</div>
+		[% END %]
+
+		<input type="text" class="stdedit" name="pref_clientId" id="pref_clientId"
+		       value="[% customClientId | html %]"
+		       placeholder="[% 'PLUGIN_SPOTON_CLIENT_ID_PLACEHOLDER' | string %]"/>
+		[% IF accounts.keys.size %]
+		<p style="margin:4px 0 0 0; font-size:0.85em; color:orange; opacity:0.85">
+			[% 'PLUGIN_SPOTON_CLIENT_ID_REAUTH_HINT' | string %]
+		</p>
+		[% END %]
+
+		[% IF quotaState == 'devmode' %]
+		<div style="color: orange; margin:10px 0">
+			[% 'PLUGIN_SPOTON_DEVMODE_QUOTA_WARNING' | string %]
+		</div>
+		[% END %]
+
+		<details style="margin-top:10px"[% IF clientIdMode == 'bundled' %] open[% END %]>
+			<summary style="cursor:pointer">[% IF clientIdMode == 'bundled' %][% 'PLUGIN_SPOTON_CUSTOM_APP_SETUP' | string %][% ELSE %][% 'PLUGIN_SPOTON_CUSTOM_APP_TITLE' | string %][% END %]</summary>
+
+			<details style="margin-top:10px">
+				<summary style="cursor:pointer">[% 'PLUGIN_SPOTON_CLIENT_ID_WIZARD_TITLE' | string %]</summary>
+				<p style="margin:8px 0 4px 0; font-size:0.9em; opacity:0.85">[% 'PLUGIN_SPOTON_SETUP_DEVAPP_DESC' | string %]</p>
+				<p style="margin:0; font-size:0.85em">
+					<code style="background:rgba(128,128,128,0.1); padding:2px 6px; border-radius:3px">[% redirectUri | html %]</code>
+				</p>
+			</details>
+			<p style="margin:8px 0 0 0; font-size:0.85em; opacity:0.7">
+				<a href="#" onclick="document.getElementById('pref_clientId').value=''; return false;">[% 'PLUGIN_SPOTON_CUSTOM_APP_REMOVE' | string %]</a>
+			</p>
+		</details>
+	[% END %]
+
 	[% WRAPPER setting title="PLUGIN_SPOTON_PKCE_AUTH" desc="PLUGIN_SPOTON_PKCE_AUTH_DESC" %]
 		<p>
 			<button type="button" class="submit" id="pkceConnectBtn" onclick="spotonPkceStart()"
@@ -238,48 +280,6 @@
 		<details style="margin-top:10px">
 			<summary style="cursor:pointer">[% 'PLUGIN_SPOTON_PATHFINDER_HASH_HOWTO_TITLE' | string %]</summary>
 			<p style="margin:8px 0 0 0; font-size:0.9em; opacity:0.85">[% 'PLUGIN_SPOTON_PATHFINDER_HASH_HOWTO' | string | html %]</p>
-		</details>
-	[% END %]
-
-	[% WRAPPER setting title="PLUGIN_SPOTON_CLIENT_ID_SETTINGS" desc="PLUGIN_SPOTON_CLIENT_ID_DESC" %]
-		[% IF clientIdMode == 'bundled' %]
-		<div style="color: orange; margin:0 0 10px 0; font-size:0.9em">
-			[% 'PLUGIN_SPOTON_BUNDLED_SHARED_QUOTA_HINT' | string %]
-		</div>
-		[% ELSE %]
-		<div style="color: green; margin:0 0 10px 0; font-size:0.9em">
-			[% 'PLUGIN_SPOTON_CUSTOM_QUOTA_OK' | string %]
-		</div>
-		[% END %]
-
-		<input type="text" class="stdedit" name="pref_clientId" id="pref_clientId"
-		       value="[% customClientId | html %]"
-		       placeholder="[% 'PLUGIN_SPOTON_CLIENT_ID_PLACEHOLDER' | string %]"/>
-		[% IF accounts.keys.size %]
-		<p style="margin:4px 0 0 0; font-size:0.85em; color:orange; opacity:0.85">
-			[% 'PLUGIN_SPOTON_CLIENT_ID_REAUTH_HINT' | string %]
-		</p>
-		[% END %]
-
-		[% IF quotaState == 'devmode' %]
-		<div style="color: orange; margin:10px 0">
-			[% 'PLUGIN_SPOTON_DEVMODE_QUOTA_WARNING' | string %]
-		</div>
-		[% END %]
-
-		<details style="margin-top:10px"[% IF clientIdMode == 'bundled' %] open[% END %]>
-			<summary style="cursor:pointer">[% IF clientIdMode == 'bundled' %][% 'PLUGIN_SPOTON_CUSTOM_APP_SETUP' | string %][% ELSE %][% 'PLUGIN_SPOTON_CUSTOM_APP_TITLE' | string %][% END %]</summary>
-
-			<details style="margin-top:10px">
-				<summary style="cursor:pointer">[% 'PLUGIN_SPOTON_CLIENT_ID_WIZARD_TITLE' | string %]</summary>
-				<p style="margin:8px 0 4px 0; font-size:0.9em; opacity:0.85">[% 'PLUGIN_SPOTON_SETUP_DEVAPP_DESC' | string %]</p>
-				<p style="margin:0; font-size:0.85em">
-					<code style="background:rgba(128,128,128,0.1); padding:2px 6px; border-radius:3px">[% redirectUri | html %]</code>
-				</p>
-			</details>
-			<p style="margin:8px 0 0 0; font-size:0.85em; opacity:0.7">
-				<a href="#" onclick="document.getElementById('pref_clientId').value=''; return false;">[% 'PLUGIN_SPOTON_CUSTOM_APP_REMOVE' | string %]</a>
-			</p>
 		</details>
 	[% END %]
 
