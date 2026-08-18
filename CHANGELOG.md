@@ -5,6 +5,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.5.5] - 2026-08-18
+
+### Changed
+- **Settings UX polish** — Client ID section is now the first item in Account Settings. Removed redundant nested details section (single wizard remains). Removed devmode quota warning and redundant Redirect URI hint from the auth section. "Default mode" relabeled to "bundled ID" in the remove link.
+- **Re-authorization banner** — after changing the Client ID, a prominent orange banner appears at the top of Settings linking to the Connect Account section, matching the playback auth banner style.
+
 ## [3.5.4] - 2026-08-18
 
 ### Fixed
