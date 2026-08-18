@@ -1000,17 +1000,17 @@ PLUGIN_SPOTON_CLIENT_ID_SETTINGS
 	SV	Anpassad Spotify App
 
 PLUGIN_SPOTON_CLIENT_ID_DESC
-	CS	Volitelné pokročilé nastavení: ponechte prázdné pro použití vestavěné výchozí identity. Client ID vlastní Spotify Developer App zadejte jen tehdy, pokud dáváte přednost vyhrazenému limitu API požadavků.
-	DA	Valgfri avanceret indstilling: Lad feltet stå tomt for at bruge den indbyggede standardidentitet. Indtast kun dit eget Spotify Developer App Client-ID, hvis du foretrækker en dedikeret API-hastighedsgrænse.
-	DE	Optionale erweiterte Einstellung: Leer lassen, um die integrierte Standard-Identität zu verwenden. Trage die Client-ID deiner eigenen Spotify Developer App nur ein, wenn du ein dediziertes API-Ratenlimit bevorzugst.
-	EN	Optional advanced setting: leave empty to use the built-in default identity. Enter your own Spotify Developer App Client ID only if you prefer a dedicated API rate limit.
-	ES	Ajuste avanzado opcional: déjalo vacío para usar la identidad predeterminada integrada. Introduce el Client ID de tu propia App de Spotify Developer solo si prefieres un límite de solicitudes de API dedicado.
-	FR	Réglage avancé optionnel : laissez vide pour utiliser l'identité par défaut intégrée. Saisissez le Client ID de votre propre application Spotify Developer uniquement si vous préférez une limite de requêtes API dédiée.
-	IT	Impostazione avanzata facoltativa: lascia vuoto per usare l'identità predefinita integrata. Inserisci il Client ID della tua Spotify Developer App solo se preferisci un limite di richieste API dedicato.
-	NL	Optionele geavanceerde instelling: laat leeg om de ingebouwde standaardidentiteit te gebruiken. Voer alleen het Client-ID van uw eigen Spotify Developer App in als u de voorkeur geeft aan een toegewezen API-snelheidslimiet.
-	NO	Valgfri avansert innstilling: La feltet stå tomt for å bruke den innebygde standardidentiteten. Skriv bare inn Client-ID-en til din egen Spotify Developer App hvis du foretrekker en dedikert API-hastighetsgrense.
-	PL	Opcjonalne ustawienie zaawansowane: pozostaw puste, aby używać wbudowanej tożsamości domyślnej. Wpisz Client ID własnej aplikacji Spotify Developer tylko wtedy, gdy wolisz dedykowany limit zapytań API.
-	SV	Valfri avancerad inställning: lämna tomt för att använda den inbyggda standardidentiteten. Ange endast Client-ID:t för din egen Spotify Developer App om du föredrar en dedikerad API-hastighetsgräns.
+	CS	SpotOn je dodáván s vestavěným Client ID, které funguje bez dalšího nastavení. Vytvoření vlastní Spotify Developer App vám poskytne soukromou kvótu API bez sdílených limitů požadavků.
+	DA	SpotOn leveres med et indbygget Client-ID, der fungerer med det samme. Hvis du opretter din egen Spotify Developer App, får du en privat API-kvote uden delte hastighedsgrænser.
+	DE	SpotOn wird mit einer integrierten Client-ID ausgeliefert, die sofort funktioniert. Wenn du deine eigene Spotify Developer App erstellst, erhältst du ein privates API-Kontingent ohne geteilte Ratenlimits.
+	EN	SpotOn ships a bundled Client ID that works out of the box. Creating your own Spotify Developer App gives you a private API quota with no shared rate limits.
+	ES	SpotOn incluye un Client ID integrado que funciona desde el primer momento. Crear tu propia App de Spotify Developer te da una cuota de API privada sin límites de solicitudes compartidos.
+	FR	SpotOn est livré avec un Client ID intégré qui fonctionne immédiatement. Créer votre propre application Spotify Developer vous donne un quota d'API privé, sans limites de requêtes partagées.
+	IT	SpotOn include un Client ID integrato che funziona subito. Creare la tua Spotify Developer App ti offre una quota API privata senza limiti di richieste condivisi.
+	NL	SpotOn wordt geleverd met een ingebouwd Client-ID dat direct werkt. Als u uw eigen Spotify Developer App aanmaakt, krijgt u een privé API-quotum zonder gedeelde snelheidslimieten.
+	NO	SpotOn leveres med en innebygd Client-ID som fungerer med en gang. Hvis du oppretter din egen Spotify Developer App, får du en privat API-kvote uten delte hastighetsgrenser.
+	PL	SpotOn jest dostarczany z wbudowanym Client ID, które działa od razu. Utworzenie własnej aplikacji Spotify Developer daje ci prywatny limit API bez współdzielonych limitów zapytań.
+	SV	SpotOn levereras med ett inbyggt Client-ID som fungerar direkt. Om du skapar din egen Spotify Developer App får du en privat API-kvot utan delade hastighetsgränser.
 
 PLUGIN_SPOTON_CLIENT_ID_PLACEHOLDER
 	CS	Spotify Client-ID (32 znaků, alfanumerické)
@@ -1052,17 +1052,30 @@ PLUGIN_SPOTON_REGISTER_APP_LINK
 	SV	Registrera din egen app
 
 PLUGIN_SPOTON_CUSTOM_APP_TITLE
-	CS	Pokročilé: Použít vlastní Spotify Developer App
-	DA	Avanceret: Brug din egen Spotify Developer App
-	DE	Erweitert: Eigene Spotify Developer App verwenden
-	EN	Advanced: Use your own Spotify Developer App
-	ES	Avanzado: Usar tu propia App de Spotify Developer
-	FR	Avancé : utiliser votre propre application Spotify Developer
-	IT	Avanzate: usa la tua Spotify Developer App
-	NL	Geavanceerd: gebruik uw eigen Spotify Developer App
-	NO	Avansert: Bruk din egen Spotify Developer App
-	PL	Zaawansowane: użyj własnej aplikacji Spotify Developer
-	SV	Avancerat: Använd din egen Spotify Developer App
+	CS	Spravovat vlastní Spotify App
+	DA	Administrer brugerdefineret Spotify App
+	DE	Eigene Spotify App verwalten
+	EN	Manage Custom Spotify App
+	ES	Gestionar App de Spotify personalizada
+	FR	Gérer l'application Spotify personnalisée
+	IT	Gestisci app Spotify personalizzata
+	NL	Aangepaste Spotify App beheren
+	NO	Administrer egendefinert Spotify App
+	PL	Zarządzaj własną aplikacją Spotify
+	SV	Hantera anpassad Spotify App
+
+PLUGIN_SPOTON_CUSTOM_APP_SETUP
+	CS	Doporučeno: Vytvořte si vlastní Spotify Developer App
+	DA	Anbefalet: Opret din egen Spotify Developer App
+	DE	Empfohlen: Eigene Spotify Developer App erstellen
+	EN	Recommended: Create your own Spotify Developer App
+	ES	Recomendado: Crea tu propia App de Spotify Developer
+	FR	Recommandé : créez votre propre application Spotify Developer
+	IT	Consigliato: crea la tua Spotify Developer App
+	NL	Aanbevolen: maak uw eigen Spotify Developer App aan
+	NO	Anbefalt: Opprett din egen Spotify Developer App
+	PL	Zalecane: Utwórz własną aplikację Spotify Developer
+	SV	Rekommenderas: Skapa din egen Spotify Developer App
 
 PLUGIN_SPOTON_CUSTOM_APP_REMOVE
 	CS	Odebrat vlastní App ID a použít výchozí režim
@@ -1078,17 +1091,43 @@ PLUGIN_SPOTON_CUSTOM_APP_REMOVE
 	SV	Ta bort anpassat App-ID och använd standardläge
 
 PLUGIN_SPOTON_DEFAULT_AUTH_INFO
-	CS	Výchozí režim: SpotOn používá vestavěnou identitu aplikace s vlastní kvótou API — není potřeba žádná Spotify Developer App. Nastavení dokončí dvě autorizace: připojení účtu a poté autorizace přehrávání.
-	DA	Standardtilstand: SpotOn bruger sin indbyggede app-identitet med sin egen API-kvote — ingen Spotify Developer App er nødvendig. To godkendelser fuldfører opsætningen: tilslut din konto, og godkend derefter afspilning.
-	DE	Standardmodus: SpotOn nutzt seine integrierte App-Identität mit eigenem API-Kontingent — keine Spotify Developer App nötig. Zwei Autorisierungen schließen die Einrichtung ab: zuerst dein Konto verbinden, dann die Wiedergabe autorisieren.
-	EN	Default mode: SpotOn uses its built-in app identity with its own API quota — no Spotify Developer App needed. Two authorizations complete the setup: connect your account, then authorize playback.
-	ES	Modo predeterminado: SpotOn utiliza su identidad de app integrada con su propia cuota de API — no se necesita una App de Spotify Developer. Dos autorizaciones completan la configuración: conectar tu cuenta y luego autorizar la reproducción.
-	FR	Mode par défaut : SpotOn utilise sa propre identité d'application intégrée avec son propre quota d'API — aucune application Spotify Developer requise. Deux autorisations complètent la configuration : connecter votre compte, puis autoriser la lecture.
-	IT	Modalità predefinita: SpotOn utilizza la propria identità app integrata con una quota API dedicata — nessuna Spotify Developer App necessaria. Due autorizzazioni completano la configurazione: collegare l'account, quindi autorizzare la riproduzione.
-	NL	Standaardmodus: SpotOn gebruikt zijn ingebouwde app-identiteit met een eigen API-quotum — geen Spotify Developer App nodig. Twee autorisaties voltooien de installatie: uw account verbinden en vervolgens afspelen autoriseren.
-	NO	Standardmodus: SpotOn bruker sin innebygde app-identitet med sin egen API-kvote — ingen Spotify Developer App er nødvendig. To autorisasjoner fullfører oppsettet: koble til kontoen din, og autoriser deretter avspilling.
-	PL	Tryb domyślny: SpotOn korzysta z wbudowanej tożsamości aplikacji z własnym limitem API — nie jest wymagana aplikacja Spotify Developer. Konfigurację kończą dwie autoryzacje: połączenie konta, a następnie autoryzacja odtwarzania.
-	SV	Standardläge: SpotOn använder sin inbyggda appidentitet med egen API-kvot — ingen Spotify Developer App behövs. Två auktoriseringar slutför installationen: anslut ditt konto och auktorisera sedan uppspelning.
+	CS	SpotOn funguje bez dalšího nastavení — není potřeba žádná Spotify Developer App. Nastavení dokončí dvě autorizace: připojení účtu a poté autorizace přehrávání.
+	DA	SpotOn fungerer med det samme — ingen Spotify Developer App er nødvendig. To godkendelser fuldfører opsætningen: tilslut din konto, og godkend derefter afspilning.
+	DE	SpotOn funktioniert sofort — keine Spotify Developer App nötig. Zwei Autorisierungen schließen die Einrichtung ab: zuerst dein Konto verbinden, dann die Wiedergabe autorisieren.
+	EN	SpotOn works out of the box — no Spotify Developer App needed. Two authorizations complete the setup: connect your account, then authorize playback.
+	ES	SpotOn funciona desde el primer momento — no se necesita una App de Spotify Developer. Dos autorizaciones completan la configuración: conectar tu cuenta y luego autorizar la reproducción.
+	FR	SpotOn fonctionne immédiatement — aucune application Spotify Developer requise. Deux autorisations complètent la configuration : connecter votre compte, puis autoriser la lecture.
+	IT	SpotOn funziona subito — nessuna Spotify Developer App necessaria. Due autorizzazioni completano la configurazione: collegare l'account, quindi autorizzare la riproduzione.
+	NL	SpotOn werkt direct — geen Spotify Developer App nodig. Twee autorisaties voltooien de installatie: uw account verbinden en vervolgens afspelen autoriseren.
+	NO	SpotOn fungerer med en gang — ingen Spotify Developer App er nødvendig. To autorisasjoner fullfører oppsettet: koble til kontoen din, og autoriser deretter avspilling.
+	PL	SpotOn działa od razu — nie jest wymagana aplikacja Spotify Developer. Konfigurację kończą dwie autoryzacje: połączenie konta, a następnie autoryzacja odtwarzania.
+	SV	SpotOn fungerar direkt — ingen Spotify Developer App behövs. Två auktoriseringar slutför installationen: anslut ditt konto och auktorisera sedan uppspelning.
+
+PLUGIN_SPOTON_BUNDLED_SHARED_QUOTA_HINT
+	CS	Vestavěné Client ID je sdíleno napříč všemi instalacemi SpotOn. Během špičkového vytížení může docházet k omezování rychlosti požadavků. Pro nejlepší zážitek si níže vytvořte vlastní Spotify Developer App.
+	DA	Det medfølgende Client-ID deles på tværs af alle SpotOn-installationer. Der kan forekomme hastighedsbegrænsning i spidsbelastningsperioder. For den bedste oplevelse bør du oprette din egen Spotify Developer App nedenfor.
+	DE	Die integrierte Client-ID wird von allen SpotOn-Installationen gemeinsam genutzt. Bei Spitzenlast kann es zu Ratenbegrenzungen kommen. Für die beste Erfahrung erstelle unten deine eigene Spotify Developer App.
+	EN	The bundled Client ID is shared across all SpotOn installations. Rate limiting may occur during peak usage. For the best experience, create your own Spotify Developer App below.
+	ES	El Client ID incluido se comparte entre todas las instalaciones de SpotOn. Puede producirse limitación de velocidad durante horas de máximo uso. Para la mejor experiencia, crea tu propia App de Spotify Developer a continuación.
+	FR	Le Client ID intégré est partagé entre toutes les installations de SpotOn. Une limitation du débit peut survenir en période de forte affluence. Pour une meilleure expérience, créez votre propre application Spotify Developer ci-dessous.
+	IT	Il Client ID incluso è condiviso tra tutte le installazioni di SpotOn. Durante i picchi di utilizzo può verificarsi una limitazione della velocità. Per la migliore esperienza, crea la tua Spotify Developer App qui sotto.
+	NL	Het meegeleverde Client-ID wordt gedeeld door alle SpotOn-installaties. Tijdens piekgebruik kan snelheidsbeperking optreden. Voor de beste ervaring maakt u hieronder uw eigen Spotify Developer App aan.
+	NO	Det medfølgende Client-ID-et deles på tvers av alle SpotOn-installasjoner. Hastighetsbegrensning kan forekomme ved høy belastning. For den beste opplevelsen bør du opprette din egen Spotify Developer App nedenfor.
+	PL	Wbudowane Client ID jest współdzielone przez wszystkie instalacje SpotOn. W okresach szczytowego obciążenia może wystąpić ograniczanie liczby żądań. Aby uzyskać najlepsze wrażenia, utwórz poniżej własną aplikację Spotify Developer.
+	SV	Det medföljande Client-ID:t delas mellan alla SpotOn-installationer. Hastighetsbegränsning kan förekomma vid hög belastning. För bästa upplevelse, skapa din egen Spotify Developer App nedan.
+
+PLUGIN_SPOTON_CUSTOM_QUOTA_OK
+	CS	Používáte vlastní Client ID — soukromá kvóta API, žádné sdílené limity požadavků.
+	DA	Du bruger dit eget Client-ID — privat API-kvote, ingen delte hastighedsgrænser.
+	DE	Du verwendest deine eigene Client-ID — privates API-Kontingent, keine geteilten Ratenlimits.
+	EN	Using your own Client ID — private API quota, no shared rate limits.
+	ES	Estás usando tu propio Client ID — cuota de API privada, sin límites de solicitudes compartidos.
+	FR	Vous utilisez votre propre Client ID — quota d'API privé, sans limites de requêtes partagées.
+	IT	Stai usando il tuo Client ID — quota API privata, senza limiti di richieste condivisi.
+	NL	U gebruikt uw eigen Client-ID — privé API-quotum, geen gedeelde snelheidslimieten.
+	NO	Du bruker din egen Client-ID — privat API-kvote, ingen delte hastighetsgrenser.
+	PL	Używasz własnego Client ID — prywatny limit API, bez współdzielonych limitów zapytań.
+	SV	Du använder ditt eget Client-ID — privat API-kvot, inga delade hastighetsgränser.
 
 PLUGIN_SPOTON_DEVMODE_QUOTA_WARNING
 	CS	Vaše Spotify Developer App je v režimu Dev Mode s omezeným přístupem k API (méně výsledků vyhledávání, některé endpointy nedostupné). Odstraňte výše uvedené Client ID a použijte místo toho vestavěný režim Extended Quota.
