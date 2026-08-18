@@ -332,6 +332,11 @@ sub handler {
     # the template shows.
     $paramRef->{pkceConfigured} = _isPkceConfigured();
 
+    # Accounts exist but no PKCE tokens → user changed Client ID and needs
+    # to re-authorize.  Drives a prominent orange banner at the top.
+    $paramRef->{needsPkceReauth} =
+        (keys %{$paramRef->{accounts}} && !$paramRef->{pkceConfigured}) ? 1 : 0;
+
     # GH #147 plan 65-02: playback-authorization state for the ACTIVE account.
     # 'none'     -- no accounts at all (setup guide handles this case)
     # 'required' -- flagged by the crash escalation (plan 65-01), OR the

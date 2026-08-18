@@ -1077,6 +1077,19 @@ PLUGIN_SPOTON_CUSTOM_APP_SETUP
 	PL	Zalecane: Utwórz własną aplikację Spotify Developer
 	SV	Rekommenderas: Skapa din egen Spotify Developer App
 
+PLUGIN_SPOTON_PKCE_REAUTH_BANNER
+	CS	Client ID bylo změněno — pro obnovení přístupu k API znovu připojte svůj účet.
+	DA	Client-ID er blevet ændret — forbind din konto igen for at gendanne API-adgang.
+	DE	Die Client-ID wurde geändert — verbinde dein Konto erneut, um den API-Zugriff wiederherzustellen.
+	EN	Client ID was changed — reconnect your account to restore API access.
+	ES	El Client ID ha cambiado — vuelve a conectar tu cuenta para restaurar el acceso a la API.
+	FR	Le Client ID a été modifié — reconnectez votre compte pour rétablir l'accès à l'API.
+	IT	Il Client ID è stato modificato — ricollega il tuo account per ripristinare l'accesso API.
+	NL	De Client-ID is gewijzigd — verbind uw account opnieuw om de API-toegang te herstellen.
+	NO	Client-ID ble endret — koble til kontoen din på nytt for å gjenopprette API-tilgangen.
+	PL	Client ID zostało zmienione — połącz ponownie swoje konto, aby przywrócić dostęp do API.
+	SV	Client-ID har ändrats — anslut ditt konto igen för att återställa API-åtkomst.
+
 PLUGIN_SPOTON_CLIENT_ID_REAUTH_HINT
 	CS	Změna Client ID vyžaduje opětovnou autorizaci všech připojených účtů.
 	DA	Ændring af Client-ID kræver ny godkendelse af alle tilknyttede konti.
