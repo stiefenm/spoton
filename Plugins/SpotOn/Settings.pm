@@ -1113,10 +1113,19 @@ sub _htmlEscape {
 # Renders a minimal centered-card HTML result page for the /pkce/callback
 # browser redirect flow. This page is opened via window.open() as a popup/
 # new tab and has no LMS navigation frame, so on success it self-closes
-# (window.close()) after 3 seconds instead of redirecting to Settings --
-# a redirect here would strand the user on a bare Settings page without the
-# Material Skin wrapper. Error pages show a link back to Settings instead
-# (the user may need to read the error before leaving).
+# (window.close()) after 2 seconds instead of redirecting itself to Settings
+# -- a self-redirect here would strand the user on a bare Settings page
+# without the Material Skin wrapper. Error pages show a link back to
+# Settings instead (the user may need to read the error before leaving).
+#
+# D-06 (forum #257): Classic Skin's ORIGINAL Settings tab (window.opener --
+# same-origin, since it's the LMS host that opened this popup) does not
+# auto-refresh after OAuth completes, leaving it showing stale
+# not-connected state until the user manually reloads. On success we
+# navigate window.opener to the Settings page (triggering a fresh render
+# with the new account state) before self-closing this popup. Material
+# Skin already refreshes its own Settings view via AJAX, so the extra
+# opener navigation is harmless there.
 # ============================================================
 sub _renderPkceResultPage {
     my ($httpClient, $response, $title, $message, $isError) = @_;
@@ -1127,8 +1136,17 @@ sub _renderPkceResultPage {
 
     my $action = $isError
         ? qq{<p><a href="$settingsUrl">} . _htmlEscape(string('PLUGIN_SPOTON_NAME')) . qq{</a></p>}
-        : qq{<script>setTimeout(function(){ try { window.close(); } catch(e) {} }, 3000);</script>
-<p style="color:#b3b3b3; font-size:0.9em">This tab will close automatically. If not, close it manually and refresh your SpotOn Settings page.</p>};
+        : qq{<script>
+setTimeout(function() {
+    try {
+        if (window.opener && !window.opener.closed) {
+            window.opener.location.href = "$settingsUrl";
+        }
+    } catch (e) {}
+    try { window.close(); } catch (e) {}
+}, 2000);
+</script>
+<p style="color:#b3b3b3; font-size:0.9em">This tab will close automatically and your SpotOn Settings page will refresh. If not, close it manually and refresh Settings yourself.</p>};
 
     my $html = qq{<!DOCTYPE html>
 <html>
