@@ -257,34 +257,34 @@
 
 ### Phase 58: Connect Position Sync Fix
 
-- [ ] **Phase 58: Connect Position Sync Fix**
+- [x] **Phase 58: Connect Position Sync Fix** (completed 2026-08-18)
   **Goal**: Fix mid-song Connect resume position (Rust: needs_position_sync cleared too early in TrackChanged Some→Some) and relocate the change-handler notification to _fetchTrackMetadata failure paths (Perl: avoid pushing position=0 before real position is known). Fixes regression from #126 fix.
   Depends on: Phase 57 (completed), #126 fix (commit 5d91cd8)
-  **Plans:** 2 plans
+  **Plans:** 2/2 plans complete
   Plans:
 
-  - [ ] 58-01-PLAN.md — Perl hotfix: relocate change-handler newmetadata notify to _fetchTrackMetadata failure paths (Wave 1)
-  - [ ] 58-02-PLAN.md — Rust root-cause fix: preserve needs_position_sync across TrackChanged Some→Some, consume in Playing Some→Some (Wave 1, triggers CI binary rebuild)
+  - [x] 58-01-PLAN.md — Perl hotfix: relocate change-handler newmetadata notify to _fetchTrackMetadata failure paths (Wave 1)
+  - [x] 58-02-PLAN.md — Rust root-cause fix: preserve needs_position_sync across TrackChanged Some→Some, consume in Playing Some→Some (Wave 1, triggers CI binary rebuild)
   See: `.planning/phases/58-connect-position-sync-fix/`
 
 ### Phase 59: Connect & Search Fixes
 
-- [ ] **Phase 59: Connect & Search Fixes (GH #129 + #130)**
+- [x] **Phase 59: Connect & Search Fixes (GH #129 + #130)** (completed 2026-08-18)
   **Goal**: Two v3.2.3 bugfixes reported by woorszt. #129: enable seek from JiveLite/LMS UIs during Spotify Connect playback — remove the `canSeek` Connect guard, but suppress the LMS-side stream restart (`getSeekData` returns undef when Connect active) and read the seek target from the request's `_newvalue` instead of stale `songTime`. #130: `_searchTypeFeed` pagination — map LMS `index` to API offset and return `offset`/`total` (same pattern as `_artistAlbumsFeed`, #121).
   Depends on: none (independent of Phase 58)
-  **Plans:** 1/2 plans executed
+  **Plans:** 2/2 plans complete
   Plans:
 
   - [x] 59-01-PLAN.md — Connect seek (ProtocolHandler.pm + Connect.pm) + search pagination (Plugin.pm) + CHANGELOG (Wave 1)
-  - [ ] 59-02-PLAN.md — Review finding fixes: R-1 canDoAction 'rew' guard, R-2 pause-seek-unpause documented + UAT, R-4 ignore-placeholders, R-5 error offset/total + 1000-cap; R-3 accepted as known limitation, no code fix (Wave 2)
+  - [x] 59-02-PLAN.md — Review finding fixes: R-1 canDoAction 'rew' guard, R-2 pause-seek-unpause documented + UAT, R-4 ignore-placeholders, R-5 error offset/total + 1000-cap; R-3 accepted as known limitation, no code fix (Wave 2)
   See: `.planning/phases/59-connect-search-fixes/`
 
 ### Phase 60: Search Single-Type & Podcast Pagination
 
-- [ ] **Phase 60: Search Single-Type & Podcast Pagination (GH #130)**
+- [x] **Phase 60: Search Single-Type & Podcast Pagination (GH #130)** (completed 2026-08-18)
   **Goal**: Fix search total-count discrepancy and podcast search pagination. (1) Switch `_searchFeed` and `_podcastSearchFeed` from combined multi-type API calls to parallel single-type calls so overview totals match drill-in totals (woorszt #130 observation). (2) Add full pagination to `_podcastSearchTypeFeed` (currently hardcoded offset=0, no total). (3) Backport R-4 (nameless ignore placeholders) and R-5 (1000 offset cap) to podcast search. (4) Fix duplicate `$offset` declaration in `_searchTypeFeed`.
   Depends on: Phase 59 (search pagination foundation)
-  **Plans:** 1/1 plans executed
+  **Plans:** 1/1 plans complete
   Plans:
 
   - [x] 60-01-PLAN.md — _multiTypeSearch aggregator (single-type overview totals) + podcast search pagination with R-4/R-5 backport + duplicate $offset fix + CHANGELOG (Wave 1)
@@ -352,14 +352,12 @@ Plans:
 **Goal:** Fix account switcher confirmation page behavior across all LMS client types (#136). Prevent unnecessary Connect daemon restarts when sync group membership changes (#143).
 **Requirements**: GH #136, #143
 **Depends on:** None (independent UX/stability fixes)
-**Plans:** 2/2 plans executed
+**Plans:** 2/2 plans complete
 
 Plans:
 
 - [x] 63-01-PLAN.md
 - [x] 63-02-PLAN.md
-
-- [ ] TBD (run /gsd-plan-phase 63 to break down)
 
 ### Phase 64: PassthroughMixer + Upstream Merge
 
@@ -378,7 +376,7 @@ Plans:
 **Goal:** Restore playback after Spotify's Login5 StoredCredential blockade (Aug 10, 2026) by switching credential provisioning from PKCE-derived `--token-login` to ZeroConf-paired `--discover-once`. Stop the daemon crash-loop caused by unrecognized INVALID_CREDENTIALS errors. Provide browser-based fallback for environments where mDNS is unavailable (Docker, VLANs).
 **Requirements**: GH #147
 **Depends on:** None (hotfix, independent of v2.3 Library Integration)
-**Plans:** 5/5 plans executed (65-06..65-08 cancelled — STOP gate)
+**Plans:** 5/8 plans complete
 
 Plans:
 
@@ -409,11 +407,13 @@ Plans:
 **Goal:** Fix /login redirect handler bug (qr{} regex-as-hash-key → 404), overhaul bundled ID UX to communicate shared-bucket degradation, recommend custom Client ID as primary path
 **Requirements**: GH #147 (rate-limit root cause), D-01..D-05
 **Depends on:** Phase 66
-**Plans:** 1 plan
+**Plans:** 2/2 plans complete
 
 Plans:
 
-- [ ] 67-01-PLAN.md — /login fix, probe skip for bundled ID, Settings UX reframing, i18n (11 langs), TROUBLESHOOTING.md, forum reply
+- [x] 67-02-PLAN.md
+
+- [x] 67-01-PLAN.md — /login fix, probe skip for bundled ID, Settings UX reframing, i18n (11 langs), TROUBLESHOOTING.md, forum reply
 
 ---
 *Roadmap created: 2026-05-26*

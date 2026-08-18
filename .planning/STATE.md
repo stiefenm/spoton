@@ -2,18 +2,18 @@
 gsd_state_version: 1.0
 milestone: v2.3
 milestone_name: Library Integration
-current_phase: 58
-current_phase_name: Connect Position Sync Fix
+current_phase: 64
+current_phase_name: PassthroughMixer + Upstream Merge
 status: planning
 stopped_at: Completed 65-05-PLAN.md (HYPOTHESIS FAILED — checkpoint pending)
-last_updated: "2026-08-16T18:25:27.008Z"
-last_activity: 2026-08-16
-last_activity_desc: Phase 66 complete, transitioned to Phase 58
+last_updated: "2026-08-18T09:21:42.568Z"
+last_activity: 2026-08-18
+last_activity_desc: Phase 67 execution started
 progress:
-  total_phases: 37
-  completed_phases: 23
-  total_plans: 68
-  completed_plans: 60
+  total_phases: 38
+  completed_phases: 26
+  total_plans: 67
+  completed_plans: 63
 ---
 
 # Project State: SpotOn
@@ -28,14 +28,14 @@ See: .planning/PROJECT.md (updated 2026-06-30)
 
 **Core Value:** Reliable Spotify playback and Connect integration on LMS — Browse, stream, and control via Spotify app, without 429 bursts, zombie daemons, or audio glitches.
 
-**Current Focus:** Phase 66 — settings-auth-reorg
+**Current Focus:** Phase 67 — bundled-id-auth-redirect-ux
 
 ## Current Position
 
-Phase: 58 — Connect Position Sync Fix
+Phase: 64 — PassthroughMixer + Upstream Merge
 Plan: Not started
 Status: Ready to plan
-Last activity: 2026-08-16 — Phase 66 complete, transitioned to Phase 58
+Last activity: 2026-08-18 — Phase 63 complete, transitioned to Phase 64
 
 ## Progress Bar
 
