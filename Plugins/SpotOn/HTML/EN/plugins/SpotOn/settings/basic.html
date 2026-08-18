@@ -252,18 +252,23 @@
 		</div>
 		[% END %]
 
-		<details[% IF customClientId || clientIdMode == 'bundled' %] open[% END %]>
+		<input type="text" class="stdedit" name="pref_clientId" id="pref_clientId"
+		       value="[% customClientId | html %]"
+		       placeholder="[% 'PLUGIN_SPOTON_CLIENT_ID_PLACEHOLDER' | string %]"/>
+		[% IF accounts.keys.size %]
+		<p style="margin:4px 0 0 0; font-size:0.85em; color:orange; opacity:0.85">
+			[% 'PLUGIN_SPOTON_CLIENT_ID_REAUTH_HINT' | string %]
+		</p>
+		[% END %]
+
+		[% IF quotaState == 'devmode' %]
+		<div style="color: orange; margin:10px 0">
+			[% 'PLUGIN_SPOTON_DEVMODE_QUOTA_WARNING' | string %]
+		</div>
+		[% END %]
+
+		<details style="margin-top:10px"[% IF clientIdMode == 'bundled' %] open[% END %]>
 			<summary style="cursor:pointer">[% IF clientIdMode == 'bundled' %][% 'PLUGIN_SPOTON_CUSTOM_APP_SETUP' | string %][% ELSE %][% 'PLUGIN_SPOTON_CUSTOM_APP_TITLE' | string %][% END %]</summary>
-
-			[% IF quotaState == 'devmode' %]
-			<div style="color: orange; margin:10px 0">
-				[% 'PLUGIN_SPOTON_DEVMODE_QUOTA_WARNING' | string %]
-			</div>
-			[% END %]
-
-			<input type="text" class="stdedit" name="pref_clientId" id="pref_clientId"
-			       value="[% customClientId | html %]"
-			       placeholder="[% 'PLUGIN_SPOTON_CLIENT_ID_PLACEHOLDER' | string %]" style="margin-top:10px"/>
 
 			<details style="margin-top:10px">
 				<summary style="cursor:pointer">[% 'PLUGIN_SPOTON_CLIENT_ID_WIZARD_TITLE' | string %]</summary>

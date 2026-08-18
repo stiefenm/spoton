@@ -1077,6 +1077,19 @@ PLUGIN_SPOTON_CUSTOM_APP_SETUP
 	PL	Zalecane: Utwórz własną aplikację Spotify Developer
 	SV	Rekommenderas: Skapa din egen Spotify Developer App
 
+PLUGIN_SPOTON_CLIENT_ID_REAUTH_HINT
+	CS	Změna Client ID vyžaduje opětovnou autorizaci všech připojených účtů.
+	DA	Ændring af Client-ID kræver ny godkendelse af alle tilknyttede konti.
+	DE	Eine Änderung der Client-ID erfordert eine erneute Autorisierung aller verbundenen Konten.
+	EN	Changing the Client ID requires re-authorization of all connected accounts.
+	ES	Cambiar el Client ID requiere una nueva autorización de todas las cuentas conectadas.
+	FR	La modification du Client ID nécessite une nouvelle autorisation de tous les comptes connectés.
+	IT	La modifica del Client ID richiede una nuova autorizzazione di tutti gli account collegati.
+	NL	Het wijzigen van de Client-ID vereist opnieuw autoriseren van alle verbonden accounts.
+	NO	Endring av Client-ID krever ny autorisering av alle tilkoblede kontoer.
+	PL	Zmiana Client ID wymaga ponownej autoryzacji wszystkich połączonych kont.
+	SV	Ändring av Client-ID kräver ny auktorisering av alla anslutna konton.
+
 PLUGIN_SPOTON_CUSTOM_APP_REMOVE
 	CS	Odebrat vlastní App ID a použít výchozí režim
 	DA	Fjern tilpasset App-ID og brug standardtilstand
