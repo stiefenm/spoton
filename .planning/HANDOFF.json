@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "timestamp": "2026-08-18T20:47:34.701Z",
+  "timestamp": "2026-08-19T05:45:42.460Z",
   "phase": null,
   "phase_name": null,
   "phase_dir": null,
@@ -9,34 +9,52 @@
   "total_tasks": null,
   "status": "paused",
   "completed_tasks": [
-    {"id": "resume", "name": "Session resumed, state restored from HANDOFF.json", "status": "done"},
+    {"id": "resume", "name": "Session resumed from v3.5.6 HANDOFF", "status": "done"},
     {"id": "device-auth-review", "name": "Reviewed lmore377/librespot device auth commit (RFC 8628)", "status": "done"},
-    {"id": "device-auth-memory", "name": "Saved device auth flow as watch item in memory", "status": "done"},
-    {"id": "issue-156", "name": "Created GH #156 (OGG metadata strip) from urknall chat", "status": "done"},
-    {"id": "issue-156-comment", "name": "Added urknall's parse-before-strip pipeline detail to #156", "status": "done"},
+    {"id": "issue-156", "name": "Created GH #156 (OGG metadata strip) + urknall pipeline detail", "status": "done"},
     {"id": "260818-v1l", "name": "Fix #155 follow-up: rate_limited_local deferral + UX + logging", "status": "done", "commit": "60a5ffb"},
-    {"id": "review-v1l", "name": "Fable 5 code review — 0H 1M 2L 4I, all fixed", "status": "done", "commit": "60a5ffb"},
-    {"id": "deploy-dev", "name": "Deployed to dev LMS, smoke test + 15-request burst test passed", "status": "done"},
-    {"id": "release-357", "name": "Release v3.5.7 (Perl-only: 429 deferral + rate-limited UX)", "status": "done", "commit": "1713df6"},
-    {"id": "comment-155", "name": "Reply to woorszt on #155 (root cause + fix explanation)", "status": "done"}
+    {"id": "review-v1l", "name": "Fable 5 code review (0H 1M 2L 4I, all fixed)", "status": "done"},
+    {"id": "release-357", "name": "Release v3.5.7", "status": "done", "commit": "1713df6"},
+    {"id": "comment-155", "name": "Reply to woorszt on #155 (root cause + fix)", "status": "done"},
+    {"id": "vault-audit", "name": "Fable 5 dual-audit: gap + staleness (2 agents)", "status": "done"},
+    {"id": "vault-auth-fixes", "name": "Auth cluster: 7 notes corrected (Single Auth, PKCE, Strategy, Auth MOC, glossaries)", "status": "done"},
+    {"id": "vault-structure", "name": "Roadmap/Overview/Timeline/DecLog updated to v3.5.7, 8 decisions added", "status": "done"},
+    {"id": "vault-new-notes", "name": "6 new vault notes (urknall, Rouzax, Login5 pattern, Rate-Limit pattern, login5 glossary, Phase 65-66 journal)", "status": "done"},
+    {"id": "vault-medium", "name": "9 medium-priority fixes (Docker, Client, Community, woorszt, Plugin Structure, Keymaster, Credential Derivation, Dev Mode)", "status": "done"},
+    {"id": "vault-covers-through", "name": "covers_through: v3.5.7 on all 69 vault notes", "status": "done"},
+    {"id": "vault-skill-upgrade", "name": "obsidian-sync skill rewritten (covers_through + semantic manifest)", "status": "done"},
+    {"id": "vault-consistency", "name": "Final consistency check: 6 remaining issues fixed, vault CLEAN", "status": "done"},
+    {"id": "spoton-private-upgrade", "name": "UPGRADE-INSTRUCTIONS.md for spoton-private vault sync", "status": "done"},
+    {"id": "triage", "name": "Forum + Issues triage: all quiet, no action needed", "status": "done"}
   ],
   "remaining_tasks": [],
   "blockers": [],
   "async_jobs": [],
   "human_actions_pending": [
-    {"action": "Monitor librespot-org/librespot#1743 for merge — then revert Cargo.toml to upstream dev", "context": "Temporary fork pin, memory project_librespot_fork_pin.md tracks this", "blocking": false},
-    {"action": "Monitor #149 and #150 for Rouzax confirmation (waiting-user)", "context": "Real-world validation of AP drop fixes from v3.5.1/v3.5.2", "blocking": false},
-    {"action": "Monitor #155 for woorszt confirmation of v3.5.7 deferral behavior", "context": "v3.5.7 shipped, waiting for real-world validation", "blocking": false},
-    {"action": "Monitor lmore377/librespot device auth for upstream PR", "context": "RFC 8628 device flow, only works with desktop client ID, memory project_device_auth_flow.md", "blocking": false}
+    {"action": "Monitor librespot-org/librespot#1743 for merge", "context": "Temporary fork pin, revert Cargo.toml to upstream dev after merge", "blocking": false},
+    {"action": "Monitor #149/#150 for Rouzax confirmation", "context": "AP drop fixes v3.5.1/v3.5.2, waiting real-world validation", "blocking": false},
+    {"action": "Monitor #155 for woorszt v3.5.7 validation", "context": "429 deferral shipped, waiting for real-world testing", "blocking": false},
+    {"action": "Monitor lmore377/librespot device auth for upstream PR", "context": "RFC 8628 device flow, memory project_device_auth_flow.md", "blocking": false},
+    {"action": "Apply obsidian-sync upgrade in spoton-private", "context": "UPGRADE-INSTRUCTIONS.md written, apply in next spoton-private session", "blocking": false}
   ],
   "decisions": [
-    {"decision": "429 deferral only for GET requests, writes keep fail-fast", "rationale": "Stale play/pause/seek firing seconds late would mutate playback state unexpectedly (Fable 5 M-01)", "phase": "quick"},
-    {"decision": "Probe calls excluded from deferral", "rationale": "Probes have their own deferral mechanism, mixing would stall probe chain (Fable 5 L-01)", "phase": "quick"},
-    {"decision": "Random jitter on deferred timers", "rationale": "Prevents thundering herd when multiple deferred requests fire at window close (Fable 5 L-02)", "phase": "quick"},
-    {"decision": "spoton_rate_limit stores expiry timestamp instead of 1", "rationale": "_request() needs to compute remaining wait time for deferral scheduling", "phase": "quick"},
-    {"decision": "Request queue idea parked for Phase 38", "rationale": "Current defer+retry+concurrency-cap covers woorszt's scenario; full queue is overkill now but relevant for Library Import", "phase": "future"}
+    {"decision": "429 deferral only for GET, writes fail-fast", "rationale": "Fable 5 M-01: stale writes would mutate playback", "phase": "quick"},
+    {"decision": "spoton_rate_limit stores expiry timestamp", "rationale": "Enables remaining-time computation for deferral scheduling", "phase": "quick"},
+    {"decision": "Request queue parked for Phase 38", "rationale": "Current defer+retry covers #155; full queue relevant for Library Import", "phase": "future"},
+    {"decision": "Vault consistency via covers_through + semantic manifest", "rationale": "Old scan-everything approach missed deep staleness (7 auth notes wrong for weeks)", "phase": "tooling"},
+    {"decision": "Fable 5 deep audit quarterly or at milestones", "rationale": "Catches what covers_through + manifest miss", "phase": "tooling"}
+  ],
+  "semantic_changes": [
+    {
+      "type": "behavior_change",
+      "summary": "429 rate-limited GET requests now deferred instead of fail-fast",
+      "claim_before": "Rate-limited requests return empty page immediately with no log",
+      "claim_after": "GET requests deferred until window closes with jitter; writes fail-fast; INFOLOG visible; 'Temporarily rate limited' UX message",
+      "vault_impact": ["architecture/Client.md"],
+      "version": "v3.5.7"
+    }
   ],
   "uncommitted_files": [],
-  "next_action": "Check #155/#149/#150 for user responses. Phase 62 (Browse Endpoints + Connect Queue) is the only unplanned open phase. #154 (librespot log integration) and #156 (OGG metadata strip) queued as future work. Device auth flow (lmore377 fork) being watched.",
-  "context_notes": "Productive session: woorszt's #155 follow-up diagnosed (rate_limited_local short-circuit at debug level), fixed with deferral + UX message + logging upgrade, Fable 5 reviewed (all findings fixed), deployed, released as v3.5.7. Also: created #156 from urknall chat (OGG 0x81 metadata strip with parse-before-strip requirement), reviewed lmore377 device auth commit (RFC 8628, parked as watch item). Request queue idea saved for Phase 38 Library Import."
+  "next_action": "Check #155/#149/#150 for user responses. Phase 62 (Browse Endpoints + Connect Queue) is the only unplanned open phase. #154 (librespot log integration) and #156 (OGG metadata strip) queued as future work.",
+  "context_notes": "Extended session: v3.5.7 released (429 deferral), then massive vault overhaul — Fable 5 dual-audit found 11 critical auth staleness items + 6 missing notes + structural gaps. 34 notes updated, 6 created, 69 tagged with covers_through. obsidian-sync skill rewritten with two-tier consistency model (covers_through tags + semantic change manifest). Final consistency check clean. spoton-private upgrade instructions written. Triage: all quiet."
 }

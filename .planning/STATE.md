@@ -264,25 +264,31 @@ Items carried forward from previous milestones:
 
 **Resume file:** None
 
-**Last session:** 2026-08-18
-**Stopped at:** v3.5.7 released (Fix #155 follow-up: 429 deferral)
-**Completed this session (2026-08-18):**
+**Last session:** 2026-08-19
+**Stopped at:** Vault overhaul complete + triage clean
+**Completed this session (2026-08-18→19):**
 
 - Reviewed lmore377/librespot device auth commit (RFC 8628) — saved as watch item
-- Created GH #156 (OGG metadata strip) from urknall chat + added parse-before-strip detail
-- Fixed #155 follow-up: rate_limited_local deferral + UX message + logging upgrade
-- Fable 5 code review (0H 1M 2L 4I) — all findings fixed
-- Deployed to dev LMS, smoke test + 15-request burst test passed
-- Released v3.5.7 (Perl-only), repo.xml SHA updated
-- Replied to woorszt on #155 (root cause + fix explanation)
-- Request queue idea saved for Phase 38 Library Import
+- Created GH #156 (OGG metadata strip) from urknall chat + parse-before-strip detail
+- Fixed #155 follow-up: rate_limited_local deferral + UX + logging, Fable 5 reviewed
+- Released v3.5.7, replied to woorszt on #155
+- **Vault overhaul:** Fable 5 dual-audit (gap + staleness), 34 notes updated, 6 new notes created
+- Auth cluster: 7 notes corrected (Single Auth, PKCE, Strategy, Auth MOC, glossaries)
+- Structure: Roadmap/Overview/Timeline/DecLog updated to v3.5.7, 8 decisions added
+- New notes: urknall, Rouzax, Login5 pattern, Rate-Limit pattern, login5 glossary, Phase 65-66 journal
+- Medium: 9 fixes (Docker, Client, Community, woorszt, Plugin Structure, Keymaster, etc.)
+- **covers_through: v3.5.7** on all 69 vault notes
+- **obsidian-sync skill rewritten:** covers_through + semantic change manifest (two-tier model)
+- spoton-private: UPGRADE-INSTRUCTIONS.md for vault sync upgrade
+- Triage: all quiet, no action needed
 
 **Next action:**
 
 1. Check #155/#149/#150 for user responses
 2. Phase 62 (Browse Endpoints + Connect Queue) is the only unplanned open phase
 3. #154 (librespot log integration) and #156 (OGG metadata strip) queued as future work
+4. Apply obsidian-sync upgrade in spoton-private (next session there)
 
 ---
 *State initialized: 2026-05-26*
-*Last updated: 2026-08-18 — v3.5.7 released, #155 429 deferral shipped*
+*Last updated: 2026-08-19 — Vault overhaul complete, obsidian-sync rewritten*
