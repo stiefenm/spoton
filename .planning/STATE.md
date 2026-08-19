@@ -265,30 +265,23 @@ Items carried forward from previous milestones:
 **Resume file:** None
 
 **Last session:** 2026-08-19
-**Stopped at:** Vault overhaul complete + triage clean
-**Completed this session (2026-08-18→19):**
+**Stopped at:** Forum triage + Phase 68 created
+**Completed this session (2026-08-19):**
 
-- Reviewed lmore377/librespot device auth commit (RFC 8628) — saved as watch item
-- Created GH #156 (OGG metadata strip) from urknall chat + parse-before-strip detail
-- Fixed #155 follow-up: rate_limited_local deferral + UX + logging, Fable 5 reviewed
-- Released v3.5.7, replied to woorszt on #155
-- **Vault overhaul:** Fable 5 dual-audit (gap + staleness), 34 notes updated, 6 new notes created
-- Auth cluster: 7 notes corrected (Single Auth, PKCE, Strategy, Auth MOC, glossaries)
-- Structure: Roadmap/Overview/Timeline/DecLog updated to v3.5.7, 8 decisions added
-- New notes: urknall, Rouzax, Login5 pattern, Rate-Limit pattern, login5 glossary, Phase 65-66 journal
-- Medium: 9 fixes (Docker, Client, Community, woorszt, Plugin Structure, Keymaster, etc.)
-- **covers_through: v3.5.7** on all 69 vault notes
-- **obsidian-sync skill rewritten:** covers_through + semantic change manifest (two-tier model)
-- spoton-private: UPGRADE-INSTRUCTIONS.md for vault sync upgrade
-- Triage: all quiet, no action needed
+- Forum triage (Page 19): 4 new posts, 3 replies drafted (#273 agriff79, #274 alnames, #275 CJS)
+- woOrszt #155 confirmed v3.5.7 deferral works (emoji reaction)
+- **Bug found + fixed:** Rate-limit flags (`spoton_rate_limit`, `spoton_wp_rate_limit`) survived Client-ID switch → `Client->reset()` now clears them (96a6dee)
+- GH #156 updated with sanitized research findings (approach, SC, pitfalls, open questions)
+- **Phase 68** (OGG Metadata Strip) created in ROADMAP + `.planning/phases/`
 
 **Next action:**
 
-1. Check #155/#149/#150 for user responses
-2. Phase 62 (Browse Endpoints + Connect Queue) is the only unplanned open phase
-3. #154 (librespot log integration) and #156 (OGG metadata strip) queued as future work
-4. Apply obsidian-sync upgrade in spoton-private (next session there)
+1. Post forum replies (#273, #274, #275) from `~/SynologyDrive/forum-reply-*.txt`
+2. Phase 68 needs Wave-0 empirical capture (serial/BOS) before planning
+3. Phase 62 (Browse Endpoints + Connect Queue) remains unplanned
+4. #154 (librespot log integration) queued as future work
+5. Monitor #149/#150 (Rouzax), #155 (woorszt), alnames #274 response
 
 ---
 *State initialized: 2026-05-26*
-*Last updated: 2026-08-19 — Vault overhaul complete, obsidian-sync rewritten*
+*Last updated: 2026-08-19 — Forum triage, rate-limit fix, Phase 68 created*
