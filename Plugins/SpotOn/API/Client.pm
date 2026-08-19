@@ -109,7 +109,9 @@ sub reset {
     Slim::Utils::Timers::killTimers(undef, \&_probeRetry);
     for my $t (@_retryTimers) { Slim::Utils::Timers::killTimers($t, \&_429retry); }
     @_retryTimers = ();
-    main::INFOLOG && $log->info("Client: counters and limit detection reset");
+    $cache->remove('spoton_rate_limit');
+    $cache->remove(WP_RATE_LIMIT_KEY);
+    main::INFOLOG && $log->info("Client: counters, rate-limit flags, and limit detection reset");
 }
 
 sub getLimit {
