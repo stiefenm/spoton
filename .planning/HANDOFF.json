@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "timestamp": "2026-08-19T05:45:42.460Z",
+  "timestamp": "2026-08-19T08:18:23.261Z",
   "phase": null,
   "phase_name": null,
   "phase_dir": null,
@@ -9,52 +9,45 @@
   "total_tasks": null,
   "status": "paused",
   "completed_tasks": [
-    {"id": "resume", "name": "Session resumed from v3.5.6 HANDOFF", "status": "done"},
-    {"id": "device-auth-review", "name": "Reviewed lmore377/librespot device auth commit (RFC 8628)", "status": "done"},
-    {"id": "issue-156", "name": "Created GH #156 (OGG metadata strip) + urknall pipeline detail", "status": "done"},
-    {"id": "260818-v1l", "name": "Fix #155 follow-up: rate_limited_local deferral + UX + logging", "status": "done", "commit": "60a5ffb"},
-    {"id": "review-v1l", "name": "Fable 5 code review (0H 1M 2L 4I, all fixed)", "status": "done"},
-    {"id": "release-357", "name": "Release v3.5.7", "status": "done", "commit": "1713df6"},
-    {"id": "comment-155", "name": "Reply to woorszt on #155 (root cause + fix)", "status": "done"},
-    {"id": "vault-audit", "name": "Fable 5 dual-audit: gap + staleness (2 agents)", "status": "done"},
-    {"id": "vault-auth-fixes", "name": "Auth cluster: 7 notes corrected (Single Auth, PKCE, Strategy, Auth MOC, glossaries)", "status": "done"},
-    {"id": "vault-structure", "name": "Roadmap/Overview/Timeline/DecLog updated to v3.5.7, 8 decisions added", "status": "done"},
-    {"id": "vault-new-notes", "name": "6 new vault notes (urknall, Rouzax, Login5 pattern, Rate-Limit pattern, login5 glossary, Phase 65-66 journal)", "status": "done"},
-    {"id": "vault-medium", "name": "9 medium-priority fixes (Docker, Client, Community, woorszt, Plugin Structure, Keymaster, Credential Derivation, Dev Mode)", "status": "done"},
-    {"id": "vault-covers-through", "name": "covers_through: v3.5.7 on all 69 vault notes", "status": "done"},
-    {"id": "vault-skill-upgrade", "name": "obsidian-sync skill rewritten (covers_through + semantic manifest)", "status": "done"},
-    {"id": "vault-consistency", "name": "Final consistency check: 6 remaining issues fixed, vault CLEAN", "status": "done"},
-    {"id": "spoton-private-upgrade", "name": "UPGRADE-INSTRUCTIONS.md for spoton-private vault sync", "status": "done"},
-    {"id": "triage", "name": "Forum + Issues triage: all quiet, no action needed", "status": "done"}
+    {"id": "resume", "name": "Session resumed, forum + issues checked", "status": "done"},
+    {"id": "forum-triage", "name": "Forum Page 19 triaged: 4 new posts (#271-#276), 3 replies drafted", "status": "done"},
+    {"id": "reply-273", "name": "Reply drafted for agriff79 (Dev Mode warning removed in v3.5.5)", "status": "done"},
+    {"id": "reply-274", "name": "Reply drafted for alnames (403 != 429, diagnostic questions)", "status": "done"},
+    {"id": "reply-275", "name": "Reply drafted for CJS (rate-limit cache bug, fix in next release)", "status": "done"},
+    {"id": "replies-posted", "name": "All 3 forum replies posted by user", "status": "done"},
+    {"id": "emoji-155", "name": "Thumbs-up reaction on woOrszt #155 confirmation comment", "status": "done"},
+    {"id": "rate-limit-fix", "name": "Bug fix: Client->reset() now clears spoton_rate_limit + WP_RATE_LIMIT_KEY", "status": "done", "commit": "96a6dee"},
+    {"id": "issue-156-update", "name": "GH #156 updated with sanitized research (approach, SC, pitfalls, open questions)", "status": "done"},
+    {"id": "phase-68", "name": "Phase 68 (OGG Metadata Strip) created in ROADMAP + .planning/phases/", "status": "done", "commit": "aa7044c"},
+    {"id": "forum-topics-update", "name": "forum-topics.json updated (agriff79 topic updated, alnames-playlist-403 added)", "status": "done"},
+    {"id": "push", "name": "Pushed 96a6dee + aa7044c to origin/main", "status": "done"}
   ],
   "remaining_tasks": [],
   "blockers": [],
   "async_jobs": [],
   "human_actions_pending": [
+    {"action": "Monitor alnames reply (#274) for 403 diagnosis response", "context": "HTTP 403 on playlists/{id}/items — not reproducible from our side, asked diagnostic questions", "blocking": false},
     {"action": "Monitor librespot-org/librespot#1743 for merge", "context": "Temporary fork pin, revert Cargo.toml to upstream dev after merge", "blocking": false},
     {"action": "Monitor #149/#150 for Rouzax confirmation", "context": "AP drop fixes v3.5.1/v3.5.2, waiting real-world validation", "blocking": false},
-    {"action": "Monitor #155 for woorszt v3.5.7 validation", "context": "429 deferral shipped, waiting for real-world testing", "blocking": false},
-    {"action": "Monitor lmore377/librespot device auth for upstream PR", "context": "RFC 8628 device flow, memory project_device_auth_flow.md", "blocking": false},
+    {"action": "Phase 68 needs Wave-0 empirical capture (serial/BOS relationship)", "context": "Decides plain drop vs drop+re-BOS+renumber+CRC — blocks planning the strip logic", "blocking": false},
     {"action": "Apply obsidian-sync upgrade in spoton-private", "context": "UPGRADE-INSTRUCTIONS.md written, apply in next spoton-private session", "blocking": false}
   ],
   "decisions": [
-    {"decision": "429 deferral only for GET, writes fail-fast", "rationale": "Fable 5 M-01: stale writes would mutate playback", "phase": "quick"},
-    {"decision": "spoton_rate_limit stores expiry timestamp", "rationale": "Enables remaining-time computation for deferral scheduling", "phase": "quick"},
-    {"decision": "Request queue parked for Phase 38", "rationale": "Current defer+retry covers #155; full queue relevant for Library Import", "phase": "future"},
-    {"decision": "Vault consistency via covers_through + semantic manifest", "rationale": "Old scan-everything approach missed deep staleness (7 auth notes wrong for weeks)", "phase": "tooling"},
-    {"decision": "Fable 5 deep audit quarterly or at milestones", "rationale": "Catches what covers_through + manifest miss", "phase": "tooling"}
+    {"decision": "Rate-limit cache flags cleared on Client ID switch", "rationale": "Fable 5 analysis: spoton_rate_limit survived ID change, blocking new-ID requests. Minimal fix: remove both rate-limit keys in reset()", "phase": "quick"},
+    {"decision": "Phase 68 for OGG metadata strip", "rationale": "Consolidates GH #156 + spoton-private Phase 13 research into public tracking", "phase": "68"},
+    {"decision": "GH #156 updated with sanitized research", "rationale": "Community (urknall) can follow approach; private references (eSDK, analysis logs, Reiner attribution) excluded", "phase": "68"}
   ],
+  "uncommitted_files": [],
+  "next_action": "Monitor alnames #274 response. Phase 68 needs Wave-0 capture before planning. Phase 62 (Browse Endpoints + Connect Queue) remains unplanned. Next release will include rate-limit fix (96a6dee).",
+  "context_notes": "Triage session: forum active with 429/403 reports. woOrszt confirmed v3.5.7 works. CJS's restart observation led to a real bug (rate-limit state not cleared on Client ID switch). alnames has a separate 403 issue we can't reproduce — waiting for diagnostic response. GH #156 now has full approach documentation from private research. Phase 68 created but needs empirical OGG header capture before planning.",
   "semantic_changes": [
     {
       "type": "behavior_change",
-      "summary": "429 rate-limited GET requests now deferred instead of fail-fast",
-      "claim_before": "Rate-limited requests return empty page immediately with no log",
-      "claim_after": "GET requests deferred until window closes with jitter; writes fail-fast; INFOLOG visible; 'Temporarily rate limited' UX message",
+      "summary": "Client ID switch now clears rate-limit state (no restart needed)",
+      "claim_before": "Changing Client ID requires LMS restart for rate-limit state to clear",
+      "claim_after": "Client->reset() clears spoton_rate_limit and spoton_wp_rate_limit immediately on Client ID change",
       "vault_impact": ["architecture/Client.md"],
-      "version": "v3.5.7"
+      "version": "unreleased"
     }
-  ],
-  "uncommitted_files": [],
-  "next_action": "Check #155/#149/#150 for user responses. Phase 62 (Browse Endpoints + Connect Queue) is the only unplanned open phase. #154 (librespot log integration) and #156 (OGG metadata strip) queued as future work.",
-  "context_notes": "Extended session: v3.5.7 released (429 deferral), then massive vault overhaul — Fable 5 dual-audit found 11 critical auth staleness items + 6 missing notes + structural gaps. 34 notes updated, 6 created, 69 tagged with covers_through. obsidian-sync skill rewritten with two-tier consistency model (covers_through tags + semantic change manifest). Final consistency check clean. spoton-private upgrade instructions written. Triage: all quiet."
+  ]
 }
