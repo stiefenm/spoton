@@ -1,58 +1,48 @@
 {
   "version": "1.0",
-  "timestamp": "2026-08-21T08:49:56.136Z",
-  "phase": null,
-  "phase_name": null,
-  "phase_dir": null,
+  "timestamp": "2026-08-21T17:09:30Z",
+  "phase": "69",
+  "phase_name": "Connect Sync Group Catch-Up + Icon Fix",
+  "phase_dir": ".planning/phases/69-connect-sync-catchup-icon-fix",
   "plan": null,
   "task": null,
-  "total_tasks": null,
-  "status": "paused",
+  "total_tasks": 0,
+  "status": "reverted",
   "completed_tasks": [
-    {"id": "resume", "name": "Session resumed from 2026-08-19 state", "status": "done"},
-    {"id": "forum-monitor-fix", "name": "Forum monitor false-positive filter fix: word-boundary regex, min-length guard, AI keyword fix", "status": "done"},
-    {"id": "forum-triage-280", "name": "Forum #280 (yeomanspc): QNAP sync drift, reply posted (LMS Proxy recommendation)", "status": "done"},
-    {"id": "forum-triage-276", "name": "Forum #276 (woOrszt): positive confirmation v3.5.7, triaged (emoji only)", "status": "done"},
-    {"id": "issue-155-closed", "name": "GH #155 closed: 429 deferral confirmed working by woOrszt", "status": "done"},
-    {"id": "issue-143-closed", "name": "GH #143 closed: sync group rename fix shipped v3.3.4, no negative reports", "status": "done"},
-    {"id": "issue-156-verified", "name": "GH #156 verified + closed: PassthroughDecoder re-serializes OGG, 0x81 never present in output", "status": "done"},
-    {"id": "phase-68-dropped", "name": "Phase 68 (OGG Metadata Strip) dropped from ROADMAP", "status": "done"},
-    {"id": "state-update", "name": "STATE.md + ROADMAP.md updated", "status": "done"}
+    {"id": "phase-69-plan", "name": "Phase 69 planned (research + 2 plans + verification loop)", "status": "done"},
+    {"id": "phase-69-execute", "name": "Phase 69 executed (Rust catchup window + icon commit)", "status": "reverted"},
+    {"id": "phase-69-uat-attempt", "name": "UAT started, sync group stutter investigation", "status": "reverted"}
   ],
-  "remaining_tasks": [],
-  "blockers": [],
+  "remaining_tasks": [
+    {"id": "phase-69-redo", "name": "Phase 69 needs fresh approach — sync group stutter on dev-box not isolated", "status": "not_started"}
+  ],
+  "blockers": [
+    {
+      "description": "Sync group stuttering on dev-box during UAT — all binary variants (old, new, catchup=0/5000) showed stutter-then-settle pattern on squeezelite-pulseaudio sync groups. Solo playback always clean. Pi sync groups work fine. Root cause unclear after ~10 LMS restarts. Needs fresh test with minimal restarts.",
+      "type": "technical",
+      "workaround": "Test on Pi with real hardware players, or fresh dev-box session with exactly 1 restart"
+    }
+  ],
   "async_jobs": [],
   "human_actions_pending": [
     {"action": "Monitor alnames reply (#274) for 403 diagnosis response", "context": "HTTP 403 on playlists/{id}/items, diagnostic questions posted", "blocking": false},
-    {"action": "Monitor librespot-org/librespot#1743 for merge", "context": "Temporary fork pin, revert Cargo.toml to upstream dev after merge", "blocking": false},
-    {"action": "Monitor #149/#150 for Rouzax confirmation", "context": "AP drop fixes v3.5.1/v3.5.2, partial confirmation", "blocking": false},
-    {"action": "Apply obsidian-sync upgrade in spoton-private", "context": "UPGRADE-INSTRUCTIONS.md written", "blocking": false}
+    {"action": "Monitor librespot-org/librespot#1743 for merge", "context": "Temporary fork pin, revert Cargo.toml to upstream dev after merge", "blocking": false}
   ],
   "decisions": [
-    {"decision": "Phase 68 (OGG Metadata Strip) dropped", "rationale": "PassthroughDecoder re-serializes OGG from scratch, 0x81 never in output. Verified via source analysis, confirmed by urknall.", "phase": "68"},
-    {"decision": "Forum monitor matchesTopic() switched to word-boundary regex", "rationale": "String.includes() false positive: 'AI' matched inside 'avail'. Fix: word-boundary regex with smart anchoring, min-length 3 guard.", "phase": "infra"},
-    {"decision": "#155 closed (v3.5.7)", "rationale": "woOrszt confirmed deferral works.", "phase": "triage"},
-    {"decision": "#143 closed (v3.3.4)", "rationale": "17 days shipped, no negative reports.", "phase": "triage"}
+    {"decision": "Phase 69 reverted to pre-session state (035c3a9)", "rationale": "UAT sync group stutter could not be isolated. All work preserved on branch phase-69-attempt-1.", "phase": "69"},
+    {"decision": "Device naming chilly > claude discussed and agreed", "rationale": "Slave shows '> master' instead of static '(Gruppe)'. Not yet implemented. Master keeps plain name. GH #143 stability guarantee holds: only master-change triggers rename.", "phase": "69"},
+    {"decision": "Sync subscriber needs master restart on solo->synced transition", "rationale": "Without restart, master daemon misses --catchup-ms (started before sync formation). Gated on _isStreamActive.", "phase": "69"}
   ],
-  "uncommitted_files": [".planning/ROADMAP.md", ".planning/STATE.md"],
-  "next_action": "Phase 62 (Browse Endpoints + Connect Queue) next unplanned. v2.3 Library Integration (38-41) is core milestone. Monitor alnames #274, Rouzax #149/#150.",
-  "context_notes": "Triage session. 3 issues closed (#155, #143, #156), Phase 68 dropped. Forum monitor had substring matching bug silently dropping posts — fixed. 11 open issues remain. Upstream librespot #1743 still open, fork pin stays.",
-  "semantic_changes": [
+  "uncommitted_files": [],
+  "next_action": "Phase 69 redo in a few days: 1) Fresh session, 1 LMS restart only. 2) Cherry-pick from phase-69-attempt-1 or replan. 3) Test sync group on Pi first (proven working), then dev-box. Key learnings: device naming '> master', sync subscriber master restart, catchup-ms value tuning.",
+  "context_notes": "Phase 69 was fully planned (fable model), executed (2 plans, 5 tasks, all green), but UAT revealed sync group stutter that could not be attributed to our changes vs. pre-existing. After reverting ALL changes (Rust + Perl) and testing old binary, the same stutter appeared — suggesting it was always there or caused by CDN connection state after ~10 rapid LMS restarts. Session ended by reverting main to 035c3a9 and redeploying old binary.",
+  "semantic_changes": [],
+  "blocking_constraints": [
     {
-      "type": "status_change",
-      "summary": "Phase 68 dropped — 0x81 never present in passthrough output",
-      "claim_before": "Phase 68 planned: strip 0x81 metadata page from passthrough stream",
-      "claim_after": "Phase 68 dropped: PassthroughDecoder re-serializes OGG, 0x81 discarded by librespot",
-      "vault_impact": ["phases/Phase-68.md"],
-      "version": "n/a"
-    },
-    {
-      "type": "status_change",
-      "summary": "GH #155, #143, #156 closed",
-      "claim_before": "#155/#143/#156 open",
-      "claim_after": "All three closed: confirmed fixed / not applicable",
-      "vault_impact": ["issues/"],
-      "version": "n/a"
+      "description": "Sync group stutter on dev-box could not be isolated. The same stutter-then-settle pattern appeared with every binary variant. Many rapid LMS restarts may have poisoned the CDN/AP connection state. Next attempt should use exactly 1 LMS restart and test on Pi hardware first.",
+      "severity": "advisory",
+      "context": "Phase 69 UAT"
     }
-  ]
+  ],
+  "resume_command": "/gsd-resume-work"
 }
