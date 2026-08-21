@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "timestamp": "2026-08-19T08:18:23.261Z",
+  "timestamp": "2026-08-21T08:49:56.136Z",
   "phase": null,
   "phase_name": null,
   "phase_dir": null,
@@ -9,45 +9,50 @@
   "total_tasks": null,
   "status": "paused",
   "completed_tasks": [
-    {"id": "resume", "name": "Session resumed, forum + issues checked", "status": "done"},
-    {"id": "forum-triage", "name": "Forum Page 19 triaged: 4 new posts (#271-#276), 3 replies drafted", "status": "done"},
-    {"id": "reply-273", "name": "Reply drafted for agriff79 (Dev Mode warning removed in v3.5.5)", "status": "done"},
-    {"id": "reply-274", "name": "Reply drafted for alnames (403 != 429, diagnostic questions)", "status": "done"},
-    {"id": "reply-275", "name": "Reply drafted for CJS (rate-limit cache bug, fix in next release)", "status": "done"},
-    {"id": "replies-posted", "name": "All 3 forum replies posted by user", "status": "done"},
-    {"id": "emoji-155", "name": "Thumbs-up reaction on woOrszt #155 confirmation comment", "status": "done"},
-    {"id": "rate-limit-fix", "name": "Bug fix: Client->reset() now clears spoton_rate_limit + WP_RATE_LIMIT_KEY", "status": "done", "commit": "96a6dee"},
-    {"id": "issue-156-update", "name": "GH #156 updated with sanitized research (approach, SC, pitfalls, open questions)", "status": "done"},
-    {"id": "phase-68", "name": "Phase 68 (OGG Metadata Strip) created in ROADMAP + .planning/phases/", "status": "done", "commit": "aa7044c"},
-    {"id": "forum-topics-update", "name": "forum-topics.json updated (agriff79 topic updated, alnames-playlist-403 added)", "status": "done"},
-    {"id": "push", "name": "Pushed 96a6dee + aa7044c to origin/main", "status": "done"}
+    {"id": "resume", "name": "Session resumed from 2026-08-19 state", "status": "done"},
+    {"id": "forum-monitor-fix", "name": "Forum monitor false-positive filter fix: word-boundary regex, min-length guard, AI keyword fix", "status": "done"},
+    {"id": "forum-triage-280", "name": "Forum #280 (yeomanspc): QNAP sync drift, reply posted (LMS Proxy recommendation)", "status": "done"},
+    {"id": "forum-triage-276", "name": "Forum #276 (woOrszt): positive confirmation v3.5.7, triaged (emoji only)", "status": "done"},
+    {"id": "issue-155-closed", "name": "GH #155 closed: 429 deferral confirmed working by woOrszt", "status": "done"},
+    {"id": "issue-143-closed", "name": "GH #143 closed: sync group rename fix shipped v3.3.4, no negative reports", "status": "done"},
+    {"id": "issue-156-verified", "name": "GH #156 verified + closed: PassthroughDecoder re-serializes OGG, 0x81 never present in output", "status": "done"},
+    {"id": "phase-68-dropped", "name": "Phase 68 (OGG Metadata Strip) dropped from ROADMAP", "status": "done"},
+    {"id": "state-update", "name": "STATE.md + ROADMAP.md updated", "status": "done"}
   ],
   "remaining_tasks": [],
   "blockers": [],
   "async_jobs": [],
   "human_actions_pending": [
-    {"action": "Monitor alnames reply (#274) for 403 diagnosis response", "context": "HTTP 403 on playlists/{id}/items — not reproducible from our side, asked diagnostic questions", "blocking": false},
+    {"action": "Monitor alnames reply (#274) for 403 diagnosis response", "context": "HTTP 403 on playlists/{id}/items, diagnostic questions posted", "blocking": false},
     {"action": "Monitor librespot-org/librespot#1743 for merge", "context": "Temporary fork pin, revert Cargo.toml to upstream dev after merge", "blocking": false},
-    {"action": "Monitor #149/#150 for Rouzax confirmation", "context": "AP drop fixes v3.5.1/v3.5.2, waiting real-world validation", "blocking": false},
-    {"action": "Phase 68 needs Wave-0 empirical capture (serial/BOS relationship)", "context": "Decides plain drop vs drop+re-BOS+renumber+CRC — blocks planning the strip logic", "blocking": false},
-    {"action": "Apply obsidian-sync upgrade in spoton-private", "context": "UPGRADE-INSTRUCTIONS.md written, apply in next spoton-private session", "blocking": false}
+    {"action": "Monitor #149/#150 for Rouzax confirmation", "context": "AP drop fixes v3.5.1/v3.5.2, partial confirmation", "blocking": false},
+    {"action": "Apply obsidian-sync upgrade in spoton-private", "context": "UPGRADE-INSTRUCTIONS.md written", "blocking": false}
   ],
   "decisions": [
-    {"decision": "Rate-limit cache flags cleared on Client ID switch", "rationale": "Fable 5 analysis: spoton_rate_limit survived ID change, blocking new-ID requests. Minimal fix: remove both rate-limit keys in reset()", "phase": "quick"},
-    {"decision": "Phase 68 for OGG metadata strip", "rationale": "Consolidates GH #156 + spoton-private Phase 13 research into public tracking", "phase": "68"},
-    {"decision": "GH #156 updated with sanitized research", "rationale": "Community (urknall) can follow approach; private references (eSDK, analysis logs, Reiner attribution) excluded", "phase": "68"}
+    {"decision": "Phase 68 (OGG Metadata Strip) dropped", "rationale": "PassthroughDecoder re-serializes OGG from scratch, 0x81 never in output. Verified via source analysis, confirmed by urknall.", "phase": "68"},
+    {"decision": "Forum monitor matchesTopic() switched to word-boundary regex", "rationale": "String.includes() false positive: 'AI' matched inside 'avail'. Fix: word-boundary regex with smart anchoring, min-length 3 guard.", "phase": "infra"},
+    {"decision": "#155 closed (v3.5.7)", "rationale": "woOrszt confirmed deferral works.", "phase": "triage"},
+    {"decision": "#143 closed (v3.3.4)", "rationale": "17 days shipped, no negative reports.", "phase": "triage"}
   ],
-  "uncommitted_files": [],
-  "next_action": "Monitor alnames #274 response. Phase 68 needs Wave-0 capture before planning. Phase 62 (Browse Endpoints + Connect Queue) remains unplanned. Next release will include rate-limit fix (96a6dee).",
-  "context_notes": "Triage session: forum active with 429/403 reports. woOrszt confirmed v3.5.7 works. CJS's restart observation led to a real bug (rate-limit state not cleared on Client ID switch). alnames has a separate 403 issue we can't reproduce — waiting for diagnostic response. GH #156 now has full approach documentation from private research. Phase 68 created but needs empirical OGG header capture before planning.",
+  "uncommitted_files": [".planning/ROADMAP.md", ".planning/STATE.md"],
+  "next_action": "Phase 62 (Browse Endpoints + Connect Queue) next unplanned. v2.3 Library Integration (38-41) is core milestone. Monitor alnames #274, Rouzax #149/#150.",
+  "context_notes": "Triage session. 3 issues closed (#155, #143, #156), Phase 68 dropped. Forum monitor had substring matching bug silently dropping posts — fixed. 11 open issues remain. Upstream librespot #1743 still open, fork pin stays.",
   "semantic_changes": [
     {
-      "type": "behavior_change",
-      "summary": "Client ID switch now clears rate-limit state (no restart needed)",
-      "claim_before": "Changing Client ID requires LMS restart for rate-limit state to clear",
-      "claim_after": "Client->reset() clears spoton_rate_limit and spoton_wp_rate_limit immediately on Client ID change",
-      "vault_impact": ["architecture/Client.md"],
-      "version": "unreleased"
+      "type": "status_change",
+      "summary": "Phase 68 dropped — 0x81 never present in passthrough output",
+      "claim_before": "Phase 68 planned: strip 0x81 metadata page from passthrough stream",
+      "claim_after": "Phase 68 dropped: PassthroughDecoder re-serializes OGG, 0x81 discarded by librespot",
+      "vault_impact": ["phases/Phase-68.md"],
+      "version": "n/a"
+    },
+    {
+      "type": "status_change",
+      "summary": "GH #155, #143, #156 closed",
+      "claim_before": "#155/#143/#156 open",
+      "claim_after": "All three closed: confirmed fixed / not applicable",
+      "vault_impact": ["issues/"],
+      "version": "n/a"
     }
   ]
 }

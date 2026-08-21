@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-06-30)
 
 **Core Value:** Reliable Spotify playback and Connect integration on LMS — Browse, stream, and control via Spotify app, without 429 bursts, zombie daemons, or audio glitches.
 
-**Current Focus:** Phase 67 — bundled-id-auth-redirect-ux
+**Current Focus:** Phase 62 — Browse Endpoints + Connect Queue (next unplanned phase)
 
 ## Current Position
 
@@ -276,12 +276,11 @@ Items carried forward from previous milestones:
 
 **Next action:**
 
-1. Post forum replies (#273, #274, #275) from `~/SynologyDrive/forum-reply-*.txt`
-2. Phase 68 needs Wave-0 empirical capture (serial/BOS) before planning
-3. Phase 62 (Browse Endpoints + Connect Queue) remains unplanned
-4. #154 (librespot log integration) queued as future work
-5. Monitor #149/#150 (Rouzax), #155 (woorszt), alnames #274 response
+1. Phase 62 (Browse Endpoints + Connect Queue) remains unplanned
+2. #154 (librespot log integration) queued as future work
+3. Monitor #149/#150 (Rouzax), alnames #274 response
+4. v2.3 Library Integration (Phases 38–41) — core milestone work untouched
 
 ---
 *State initialized: 2026-05-26*
-*Last updated: 2026-08-19 — Forum triage, rate-limit fix, Phase 68 created*
+*Last updated: 2026-08-21 — Triage: #155/#143/#156 closed, Phase 68 dropped, forum reply #280*

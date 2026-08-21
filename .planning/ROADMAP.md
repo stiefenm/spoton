@@ -415,19 +415,10 @@ Plans:
 
 - [x] 67-01-PLAN.md — /login fix, probe skip for bundled ID, Settings UX reframing, i18n (11 langs), TROUBLESHOOTING.md, forum reply
 
-### Phase 68: OGG Metadata Strip (Passthrough)
+### ~~Phase 68: OGG Metadata Strip (Passthrough)~~ DROPPED
 
-**Goal:** Strip Spotify's proprietary `0x81` metadata page from the OGG passthrough stream, producing a standard-compliant Vorbis stream. Parse ReplayGain from typed segments (go-librespot approach) and expose as HTTP response headers. (#156)
-**Requirements**: GH #156
-**Depends on:** None (independent Rust daemon change)
-**Plans:** 0 plans
-
-Plans:
-
-- [ ] TBD (run /gsd-plan-phase 68 to break down)
-
-**Note:** Requires an empirical Wave-0 capture (serial/BOS relationship of page 0 vs page 1) before planning the strip logic — decides "plain drop" vs "drop + re-BOS + renumber + CRC".
+**Dropped:** 2026-08-21 — librespot's PassthroughDecoder re-serializes the OGG container from scratch (only standard headers 0x01/0x03/0x05 + audio data). Spotify's proprietary 0x81 page is never present in the output. Verified via source analysis, confirmed by urknall (#156). No strip logic needed.
 
 ---
 *Roadmap created: 2026-05-26*
-*Last updated: 2026-08-19 — Phase 68 added (OGG metadata strip, GH #156)*
+*Last updated: 2026-08-21 — Phase 68 dropped (0x81 not present in passthrough output, #156 closed)*
