@@ -1362,7 +1362,7 @@ sub _homeFeed {
             name  => cstring($client, 'PLUGIN_SPOTON_RECENTLY_PLAYED'),
             url   => \&_recentlyPlayedFeed,
             type  => 'link',
-            image => 'plugins/SpotOn/html/images/recently.png',
+            image => 'plugins/SpotOn/html/images/MTL_icon_history.png',
         },
     );
 
@@ -1383,14 +1383,14 @@ sub _homeFeed {
             name  => cstring($client, 'PLUGIN_SPOTON_MADE_FOR_YOU'),
             url   => \&_madeForYouExpiredFeed,
             type  => 'link',
-            image => 'plugins/SpotOn/html/images/madeforyou.png',
+            image => 'plugins/SpotOn/html/images/MTL_icon_auto_awesome.png',
         };
     } else {
         push @items, {
             name  => cstring($client, 'PLUGIN_SPOTON_MADE_FOR_YOU'),
             url   => \&_madeForYouFeed,
             type  => 'link',
-            image => 'plugins/SpotOn/html/images/madeforyou.png',
+            image => 'plugins/SpotOn/html/images/MTL_icon_auto_awesome.png',
         };
     }
 
