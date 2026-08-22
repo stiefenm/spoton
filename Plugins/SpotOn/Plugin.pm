@@ -2557,55 +2557,70 @@ sub _podcastSearchFeed {
 # pagination (GH #130).
 # Per D-12: limit capped at 10 (Dev Mode). Dispatches to _showItem or _episodeItem.
 # Per Pitfall 4: episode search results use $episode->{show}{images} as artwork fallback.
+# _podcastSearchTypeFeed($client, $callback, $args, $passthrough)
+# GH #157: bounded multi-page fill for fixed-size JiveLite blocks — a
+# 210-item block against Spotify's dev-mode search limit (10) needs up to
+# 21 sequential calls; accepted per T-70-05, throttled by Client.pm's
+# inflight=1 sequencing.
 sub _podcastSearchTypeFeed {
     my ($client, $callback, $args, $passthrough) = @_;
 
     my $query  = $passthrough->{query} // '';
     my $type   = $passthrough->{type}  // 'show';
     my $offset = $args->{index}        // 0;
+    my $qty    = $args->{quantity} || 200;
 
     my $accountId = _getAccountId($client);
 
-    Plugins::SpotOn::API::Client->search($accountId, {
-        q      => $query,
-        type   => $type,
-        limit  => Plugins::SpotOn::API::Client->getLimit('search'),
-        offset => $offset,
-    }, sub {
-        my ($data, $err) = @_;
-        unless ($data) {
-            $callback->({ items => [ _authRequiredItem($client, $accountId, $err) ], offset => $offset, total => 0 });
-            return;
-        }
+    my %typeToKey = (show => 'shows', episode => 'episodes');
+    my $key       = $typeToKey{$type} // "${type}s";
 
-        my %typeToKey = (show => 'shows', episode => 'episodes');
-        my $key      = $typeToKey{$type} // "${type}s";
-        my $typeData = $data->{$key} || {};
-        my $resultItems = $typeData->{items} || [];
-
-        # R-4: map nameless entries to { ignore => 1 } placeholders instead of
-        # filtering them out — XMLBrowser skips ignore-items and decrements
-        # totalCount, so offset/total stay aligned with the API's paging.
-        my @items = map {
-            if (defined $_->{name} && $_->{name} =~ /\S/) {
-                ($type eq 'show') ? _showItem($client, $_) : _episodeItem($client, $_, undef);
-            } else {
-                { ignore => 1 };
+    _fetchPages({
+        accountId    => $accountId,
+        apiFn        => sub {
+            my ($acct, $params, $cb) = @_;
+            Plugins::SpotOn::API::Client->search($acct, {
+                q      => $query,
+                type   => $type,
+                limit  => $params->{limit},
+                offset => $params->{offset},
+            }, $cb);
+        },
+        pageLimit    => Plugins::SpotOn::API::Client->getLimit('search'),
+        startOffset  => $offset,
+        maxItems     => $qty,
+        extractItems => sub { ($_[0]->{$key} || {})->{items} || [] },
+        extractTotal => sub { ($_[0]->{$key} || {})->{total} },
+        done         => sub {
+            my ($allItems, $err, $total) = @_;
+            if (!@$allItems && $err) {
+                $callback->({ items => [ _authRequiredItem($client, $accountId, $err) ], offset => $offset, total => 0 });
+                return;
             }
-        } @{$resultItems};
 
-        my $realCount = grep { !$_->{ignore} } @items;
-        if (!$realCount && !$offset) {
-            push @items, { name => cstring($client, 'PLUGIN_SPOTON_NO_RESULTS'), type => 'textarea' };
-        }
+            # R-4: map nameless entries to { ignore => 1 } placeholders instead of
+            # filtering them out — XMLBrowser skips ignore-items and decrements
+            # totalCount, so offset/total stay aligned with the API's paging.
+            my @items = map {
+                if (defined $_->{name} && $_->{name} =~ /\S/) {
+                    ($type eq 'show') ? _showItem($client, $_) : _episodeItem($client, $_, undef);
+                } else {
+                    { ignore => 1 };
+                }
+            } @{$allItems};
 
-        # R-5: Spotify rejects offset >= 1000 for tracks/albums/artists/playlists,
-        # but only >= 50 for shows/episodes in Dev Mode.
-        my $maxOffset = ($type eq 'show' || $type eq 'episode') ? 50 : 1000;
-        my $total = $typeData->{total} // 0;
-        $total = $maxOffset if $total > $maxOffset;
+            my $realCount = grep { !$_->{ignore} } @items;
+            if (!$realCount && !$offset) {
+                push @items, { name => cstring($client, 'PLUGIN_SPOTON_NO_RESULTS'), type => 'textarea' };
+            }
 
-        $callback->({ items => \@items, offset => $offset, total => $total });
+            # R-5: Spotify rejects offset >= 1000 for tracks/albums/artists/playlists,
+            # but only >= 50 for shows/episodes in Dev Mode.
+            my $maxOffset = ($type eq 'show' || $type eq 'episode') ? 50 : 1000;
+            $total = $maxOffset if $total > $maxOffset;
+
+            $callback->({ items => \@items, offset => $offset, total => $total });
+        },
     });
 }
 
@@ -2906,62 +2921,77 @@ sub _searchFeed {
 # _searchTypeFeed($client, $callback, $args, $passthrough)
 # Paginated drill-down into a single search type (track, album, artist, or playlist).
 # Per NAV-11: limit capped at 10 (Dev Mode). Maps LMS index/quantity to offset/limit.
+# _searchTypeFeed($client, $callback, $args, $passthrough)
+# GH #157: bounded multi-page fill for fixed-size JiveLite blocks — a
+# 210-item block against Spotify's dev-mode search limit (10) needs up to
+# 21 sequential calls; accepted per T-70-05, throttled by Client.pm's
+# inflight=1 sequencing.
 sub _searchTypeFeed {
     my ($client, $callback, $args, $passthrough) = @_;
 
     my $query  = $passthrough->{query} // '';
     my $type   = $passthrough->{type}  // 'track';
     my $offset = $args->{index}        // 0;
+    my $qty    = $args->{quantity} || 200;
 
     my $accountId = _getAccountId($client);
 
-    Plugins::SpotOn::API::Client->search($accountId, {
-        q      => $query,
-        type   => $type,
-        limit  => Plugins::SpotOn::API::Client->getLimit('search'),
-        offset => $offset,
-    }, sub {
-        my ($data, $err) = @_;
-        unless ($data) {
-            $callback->({ items => [ _authRequiredItem($client, $accountId, $err) ], offset => $offset, total => 0 });
-            return;
-        }
+    my %typeToKey = (
+        track    => 'tracks',
+        album    => 'albums',
+        artist   => 'artists',
+        playlist => 'playlists',
+    );
+    my $key = $typeToKey{$type} // "${type}s";
 
-        my %typeToKey = (
-            track    => 'tracks',
-            album    => 'albums',
-            artist   => 'artists',
-            playlist => 'playlists',
-        );
-        my $key       = $typeToKey{$type} // "${type}s";
-        my $typeData  = $data->{$key} || {};
-        my $resultItems = $typeData->{items} || [];
+    _fetchPages({
+        accountId    => $accountId,
+        apiFn        => sub {
+            my ($acct, $params, $cb) = @_;
+            Plugins::SpotOn::API::Client->search($acct, {
+                q      => $query,
+                type   => $type,
+                limit  => $params->{limit},
+                offset => $params->{offset},
+            }, $cb);
+        },
+        pageLimit    => Plugins::SpotOn::API::Client->getLimit('search'),
+        startOffset  => $offset,
+        maxItems     => $qty,
+        extractItems => sub { ($_[0]->{$key} || {})->{items} || [] },
+        extractTotal => sub { ($_[0]->{$key} || {})->{total} },
+        done         => sub {
+            my ($allItems, $err, $total) = @_;
+            if (!@$allItems && $err) {
+                $callback->({ items => [ _authRequiredItem($client, $accountId, $err) ], offset => $offset, total => 0 });
+                return;
+            }
 
-        # R-4: map nameless entries to { ignore => 1 } placeholders instead of
-        # filtering them out — XMLBrowser skips ignore-items and decrements
-        # totalCount, so offset/total stay aligned with the API's paging.
-        my %typeToItem = (
-            track    => \&_trackItem,
-            album    => \&_albumItem,
-            artist   => \&_artistItem,
-            playlist => \&_playlistItem,
-        );
-        my $itemFn = $typeToItem{$type} // \&_trackItem;
+            # R-4: map nameless entries to { ignore => 1 } placeholders instead of
+            # filtering them out — XMLBrowser skips ignore-items and decrements
+            # totalCount, so offset/total stay aligned with the API's paging.
+            my %typeToItem = (
+                track    => \&_trackItem,
+                album    => \&_albumItem,
+                artist   => \&_artistItem,
+                playlist => \&_playlistItem,
+            );
+            my $itemFn = $typeToItem{$type} // \&_trackItem;
 
-        my @items = map {
-            (defined $_->{name} && $_->{name} =~ /\S/) ? $itemFn->($client, $_) : { ignore => 1 }
-        } @{$resultItems};
+            my @items = map {
+                (defined $_->{name} && $_->{name} =~ /\S/) ? $itemFn->($client, $_) : { ignore => 1 }
+            } @{$allItems};
 
-        my $realCount = grep { !$_->{ignore} } @items;
-        if (!$realCount && !$offset) {
-            push @items, { name => cstring($client, 'PLUGIN_SPOTON_NO_RESULTS'), type => 'textarea' };
-        }
+            my $realCount = grep { !$_->{ignore} } @items;
+            if (!$realCount && !$offset) {
+                push @items, { name => cstring($client, 'PLUGIN_SPOTON_NO_RESULTS'), type => 'textarea' };
+            }
 
-        # R-5: Spotify search rejects offset >= 1000 — cap advertised total.
-        my $total = $typeData->{total} // 0;
-        $total = 1000 if $total > 1000;
+            # R-5: Spotify search rejects offset >= 1000 — cap advertised total.
+            $total = 1000 if $total > 1000;
 
-        $callback->({ items => \@items, offset => $offset, total => $total });
+            $callback->({ items => \@items, offset => $offset, total => $total });
+        },
     });
 }
 
