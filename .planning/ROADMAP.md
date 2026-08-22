@@ -419,6 +419,30 @@ Plans:
 
 **Dropped:** 2026-08-21 — librespot's PassthroughDecoder re-serializes the OGG container from scratch (only standard headers 0x01/0x03/0x05 + audio data). Spotify's proprietary 0x81 page is never present in the output. Verified via source analysis, confirmed by urknall (#156). No strip logic needed.
 
+### Phase 70: JiveLite Pagination Fill (GH #157)
+
+**Goal:** Fix JiveLite empty rows by implementing bounded multi-page fill in all 11 affected feed functions. Generalize _fetchAllPages to _fetchPages with startOffset/maxItems, swap else-branch single API calls for multi-page fills, clamp total on partial errors. Covers saved tracks/albums/shows, playlists, artist albums, album tracks, search, podcast search, and add-to-playlist.
+**Depends on:** None (independent side phase)
+**Plans:** 4 plans
+
+Requirements:
+- JVL-01: _fetchPages helper with startOffset + maxItems params (generalization of _fetchAllPages)
+- JVL-02: 8 tripartite feeds else-branch converted to _fetchPages fill
+- JVL-03: _searchTypeFeed + _podcastSearchTypeFeed converted with extractTotal for nested keys
+- JVL-04: SpotOnAddToPlaylist converted
+- JVL-05: _albumFeed embedded-seed + continuation fill
+- JVL-06: Total-clamping safety on partial fill (mid-fill error → total = offset + count)
+- JVL-07: pageLimit=0 guard (blocked endpoints)
+- JVL-08: Existing play-all + Material Skin + Classic Skin behavior preserved
+- JVL-09: Icon contrast fix from reverted Phase 69 (GH #124) — recently.png + madeforyou.png grey-gradient regeneration
+
+Plans:
+
+- [ ] 70-01-PLAN.md — _fetchPages generalized paginator + _fetchAllPages wrapper + _savedTracksFeed tracer conversion + t/25 unit test (Wave 1)
+- [ ] 70-02-PLAN.md — Convert 6 tripartite feeds: savedAlbums, savedShows, userPlaylists, showFeed, artistAlbums, playlistFeed (Wave 2)
+- [ ] 70-03-PLAN.md — Convert search + podcast search (extractTotal), SpotOnAddToPlaylist, _albumFeed seed+continuation + CHANGELOG (Wave 3)
+- [ ] 70-04-PLAN.md — Icon contrast fix: cherry-pick 30f8b7b + CHANGELOG (Wave 1, parallel)
+
 ---
 *Roadmap created: 2026-05-26*
-*Last updated: 2026-08-21 — Phase 68 dropped (0x81 not present in passthrough output, #156 closed)*
+*Last updated: 2026-08-22 — Phase 70 added (JiveLite Pagination Fill, GH #157)*
