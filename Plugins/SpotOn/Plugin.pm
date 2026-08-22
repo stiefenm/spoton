@@ -1590,26 +1590,30 @@ sub _libraryFeed {
 # Play-all detection: if quantity is undef (CLI/Material Skin "Play now") OR
 # $qty >= 500 (Classic/Web UI "Play All"), AND $offset == 0, fetches ALL tracks
 # via _fetchAllPages (Option D, Phase 54 Plan 04).
+# Else-branch: bounded multi-page fill via _fetchPages honoring the requested
+# (offset, quantity) so JiveLite's ~210-item block requests get filled across
+# multiple Spotify API pages instead of stalling at the 50-item API cap (GH #157).
 sub _savedTracksFeed {
     my ($client, $callback, $args) = @_;
 
     my $offset    = $args->{index}    // 0;
     my $isPlayAll = !defined($args->{quantity}) || ($args->{quantity} >= 500);
     my $qty       = $args->{quantity} || 200;
-    my $limit     = $qty > Plugins::SpotOn::API::Client->getLimit('library') ? Plugins::SpotOn::API::Client->getLimit('library') : $qty;    # Spotify Library max = 50
 
     my $accountId = _getAccountId($client);
 
     my $cacheKey = "savedTracks:$accountId";
 
+    my $apiFn = sub {
+        my ($acct, $params, $cb) = @_;
+        Plugins::SpotOn::API::Client->getSavedTracks($acct, $params, $cb);
+    };
+
     if ($isPlayAll && $offset == 0) {
         # Play-all mode: fetch all liked tracks via full pagination
         _fetchAllPages({
             accountId    => $accountId,
-            apiFn        => sub {
-                my ($acct, $params, $cb) = @_;
-                Plugins::SpotOn::API::Client->getSavedTracks($acct, $params, $cb);
-            },
+            apiFn        => $apiFn,
             pageLimit    => 50,
             extractItems => sub { $_[0]->{items} || [] },
             done         => sub {
@@ -1641,20 +1645,30 @@ sub _savedTracksFeed {
         delete $_playAllItemCache{$cacheKey};
         goto &_savedTracksFeed;  # re-enter with same @_ after cache eviction
     } else {
-        Plugins::SpotOn::API::Client->getSavedTracks($accountId, {
-            offset => $offset,
-            limit  => $limit,
-        }, sub {
-            my ($data, $err) = @_;
-            unless ($data) {
-                $callback->({ items => [ _authRequiredItem($client, $accountId, $err) ] });
-                return;
-            }
-            my @items = map  { _trackItem($client, $_->{track}) }
-                        grep { defined $_->{track} }
-                        map  { _normalizeLibraryItem($_, 'track') }
-                        @{ $data->{items} || [] };
-            $callback->({ items => \@items, offset => $offset, total => $data->{total} });
+        _fetchPages({
+            accountId    => $accountId,
+            apiFn        => $apiFn,
+            pageLimit    => Plugins::SpotOn::API::Client->getLimit('library'),
+            startOffset  => $offset,
+            maxItems     => $qty,
+            extractItems => sub { $_[0]->{items} || [] },
+            done         => sub {
+                my ($allItems, $err, $total) = @_;
+                if (!@$allItems && $err) {
+                    $callback->({ items => [ _authRequiredItem($client, $accountId, $err) ] });
+                    return;
+                }
+                # FIX-01: defer metadata cache writes to avoid blocking event loop
+                # with N synchronous SQLite INSERTs before callback fires.
+                my @deferredMeta;
+                my @items = map  { _trackItem($client, $_->{track}, { defer_cache => \@deferredMeta }) }
+                            grep { defined $_->{track} }
+                            map  { _normalizeLibraryItem($_, 'track') }
+                            @{$allItems};
+                $callback->({ items => \@items, offset => $offset, total => $total });
+                # Flush deferred metadata cache writes in background (50 per event-loop tick).
+                _flushDeferredMeta(undef, \@deferredMeta, 0) if @deferredMeta;
+            },
         });
     }
 }
@@ -1776,21 +1790,34 @@ sub _fetchAllFollowedArtists {
 }
 
 # ============================================================
-# Reusable Async Paginator (Play-All Full Pagination)
+# Reusable Async Paginator (Play-All Full Pagination + Bounded Fill)
 # ============================================================
 
-# _fetchAllPages($args)
-# Reusable async paginator for offset-based Spotify API endpoints.
-# Fetches all pages recursively and calls $args->{done} with the full accumulated items.
+# _fetchPages($args)
+# Generalized async paginator for offset-based Spotify API endpoints.
+# Fetches pages recursively starting at $args->{startOffset}, stopping once
+# $args->{maxItems} items are accumulated (or the API list is exhausted),
+# and calls $args->{done} with the accumulated items.
 #
 # $args keys:
 #   accountId    - Spotify account ID
 #   apiFn        - coderef: $apiFn->($accountId, $params, $cb)
-#                  $params contains offset and limit; $cb receives ($data)
-#   pageLimit    - max items per API page (50 for tracks/albums/episodes, 100 for playlist items)
+#                  $params contains offset and limit; $cb receives ($data, $err)
+#   pageLimit    - max items per API page (50 for tracks/albums/episodes, 100 for
+#                  playlist items). A falsy value (e.g. 0 from a blocked-endpoint
+#                  Client->getLimit()) never reaches the API — falls back to 50 (JVL-07).
 #   extractItems - coderef: $extractItems->($data) returns arrayref of raw items
 #                  Default: sub { $_[0]->{items} || [] }
-#   done         - callback: $done->(\@accumulated) called when all pages fetched
+#   extractTotal - coderef: $extractTotal->($data) returns the API's reported total
+#                  Default: sub { $_[0]->{total} // 0 } -- override for endpoints
+#                  whose total lives under a nested type key (e.g. search feeds).
+#   startOffset  - offset to begin fetching from (default 0)
+#   maxItems     - stop once this many items are accumulated (default undef = unbounded,
+#                  i.e. play-all behavior identical to the former _fetchAllPages)
+#   done         - callback: $done->(\@accumulated, $err, $safeTotal)
+#                  $safeTotal is pre-clamped: on any partial/error/exhausted stop it
+#                  never exceeds startOffset + scalar(@accumulated), so callers can pass
+#                  it straight through to JiveLite without risking nil cache slots (JVL-06).
 #
 # T-25-01: Guards against infinite recursion — stops when current page returns 0 items,
 # regardless of what the total field says. Prevents infinite loop on API inconsistencies.
@@ -1799,44 +1826,84 @@ sub _fetchAllFollowedArtists {
 # from a genuine empty result set (Plan 03 Task 2 -- this shared paginator
 # has no inline NO_RESULTS item of its own to substitute at its unless($data)
 # site, unlike the 15 standard call sites).
-sub _fetchAllPages {
+sub _fetchPages {
     my ($args) = @_;
 
     _evictPlayAllCache();
 
     my $accountId    = $args->{accountId};
     my $apiFn        = $args->{apiFn};
-    my $pageLimit    = $args->{pageLimit}    || 50;
+    my $pageLimit    = $args->{pageLimit} || 50;    # JVL-07: never request limit=0
     my $extractItems = $args->{extractItems} || sub { $_[0]->{items} || [] };
+    my $extractTotal = $args->{extractTotal} || sub { $_[0]->{total} // 0 };
+    my $startOffset  = $args->{startOffset} // 0;
+    my $maxItems     = $args->{maxItems};
     my $done         = $args->{done};
 
+    if (defined $maxItems && $maxItems <= 0) {
+        $done->([], undef, $startOffset);
+        return;
+    }
+
     my @accumulated;
+    my $lastTotal = 0;
 
     my $fetchPage;
     $fetchPage = sub {
-        my ($offset) = @_;
-        $apiFn->($accountId, { offset => $offset, limit => $pageLimit }, sub {
+        my $requestOffset = $startOffset + scalar(@accumulated);
+        my $requestLimit  = $pageLimit;
+        if (defined $maxItems) {
+            my $remaining = $maxItems - scalar(@accumulated);
+            $requestLimit = $remaining if $remaining < $requestLimit;
+        }
+        $apiFn->($accountId, { offset => $requestOffset, limit => $requestLimit }, sub {
             my ($data, $err) = @_;
             unless ($data) {
                 undef $fetchPage;
-                $done->(\@accumulated, $err);
+                $done->(\@accumulated, $err, $startOffset + scalar(@accumulated));
                 return;
             }
             my $items = $extractItems->($data);
+            my $itemCount = scalar(@{$items});
             push @accumulated, @{$items};
 
-            my $total = $data->{total} // 0;
+            # Overshoot trim: API may ignore a shrunk limit and return a full page.
+            if (defined $maxItems && scalar(@accumulated) > $maxItems) {
+                splice(@accumulated, $maxItems);
+            }
+
+            $lastTotal = $extractTotal->($data) // 0;
+
+            my $reachedMax = defined($maxItems) && scalar(@accumulated) >= $maxItems;
             # T-25-01: stop if current page returned no items (prevents infinite loop)
-            if (scalar(@accumulated) < $total && @{$items} > 0) {
-                $fetchPage->(scalar(@accumulated));
+            if (!$reachedMax && $itemCount > 0 && ($startOffset + scalar(@accumulated)) < $lastTotal) {
+                $fetchPage->();
             } else {
                 undef $fetchPage;
-                $done->(\@accumulated);
+                my $safeTotal;
+                if ($reachedMax) {
+                    # Advertise the true API total (if larger) so JiveLite requests the next block.
+                    my $filled = $startOffset + scalar(@accumulated);
+                    $safeTotal = $lastTotal > $filled ? $lastTotal : $filled;
+                } else {
+                    # List exhausted, empty page, or shrunken list: clamp to what was delivered (JVL-06).
+                    $safeTotal = $startOffset + scalar(@accumulated);
+                }
+                $done->(\@accumulated, undef, $safeTotal);
             }
         });
     };
 
-    $fetchPage->(0);
+    $fetchPage->();
+}
+
+# _fetchAllPages($args)
+# Backward-compatible wrapper around _fetchPages for the 7 existing play-all
+# call sites (unbounded fetch, 2-arg done callback -- the extra 3rd $safeTotal
+# arg is simply ignored by callers that only destructure ($allItems, $err)).
+sub _fetchAllPages {
+    my ($args) = @_;
+    _fetchPages($args);
 }
 
 # _userPlaylistsFeed($client, $callback, $args)
