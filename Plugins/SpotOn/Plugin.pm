@@ -3278,7 +3278,10 @@ sub _albumFeed {
 
             if ($total <= $seedCount || $qty <= $seedCount) {
                 # Embedded seed already covers the request -- no getAlbumTracks call needed.
-                my @items = map { _albumTrackItem($client, $_, $images, $artist0, $album->{name}, { albumReleaseDate => $album->{release_date} // '' }) } @{$tracks};
+                # WR-03: deliver at most $qty items (bounded-fill contract); total stays
+                # the real album total so JiveLite can request the next block.
+                my $deliver = ($qty < $seedCount) ? $qty : $seedCount;
+                my @items = map { _albumTrackItem($client, $_, $images, $artist0, $album->{name}, { albumReleaseDate => $album->{release_date} // '' }) } @{$tracks}[0 .. $deliver - 1];
 
                 if (!@items) {
                     push @items, { name => cstring($client, 'PLUGIN_SPOTON_NO_RESULTS'), type => 'textarea' };
@@ -3299,6 +3302,13 @@ sub _albumFeed {
                 maxItems    => $qty - $seedCount,
                 done        => sub {
                     my ($fetched, $err, $combinedTotal) = @_;
+                    # WR-01: the embedded seed (@$tracks) is always non-empty here, so
+                    # test the continuation result itself -- surface auth errors only
+                    # when the getAlbumTracks fill failed and delivered nothing.
+                    if (!@$fetched && $err) {
+                        $callback->({ items => [ _authRequiredItem($client, $accountId, $err) ] });
+                        return;
+                    }
                     # FIX-01: defer metadata cache writes.
                     my @items = map { _albumTrackItem($client, $_, $images, $artist0, $album->{name}, { defer_cache => \@deferredMeta, albumReleaseDate => $album->{release_date} // '' }) } (@$tracks, @$fetched);
 
@@ -3326,13 +3336,16 @@ sub _albumFeed {
                     return;
                 }
 
-                my @items = map { _albumTrackItem($client, $_, $albumImages, $albumArtist, $albumName, { albumReleaseDate => $albumReleaseDate }) } @$allItems;
+                # FIX-01: defer metadata cache writes.
+                my @deferredMeta;
+                my @items = map { _albumTrackItem($client, $_, $albumImages, $albumArtist, $albumName, { defer_cache => \@deferredMeta, albumReleaseDate => $albumReleaseDate }) } @$allItems;
 
                 if (!@items) {
                     push @items, { name => cstring($client, 'PLUGIN_SPOTON_NO_RESULTS'), type => 'textarea' };
                 }
 
                 $callback->({ items => \@items, offset => $offset, total => $total });
+                _flushDeferredMeta(undef, \@deferredMeta, 0) if @deferredMeta;
             },
         });
     }
