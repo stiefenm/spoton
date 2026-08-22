@@ -423,7 +423,7 @@ Plans:
 
 **Goal:** Fix JiveLite empty rows by implementing bounded multi-page fill in all 11 affected feed functions. Generalize _fetchAllPages to _fetchPages with startOffset/maxItems, swap else-branch single API calls for multi-page fills, clamp total on partial errors. Covers saved tracks/albums/shows, playlists, artist albums, album tracks, search, podcast search, and add-to-playlist.
 **Depends on:** None (independent side phase)
-**Plans:** 5/5 plans executed
+**Plans:** 5/5 plans complete
 
 Requirements:
 
