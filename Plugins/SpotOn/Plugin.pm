@@ -978,6 +978,9 @@ sub _followCacheKey {
 # Add to Playlist (Phase 34)
 # ============================================================
 
+# SpotOnAddToPlaylist($client, $cb, $params, $args)
+# GH #157: bounded multi-page fill so the picker lists up to a full
+# JiveLite 210-item block instead of stalling at one API page (JVL-04).
 sub SpotOnAddToPlaylist {
     my ($client, $cb, $params, $args) = @_;
 
@@ -987,33 +990,39 @@ sub SpotOnAddToPlaylist {
 
     my $offset = $params->{index} || 0;
     my $qty    = $params->{quantity} || 200;
-    my $limit  = $qty > Plugins::SpotOn::API::Client->getLimit('library') ? Plugins::SpotOn::API::Client->getLimit('library') : $qty;
 
-    Plugins::SpotOn::API::Client->getUserPlaylists($accountId, {
-        offset => $offset,
-        limit  => $limit,
-    }, sub {
-        my ($data, $err) = @_;
-        unless ($data && $data->{items}) {
-            $cb->({ items => [{ name => cstring($client, 'PLUGIN_SPOTON_NO_RESULTS'), type => 'textarea' }] });
-            return;
-        }
+    _fetchPages({
+        accountId   => $accountId,
+        apiFn       => sub {
+            my ($acct, $params2, $cb2) = @_;
+            Plugins::SpotOn::API::Client->getUserPlaylists($acct, $params2, $cb2);
+        },
+        pageLimit   => Plugins::SpotOn::API::Client->getLimit('library'),
+        startOffset => $offset,
+        maxItems    => $qty,
+        done        => sub {
+            my ($allItems, $err, $total) = @_;
+            if (!@$allItems && $err) {
+                $cb->({ items => [{ name => cstring($client, 'PLUGIN_SPOTON_NO_RESULTS'), type => 'textarea' }] });
+                return;
+            }
 
-        my @items;
-        for my $pl (@{ $data->{items} }) {
-            next unless $pl && $pl->{id};
-            next if _isMadeForYou($pl);
-            push @items, {
-                name        => $pl->{name} // '',
-                url         => \&_doAddToPlaylist,
-                passthrough => [{ playlistId => $pl->{id}, playlistName => $pl->{name}, spotifyUri => $spotifyUri, accountId => $accountId }],
-                image       => _largestImage($pl->{images}) || 'html/images/playlists.png',
-                line2       => ($pl->{owner} || {})->{display_name} // '',
-                type        => 'link',
-            };
-        }
+            my @items;
+            for my $pl (@$allItems) {
+                next unless $pl && $pl->{id};
+                next if _isMadeForYou($pl);
+                push @items, {
+                    name        => $pl->{name} // '',
+                    url         => \&_doAddToPlaylist,
+                    passthrough => [{ playlistId => $pl->{id}, playlistName => $pl->{name}, spotifyUri => $spotifyUri, accountId => $accountId }],
+                    image       => _largestImage($pl->{images}) || 'html/images/playlists.png',
+                    line2       => ($pl->{owner} || {})->{display_name} // '',
+                    type        => 'link',
+                };
+            }
 
-        $cb->({ items => \@items, offset => $offset, total => $data->{total} || 0 });
+            $cb->({ items => \@items, offset => $offset, total => $total });
+        },
     });
 }
 
@@ -3147,10 +3156,17 @@ sub _albumFeed {
     my $offset    = $args->{index}    // 0;
     my $isPlayAll = !defined($args->{quantity}) || ($args->{quantity} >= 500);
     my $qty       = $args->{quantity} || 200;
-    my $limit     = $qty > Plugins::SpotOn::API::Client->getLimit('album_tracks') ? Plugins::SpotOn::API::Client->getLimit('album_tracks') : $qty;
 
     my $accountId = _getAccountId($client);
     my $albumCacheKey = "album:$accountId:$albumId";
+
+    # GH #157: hoisted getAlbumTracks apiFn closure, shared by both browse
+    # branches below (offset==0 continuation seed + offset>0 pages). The
+    # play-all branch's inline paginator stays independent/untouched (JVL-08).
+    my $apiFn = sub {
+        my ($acct, $params, $cb) = @_;
+        Plugins::SpotOn::API::Client->getAlbumTracks($acct, $albumId, $params, $cb);
+    };
 
     if ($isPlayAll && $offset == 0) {
         # Play-all mode: first fetch full album for metadata + seed tracks, then paginate remaining
@@ -3245,6 +3261,8 @@ sub _albumFeed {
         goto &_albumFeed;  # re-enter with same @_ after cache eviction
     } elsif ($offset == 0) {
         # Initial browse load: fetch full album (includes first page of tracks in tracks.items).
+        # GH #157: if quantity exceeds the embedded seed tracks and the album has
+        # more, continue fetching via getAlbumTracks (embedded-seed + continuation).
         Plugins::SpotOn::API::Client->getAlbum($accountId, $albumId, sub {
             my $album = shift;
             unless ($album) {
@@ -3252,38 +3270,70 @@ sub _albumFeed {
                 return;
             }
 
-            my $images   = $album->{images}           || [];
-            my $artist0  = ($album->{artists} && @{$album->{artists}}) ? $album->{artists}[0]{name} : '';
-            my $total    = ($album->{tracks} && $album->{tracks}{total}) ? $album->{tracks}{total} : 0;
-            my $tracks   = ($album->{tracks} && $album->{tracks}{items}) ? $album->{tracks}{items} : [];
+            my $images    = $album->{images}           || [];
+            my $artist0   = ($album->{artists} && @{$album->{artists}}) ? $album->{artists}[0]{name} : '';
+            my $total     = ($album->{tracks} && $album->{tracks}{total}) ? $album->{tracks}{total} : 0;
+            my $tracks    = ($album->{tracks} && $album->{tracks}{items}) ? $album->{tracks}{items} : [];
+            my $seedCount = scalar(@$tracks);
 
-            my @items = map { _albumTrackItem($client, $_, $images, $artist0, $album->{name}, { albumReleaseDate => $album->{release_date} // '' }) } @{$tracks};
+            if ($total <= $seedCount || $qty <= $seedCount) {
+                # Embedded seed already covers the request -- no getAlbumTracks call needed.
+                my @items = map { _albumTrackItem($client, $_, $images, $artist0, $album->{name}, { albumReleaseDate => $album->{release_date} // '' }) } @{$tracks};
 
-            if (!@items) {
-                push @items, { name => cstring($client, 'PLUGIN_SPOTON_NO_RESULTS'), type => 'textarea' };
-            }
+                if (!@items) {
+                    push @items, { name => cstring($client, 'PLUGIN_SPOTON_NO_RESULTS'), type => 'textarea' };
+                }
 
-            $callback->({ items => \@items, offset => 0, total => $total });
-        });
-    } else {
-        # Subsequent browse pages: use getAlbumTracks with correct offset.
-        Plugins::SpotOn::API::Client->getAlbumTracks($accountId, $albumId, {
-            offset => $offset,
-            limit  => $limit,
-        }, sub {
-            my ($data, $err) = @_;
-            unless ($data) {
-                $callback->({ items => [ _authRequiredItem($client, $accountId, $err) ] });
+                $callback->({ items => \@items, offset => 0, total => $total });
                 return;
             }
 
-            my @items = map { _albumTrackItem($client, $_, $albumImages, $albumArtist, $albumName, { albumReleaseDate => $albumReleaseDate }) } @{ $data->{items} || [] };
+            # JiveLite case: quantity (up to 210) exceeds the <=50 embedded tracks
+            # and the album has more -- continue from where the seed left off.
+            my @deferredMeta;
+            _fetchPages({
+                accountId   => $accountId,
+                apiFn       => $apiFn,
+                pageLimit   => Plugins::SpotOn::API::Client->getLimit('album_tracks'),
+                startOffset => $seedCount,
+                maxItems    => $qty - $seedCount,
+                done        => sub {
+                    my ($fetched, $err, $combinedTotal) = @_;
+                    # FIX-01: defer metadata cache writes.
+                    my @items = map { _albumTrackItem($client, $_, $images, $artist0, $album->{name}, { defer_cache => \@deferredMeta, albumReleaseDate => $album->{release_date} // '' }) } (@$tracks, @$fetched);
 
-            if (!@items) {
-                push @items, { name => cstring($client, 'PLUGIN_SPOTON_NO_RESULTS'), type => 'textarea' };
-            }
+                    if (!@items) {
+                        push @items, { name => cstring($client, 'PLUGIN_SPOTON_NO_RESULTS'), type => 'textarea' };
+                    }
 
-            $callback->({ items => \@items, offset => $offset, total => $data->{total} // 0 });
+                    $callback->({ items => \@items, offset => 0, total => $combinedTotal });
+                    _flushDeferredMeta(undef, \@deferredMeta, 0) if @deferredMeta;
+                },
+            });
+        });
+    } else {
+        # Subsequent browse pages: bounded multi-page fill via getAlbumTracks (GH #157).
+        _fetchPages({
+            accountId   => $accountId,
+            apiFn       => $apiFn,
+            pageLimit   => Plugins::SpotOn::API::Client->getLimit('album_tracks'),
+            startOffset => $offset,
+            maxItems    => $qty,
+            done        => sub {
+                my ($allItems, $err, $total) = @_;
+                if (!@$allItems && $err) {
+                    $callback->({ items => [ _authRequiredItem($client, $accountId, $err) ] });
+                    return;
+                }
+
+                my @items = map { _albumTrackItem($client, $_, $albumImages, $albumArtist, $albumName, { albumReleaseDate => $albumReleaseDate }) } @$allItems;
+
+                if (!@items) {
+                    push @items, { name => cstring($client, 'PLUGIN_SPOTON_NO_RESULTS'), type => 'textarea' };
+                }
+
+                $callback->({ items => \@items, offset => $offset, total => $total });
+            },
         });
     }
 }
