@@ -1683,19 +1683,20 @@ sub _savedAlbumsFeed {
     my $offset    = $args->{index}    // 0;
     my $isPlayAll = !defined($args->{quantity}) || ($args->{quantity} >= 500);
     my $qty       = $args->{quantity} || 200;
-    my $limit     = $qty > Plugins::SpotOn::API::Client->getLimit('library') ? Plugins::SpotOn::API::Client->getLimit('library') : $qty;
 
     my $accountId = _getAccountId($client);
 
     my $cacheKey = "savedAlbums:$accountId";
 
+    my $apiFn = sub {
+        my ($acct, $params, $cb) = @_;
+        Plugins::SpotOn::API::Client->getSavedAlbums($acct, $params, $cb);
+    };
+
     if ($isPlayAll && $offset == 0) {
         _fetchAllPages({
             accountId    => $accountId,
-            apiFn        => sub {
-                my ($acct, $params, $cb) = @_;
-                Plugins::SpotOn::API::Client->getSavedAlbums($acct, $params, $cb);
-            },
+            apiFn        => $apiFn,
             pageLimit    => Plugins::SpotOn::API::Client->getLimit('library'),
             extractItems => sub { $_[0]->{items} || [] },
             done         => sub {
@@ -1722,20 +1723,26 @@ sub _savedAlbumsFeed {
         delete $_playAllItemCache{$cacheKey};
         goto &_savedAlbumsFeed;
     } else {
-        Plugins::SpotOn::API::Client->getSavedAlbums($accountId, {
-            offset => $offset,
-            limit  => $limit,
-        }, sub {
-            my ($data, $err) = @_;
-            unless ($data) {
-                $callback->({ items => [ _authRequiredItem($client, $accountId, $err) ] });
-                return;
-            }
-            my @items = map  { _albumItem($client, $_->{album}) }
-                        grep { defined $_->{album} }
-                        map  { _normalizeLibraryItem($_, 'album') }
-                        @{ $data->{items} || [] };
-            $callback->({ items => \@items, offset => $offset, total => $data->{total} });
+        # Bounded multi-page fill for fixed-size block clients (GH #157).
+        _fetchPages({
+            accountId    => $accountId,
+            apiFn        => $apiFn,
+            pageLimit    => Plugins::SpotOn::API::Client->getLimit('library'),
+            startOffset  => $offset,
+            maxItems     => $qty,
+            extractItems => sub { $_[0]->{items} || [] },
+            done         => sub {
+                my ($allItems, $err, $total) = @_;
+                if (!@$allItems && $err) {
+                    $callback->({ items => [ _authRequiredItem($client, $accountId, $err) ] });
+                    return;
+                }
+                my @items = map  { _albumItem($client, $_->{album}) }
+                            grep { defined $_->{album} }
+                            map  { _normalizeLibraryItem($_, 'album') }
+                            @{$allItems};
+                $callback->({ items => \@items, offset => $offset, total => $total });
+            },
         });
     }
 }
@@ -1918,19 +1925,20 @@ sub _userPlaylistsFeed {
     my $offset    = $args->{index}    // 0;
     my $isPlayAll = !defined($args->{quantity}) || ($args->{quantity} >= 500);
     my $qty       = $args->{quantity} || 200;
-    my $limit     = $qty > Plugins::SpotOn::API::Client->getLimit('library') ? Plugins::SpotOn::API::Client->getLimit('library') : $qty;
 
     my $accountId = _getAccountId($client);
 
     my $cacheKey = "userPlaylists:$accountId";
 
+    my $apiFn = sub {
+        my ($acct, $params, $cb) = @_;
+        Plugins::SpotOn::API::Client->getUserPlaylists($acct, $params, $cb);
+    };
+
     if ($isPlayAll && $offset == 0) {
         _fetchAllPages({
             accountId    => $accountId,
-            apiFn        => sub {
-                my ($acct, $params, $cb) = @_;
-                Plugins::SpotOn::API::Client->getUserPlaylists($acct, $params, $cb);
-            },
+            apiFn        => $apiFn,
             pageLimit    => Plugins::SpotOn::API::Client->getLimit('library'),
             extractItems => sub { $_[0]->{items} || [] },
             done         => sub {
@@ -1955,19 +1963,25 @@ sub _userPlaylistsFeed {
         delete $_playAllItemCache{$cacheKey};
         goto &_userPlaylistsFeed;
     } else {
-        Plugins::SpotOn::API::Client->getUserPlaylists($accountId, {
-            offset => $offset,
-            limit  => $limit,
-        }, sub {
-            my ($data, $err) = @_;
-            unless ($data) {
-                $callback->({ items => [ _authRequiredItem($client, $accountId, $err) ] });
-                return;
-            }
-            # D-03: Exclude Made-For-You playlists from Library Playlists
-            my @user  = grep { !_isMadeForYou($_) } @{ $data->{items} || [] };
-            my @items = map  { _playlistItem($client, $_) } @user;
-            $callback->({ items => \@items, offset => $offset, total => $data->{total} });
+        # Bounded multi-page fill for fixed-size block clients (GH #157).
+        _fetchPages({
+            accountId    => $accountId,
+            apiFn        => $apiFn,
+            pageLimit    => Plugins::SpotOn::API::Client->getLimit('library'),
+            startOffset  => $offset,
+            maxItems     => $qty,
+            extractItems => sub { $_[0]->{items} || [] },
+            done         => sub {
+                my ($allItems, $err, $total) = @_;
+                if (!@$allItems && $err) {
+                    $callback->({ items => [ _authRequiredItem($client, $accountId, $err) ] });
+                    return;
+                }
+                # D-03: Exclude Made-For-You playlists from Library Playlists
+                my @user  = grep { !_isMadeForYou($_) } @{$allItems};
+                my @items = map  { _playlistItem($client, $_) } @user;
+                $callback->({ items => \@items, offset => $offset, total => $total });
+            },
         });
     }
 }
@@ -2012,19 +2026,20 @@ sub _savedShowsFeed {
     my $offset    = $args->{index}    // 0;
     my $isPlayAll = !defined($args->{quantity}) || ($args->{quantity} >= 500);
     my $qty       = $args->{quantity} || 200;
-    my $limit     = $qty > Plugins::SpotOn::API::Client->getLimit('library') ? Plugins::SpotOn::API::Client->getLimit('library') : $qty;    # Spotify /me/shows max = 50
 
     my $accountId = _getAccountId($client);
 
     my $cacheKey = "savedShows:$accountId";
 
+    my $apiFn = sub {
+        my ($acct, $params, $cb) = @_;
+        Plugins::SpotOn::API::Client->getSavedShows($acct, { %$params, _noCache => 1 }, $cb);
+    };
+
     if ($isPlayAll && $offset == 0) {
         _fetchAllPages({
             accountId    => $accountId,
-            apiFn        => sub {
-                my ($acct, $params, $cb) = @_;
-                Plugins::SpotOn::API::Client->getSavedShows($acct, { %$params, _noCache => 1 }, $cb);
-            },
+            apiFn        => $apiFn,
             pageLimit    => Plugins::SpotOn::API::Client->getLimit('library'),
             extractItems => sub { $_[0]->{items} || [] },
             done         => sub {
@@ -2051,23 +2066,28 @@ sub _savedShowsFeed {
         delete $_playAllItemCache{$cacheKey};
         goto &_savedShowsFeed;
     } else {
-        Plugins::SpotOn::API::Client->getSavedShows($accountId, {
-            offset   => $offset,
-            limit    => $limit,
-            _noCache => 1,
-        }, sub {
-            my ($data, $err) = @_;
-            unless ($data) {
-                $callback->({ items => [ _authRequiredItem($client, $accountId, $err) ] });
-                return;
-            }
-            # Pitfall 1: items are [{ added_at: "...", show: {...} }] — must unwrap {show}
-            # CR-01: null-show guard — same pattern as _playlistFeed (line 1719-1721)
-            my @items = map  { _showItem($client, $_->{show}) }
-                        grep { defined $_->{show} }
-                        map  { _normalizeLibraryItem($_, 'show') }
-                        @{ $data->{items} || [] };
-            $callback->({ items => \@items, offset => $offset, total => $data->{total} });
+        # Bounded multi-page fill for fixed-size block clients (GH #157).
+        _fetchPages({
+            accountId    => $accountId,
+            apiFn        => $apiFn,
+            pageLimit    => Plugins::SpotOn::API::Client->getLimit('library'),
+            startOffset  => $offset,
+            maxItems     => $qty,
+            extractItems => sub { $_[0]->{items} || [] },
+            done         => sub {
+                my ($allItems, $err, $total) = @_;
+                if (!@$allItems && $err) {
+                    $callback->({ items => [ _authRequiredItem($client, $accountId, $err) ] });
+                    return;
+                }
+                # Pitfall 1: items are [{ added_at: "...", show: {...} }] — must unwrap {show}
+                # CR-01: null-show guard — same pattern as _playlistFeed (line 1719-1721)
+                my @items = map  { _showItem($client, $_->{show}) }
+                            grep { defined $_->{show} }
+                            map  { _normalizeLibraryItem($_, 'show') }
+                            @{$allItems};
+                $callback->({ items => \@items, offset => $offset, total => $total });
+            },
         });
     }
 }
