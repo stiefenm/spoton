@@ -5,9 +5,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.5.8] - 2026-08-22
+
 ### Fixed
-- **"Recently Played" and "Made For You" home icons legible on light theme** — both icons are now grey-gradient glyphs matching the Top Tracks icon, fixing their invisibility as white silhouettes on the Material Skin light theme. ([#124](https://github.com/stiefenm/spoton/issues/124))
+- **"Recently Played" and "Made For You" home icons now theme-aware on Material Skin** — icons use the Material Skin `MTL_icon_` convention (`history`, `auto_awesome`) for automatic light/dark theme adaptation, matching the Top Tracks icon (`trophy` via icon-map.json). PNG fallbacks remain for non-Material skins. ([#124](https://github.com/stiefenm/spoton/issues/124))
 - **JiveLite / piCorePlayer lists no longer show empty rows past the first API page** — all Browse, Library, Search, and Add-to-Playlist menus now fill JiveLite's fixed 200-item blocks with bounded multi-page fetches, instead of stalling at Spotify's single-page API limit (10-100 items depending on endpoint) and leaving trailing positions permanently empty. Partial failures during a multi-page fetch now report a truncated-but-consistent item count instead of an unfillable total. ([#157](https://github.com/stiefenm/spoton/issues/157))
+- **Rate-limit state cleared on Client ID switch** — switching Client IDs no longer carries stale rate-limit cooldown from the previous ID.
 
 ## [3.5.7] - 2026-08-18
 
