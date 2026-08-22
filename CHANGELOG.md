@@ -5,6 +5,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- **"Recently Played" and "Made For You" home icons legible on light theme** — both icons are now grey-gradient glyphs matching the Top Tracks icon, fixing their invisibility as white silhouettes on the Material Skin light theme. ([#124](https://github.com/stiefenm/spoton/issues/124))
+
 ## [3.5.7] - 2026-08-18
 
 ### Fixed
