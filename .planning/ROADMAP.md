@@ -423,9 +423,10 @@ Plans:
 
 **Goal:** Fix JiveLite empty rows by implementing bounded multi-page fill in all 11 affected feed functions. Generalize _fetchAllPages to _fetchPages with startOffset/maxItems, swap else-branch single API calls for multi-page fills, clamp total on partial errors. Covers saved tracks/albums/shows, playlists, artist albums, album tracks, search, podcast search, and add-to-playlist.
 **Depends on:** None (independent side phase)
-**Plans:** 4 plans
+**Plans:** 5/5 plans executed
 
 Requirements:
+
 - JVL-01: _fetchPages helper with startOffset + maxItems params (generalization of _fetchAllPages)
 - JVL-02: 8 tripartite feeds else-branch converted to _fetchPages fill
 - JVL-03: _searchTypeFeed + _podcastSearchTypeFeed converted with extractTotal for nested keys
@@ -438,10 +439,20 @@ Requirements:
 
 Plans:
 
-- [ ] 70-01-PLAN.md — _fetchPages generalized paginator + _fetchAllPages wrapper + _savedTracksFeed tracer conversion + t/25 unit test (Wave 1)
-- [ ] 70-02-PLAN.md — Convert 6 tripartite feeds: savedAlbums, savedShows, userPlaylists, showFeed, artistAlbums, playlistFeed (Wave 2)
-- [ ] 70-03-PLAN.md — Convert search + podcast search (extractTotal), SpotOnAddToPlaylist, _albumFeed seed+continuation + CHANGELOG (Wave 3)
-- [ ] 70-04-PLAN.md — Icon contrast fix: cherry-pick 30f8b7b + CHANGELOG (Wave 1, parallel)
+- [x] 70-05-PLAN.md
+
+**Wave 1**
+
+- [x] 70-01-PLAN.md — _fetchPages generalized paginator + _fetchAllPages wrapper + _savedTracksFeed tracer conversion + t/25 unit test (Wave 1)
+- [x] 70-04-PLAN.md — Icon contrast fix: cherry-pick 30f8b7b + CHANGELOG (Wave 1, parallel)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [x] 70-02-PLAN.md — Convert 6 tripartite feeds: savedAlbums, savedShows, userPlaylists, showFeed, artistAlbums, playlistFeed (Wave 2)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [x] 70-03-PLAN.md — Convert search + podcast search (extractTotal), SpotOnAddToPlaylist, _albumFeed seed+continuation + CHANGELOG (Wave 3)
 
 ---
 *Roadmap created: 2026-05-26*
