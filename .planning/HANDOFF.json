@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "timestamp": "2026-08-22T22:07:08.900Z",
+  "timestamp": "2026-08-23T11:02:16.355Z",
   "phase": "70",
   "phase_name": "JiveLite Pagination Fill (GH #157)",
   "phase_dir": ".planning/phases/70-jivelite-pagination-fill-gh-157",
@@ -9,30 +9,31 @@
   "total_tasks": 1,
   "status": "complete",
   "completed_tasks": [
-    {"id": "70-01", "name": "_fetchPages paginator + _savedTracksFeed tracer", "status": "done", "commit": "fcfa2dd"},
-    {"id": "70-02", "name": "6 remaining tripartite feeds conversion", "status": "done", "commit": "c22fa4b"},
-    {"id": "70-03", "name": "4 non-uniform feeds + CHANGELOG", "status": "done", "commit": "d548478"},
-    {"id": "70-04", "name": "Icon contrast fix cherry-pick", "status": "done", "commit": "5a344e4"},
-    {"id": "70-05", "name": "_albumFeed gap closure (WR-01/02/03)", "status": "done", "commit": "8c4386c"}
+    {"id": "session-1", "name": "Recreate stiefenm/librespot fork from upstream dev HEAD", "status": "done"},
+    {"id": "session-2", "name": "Rebase audio-key-retry patch onto dev HEAD (1599145)", "status": "done"},
+    {"id": "session-3", "name": "Open upstream PR #1748 (replaces closed #1743)", "status": "done"},
+    {"id": "session-4", "name": "Update Cargo.lock to new fork commit f3734bfb", "status": "done", "commit": "21956c5"},
+    {"id": "session-5", "name": "Local release build + deploy to LMS", "status": "done"},
+    {"id": "session-6", "name": "Device Auth Flow spike (RFC 8628)", "status": "done"}
   ],
   "remaining_tasks": [],
   "blockers": [],
   "async_jobs": [],
   "human_actions_pending": [
-    {"action": "JiveLite pagination UAT on piCorePlayer/JiveLite device", "context": "Tests 1-4 blocked due to no JiveLite hardware available — Pi is first community user after release", "blocking": false},
-    {"action": "Monitor librespot-org/librespot#1743 for merge", "context": "Temporary fork pin, revert Cargo.toml to upstream dev after merge", "blocking": false}
+    {"action": "Monitor librespot-org/librespot#1748 for review/merge", "context": "Audio key retry patch, rebased on current dev HEAD. Replaces accidentally closed #1743.", "blocking": false},
+    {"action": "JiveLite pagination UAT on piCorePlayer/JiveLite device", "context": "Tests 1-4 blocked due to no JiveLite hardware available — Pi is first community user after release", "blocking": false}
   ],
   "decisions": [
-    {"decision": "Material Skin MTL_icon_ convention for home icons instead of custom PNGs", "rationale": "Material Skin replaces PNG icons with theme-aware Vuetify icons via MTL_icon_ prefix. Top Tracks was already mapped to trophy SVG via icon-map.json. Our custom PNGs rendered as raw greyscale on all themes. MTL_icon_ history and auto_awesome give automatic light/dark adaptation.", "phase": "70"},
-    {"decision": "WR-04 (search offset ceiling) deferred as non-blocking", "rationale": "Search feeds near Spotify's 1000-offset ceiling waste one API call but correctness is preserved via JVL-06 error clamp. Efficiency optimization, not a bug.", "phase": "70"}
+    {"decision": "librespot fork recreated on current dev HEAD (1599145)", "rationale": "Original fork accidentally deleted, closing PR #1743. New PR #1748 opened.", "phase": "infra"},
+    {"decision": "Device Auth Flow parked — not usable with SpotOn", "rationale": "Spike confirmed: only Desktop Client ID accepted. SpotOn Dev ID and ncspot Extended Quota ID both rejected with unauthorized_client. PKCE remains sole auth path.", "phase": "infra"}
   ],
-  "uncommitted_files": [".planning/ROADMAP.md", ".planning/STATE.md"],
-  "next_action": "Phase 70 complete, v3.5.8 released. Next session: check forum/issues for user feedback on pagination fix, plan next phase.",
-  "context_notes": "Phase 70 fully executed (5 plans, 3 waves + 1 gap closure wave), verified 9/9, UAT partial (2/2 testable passed, 4 JiveLite blocked), released as v3.5.8. Icon fix evolved from PNG grey-gradient (inadequate) to MTL_icon_ convention (correct) after discovering Material Skin's SVG icon replacement system via icon-map.json and mapIconType.",
+  "uncommitted_files": [],
+  "next_action": "Phase 62 (Browse Endpoints + Connect Queue) or Phase 38 (Importer Foundation) — core milestone work. Monitor #1748 upstream.",
+  "context_notes": "Session focused on librespot infrastructure: fork recovery, dev HEAD upgrade, Device Auth spike. No phase work done. Binary deployed and user-tested. UAT Connect audio-key errors were Spotify-side throttling, not a regression.",
   "semantic_changes": [
-    {"type": "new_concept", "summary": "Material Skin MTL_icon_ convention for theme-aware plugin icons", "claim_before": null, "claim_after": "Plugin icons named MTL_icon_{name}.png trigger Material Skin's mapIconType to replace the PNG with the named Vuetify Material Design icon, rendered theme-aware via /material/svg/{name}?c={color}", "vault_impact": []},
-    {"type": "version_bump", "summary": "v3.5.8 released with JiveLite pagination fix + icon contrast fix", "claim_before": "v3.5.7", "claim_after": "v3.5.8", "vault_impact": []},
-    {"type": "behavior_change", "summary": "_fetchPages replaces direct API calls in 11 feed else-branches", "claim_before": "Feed else-branches issue single capped API calls", "claim_after": "Feed else-branches use _fetchPages bounded multi-page fill with startOffset/maxItems", "vault_impact": []}
+    {"type": "version_bump", "summary": "librespot fork rebased from pre-#1722 dev to current dev HEAD (1599145, includes #1722 CDN fallback, #1730 clippy, #1744 examples, #1745 device auth)", "claim_before": "Fork pinned to stiefenm/librespot pre-#1722 commit 4abb7cc7", "claim_after": "Fork pinned to stiefenm/librespot commit f3734bfb on dev HEAD 1599145", "vault_impact": []},
+    {"type": "status_change", "summary": "Upstream PR #1743 replaced by #1748 after fork recreation", "claim_before": "PR #1743 open (audio key retry)", "claim_after": "PR #1743 closed (fork deleted), PR #1748 open (rebased on current dev)", "vault_impact": []},
+    {"type": "new_concept", "summary": "Device Auth Flow (RFC 8628) spiked and parked — only Desktop Client ID works", "claim_before": null, "claim_after": "Device Auth requires Spotify-internal Client IDs, Dashboard-registered IDs rejected. Not usable for SpotOn.", "vault_impact": []}
   ],
   "blocking_constraints": [],
   "resume_command": "/gsd-resume-work"

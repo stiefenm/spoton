@@ -277,25 +277,25 @@ Items carried forward from previous milestones:
 
 ## Session Continuity
 
-**Resume file:** None
+**Resume file:** .planning/.continue-here.md
 
-**Last session:** 2026-08-22T18:06:15.887Z
-**Stopped at:** Phase 70 complete — all phases complete
-**Completed this session (2026-08-19):**
+**Last session:** 2026-08-23T11:02:16.355Z
+**Stopped at:** Infrastructure session — librespot fork recovered, dev HEAD upgrade, Device Auth spike
+**Completed this session (2026-08-23):**
 
-- Forum triage (Page 19): 4 new posts, 3 replies drafted (#273 agriff79, #274 alnames, #275 CJS)
-- woOrszt #155 confirmed v3.5.7 deferral works (emoji reaction)
-- **Bug found + fixed:** Rate-limit flags (`spoton_rate_limit`, `spoton_wp_rate_limit`) survived Client-ID switch → `Client->reset()` now clears them (96a6dee)
-- GH #156 updated with sanitized research findings (approach, SC, pitfalls, open questions)
-- **Phase 68** (OGG Metadata Strip) created in ROADMAP + `.planning/phases/`
+- librespot fork (stiefenm/librespot) recreated after accidental deletion
+- Audio-key-retry patch rebased onto dev HEAD (1599145), upstream PR #1748 opened (replaces #1743)
+- Cargo.lock updated to new fork commit f3734bfb (21956c5)
+- Local build + deploy, user confirmed Browse + Connect regression-free
+- Device Auth Flow spike (RFC 8628): only Desktop Client ID accepted, Dev/EQ IDs rejected → parked
 
 **Next action:**
 
-1. Phase 62 (Browse Endpoints + Connect Queue) remains unplanned
-2. #154 (librespot log integration) queued as future work
-3. Monitor #149/#150 (Rouzax), alnames #274 response
-4. v2.3 Library Integration (Phases 38–41) — core milestone work untouched
+1. v2.3 Library Integration (Phases 38–41) — core milestone work untouched
+2. Phase 62 (Browse Endpoints + Connect Queue) remains unplanned
+3. #154 (librespot log integration) queued as future work
+4. Monitor PR #1748 upstream, #149/#150 (Rouzax)
 
 ---
 *State initialized: 2026-05-26*
-*Last updated: 2026-08-22 — Phase 70 added (JiveLite Pagination Fill, GH #157)*
+*Last updated: 2026-08-23 — librespot fork recovered, dev HEAD upgrade, Device Auth spike*
