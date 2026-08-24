@@ -5,7 +5,13 @@ librespot-spoton/target/
 *.bak
 
 # Platform binaries (built by CI, distributed via GitHub Releases)
-Plugins/SpotOn/Bin/
+Plugins/SpotOn/Bin/*
+# fake-libpulse.c + Makefile are SOURCE (D-06), not a build artifact --
+# track them, but keep the locally-buildable libpulse.so.0 ignored.
+!Plugins/SpotOn/Bin/fake-libpulse/
+Plugins/SpotOn/Bin/fake-libpulse/*.so
+Plugins/SpotOn/Bin/fake-libpulse/*.so.*
+Plugins/SpotOn/Bin/fake-libpulse/*.o
 
 # Release ZIP archives (built locally, distributed via GitHub Releases)
 SpotOn-v*.zip
