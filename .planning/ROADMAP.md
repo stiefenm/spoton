@@ -10,7 +10,13 @@
 - ✅ **v1.1 Hardening & Reach** — Phases 7-12 (shipped 2026-06-06)
 - ✅ **v1.3 Polish & Publish** — Phases 13-16.1 (shipped 2026-06-13)
 - ✅ **v1.5 Podcasts** — Phases 18-21 (shipped 2026-06-15)
-- 🔄 **v2.0 Browse Daemon Migration** — Phases 28-30 (active)
+- ✅ **v2.0 Browse Daemon Migration** — Phases 28-30 (shipped 2026-06-23)
+- ✅ **v2.1 Context Menu** — Phases 31, 37 (shipped 2026-06-26)
+- ✅ **v2.2 Session Health** — Phase 36 (shipped 2026-06-30)
+- ✅ **v3.0 Auth Overhaul** — Phases 49-53 (shipped 2026-07-17)
+- ⏸️ **v2.3 Library Integration** — Phase 37 shipped (CTX-01), Phases 38-41 deferred to v5.0
+- 🔄 **v4.0 Soloist Integration** — Phases 71-75 (active)
+- 📋 **v5.0 Library Integration** — Phases TBD (future, v2.3 Requirements carried forward)
 
 ## Phases
 
@@ -77,7 +83,7 @@
 
 - [x] **Phase 24: Forum Auto-Post** — closed 2026-07-24
   **Goal**: Label-getriggerter GitHub Action Workflow der approved Draft-Replies automatisch im vBulletin-Forum postet.
-  **Note**: Closed — manual posting via SynologyDrive reply files works well enough, vBulletin automation not worth the effort.
+  **Note**: Closed — manual posting via reply files works well enough, vBulletin automation not worth the effort.
 
 - [x] **Phase 25: Play-All Full Pagination** — completed 2026-06-18
   **Goal**: Play-All auf Playlists, Liked Songs, Alben und Shows spielt alle Tracks ab — nicht nur die erste API-Seite (max 50/100). Reusable Paginator-Helper für alle Feed-Funktionen.
@@ -104,40 +110,17 @@
 
   - [x] 27-01-PLAN.md — Prefetch watchdog + skip cache
 
-### v2.0 Browse Daemon Migration
+<details>
+<summary>✅ v2.0 Browse Daemon Migration (Phases 28-30) — SHIPPED 2026-06-23</summary>
 
 - [x] **Phase 28: Persistent Browse Daemon** — completed 2026-06-22
-  **Goal**: Per-track `--single-track` spawning durch persistenten Browse-Daemon mit HTTP-Track-Serving ersetzen. Löst Prefetch-Hang, Audio-Key-Throttling und Log-Flood an der Wurzel.
-  **Plans:** 3/3 plans complete
-  Canonical refs: `.planning/notes/browse-daemon-architecture-decision.md`
-
-  Plans:
-
-  - [x] 28-01-PLAN.md — Browse daemon Rust implementation (HTTP server + track endpoint)
-  - [x] 28-02-PLAN.md — Browse daemon lifecycle modules (DaemonManager + Daemon Perl)
-  - [x] 28-03-PLAN.md — Browse-HTTP pipeline integration (ProtocolHandler + Plugin wiring)
-
-- [x] **Phase 29: Unified Browse+Connect Daemon** (completed 2026-06-22)
-  **Goal**: Browse- und Connect-Daemon in einen Prozess pro Player zusammenführen — ein librespot-Prozess mit Spirc (Connect) + HTTP Track-Endpoint (Browse) gleichzeitig. Eliminiert doppelten RAM-Overhead und Session-Koordination.
-  **Plans:** 3 plans
-  Canonical refs: `.planning/notes/browse-daemon-architecture-decision.md`, `.planning/seeds/evaluate-phase2-unified-daemon.md`
-
-  Plans:
-
-  - [x] 29-01-PLAN.md — Unified Rust daemon (unified.rs + main.rs CLI dispatch)
-  - [x] 29-02-PLAN.md — Unified Perl DaemonManager + Daemon lifecycle modules
-  - [x] 29-03-PLAN.md — Integration (ProtocolHandler + Plugin.pm + daemonMode pref)
-
+- [x] **Phase 29: Unified Browse+Connect Daemon** — completed 2026-06-22
 - [x] **Phase 30: Legacy Pipe Cleanup** — closed 2026-07-24
-  **Goal**: Remove `--single-track` mode and `son-*` transcoding pipelines. Remove `browseMode`/`daemonMode` toggle prefs. Delete Browse::DM, Browse::Daemon, Connect::DM, Connect::Daemon modules. Add rapid-skip debounce to unified.rs.
-  **Plans:** 1/2 plans complete (30-02 rapid-skip debounce dropped — not needed in practice)
 
-  Plans:
+</details>
 
-  - [x] 30-01-PLAN.md — Delete legacy Perl modules + simplify Plugin.pm/ProtocolHandler.pm/Connect.pm + remove son-* from custom-convert.conf + remove dead Rust modes
-  - [ ] ~~30-02-PLAN.md~~ — dropped
-
-### v3.0 Auth Overhaul
+<details>
+<summary>✅ v3.0 Auth Overhaul (Phases 49-53) — SHIPPED 2026-07-17</summary>
 
 ### Phase 49: PKCE OAuth Flow
 
@@ -205,6 +188,10 @@
   - [x] 53-01-PLAN.md — Rust binary: remove --get-token/Mode::GetToken/run_get_token(), rename KEYMASTER_CLIENT_ID
   - [x] 53-02-PLAN.md — Perl naming cleanup (Client.pm), i18n string rewrite (22+), AUTH-06 disposition
   - [x] 53-03-PLAN.md — Migration detection + OPML/Settings/feed UX wiring + Client-ID setup wizard
+
+</details>
+
+### v3.x Point Releases (Phases 54-70)
 
 ### Phase 54: Auth Health Dashboard
 
@@ -297,32 +284,24 @@
 | 1-6 (15 phases) | v1.0 | 50/50 | Complete | 2026-06-03 |
 | 7-12 (7 phases) | v1.1 | 13/13 | Complete | 2026-06-06 |
 | 13-16.1 (5 phases) | v1.3 | 9/9 | Complete | 2026-06-13 |
-| 18. Podcast API Foundation | v1.5 | 1/1 | Complete | 2026-06-14 |
-| 19. Podcast Browse | v1.5 | 2/2 | Complete | 2026-06-14 |
-| 20. Podcast Library Actions | v1.5 | 1/1 | Complete | 2026-06-15 |
-| 21. Podcast UX Polish + i18n | v1.5 | 2/2 | Complete | 2026-06-15 |
-| 22. Seek + Favorites Bugfixes | — | 1/1 | Complete | 2026-06-17 |
-| 25. Play-All Full Pagination | — | 1/1 | Complete | 2026-06-18 |
-| 26. Browse Error Recovery | — | 2/2 | Complete | 2026-06-21 |
-| 27. Pipeline Failure Recovery | — | 1/1 | Complete | 2026-06-22 |
-| 28. Persistent Browse Daemon | v2.0 | 3/3 | Complete | 2026-06-22 |
-| 29. Unified Daemon | v2.0 | 3/3 | Complete   | 2026-06-22 |
-| 23. Forum Monitor | — | — | Complete | 2026-07-03 |
-| 24. Forum Auto-Post | — | — | Closed | 2026-07-24 |
-| 30. Legacy Pipe Cleanup | v2.0 | 1/2 | Closed | 2026-07-24 |
-| 54. Auth Health Dashboard | v3.0 | 5/5 | Complete | 2026-07-16 |
+| 18-21 (4 phases) | v1.5 | 6/6 | Complete | 2026-06-15 |
+| 22-27 (6 phases) | — | 6/6 | Complete | 2026-06-22 |
+| 28-30 (3 phases) | v2.0 | 7/7 | Complete | 2026-06-23 |
+| 37. Context Menu LMS Items | v2.3 | 2/2 | Complete | 2026-07-02 |
+| 42-44. OGG Passthrough | — | 3/3 | Complete | — |
+| 46. Code Review Bugfixes | — | —/— | Complete | — |
+| 49-53 (5 phases) | v3.0 | 19/19 | Complete | 2026-07-17 |
+| 54. Auth Health Dashboard | v3.x | 5/5 | Complete | 2026-07-16 |
 | 55. Bundled Client ID | — | — | Parked | 2026-07-24 |
-
-## Backlog
-
-Items discovered during development — not assigned to a milestone.
-
-1. **Eigene SpotOn Client-ID bei Spotify registrieren** — Blocked: Spotify requires 250k MAU + legally registered business. Extended Quota documentation deferred to future milestone.
-2. **~~Online-Musiksammlung (Importer.pm / OnlineLibraryBase)~~** — Evaluiert und bewusst abgelehnt. API-Quota im Dev Mode macht Library-Scan extrem teuer; Browse > Library deckt den Use Case on-demand ab.
-3. ~~**LMS Community Repo Submission**~~ — Erledigt: Plugin im Community Repo veröffentlicht.
-4. ~~**ZeroConf Auth UX: "Connected" an Spotify App melden**~~ — Verworfen: Setup Guide erklärt das Verhalten, kein technischer Fix möglich ohne Playback-Session.
-5. ~~**Diagnostics: "Clear Logs" Button in Settings**~~ — Implementiert in v1.7.4 (truncate on daemon restart + Clear Logs button).
-6. **Spotty Favorites Migration** — Settings-Button der `spotify://` Einträge in LMS Favorites und Playlists als `spoton://` Duplikate anlegt. Originale bleiben erhalten, User kann Spotty danach deinstallieren. URI-Schema nach Prefix ist identisch (`track:ID`, `album:ID`, etc.). Idee von Paul Webster (Forum #32, 2026-06-19).
+| 56-57. Material Skin | v3.x | 5/5 | Complete | 2026-07-23 |
+| 58-60. Connect/Search Fixes | v3.x | 5/5 | Complete | 2026-08-18 |
+| 61. Community Bugfixes | v3.x | 2/2 | Complete | — |
+| 63. Account Switcher + Sync | v3.x | 2/2 | Complete | — |
+| 64. PassthroughMixer | v3.x | 2/2 | Complete | — |
+| 65-67. ZeroConf + Auth Revert | v3.x | 13/16 | Complete | — |
+| 70. JiveLite Pagination | v3.x | 5/5 | Complete | 2026-08-22 |
+| 38-41 (4 phases) | v2.3 | 0/? | Not started | — |
+| 62. Browse + Connect Queue | — | 0/? | Not started | — |
 
 ### Phase 61: Community Bugfixes (HomeExtra, Status Page, Connect Volume)
 
@@ -336,16 +315,9 @@ Plans:
 - [x] 61-01-PLAN.md — HomeExtra staleness + account switch: pagination-aware memoization key (#133), refresh() signal helper wired at account/auth state changes (#139), switcher returns to re-fetched main menu (#136)
 - [x] 61-02-PLAN.md — Status page deterministic account order (#138), --volume-ctrl fixed for players without digital volume (#137), CHANGELOG
 
-### Phase 62: Browse Endpoints + Connect Queue
+### ~~Phase 62: Browse Endpoints + Connect Queue~~ DEFERRED
 
-**Goal:** Add New Releases, Genres & Moods, Featured Playlists via Extended Quota bundled Client ID (#134). Reflect Spotify Connect queue ("Up Next") in LMS/Material Skin (#135).
-**Requirements**: GH #134, #135
-**Depends on:** None (independent features)
-**Plans:** 0 plans
-
-Plans:
-
-- [ ] TBD (run /gsd-plan-phase 62 to break down)
+**Deferred to Backlog** (2026-08-24): New Releases (#134) + Connect Queue (#135) are independent features, not blocking v4.0 Soloist. Moved to Backlog.
 
 ### Phase 63: Account Switcher UX + Sync Group Stability
 
@@ -454,6 +426,90 @@ Plans:
 
 - [x] 70-03-PLAN.md — Convert search + podcast search (extractTotal), SpotOnAddToPlaylist, _albumFeed seed+continuation + CHANGELOG (Wave 3)
 
+## Backlog
+
+Items discovered during development — not assigned to a milestone.
+
+1. **Eigene SpotOn Client-ID bei Spotify registrieren** — Blocked: Spotify requires 250k MAU + legally registered business.
+2. **Spotty Favorites Migration** — Settings-Button der `spotify://` Einträge in LMS Favorites als `spoton://` Duplikate anlegt.
+3. **Browse Endpoints + Connect Queue** — New Releases/Genres/Featured via Extended Quota (#134), Connect Queue in LMS (#135). Deferred from Phase 62.
+4. **Browse context parity** — Browse menu fewer items than TrackInfo (#94).
+5. **Connect stutter sync groups** — Mixed player types (#131).
+6. **Progress bar lag Connect handoff** — Buffer fill delay (#128).
+7. **Restore player power state** — When Connect session ends (#151).
+8. **librespot log integration** — Feed daemon log into server.log (#154).
+9. **Recommendations diversification** — Too account-centric (#127).
+10. ~~**Online-Musiksammlung**~~ — Deferred to v5.0 Library Integration.
+11. ~~**LMS Community Repo Submission**~~ — Erledigt.
+12. ~~**ZeroConf Auth UX**~~ — Verworfen.
+13. ~~**Clear Logs Button**~~ — Implementiert in v1.7.4.
+
+## Active — v4.0 Soloist Integration
+
+**Goal:** Spotify Soloist als alternatives Audio-Backend neben librespot — offizieller Spotify Connect Client mit BYOK (Bring Your Own Key), Fake-libpulse Audio-Interface und optionalem Lifetime-Patch.
+
+**Context:** Spotify launched Soloist am 2026-08-13 als offizielles Developer-Produkt. spak-Key ist Self-Service im Developer Dashboard (Premium required). Drei Linux-Architekturen: x86_64, arm64, arm32 — deckt Pi und Desktop ab.
+
+**Approach:** BYOK + Fake-libpulse. User generiert eigenen spak-Key, Projekt liefert Integration + eine schlanke Fake-libpulse.so.0 die Audio direkt per FD abgreift statt PulseAudio zu benötigen.
+
+**Spike Results (2026-08-24):**
+
+| Spike | Ergebnis | Details |
+|-------|----------|---------|
+| **Lifetime Patch** | VALIDIERT | ASCII-Timestamp in .rodata, 10-Zeichen Drop-in-Replace. Binary zeigt "25696 days". Spotify akzeptiert gepatchten Client. |
+| **Audio Interface** | VALIDIERT | Fake-libpulse.so.0 (~250 LOC C) implementiert 47 PA-Funktionen inkl. `pa_threaded_mainloop_*`. Soloist gibt S32LE/44100Hz/Stereo PCM via `pa_stream_write` aus. Kein PulseAudio-Server nötig, kein Capture-Overhead. `LD_LIBRARY_PATH` statt Binary-Patch. |
+| **BYOK** | VALIDIERT | spak-Key per Developer Dashboard, Pairing via Spotify App, Credentials persistent. `--single-track` nutzt gespeicherte Session. |
+| **Audio Pipeline** | VALIDIERT | PCM → FLAC (68% Ratio, 93x Realtime), PCM → OGG (10% Ratio). Gleiche Pipeline wie librespot via custom-convert.conf. |
+| **24-Bit FLAC Patch** | TEILWEISE | 6 Enum-Downgrade-Gates gefunden (cmp 6/mov 5), 5 davon sicher patchbar (Gate 4 crasht). Aber: Patch allein reicht nicht — Soloist muss `supported_audio_quality=HIFI_24` in DeviceCapabilities announcen UND Spotify muss die Quality-Stufe serverseitig zuweisen. A/B-Test zeigt identische CDN-Dateigrößen (~4.5 MB OGG). Needs deeper analysis in Phase 74. |
+
+**Key Decisions:**
+- Soloist ist Community-Alternative neben librespot im öffentlichen Repo
+- Kein Key im Repo, keine Key-Verteilung — reines BYOK (Spotify's eigenes Modell)
+- Fake-libpulse statt PulseAudio-Capture — kein Systemprozess-Overhead, kein Binary-Patch für Audio
+- Lifetime-Patch ist ein optionaler Komfort (ASCII-Replace), kein harter Blocker
+- Drei Plattformen: x86_64, arm64, arm32 (kein macOS/Windows — dort bleibt librespot)
+
+**Phases:**
+
+- [ ] **Phase 71: Soloist Foundation** — Soloist.pm Backend-Modul (Download/Version-Check/Lifecycle), Fake-libpulse.so Build-Pipeline (3 Architekturen), Helper.pm Backend-Auswahl (librespot vs soloist), BYOK Key-Management (Settings UI, mode 0600 Datei)
+  - **Plans:** 4 plans (Wave 1: 71-01, 71-04 parallel · Wave 2: 71-02, 71-03 parallel)
+  - [ ] 71-01-PLAN.md — Soloist.pm Backend-Modul (Tracer): Arch-Map, Auto-Download, Version-Check, spak.key mode 0600
+  - [ ] 71-02-PLAN.md — DaemonManager Backend-Dispatch + D-09 Voraussetzungs-Gate
+  - [ ] 71-03-PLAN.md — Settings UI: Backend-Dropdown, conditional spak-Key-Feld, Format-Validierung, i18n
+  - [ ] 71-04-PLAN.md — Fake-libpulse CI Build-Pipeline (glibc cross-gcc, 3 Architekturen)
+- [ ] **Phase 72: Soloist Browse Playback** — ProtocolHandler soloist://-Modus, `--single-track` Integration, Audio-Pipeline (S32LE → FLAC/PCM via custom-convert.conf), FD-basiertes Streaming an LMS StreamServer
+- [ ] **Phase 73: Soloist Connect Mode** — WebSocket API Integration (Events → LMS Player State), Connect Transfer-Playback, Daemon-Lifecycle pro Player, Sync-Group Support
+- [ ] **Phase 74: Soloist Polish** — Lifetime-Patcher (optional, Settings-Toggle), 24-Bit FLAC (Enum-Patch), Quality-Dropdown (OGG/FLAC/Lossless), Per-Player Backend-Auswahl, Diagnostics
+- [ ] **Phase 75: Soloist UAT + Release** — E2E-Tests (Browse, Connect, Sync Groups, Format-Switching), Plattform-Tests (x86_64, arm64, arm32), TROUBLESHOOTING, CHANGELOG, v4.0.0 Release
+
+**Risks:**
+- Spotify kann Soloist-API-Terms ändern oder Keys revoken
+- Build-Expiry-Mechanismus kann serverseitig verschärft werden
+- Soloist ist Linux-only (kein macOS/Windows)
+- spak-Key ist account-gebunden — User-Tracking möglich
+- Dynamisches Linking gegen glibc — ältere Distros könnten Probleme haben
+
+**References:**
+- Spotify Docs: developer.spotify.com/documentation/soloist
+- Downloads: developer.spotify.com/documentation/soloist/reference/downloads-and-updates
+- GitHub: github.com/spotify/soloist
+- Soloist Auth: developer.spotify.com/documentation/soloist/concepts/authentication
+- WebSocket API: developer.spotify.com/documentation/soloist/reference/websocket-api
+
+## Future — v5.0 Library Integration
+
+**Goal:** Spotify-Bibliothek in LMS Native Library integrieren (OnlineLibraryBase/Importer.pm). Carried forward from v2.3.
+
+**Requirements:** LIB-01..10, PL-01..02, TOK-01..02, CFG-01..02 (see `.planning/REQUIREMENTS.md`)
+
+**Phases:** TBD — to be broken down when milestone becomes active.
+
+**Key Decisions (from v2.3 research):**
+- Importer follows OnlineLibraryBase pattern (Spotty, Qobuz, TIDAL, Deezer)
+- me/tracks returns full objects — no individual entity fetches needed
+- Incremental sync via added_at early-exit
+- Scanner uses SimpleSyncHTTP (blocking OK in scanner process)
+
 ---
 *Roadmap created: 2026-05-26*
-*Last updated: 2026-08-22 — Phase 70 added (JiveLite Pagination Fill, GH #157)*
+*Last updated: 2026-08-24 — v2.3 deferred, v4.0 Soloist active, v5.0 Library future*
