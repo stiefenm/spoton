@@ -124,8 +124,13 @@ sub handler {
 
     my ($helperPath, $helperVersion) = Plugins::SpotOn::Helper->get();
 
-    # Pass binary status to template
-    $paramRef->{helperMissing} = string('PLUGIN_SPOTON_BINARY_MISSING') unless $helperPath;
+    # Pass binary status to template. D-07: the librespot binary-missing hint
+    # is librespot-specific state -- under backend=soloist it lives inside
+    # the now-hidden #librespot-fields group, so a soloist-only install (no
+    # librespot binary ever fetched) must not surface a red warning for a
+    # binary it will never need.
+    $paramRef->{helperMissing} = string('PLUGIN_SPOTON_BINARY_MISSING')
+        if !$helperPath && (($prefs->get('backend') || 'librespot') ne 'soloist');
     $paramRef->{binaryVersion} = $helperVersion || '';
     $paramRef->{binaryPath}    = $helperPath    || '';
     $paramRef->{isMac}         = main::ISMAC ? 1 : 0;
@@ -509,6 +514,15 @@ sub handler {
     # T-71-02: fixed placeholder only when a key is stored — the raw key is
     # never read back (Soloist.pm exposes no accessor for it).
     $paramRef->{soloistKeyMasked}     = $soloistHasKey ? SOLOIST_KEY_MASKED_PREVIEW : '';
+
+    # D-07 (Phase 72 Plan 02): pairing state for the Settings pairing-status
+    # block -- isPaired() drives the paired/not-paired status line,
+    # launcherPath() is the exact command the not-paired hint tells the user
+    # to run (same generated wrapper the sol-flc/sol-pcm convert rules spawn,
+    # so a --pair run here writes into the SAME dataDir() the wrapper reads —
+    # RESEARCH A3).
+    $paramRef->{soloistPaired}        = Plugins::SpotOn::Soloist::isPaired() ? 1 : 0;
+    $paramRef->{soloistLauncherPath}  = Plugins::SpotOn::Soloist::launcherPath() || '';
 
     # Diagnostic mode status for template (#3)
     $paramRef->{diagnosticEnabled} = $prefs->get('diagnosticMode') ? 1 : 0;

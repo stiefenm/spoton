@@ -48,7 +48,7 @@
 	</div>
 	[% END %]
 
-	[% IF playbackAuthState == 'required' %]
+	[% IF playbackAuthState == 'required' && backend != 'soloist' %]
 	<div style="background:rgba(255,165,0,0.08); border:1px solid orange; padding:12px 16px; margin-bottom:20px; border-radius:4px">
 		<strong style="color:orange">[% 'PLUGIN_SPOTON_PLAYER_AUTH_BANNER' | string %]</strong>
 		<p style="margin:8px 0 0 0">
@@ -73,6 +73,50 @@
 			</a>
 			[% END %]
 		</p>
+	</div>
+
+	<hr style="margin:16px 0; border:0; border-top:1px solid rgba(128,128,128,0.25)"/>
+	<h2>[% 'PLUGIN_SPOTON_SETTINGS_BACKEND_SECTION' | string %]</h2>
+
+	[% WRAPPER setting title="PLUGIN_SPOTON_BACKEND" desc="PLUGIN_SPOTON_BACKEND_DESC" %]
+		<select class="stdedit" name="pref_backend" id="pref_backend">
+			<option value="librespot" [% IF backend == 'librespot' %]selected[% END %]>librespot</option>
+			<option value="soloist"  [% IF backend == 'soloist'  %]selected[% END %]>Soloist</option>
+		</select>
+	[% END %]
+
+	<div id="soloist-fields" style="[% IF backend == 'soloist' %]display:block[% ELSE %]display:none[% END %]">
+		[% WRAPPER setting title="PLUGIN_SPOTON_SOLOIST_KEY" desc="PLUGIN_SPOTON_SOLOIST_KEY_DESC" %]
+			<input type="text" class="stdedit" name="pref_soloistKey" id="pref_soloistKey"
+			       value="[% soloistKeyMasked | html %]"
+			       placeholder="[% 'PLUGIN_SPOTON_SOLOIST_KEY' | string | html %]"/>
+
+			<div style="margin-top:6px; font-size:0.9em">
+				[% IF soloistUnsupportedOS %]
+				<span style="color: red">&#9679; [% 'PLUGIN_SPOTON_SOLOIST_UNSUPPORTED_OS' | string %]</span>
+				[% ELSIF soloistMissing %]
+				<span style="color: red">&#9679; [% 'PLUGIN_SPOTON_SOLOIST_BINARY_MISSING' | string %]</span>
+				[% ELSIF soloistKeyMissing %]
+				<span style="color: orange">&#9679; [% 'PLUGIN_SPOTON_SOLOIST_KEY_MISSING' | string %]</span>
+				[% ELSE %]
+				<span style="color: green">&#9679; [% 'PLUGIN_SPOTON_SOLOIST_STATUS' | string %] [% soloistVersion | html %]</span>
+				[% END %]
+			</div>
+
+			[% IF !soloistUnsupportedOS && !soloistMissing && !soloistKeyMissing %]
+			<div style="margin-top:12px; font-size:0.9em">
+				[% IF soloistPaired %]
+				<span style="color: green">&#9679; [% 'PLUGIN_SPOTON_SOLOIST_PAIRED' | string %]</span>
+				[% ELSE %]
+				<span style="color: orange">&#9679; [% 'PLUGIN_SPOTON_SOLOIST_NOT_PAIRED' | string %]</span>
+				<p style="margin:6px 0 4px 0; font-size:0.9em; opacity:0.85">[% 'PLUGIN_SPOTON_SOLOIST_PAIR_HOWTO' | string %]</p>
+				<p style="margin:0">
+					<code style="background:rgba(128,128,128,0.1); padding:2px 6px; border-radius:3px">[% soloistLauncherPath | html %] --pair</code>
+				</p>
+				[% END %]
+			</div>
+			[% END %]
+		[% END %]
 	</div>
 
 	<hr style="margin:16px 0; border:0; border-top:1px solid rgba(128,128,128,0.25)"/>
@@ -176,6 +220,7 @@
 		[% END %]
 	[% END %]
 
+	<div id="librespot-fields" style="[% IF backend == 'soloist' %]display:none[% ELSE %]display:block[% END %]">
 	<div id="spoton-player-auth"></div>
 	[% WRAPPER setting title="PLUGIN_SPOTON_PLAYER_AUTH_TITLE" desc="PLUGIN_SPOTON_PLAYER_AUTH_DESC" %]
 		<div style="margin-bottom:10px; font-size:0.9em">
@@ -236,6 +281,7 @@
 			<div id="player-auth-browser-status" style="display:none; margin-top:10px"></div>
 		</details>
 	[% END %]
+	</div>
 
 	[% WRAPPER setting title="PLUGIN_SPOTON_SP_DC" desc="PLUGIN_SPOTON_SP_DC_DESC" %]
 		[% IF madeForYouState == 'expired' %]
@@ -282,6 +328,7 @@
 	<hr style="margin:16px 0; border:0; border-top:1px solid rgba(128,128,128,0.25)"/>
 	<h2>[% 'PLUGIN_SPOTON_SETTINGS_GLOBAL_SECTION' | string %]</h2>
 
+	<div id="librespot-fields" style="[% IF backend == 'soloist' %]display:none[% ELSE %]display:block[% END %]">
 	[% WRAPPER setting title="PLUGIN_SPOTON_BINARY_STATUS" desc="" %]
 		[% IF binaryPath %]
 			<p>[% binaryPath | html %] (v[% binaryVersion | html %])</p>
@@ -294,33 +341,6 @@
 			[% END %]
 		[% END %]
 	[% END %]
-
-	[% WRAPPER setting title="PLUGIN_SPOTON_BACKEND" desc="PLUGIN_SPOTON_BACKEND_DESC" %]
-		<select class="stdedit" name="pref_backend" id="pref_backend">
-			<option value="librespot" [% IF backend == 'librespot' %]selected[% END %]>librespot</option>
-			<option value="soloist"  [% IF backend == 'soloist'  %]selected[% END %]>Soloist</option>
-		</select>
-	[% END %]
-
-	<div id="soloist-fields" style="[% IF backend == 'soloist' %]display:block[% ELSE %]display:none[% END %]">
-		[% WRAPPER setting title="PLUGIN_SPOTON_SOLOIST_KEY" desc="PLUGIN_SPOTON_SOLOIST_KEY_DESC" %]
-			<input type="text" class="stdedit" name="pref_soloistKey" id="pref_soloistKey"
-			       value="[% soloistKeyMasked | html %]"
-			       placeholder="[% 'PLUGIN_SPOTON_SOLOIST_KEY' | string | html %]"/>
-
-			<div style="margin-top:6px; font-size:0.9em">
-				[% IF soloistUnsupportedOS %]
-				<span style="color: red">&#9679; [% 'PLUGIN_SPOTON_SOLOIST_UNSUPPORTED_OS' | string %]</span>
-				[% ELSIF soloistMissing %]
-				<span style="color: red">&#9679; [% 'PLUGIN_SPOTON_SOLOIST_BINARY_MISSING' | string %]</span>
-				[% ELSIF soloistKeyMissing %]
-				<span style="color: orange">&#9679; [% 'PLUGIN_SPOTON_SOLOIST_KEY_MISSING' | string %]</span>
-				[% ELSE %]
-				<span style="color: green">&#9679; [% 'PLUGIN_SPOTON_SOLOIST_STATUS' | string %] [% soloistVersion | html %]</span>
-				[% END %]
-			</div>
-		[% END %]
-	</div>
 
 	[% WRAPPER setting title="PLUGIN_SPOTON_BITRATE" desc="" %]
 		<select class="stdedit" name="pref_bitrate" id="pref_bitrate">
@@ -342,6 +362,7 @@
 			value="1" [% IF prefs.pref_normalization %]checked[% END %]/>
 		<label for="pref_normalization">[% 'PLUGIN_SPOTON_NORMALIZATION_LABEL' | string %]</label>
 	[% END %]
+	</div>
 
 	<hr style="margin:16px 0; border:0; border-top:1px solid rgba(128,128,128,0.25)"/>
 	<h2>[% 'PLUGIN_SPOTON_SETTINGS_DIAG_SECTION' | string %]</h2>
@@ -650,17 +671,29 @@
 		xhr.send();
 	}
 
-	// Phase 71 (D-08): live backend dropdown toggle -- shows/hides the
-	// Soloist spak-key field without a page reload. The div's initial
-	// visibility is already server-rendered correctly (backend == 'soloist'
-	// above); this listener only keeps it in sync with further client-side
-	// changes before the next save.
+	// Phase 71/72 (D-08/D-07): live backend dropdown toggle -- shows/hides the
+	// Soloist spak-key/pairing fields and the librespot-only fields (Binary
+	// Status, Bitrate, Streaming Mode, Normalization, Player Auth) without a
+	// page reload. Both divs' initial visibility is already server-rendered
+	// correctly (backend == 'soloist' above); this listener only keeps them
+	// in sync with further client-side changes before the next save.
+	// #librespot-fields intentionally appears twice in the DOM (Account
+	// section's Player Auth block + Global section's binary/bitrate/
+	// streaming/normalization block) -- querySelectorAll (not
+	// getElementById) is required to toggle both instances.
 	(function() {
 		var backendSelect = document.getElementById('pref_backend');
 		var soloistFields  = document.getElementById('soloist-fields');
-		if (backendSelect && soloistFields) {
+		var librespotFieldsList = document.querySelectorAll('[id="librespot-fields"]');
+		if (backendSelect) {
 			backendSelect.addEventListener('change', function() {
-				soloistFields.style.display = (backendSelect.value === 'soloist') ? 'block' : 'none';
+				var isSoloist = backendSelect.value === 'soloist';
+				if (soloistFields) {
+					soloistFields.style.display = isSoloist ? 'block' : 'none';
+				}
+				for (var i = 0; i < librespotFieldsList.length; i++) {
+					librespotFieldsList[i].style.display = isSoloist ? 'none' : 'block';
+				}
 			});
 		}
 	})();
