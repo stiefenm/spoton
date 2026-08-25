@@ -180,6 +180,19 @@ PLUGIN_SPOTON_SOLOIST_KEY_INVALID
 	PL	Klucz spak zawiera nieprawidłowe znaki lub jest zbyt krótki — nie został zapisany.
 	SV	Spak-nyckeln innehåller ogiltiga tecken eller är för kort — den sparades inte.
 
+PLUGIN_SPOTON_SOLOIST_KEY_WRITE_FAILED
+	CS	Klíč spak se nepodařilo uložit (chyba zápisu) — zkuste to prosím znovu.
+	DA	Spak-nøglen kunne ikke gemmes (skrivefejl) — prøv igen.
+	DE	Der spak-Key konnte nicht gespeichert werden (Schreibfehler) — bitte erneut versuchen.
+	EN	Failed to save the spak-key (write error) — please try again.
+	ES	No se pudo guardar la spak-key (error de escritura) — inténtalo de nuevo.
+	FR	Impossible d'enregistrer la spak-key (erreur d'écriture) — veuillez réessayer.
+	IT	Impossibile salvare la spak-key (errore di scrittura) — riprova.
+	NL	De spak-key kon niet worden opgeslagen (schrijffout) — probeer het opnieuw.
+	NO	Spak-nøkkelen kunne ikke lagres (skrivefeil) — prøv igjen.
+	PL	Nie udało się zapisać klucza spak (błąd zapisu) — spróbuj ponownie.
+	SV	Spak-nyckeln kunde inte sparas (skrivfel) — försök igen.
+
 PLUGIN_SPOTON_BITRATE
 	CS	Přenosová rychlost
 	DA	Bithastighed

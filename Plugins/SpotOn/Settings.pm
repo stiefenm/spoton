@@ -219,7 +219,18 @@ sub handler {
                     # placeholder pending empirical confirmation against
                     # a real key (T-71-06).
                     if ($raw =~ /^[A-Za-z0-9_\-\.]{16,8192}\z/) {
-                        Plugins::SpotOn::Soloist->storeKey($raw);
+                        # WR-08: storeKey() returns (0, 'write_failed') on a
+                        # print/close/rename failure (WR-06) -- that status
+                        # was previously dropped here, so a failed write
+                        # (full disk, read-only cachedir) looked identical
+                        # to a successful save at the UI, and in the
+                        # rename+move double-failure path the old key had
+                        # already been unlinked with zero user-visible
+                        # signal. Surface it via the same warning channel
+                        # the invalid-format path (WR-03) uses.
+                        my ($ok) = Plugins::SpotOn::Soloist->storeKey($raw);
+                        $paramRef->{'warning'} = string('PLUGIN_SPOTON_SOLOIST_KEY_WRITE_FAILED')
+                            unless $ok;
                     }
                     else {
                         $paramRef->{'warning'} = string('PLUGIN_SPOTON_SOLOIST_KEY_INVALID');
