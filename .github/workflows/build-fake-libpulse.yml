@@ -77,16 +77,28 @@ jobs:
           echo "=== SHA256 checksum ==="
           sha256sum "$BINARY"
 
-          FILE_OUTPUT=$(file "$BINARY")
-          if echo "$FILE_OUTPUT" | grep -qi "musl"; then
-            echo "FATAL: $BINARY was linked against musl, not glibc." >&2
+          # WR-04: `file` on a shared object prints no libc identifier at
+          # all (verified empirically -- interpreter strings only exist
+          # in executables, not .so files), so a `file | grep -qi musl`
+          # guard can never actually catch a musl-linked .so. Inspect the
+          # dynamic section's NEEDED entries instead: musl links produce
+          # `NEEDED libc.so`, glibc produces `NEEDED libc.so.6`.
+          echo "=== readelf -d NEEDED entries ==="
+          readelf -d "$BINARY" | grep NEEDED
+
+          if readelf -d "$BINARY" | grep -q 'NEEDED.*\[libc\.so\]'; then
+            echo "FATAL: $BINARY was linked against musl libc (NEEDED libc.so, no .6)." >&2
             echo "Soloist is a glibc binary -- a musl fake-libpulse.so.0" >&2
             echo "will fail to load via LD_LIBRARY_PATH (dynamic loader" >&2
             echo "mismatch). Check that CC=${{ matrix.cc }} resolved to" >&2
             echo "a glibc cross-toolchain, not a musl one." >&2
             exit 1
           fi
-          echo "glibc verification passed (no musl interpreter/linker found)"
+          if ! readelf -d "$BINARY" | grep -q 'NEEDED.*libc\.so\.6'; then
+            echo "FATAL: expected glibc NEEDED entry (libc.so.6) not found in $BINARY." >&2
+            exit 1
+          fi
+          echo "glibc verification passed (NEEDED libc.so.6 present, no musl libc.so)"
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
