@@ -480,6 +480,7 @@ Items discovered during development — not assigned to a milestone.
 - [ ] **Phase 72: Soloist Browse Playback** — ProtocolHandler soloist://-Modus, `--single-track` Integration, Audio-Pipeline (S32LE → FLAC/PCM via custom-convert.conf), FD-basiertes Streaming an LMS StreamServer
 - [ ] **Phase 73: Soloist Connect Mode** — WebSocket API Integration (Events → LMS Player State), Connect Transfer-Playback, Daemon-Lifecycle pro Player, Sync-Group Support
 - [ ] **Phase 74: Soloist Polish** — Lifetime-Patcher (optional, Settings-Toggle), 24-Bit FLAC (Enum-Patch), Quality-Dropdown (OGG/FLAC/Lossless), Per-Player Backend-Auswahl, Diagnostics
+  **Note:** Patches (Lifetime, 24-Bit) müssen als Pattern-Scanner implementiert werden, nicht als statische Offsets — Instruction Encoding unterscheidet sich zwischen x86_64/arm64/arm32. Alle 3 Binaries runterladen und validieren.
 - [ ] **Phase 75: Soloist UAT + Release** — E2E-Tests (Browse, Connect, Sync Groups, Format-Switching), Plattform-Tests (x86_64, arm64, arm32), TROUBLESHOOTING, CHANGELOG, v4.0.0 Release
 
 **Risks:**

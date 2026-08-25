@@ -1,19 +1,21 @@
 ---
 gsd_state_version: 1.0
-milestone: v2.3
-current_phase: 70
-status: completed
-stopped_at: Phase 70 complete — all phases complete
-last_updated: "2026-08-22T18:10:36.066Z"
-last_activity: 2026-08-22
-last_activity_desc: Phase 70 complete
-state_head: f73f42d0272e0084f8c6ceb76f2be26e087a07e4
+milestone: v4.0
+milestone_name: Soloist Integration
+current_phase: 71
+current_phase_name: Soloist Foundation
+status: executing
+stopped_at: Phase 71 context gathered
+last_updated: "2026-08-24T17:53:21.963Z"
+last_activity: 2026-08-24
+last_activity_desc: Phase 71 execution started
+state_head: b13de4af5e4e8d49322b09359efe4634a2d2268b
 progress:
-  total_phases: 38
-  completed_phases: 14
-  total_plans: 72
-  completed_plans: 68
-milestone_name: Library Integration
+  total_phases: 14
+  completed_phases: 0
+  total_plans: 4
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State: SpotOn
@@ -28,46 +30,34 @@ See: .planning/PROJECT.md (updated 2026-06-30)
 
 **Core Value:** Reliable Spotify playback and Connect integration on LMS — Browse, stream, and control via Spotify app, without 429 bursts, zombie daemons, or audio glitches.
 
-**Current Focus:** Phase 70 — JiveLite Pagination Fill (GH #157)
+**Current Focus:** Phase 71 — Soloist Foundation
 
 ## Current Position
 
-Phase: 70
-Plan: Not started
-Status: All phases complete
-Last activity: 2026-08-22 — Phase 70 complete
+Phase: 71 (Soloist Foundation) — EXECUTING
+Plan: 1 of 4
+Status: Executing Phase 71
+Last activity: 2026-08-24 — Phase 71 execution started
 
 ## Progress Bar
 
 ```
-v2.3 Library Integration: [░░░░░░░░░░░░░░░░░░░░] 0/5 phases (37-41)
-Phase 37: [x] Context Menu LMS Items (CTX-01)
-Phase 38: [ ] Importer Foundation (LIB-06, TOK-01, TOK-02, CFG-01)
-Phase 39: [ ] Album + Artist Import (LIB-02, LIB-03, LIB-07, LIB-09)
-Phase 40: [ ] Liked Songs + Incremental Sync (LIB-01, LIB-04, LIB-05, LIB-08)
-Phase 41: [ ] Playlist Import (PL-01, PL-02, CFG-02)
-
-Side phases (independent):
-Phase 42: [x] OGG Vorbis Passthrough (OGG-01..03)
-Phase 43: [x] Connect OGG Passthrough (OGG-04)
-Phase 44: [x] Connect OGG Rate-Limiting (OGG-05)
-Phase 46: [x] Code Review Bugfixes (30 findings)
-Phase 48: [~] SUPERSEDED by v3.0 Auth Overhaul (2026-07-04)
-
-v3.0 Auth Overhaul (Phases 49-53, shipped v3.0.0):
-Phase 49-00: [x] Token Usage Audit + Backend Evaluation
-Phase 49: [x] PKCE OAuth Flow (AUTH-01, AUTH-02)
-Phase 50: [x] Perl TokenManager Rewrite (AUTH-03)
-Phase 51: [x] Credential Derivation + Connect (AUTH-04, AUTH-05)
-Phase 52: [x] sp_dc + Pathfinder Integration (Made for You)
-Phase 53: [x] Keymaster Removal + Migration (AUTH-06, AUTH-07)
-
-Post-v3.0 (shipped):
-Phase 54: [x] Auth Health Dashboard
-Phase 55: [x] Bundled Client ID UX
-Phase 56: [x] Material Skin Compatibility (v3.2.0)
-Phase 57: [x] Material Skin UX Polish
+v4.0 Soloist Integration: [░░░░░░░░░░░░░░░░░░░░] 0/5 phases (71-75)
+Phase 71: [ ] Soloist Foundation (BYOK, Fake-libpulse, Helper Backend-Switch)
+Phase 72: [ ] Soloist Browse Playback (--single-track, Audio Pipeline)
+Phase 73: [ ] Soloist Connect Mode (WebSocket API, Transfer-Playback)
+Phase 74: [ ] Soloist Polish (Lifetime, 24-Bit, Quality, Per-Player Backend)
+Phase 75: [ ] Soloist UAT + Release (E2E, Platform Tests, v4.0.0)
 ```
+
+<details>
+<summary>Prior milestones</summary>
+
+- v2.3: Phase 37 shipped (CTX-01), Phases 38-41 deferred to v5.0
+- v3.0: Phases 49-53 shipped (Auth Overhaul)
+- v3.x: Phases 54-70 shipped (Point releases through v3.5.8)
+
+</details>
 
 ## Performance Metrics
 
@@ -165,7 +155,7 @@ Items carried forward from previous milestones:
 - [v3.0]: ~~AUDIO KEY DEAD END (2026-07-13)~~ **RETRACTED (2026-07-13):** woorszt (#115) confirms PKCE restores full audio playback on his Keymaster-403-affected account. Dead end was specific to newest-cohort test accounts only. Three-tier model: (1) unaffected = spclient path, (2) mid-cohort (Keymaster 403, audio keys work via PKCE) = v3.0 fixes everything, (3) newest-cohort (Keymaster 403 + audio key denied) = needs future audio backend research. Mid-cohort is the relevant target population.
 - [v3.0]: Phase 49-00 Audit slim — Grep+Klassifikation der 4 Keymaster-Buckets, kein Research. Direkt danach Phase 49 PKCE.
 - [v3.0]: Audio key denial (newest cohort) tracked in #91, kein eigenes Issue — Population noch unklar
-- [v3.0]: **librespot Audio Pipeline analysiert (2026-07-13):** Kein Branching — BEIDE Pfade (CDN storage-resolve + AudioKeyManager RequestKey 0x0c) werden IMMER für jeden Track aufgerufen. CDN liefert AES-128-CTR-verschlüsselte Bytes, Audio Key ist der Entschlüsselungsschlüssel. Kein client-seitiger Workaround möglich — AP entscheidet serverseitig ob Key rausgegeben wird. Newest-cohort-Fix erfordert komplett anderes Audio-Backend (v4.0/spoton-private).
+- [v3.0]: **librespot Audio Pipeline analysiert (2026-07-13):** Kein Branching — BEIDE Pfade (CDN storage-resolve + AudioKeyManager RequestKey 0x0c) werden IMMER für jeden Track aufgerufen. CDN liefert AES-128-CTR-verschlüsselte Bytes, Audio Key ist der Entschlüsselungsschlüssel. Kein client-seitiger Workaround möglich — AP entscheidet serverseitig ob Key rausgegeben wird. Newest-cohort-Fix erfordert komplett anderes Audio-Backend.
 - [Phase 49]: Added PKCE.pm to t/05_perl_syntax.t syntax-check list to keep CI coverage consistent with sibling API modules (TokenManager.pm, Client.pm)
 - [Phase 49]: Reused TokenManager::_storeAccountPrefs for PKCE account creation instead of duplicating prefs-writing logic in Settings.pm
 - [Phase 49]: Fallback userId on /me lookup failure derived from access_token hash, not a fixed literal, to avoid account-collision across concurrent failed lookups
@@ -258,7 +248,7 @@ Items carried forward from previous milestones:
 - Forum #159 (Chezza): New Spotify account (Oct 2025) → NoStoredCredentials, urknall + CJS helping
 - ~~Forum #160 (CJS): "Default Adjustment for Remote Streams" stacks with SpotOn ReplayGain~~ FIXED in v2.3.12: trackGain() implemented (GH #108)
 - ~~Wait for urknall's response to auth architecture reply (#175)~~ RESOLVED: urknall #176 confirmed PKCE-first, provided edge cases and Keymaster audit guidance
-- Auth architecture research completed — details in private notes (SynologyDrive), not in this repo.
+- Auth architecture research completed — details not in this repo.
 
 ### Quick Tasks Completed
 
@@ -277,25 +267,31 @@ Items carried forward from previous milestones:
 
 ## Session Continuity
 
-**Resume file:** .planning/.continue-here.md
+**Resume file:** .planning/phases/71-soloist-foundation/71-CONTEXT.md
 
-**Last session:** 2026-08-23T11:02:16.355Z
-**Stopped at:** Infrastructure session — librespot fork recovered, dev HEAD upgrade, Device Auth spike
-**Completed this session (2026-08-23):**
+**Last session:** 2026-08-24T16:57:12.271Z
+**Stopped at:** Phase 71 context gathered
 
-- librespot fork (stiefenm/librespot) recreated after accidental deletion
-- Audio-key-retry patch rebased onto dev HEAD (1599145), upstream PR #1748 opened (replaces #1743)
-- Cargo.lock updated to new fork commit f3734bfb (21956c5)
-- Local build + deploy, user confirmed Browse + Connect regression-free
-- Device Auth Flow spike (RFC 8628): only Desktop Client ID accepted, Dev/EQ IDs rejected → parked
+**Completed this session (2026-08-24):**
+
+- ROADMAP Milestones aufgeräumt: v2.0, v2.1, v2.2, v3.0 als shipped markiert
+- Sensitive Referenzen aus .planning/ entfernt (eSDK, private Kontakte, SynologyDrive)
+- v4.0 Soloist Integration Milestone eingetragen
+- **Soloist Spike — alle Hypothesen validiert:**
+  - Lifetime Patch: ASCII-Timestamp in .rodata, Drop-in-Replace, "25696 days"
+  - Audio Interface: Fake-libpulse.so.0 (47 PA-Funktionen, 250 LOC C) → S32LE/44100/Stereo direkt via pa_stream_write, kein PulseAudio-Server nötig
+  - BYOK: spak-Key Self-Service im Dev Dashboard, Pairing + Single-Track + Connect funktionieren
+  - Audio Pipeline: PCM → FLAC (68%) und OGG (10%) via ffmpeg, gleiche Pipeline wie librespot
+- spak-Key ist offiziell Self-Service seit Soloist Launch (2026-08-13)
+- Drei Plattformen verfügbar: x86_64, arm64, arm32
 
 **Next action:**
 
 1. v2.3 Library Integration (Phases 38–41) — core milestone work untouched
-2. Phase 62 (Browse Endpoints + Connect Queue) remains unplanned
-3. #154 (librespot log integration) queued as future work
+2. v4.0 Soloist (Phases 71-75) — Spike complete, ready for Phase 71 wenn priorisiert
+3. Phase 62 (Browse Endpoints + Connect Queue) remains unplanned
 4. Monitor PR #1748 upstream, #149/#150 (Rouzax)
 
 ---
 *State initialized: 2026-05-26*
-*Last updated: 2026-08-23 — librespot fork recovered, dev HEAD upgrade, Device Auth spike*
+*Last updated: 2026-08-24 — Soloist Spike validated, v4.0 milestone concretized*
