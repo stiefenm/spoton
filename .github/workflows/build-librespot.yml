@@ -236,6 +236,77 @@ jobs:
           path: spoton
           retention-days: 30
 
+  # CR-02: built HERE (not in the independent build-fake-libpulse.yml
+  # workflow) so the `release` job below can download its artifacts via
+  # actions/download-artifact@v4 -- that action only sees artifacts from
+  # its OWN workflow run, never a separate workflow's run. D-06 requires
+  # libpulse.so.0 to ship inside the plugin zip; a separate workflow made
+  # that structurally impossible. build-fake-libpulse.yml itself is kept
+  # for on-demand/manual builds (workflow_dispatch only, no longer runs
+  # on tag push) so this matrix is not duplicated on every release.
+  build-fake-libpulse:
+    name: Build fake-libpulse ${{ matrix.bin_dir }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - bin_dir: x86_64-linux
+            cc: gcc
+            cross_gcc_package: ''
+          - bin_dir: aarch64-linux
+            cc: aarch64-linux-gnu-gcc
+            cross_gcc_package: gcc-aarch64-linux-gnu
+          - bin_dir: armhf-linux
+            cc: arm-linux-gnueabihf-gcc
+            cross_gcc_package: gcc-arm-linux-gnueabihf
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install glibc cross-toolchain
+        if: matrix.cross_gcc_package != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.cross_gcc_package }}
+
+      - name: Build libpulse.so.0
+        run: |
+          make -C Plugins/SpotOn/Bin/fake-libpulse CC=${{ matrix.cc }}
+
+      - name: Prepare binary
+        run: |
+          DEST_DIR="Plugins/SpotOn/Bin/${{ matrix.bin_dir }}"
+          mkdir -p "$DEST_DIR"
+          cp Plugins/SpotOn/Bin/fake-libpulse/libpulse.so.0 "$DEST_DIR/libpulse.so.0"
+          chmod 755 "$DEST_DIR/libpulse.so.0"
+
+      - name: Verify binary (glibc, not musl -- Pitfall 3)
+        run: |
+          BINARY="Plugins/SpotOn/Bin/${{ matrix.bin_dir }}/libpulse.so.0"
+          echo "=== Binary info ==="
+          file "$BINARY"
+          echo "=== SHA256 checksum ==="
+          sha256sum "$BINARY"
+
+          FILE_OUTPUT=$(file "$BINARY")
+          if echo "$FILE_OUTPUT" | grep -qi "musl"; then
+            echo "FATAL: $BINARY was linked against musl, not glibc." >&2
+            echo "Soloist is a glibc binary -- a musl fake-libpulse.so.0" >&2
+            echo "will fail to load via LD_LIBRARY_PATH (dynamic loader" >&2
+            echo "mismatch). Check that CC=${{ matrix.cc }} resolved to" >&2
+            echo "a glibc cross-toolchain, not a musl one." >&2
+            exit 1
+          fi
+          echo "glibc verification passed (no musl interpreter/linker found)"
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fake-libpulse-${{ matrix.bin_dir }}
+          path: Plugins/SpotOn/Bin/${{ matrix.bin_dir }}/libpulse.so.0
+          retention-days: 30
+
   reuse-binaries:
     name: Reuse binaries from previous release
     runs-on: ubuntu-latest
@@ -325,7 +396,7 @@ jobs:
   release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
-    needs: [detect-changes, build, build-windows, lipo, reuse-binaries]
+    needs: [detect-changes, build, build-windows, lipo, reuse-binaries, build-fake-libpulse]
     if: startsWith(github.ref, 'refs/tags/') && !cancelled() && !failure()
     permissions:
       contents: write
@@ -367,6 +438,19 @@ jobs:
             chmod 755 "$dest"/*
             rm -f "$dest/.gitkeep"
           done
+
+          # CR-02/D-06: fold in the fake-libpulse.so.0 stub built by the
+          # build-fake-libpulse job (same workflow run, so
+          # actions/download-artifact@v4 above can see it) into the same
+          # Bin/<arch>/ directories the librespot binaries just landed in.
+          for dir in release-artifacts/fake-libpulse-*/; do
+            bin_dir=$(basename "$dir" | sed 's/^fake-libpulse-//')
+            dest="Plugins/SpotOn/Bin/$bin_dir"
+            mkdir -p "$dest"
+            cp "$dir/libpulse.so.0" "$dest/libpulse.so.0"
+            chmod 755 "$dest/libpulse.so.0"
+          done
+
           VERSION="${GITHUB_REF_NAME}"
           zip -r "release-flat/SpotOn-${VERSION}.zip" Plugins/SpotOn/
           echo "=== Plugin zip ==="

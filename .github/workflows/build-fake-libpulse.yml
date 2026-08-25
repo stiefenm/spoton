@@ -11,10 +11,13 @@ name: Build fake-libpulse binaries
 # Soloist's dynamic loader at runtime).
 
 on:
+  # CR-02: this workflow is kept for on-demand/manual debugging builds only.
+  # The tag-triggered release build moved into build-librespot.yml's
+  # build-fake-libpulse job -- actions/download-artifact@v4 in that
+  # workflow's `release` job can only see artifacts from its OWN run, so a
+  # separate tag-triggered workflow here could never have its output
+  # reach the assembled plugin zip (D-06).
   workflow_dispatch:
-  push:
-    tags:
-      - 'v*'
 
 jobs:
   build:
