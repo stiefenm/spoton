@@ -1,0 +1,93 @@
+name: Build fake-libpulse binaries
+
+# Independent from build-librespot.yml (Rust/musl cross-compile). This
+# workflow builds the fake-libpulse.so.0 PulseAudio-client stub
+# (Plugins/SpotOn/Bin/fake-libpulse/fake-libpulse.c, D-06) as a C
+# shared object against GLIBC, for the same 3 architectures and into
+# the same Plugins/SpotOn/Bin/<arch>/ output directories that
+# build-librespot.yml already populates -- but via glibc cross-gcc
+# toolchains, never the musl `cross` toolchain used for the Rust
+# binary (RESEARCH.md Pitfall 3: a glibc/musl mismatch breaks
+# Soloist's dynamic loader at runtime).
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    name: Build ${{ matrix.bin_dir }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - bin_dir: x86_64-linux
+            cc: gcc
+            cross_gcc_package: ''
+          - bin_dir: aarch64-linux
+            cc: aarch64-linux-gnu-gcc
+            cross_gcc_package: gcc-aarch64-linux-gnu
+          - bin_dir: armhf-linux
+            cc: arm-linux-gnueabihf-gcc
+            cross_gcc_package: gcc-arm-linux-gnueabihf
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install glibc cross-toolchain
+        if: matrix.cross_gcc_package != ''
+        run: |
+          # x86_64 needs nothing extra -- ubuntu-latest already ships a
+          # native gcc targeting glibc. aarch64/armhf need their
+          # apt-installable glibc cross-gcc packages (NOT the musl
+          # `cross`/cargo toolchain build-librespot.yml uses).
+          #
+          # Fallback (RESEARCH.md Environment Availability -- not
+          # implemented here, apt install is expected to succeed on
+          # the standard GitHub-hosted ubuntu-latest runner): if
+          # apt-get ever fails to provide these packages, cross-
+          # compile inside a Docker image that bundles a glibc sysroot
+          # for the target (e.g. an existing cross-rs base image
+          # extended with the target triple) instead of this apt step.
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.cross_gcc_package }}
+
+      - name: Build libpulse.so.0
+        run: |
+          make -C Plugins/SpotOn/Bin/fake-libpulse CC=${{ matrix.cc }}
+
+      - name: Prepare binary
+        run: |
+          DEST_DIR="Plugins/SpotOn/Bin/${{ matrix.bin_dir }}"
+          mkdir -p "$DEST_DIR"
+          cp Plugins/SpotOn/Bin/fake-libpulse/libpulse.so.0 "$DEST_DIR/libpulse.so.0"
+          chmod 755 "$DEST_DIR/libpulse.so.0"
+
+      - name: Verify binary (glibc, not musl -- Pitfall 3)
+        run: |
+          BINARY="Plugins/SpotOn/Bin/${{ matrix.bin_dir }}/libpulse.so.0"
+          echo "=== Binary info ==="
+          file "$BINARY"
+          echo "=== SHA256 checksum ==="
+          sha256sum "$BINARY"
+
+          FILE_OUTPUT=$(file "$BINARY")
+          if echo "$FILE_OUTPUT" | grep -qi "musl"; then
+            echo "FATAL: $BINARY was linked against musl, not glibc." >&2
+            echo "Soloist is a glibc binary -- a musl fake-libpulse.so.0" >&2
+            echo "will fail to load via LD_LIBRARY_PATH (dynamic loader" >&2
+            echo "mismatch). Check that CC=${{ matrix.cc }} resolved to" >&2
+            echo "a glibc cross-toolchain, not a musl one." >&2
+            exit 1
+          fi
+          echo "glibc verification passed (no musl interpreter/linker found)"
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fake-libpulse-${{ matrix.bin_dir }}
+          path: Plugins/SpotOn/Bin/${{ matrix.bin_dir }}/libpulse.so.0
+          retention-days: 30
