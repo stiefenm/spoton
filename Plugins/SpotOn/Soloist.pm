@@ -369,6 +369,25 @@ export LD_LIBRARY_PATH="__LIB__:${LD_LIBRARY_PATH}"
 export SPOTON_SOLOIST_PCM_FD=1
 KEY=$(cat "__KEY__") || exit 1
 
+# CR-01: LMS's $URL$ convert-rule token hands this wrapper the
+# plugin-internal spoton://track:ID / spoton://episode:ID URL built by
+# Plugin.pm::_trackItem(); soloist --single-track requires a real
+# spotify: URI. Rewrite the scheme here, at the spawn boundary, so
+# LMS-side URLs stay spoton:// everywhere else (D-01 untouched).
+argc=$#
+argi=0
+while [ "$argi" -lt "$argc" ]; do
+    a=$1
+    shift
+    case "$a" in
+        spoton://*)
+            a="spotify:${a#spoton://}"
+            ;;
+    esac
+    set -- "$@" "$a"
+    argi=$((argi + 1))
+done
+
 # D-06: up to 2 quick-failure retries before letting LMS advance/skip.
 # PCM may already have started flowing on a slow failure (>=5s) -- retrying
 # then would splice duplicated/misaligned audio, so a slow failure exits

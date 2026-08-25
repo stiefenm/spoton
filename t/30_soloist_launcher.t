@@ -244,6 +244,86 @@ Plugins::SpotOn::Soloist->storeKey($DUMMY_KEY);
 }
 
 # ============================================================
+# Test: CR-01 -- generated wrapper translates spoton:// to spotify: in the
+# child argv, proven behaviorally against a stub "soloist" binary.
+# ============================================================
+SKIP: {
+    skip 'behavioral launcher test requires /bin/sh (Linux-only launcher)', 10
+        if $^O eq 'MSWin32' || !-x '/bin/sh';
+
+    my $behav_dir = tempdir(CLEANUP => 1);
+    my $argv_out  = "$behav_dir/argv.out";
+    my $stub_bin  = "$behav_dir/soloist-stub";
+
+    open(my $sfh, '>', $stub_bin) or die "cannot write stub binary: $!";
+    print $sfh <<"STUB";
+#!/bin/sh
+printf '%s\\n' "\$\@" > "$argv_out"
+exit 0
+STUB
+    close($sfh);
+    chmod(0755, $stub_bin);
+
+    my $behav_lib  = tempdir(CLEANUP => 1);
+    my $behav_key  = Plugins::SpotOn::Soloist::keyPath();
+    my $behav_data = Plugins::SpotOn::Soloist::dataDir();
+
+    my $wrapper_text = Plugins::SpotOn::Soloist::_launcherScript(
+        $behav_lib, $behav_key, $stub_bin, $behav_data,
+    );
+
+    my $wrapper_path = "$behav_dir/wrapper.sh";
+    open(my $wfh, '>', $wrapper_path) or die "cannot write wrapper: $!";
+    print $wfh $wrapper_text;
+    close($wfh);
+    chmod(0755, $wrapper_path);
+
+    # --- Run 1: track URI translation ---
+    unlink $argv_out if -f $argv_out;
+    my $rc1 = system($wrapper_path, '--single-track', 'spoton://track:abc123DEF');
+    is($rc1, 0, 'wrapper exits 0 against the stub binary (track run)');
+
+    ok(-f $argv_out, 'stub binary captured argv to argv.out (track run)');
+    open(my $afh1, '<', $argv_out) or die "cannot read $argv_out: $!";
+    my @lines1 = <$afh1>;
+    close($afh1);
+    chomp @lines1;
+
+    ok((grep { $_ eq 'spotify:track:abc123DEF' } @lines1),
+        'captured argv contains the translated spotify:track: URI');
+    ok((grep { $_ eq '--single-track' } @lines1),
+        'captured argv contains --single-track');
+    is((scalar grep { /^spoton:\/\// } @lines1), 0,
+        'captured argv has zero occurrences of the internal spoton:// scheme (T-72-03)');
+
+    is_deeply(
+        \@lines1,
+        [ '-n', 'SpotOn', '-k', $DUMMY_KEY, '-D', $behav_data, '--single-track', 'spotify:track:abc123DEF' ],
+        'captured argv preserves order and non-URL args verbatim, -k immediately followed by the exact key content (WR-01 key-delivery contract)',
+    );
+
+    # --- Run 2: episode URI translation ---
+    unlink $argv_out if -f $argv_out;
+    my $rc2 = system($wrapper_path, '--single-track', 'spoton://episode:xyz789');
+    is($rc2, 0, 'wrapper exits 0 against the stub binary (episode run)');
+
+    open(my $afh2, '<', $argv_out) or die "cannot read $argv_out: $!";
+    my @lines2 = <$afh2>;
+    close($afh2);
+    chomp @lines2;
+
+    ok((grep { $_ eq 'spotify:episode:xyz789' } @lines2),
+        'captured argv contains the translated spotify:episode: URI');
+    is((scalar grep { /^spoton:\/\// } @lines2), 0,
+        'episode run: captured argv has zero occurrences of the internal spoton:// scheme');
+
+    # T-72-01 still holds against this behaviorally-generated wrapper too:
+    # the raw key never appears in the SCRIPT TEXT (only in the runtime argv above).
+    unlike($wrapper_text, qr/\Q$DUMMY_KEY\E/,
+        'the raw spak-key value never appears in the generated script text');
+}
+
+# ============================================================
 # Test: idempotency -- a second ensureLauncher() call succeeds cleanly
 # ============================================================
 {
