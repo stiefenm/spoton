@@ -284,4 +284,51 @@ sub _findExtractedBinary {
     return $found;
 }
 
+# ---------------------------------------------------------------------------
+# spak-key storage (Pattern 3, D-10/D-11) -- the raw key is NEVER logged.
+# ---------------------------------------------------------------------------
+
+sub storeKey {
+    my ($class, $key) = @_;
+
+    return (0, 'empty_key') unless defined $key && length $key;
+
+    my $dir = _rootDir();
+    unless (-d $dir) {
+        require File::Path;
+        File::Path::make_path($dir, { mode => 0700 });
+    }
+
+    my $target = keyPath();
+    my ($fh, $staging) = File::Temp::tempfile('spak-XXXX', DIR => $dir, UNLINK => 0);
+    unless ($fh) {
+        $log->error('Soloist: failed to create staging file for spak-key');
+        return (0, 'write_failed');
+    }
+    print $fh $key;
+    close $fh;
+
+    unlink $target if -f $target;
+    unless (rename($staging, $target)) {
+        require File::Copy;
+        unless (File::Copy::move($staging, $target)) {
+            $log->error('Soloist: failed to install spak-key: ' . $!);
+            return (0, 'write_failed');
+        }
+    }
+    chmod(0600, $target) if -f $target;
+
+    return 1;
+}
+
+sub hasKey {
+    return -f keyPath() ? 1 : 0;
+}
+
+sub clearKey {
+    my $path = keyPath();
+    unlink $path if -f $path;
+    return 1;
+}
+
 1;
