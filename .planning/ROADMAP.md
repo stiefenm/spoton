@@ -479,9 +479,10 @@ Items discovered during development — not assigned to a milestone.
   - [x] 71-03-PLAN.md — Settings UI: Backend-Dropdown, conditional spak-Key-Feld, Format-Validierung, i18n
   - [ ] 71-04-PLAN.md — Fake-libpulse CI Build-Pipeline (glibc cross-gcc, 3 Architekturen)
 - [ ] **Phase 72: Soloist Browse Playback** — ProtocolHandler Runtime-Backend-Dispatch (sol/son), `--single-track` Integration via generiertem Launcher-Wrapper, Audio-Pipeline (S32LE → FLAC32/PCM via custom-convert.conf), FD-basiertes Streaming an LMS StreamServer
-  - **Plans:** 2 plans (Wave 1: 72-01 · Wave 2: 72-02)
-  - [ ] 72-01-PLAN.md — Tracer: sol-Transcoder-Pfad end-to-end (Launcher-Wrapper, sol-Convert-Rules, ProtocolHandler-Dispatch, D-06 Retry, Tests)
-  - [ ] 72-02-PLAN.md — Settings D-07 Reorg: Backend als Top-Level-Sektion, conditional librespot/soloist-Felder, Pairing-Status, i18n (11 Sprachen)
+  - **Plans:** 3 plans (Wave 1: 72-01 · Wave 2: 72-02 · Gap Closure: 72-03)
+  - [x] 72-01-PLAN.md — Tracer: sol-Transcoder-Pfad end-to-end (Launcher-Wrapper, sol-Convert-Rules, ProtocolHandler-Dispatch, D-06 Retry, Tests)
+  - [x] 72-02-PLAN.md — Settings D-07 Reorg: Backend als Top-Level-Sektion, conditional librespot/soloist-Felder, Pairing-Status, i18n (11 Sprachen)
+  - [ ] 72-03-PLAN.md — Gap Closure: CR-01 spoton://→spotify: URI-Translation im Launcher + argv-Capture-Regressionstest, WR-01 -k-argv Trade-off dokumentiert + test-pinned
 - [ ] **Phase 73: Soloist Connect Mode** — WebSocket API Integration (Events → LMS Player State), Connect Transfer-Playback, Daemon-Lifecycle pro Player, Sync-Group Support
 - [ ] **Phase 74: Soloist Polish** — Lifetime-Patcher (optional, Settings-Toggle), 24-Bit FLAC (Enum-Patch), Quality-Dropdown (OGG/FLAC/Lossless), Per-Player Backend-Auswahl, Diagnostics
   **Note:** Patches (Lifetime, 24-Bit) müssen als Pattern-Scanner implementiert werden, nicht als statische Offsets — Instruction Encoding unterscheidet sich zwischen x86_64/arm64/arm32. Alle 3 Binaries runterladen und validieren.
