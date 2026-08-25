@@ -193,6 +193,58 @@ PLUGIN_SPOTON_SOLOIST_KEY_WRITE_FAILED
 	PL	Nie udało się zapisać klucza spak (błąd zapisu) — spróbuj ponownie.
 	SV	Spak-nyckeln kunde inte sparas (skrivfel) — försök igen.
 
+PLUGIN_SPOTON_SETTINGS_BACKEND_SECTION
+	CS	Přehrávací backend
+	DA	Afspilningsbackend
+	DE	Wiedergabe-Backend
+	EN	Playback Backend
+	ES	Backend de reproducción
+	FR	Backend de lecture
+	IT	Backend di riproduzione
+	NL	Afspeel-backend
+	NO	Avspillingsbackend
+	PL	Backend odtwarzania
+	SV	Uppspelningsbackend
+
+PLUGIN_SPOTON_SOLOIST_PAIRED
+	CS	Spárováno se Spotify
+	DA	Parret med Spotify
+	DE	Mit Spotify gekoppelt
+	EN	Paired with Spotify
+	ES	Emparejado con Spotify
+	FR	Associé à Spotify
+	IT	Associato a Spotify
+	NL	Gekoppeld met Spotify
+	NO	Paret med Spotify
+	PL	Sparowano ze Spotify
+	SV	Parkopplad med Spotify
+
+PLUGIN_SPOTON_SOLOIST_NOT_PAIRED
+	CS	Zatím nespárováno — přehrávání z Procházení selže, dokud párování nebude dokončeno.
+	DA	Ikke parret endnu — Gennemse-afspilning mislykkes, indtil parring er gennemført.
+	DE	Noch nicht gekoppelt — Browse-Wiedergabe schlägt fehl, bis das Pairing abgeschlossen ist.
+	EN	Not paired yet — Browse playback will fail until pairing is done.
+	ES	Aún no emparejado — la reproducción desde Explorar fallará hasta que se complete el emparejamiento.
+	FR	Pas encore associé — la lecture depuis Parcourir échouera tant que l'association n'est pas terminée.
+	IT	Non ancora associato — la riproduzione da Esplora fallirà finché l'associazione non sarà completata.
+	NL	Nog niet gekoppeld — afspelen vanuit Bladeren mislukt totdat de koppeling is voltooid.
+	NO	Ikke paret ennå — avspilling fra Bla gjennom vil mislykkes før paring er fullført.
+	PL	Jeszcze nie sparowano — odtwarzanie z Przeglądania nie powiedzie się, dopóki parowanie nie zostanie zakończone.
+	SV	Inte parkopplad ännu — uppspelning från Bläddra kommer att misslyckas tills parkopplingen är klar.
+
+PLUGIN_SPOTON_SOLOIST_PAIR_HOWTO
+	CS	Spusťte tento příkaz na hostiteli LMS jako uživatel služby LMS, poté ve své aplikaci Spotify jednou vyberte zařízení „SpotOn“. Párování je jednorázový krok; přihlašovací údaje se ukládají lokálně.
+	DA	Kør denne kommando på LMS-værten som LMS-tjenestebrugeren, og vælg derefter enheden 'SpotOn' i din Spotify-app én gang. Parring er et engangstrin; loginoplysninger gemmes lokalt.
+	DE	Führe diesen Befehl auf dem LMS-Host als LMS-Dienstbenutzer aus und wähle anschließend einmal das Gerät „SpotOn“ in deiner Spotify-App aus. Das Pairing ist ein einmaliger Schritt; Anmeldedaten werden lokal gespeichert.
+	EN	Run this command on the LMS host as the LMS service user, then select the 'SpotOn' device in your Spotify app once. Pairing is a one-time step; credentials are stored locally.
+	ES	Ejecuta este comando en el host de LMS como el usuario del servicio LMS y, a continuación, selecciona una vez el dispositivo "SpotOn" en tu aplicación de Spotify. El emparejamiento es un paso único; las credenciales se guardan localmente.
+	FR	Exécutez cette commande sur l'hôte LMS en tant qu'utilisateur du service LMS, puis sélectionnez une fois l'appareil « SpotOn » dans votre application Spotify. L'association est une étape unique ; les identifiants sont stockés localement.
+	IT	Esegui questo comando sull'host LMS come utente del servizio LMS, quindi seleziona una volta il dispositivo "SpotOn" nella tua app Spotify. L'associazione è un passaggio una tantum; le credenziali vengono salvate localmente.
+	NL	Voer dit commando uit op de LMS-host als de LMS-servicegebruiker en selecteer daarna één keer het apparaat 'SpotOn' in je Spotify-app. Koppelen is een eenmalige stap; inloggegevens worden lokaal opgeslagen.
+	NO	Kjør denne kommandoen på LMS-verten som LMS-tjenestebrukeren, og velg deretter enheten «SpotOn» i Spotify-appen din én gang. Paring er et engangstrinn; legitimasjon lagres lokalt.
+	PL	Uruchom to polecenie na hoście LMS jako użytkownik usługi LMS, a następnie jednorazowo wybierz urządzenie „SpotOn” w aplikacji Spotify. Parowanie to jednorazowy krok; dane uwierzytelniające są przechowywane lokalnie.
+	SV	Kör detta kommando på LMS-värden som LMS-tjänsteanvändaren och välj sedan enheten "SpotOn" i din Spotify-app en gång. Parkoppling är ett engångssteg; autentiseringsuppgifter lagras lokalt.
+
 PLUGIN_SPOTON_BITRATE
 	CS	Přenosová rychlost
 	DA	Bithastighed
