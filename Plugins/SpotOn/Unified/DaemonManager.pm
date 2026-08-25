@@ -639,6 +639,16 @@ sub startHelper {
     my $backend = $prefs->get('backend') // 'librespot';
 
     if ($backend eq 'soloist') {
+        # WR-01: stop any already-running librespot daemon for this player
+        # before evaluating Soloist's own prerequisites. Without this,
+        # switching backend -> soloist left an alive librespot helper
+        # (Connect visibility, playback) running until it crashed or LMS
+        # restarted -- contradicting the shipped "switching restarts the
+        # daemons" UI copy (PLUGIN_SPOTON_BACKEND_DESC) and D-07's
+        # single-server-wide-backend semantics. stopHelper() is a no-op if
+        # no helper is tracked for $clientId or it isn't alive.
+        $class->stopHelper($clientId);
+
         my $state = _backendPrereqState($backend);
 
         if ($state ne 'soloist_ready') {
