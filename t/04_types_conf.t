@@ -13,7 +13,7 @@ my $conf_file   = "$project_dir/Plugins/SpotOn/custom-types.conf";
 ok(-f $conf_file, "custom-types.conf exists at $conf_file");
 
 SKIP: {
-    skip "custom-types.conf not found", 3 unless -f $conf_file;
+    skip "custom-types.conf not found", 6 unless -f $conf_file;
 
     open(my $fh, '<', $conf_file) or die "Cannot open $conf_file: $!";
     my $content = do { local $/; <$fh> };
@@ -35,6 +35,20 @@ SKIP: {
 
         # Server-File-Type is 4th field (index 3)
         is($fields[3], 'audio', "Server-File-Type is audio");
+    }
+
+    # Phase 72 (D-02): sol content-type row
+    my ($sol_line) = grep { /^sol\s+/ } split(/\n/, $content);
+
+    ok(defined $sol_line, "sol format line exists in custom-types.conf");
+
+    SKIP: {
+        skip "sol format line not found", 2 unless defined $sol_line;
+
+        my @fields = split(/\s+/, $sol_line);
+
+        is($fields[2], 'audio/x-sb-spoton-soloist', "sol MIME-Type is audio/x-sb-spoton-soloist");
+        is($fields[3], 'audio', "sol Server-File-Type is audio");
     }
 }
 

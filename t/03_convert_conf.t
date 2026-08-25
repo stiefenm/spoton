@@ -13,7 +13,7 @@ my $conf_file   = "$project_dir/Plugins/SpotOn/custom-convert.conf";
 ok(-f $conf_file, "custom-convert.conf exists at $conf_file");
 
 SKIP: {
-    skip "custom-convert.conf not found", 4 unless -f $conf_file;
+    skip "custom-convert.conf not found", 15 unless -f $conf_file;
 
     open(my $fh, '<', $conf_file) or die "Cannot open $conf_file: $!";
     my $content = do { local $/; <$fh> };
@@ -28,6 +28,29 @@ SKIP: {
 
     # Command line is '-' (direct streaming, no transcoder)
     ok($content =~ m{^\t-$}m, "Pipeline command is '-' (direct streaming)");
+
+    # Phase 72 (D-02/D-04): sol flc/pcm per-track transcoder rules
+    ok($content =~ m{^sol flc \* \*}m, "sol flc pipeline header exists");
+    ok($content =~ m{^sol pcm \* \*}m, "sol pcm pipeline header exists");
+
+    my $solFlcCmd = ($content =~ m{^sol flc \* \*\n\t[^\n]*\n\t([^\n]*)}m) ? $1 : '';
+    my $solPcmCmd = ($content =~ m{^sol pcm \* \*\n\t[^\n]*\n\t([^\n]*)}m) ? $1 : '';
+
+    like($solFlcCmd, qr{\[spoton-soloist\]}, "sol flc command references [spoton-soloist]");
+    like($solFlcCmd, qr{--single-track \$URL\$}, "sol flc command uses --single-track \$URL\$");
+    like($solFlcCmd, qr{--bps=32}, "sol flc command declares --bps=32 (D-04: S32LE source)");
+
+    like($solPcmCmd, qr{\[spoton-soloist\]}, "sol pcm command references [spoton-soloist]");
+    like($solPcmCmd, qr{--single-track \$URL\$}, "sol pcm command uses --single-track \$URL\$");
+
+    # Seek templating must never return for sol (Soloist has no
+    # --start-position flag -- RESEARCH Anti-Pattern / Pitfall 3)
+    ok($content !~ m{\$START\$}, "no \$START\$ substitution variable anywhere in convert.conf");
+
+    # 3-line format guard (Pitfall 6): each sol header is immediately
+    # followed by a TAB-indented capabilities/comment line.
+    ok($content =~ m{^sol flc \* \*\n\t\S}m, "sol flc header followed by a TAB-indented line (3-line format)");
+    ok($content =~ m{^sol pcm \* \*\n\t\S}m, "sol pcm header followed by a TAB-indented line (3-line format)");
 }
 
 done_testing();
