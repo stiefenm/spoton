@@ -518,7 +518,8 @@ sub handler {
     # D-07 (Phase 72 Plan 02): pairing state for the Settings pairing-status
     # block -- isPaired() drives the paired/not-paired status line,
     # launcherPath() is the exact command the not-paired hint tells the user
-    # to run (same generated wrapper the sol-flc/sol-pcm convert rules spawn,
+    # to run (same generated wrapper the sol-pcm convert rule spawns — CR-02
+    # removed the sol-flc rule, see ProtocolHandler.pm/custom-convert.conf —
     # so a --pair run here writes into the SAME dataDir() the wrapper reads —
     # RESEARCH A3).
     $paramRef->{soloistPaired}        = Plugins::SpotOn::Soloist::isPaired() ? 1 : 0;

@@ -558,8 +558,11 @@ sub getNextTrack {
 
     # D-04/Pitfall-2: Soloist emits raw S32LE/44100/stereo PCM. Without these
     # hints the sol-pcm profile would be announced as 16-bit and produce
-    # garbage; the flc target is self-describing (--bps=32 in the convert
-    # rule) and unaffected by this.
+    # garbage. CR-02 (72-REVIEW.md): the sol-flc rule was removed -- the
+    # LMS-bundled flac (1.3.x) rejects --bps=32, and declaring --bps=24
+    # against the unmodified 32-bit frames would mis-frame every sample
+    # instead (72-RESEARCH.md Pitfall 2/A2/A4). PCM-only is the Phase-72
+    # baseline; true 24-bit FLAC is deferred to Phase 74.
     if (_useSoloist() && $url =~ m{^spoton://(?:track|episode):}) {
         my $track = $song->track;
         if ($track) {
