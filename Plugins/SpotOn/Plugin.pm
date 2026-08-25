@@ -141,7 +141,23 @@ sub initPlugin {
     # Phase 72 (Pitfall 5): regenerate the per-track launcher wrapper on
     # every boot -- cheap, idempotent, self-guards for OS/arch. Registers
     # the findbin path before TranscodingHelper ever resolves a profile.
-    Plugins::SpotOn::Soloist::ensureLauncher() if !main::SCANNER;
+    # WR-06: when backend=soloist, call ensureBinary() (which itself calls
+    # ensureLauncher() first) instead of ensureLauncher() alone -- the only
+    # other production call site for the auto-download pipeline is the
+    # Settings save handler. Without this, a cache-clear followed by an LMS
+    # restart regenerates the launcher but leaves the binary it exec's
+    # missing: every Browse play spawns the wrapper, retries twice, and
+    # silently skips, with no recovery until the user opens Settings and
+    # presses Save. ensureBinary() self-guards (no-op when a working,
+    # version-matched binary is already cached; WR-07 in-flight guard
+    # covers double calls).
+    if (!main::SCANNER) {
+        if ( ($prefs->get('backend') || 'librespot') eq 'soloist' ) {
+            Plugins::SpotOn::Soloist::ensureBinary();
+        } else {
+            Plugins::SpotOn::Soloist::ensureLauncher();
+        }
+    }
 
     require Plugins::SpotOn::API::TokenManager;
     require Plugins::SpotOn::API::Client;
