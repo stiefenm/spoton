@@ -46,12 +46,28 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/time.h>
 #include <unistd.h>
+
+/* WR-02: on Linux, write() to a pipe whose read end is closed delivers
+ * SIGPIPE, whose default disposition terminates the process -- the
+ * `w < 0` / errno == EPIPE branch in pa_stream_write() below is
+ * otherwise unreachable, and the "drop the remainder, keep Soloist
+ * alive" graceful-degradation path documented there is dead code.
+ * Ignore SIGPIPE from this stub itself so write() returns EPIPE as
+ * that code already expects, regardless of whether the Soloist binary
+ * (closed-source, unverified) ignores/resets it itself. Constructor
+ * runs once at dlopen() time, before Soloist calls into any pa_*
+ * symbol. */
+__attribute__((constructor))
+static void _fake_libpulse_init(void) {
+    signal(SIGPIPE, SIG_IGN);
+}
 
 /* ------------------------------------------------------------------ */
 /* Public PulseAudio types this stub must reproduce byte-for-byte,    */
