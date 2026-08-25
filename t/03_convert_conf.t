@@ -13,7 +13,7 @@ my $conf_file   = "$project_dir/Plugins/SpotOn/custom-convert.conf";
 ok(-f $conf_file, "custom-convert.conf exists at $conf_file");
 
 SKIP: {
-    skip "custom-convert.conf not found", 12 unless -f $conf_file;
+    skip "custom-convert.conf not found", 10 unless -f $conf_file;
 
     open(my $fh, '<', $conf_file) or die "Cannot open $conf_file: $!";
     my $content = do { local $/; <$fh> };
@@ -32,10 +32,9 @@ SKIP: {
     # Phase 72 (D-02/D-04): sol pcm per-track transcoder rule
     ok($content =~ m{^sol pcm \* \*}m, "sol pcm pipeline header exists");
 
-    # Phase 72 (D-04): sol flc FLAC encoding rule
-    ok($content =~ m{^sol flc \* \*}m, "sol flc pipeline header exists");
-    ok($content =~ m{--bps=24}, "sol flc uses --bps=24 (LMS-bundled flac 1.3.x rejects --bps=32)");
-    ok($content !~ m{--bps=32}, "no --bps=32 anywhere (bundled flac 1.3.x limit)");
+    # Phase 72: sol-flc removed — S32LE frames mis-frame at any bps<32, and
+    # flac 1.3.x rejects bps=32. PCM-only until Phase 74 adds proper downsampling.
+    ok($content !~ m{^sol flc \* \*}m, "sol flc rule absent (S32LE/flac bps mismatch)");
 
     my $solPcmCmd = ($content =~ m{^sol pcm \* \*\n\t[^\n]*\n\t([^\n]*)}m) ? $1 : '';
 
