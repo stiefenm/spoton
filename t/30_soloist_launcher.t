@@ -299,7 +299,7 @@ STUB
 
     is_deeply(
         \@lines1,
-        [ '-n', 'SpotOn', '-k', $DUMMY_KEY, '-D', $behav_data, '--single-track', 'spotify:track:abc123DEF' ],
+        [ '-n', 'SpotOn', '-k', $DUMMY_KEY, '-D', $behav_data, '-C', "$behav_data/cache", '--single-track', 'spotify:track:abc123DEF' ],
         'captured argv preserves order and non-URL args verbatim, -k immediately followed by the exact key content (WR-01 key-delivery contract)',
     );
 

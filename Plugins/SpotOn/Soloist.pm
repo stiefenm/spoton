@@ -417,7 +417,7 @@ done
 n=0
 while [ "$n" -lt 2 ]; do
     start=$(date +%s)
-    "__BIN__" -n "SpotOn" -k "$KEY" -D "__DATA__" "$@"
+    "__BIN__" -n "SpotOn" -k "$KEY" -D "__DATA__" -C "__DATA__/cache" "$@"
     rc=$?
     if [ "$rc" -eq 0 ]; then
         exit 0
@@ -432,7 +432,7 @@ while [ "$n" -lt 2 ]; do
 done
 
 # Final attempt: exec so LMS's process management sees soloist directly.
-exec "__BIN__" -n "SpotOn" -k "$KEY" -D "__DATA__" "$@"
+exec "__BIN__" -n "SpotOn" -k "$KEY" -D "__DATA__" -C "__DATA__/cache" "$@"
 SCRIPT
 
     $tmpl =~ s/__LIB__/$lib/g;
