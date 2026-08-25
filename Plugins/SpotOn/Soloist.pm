@@ -312,8 +312,24 @@ sub storeKey {
         $log->error('Soloist: failed to create staging file for spak-key');
         return (0, 'write_failed');
     }
-    print $fh $key;
-    close $fh;
+    # WR-06: check both print and close -- on a full disk or I/O error
+    # either can fail, and an unchecked failure previously let a
+    # truncated/empty staging file get renamed over any existing valid
+    # key while storeKey() still reported success (hasKey() then
+    # returns true for a corrupt credential file with no breadcrumb).
+    unless (print $fh $key) {
+        my $err = $!;
+        close $fh;
+        unlink $staging;
+        $log->error("Soloist: failed writing spak-key staging file: $err");
+        return (0, 'write_failed');
+    }
+    unless (close $fh) {
+        my $err = $!;
+        unlink $staging;
+        $log->error("Soloist: failed closing spak-key staging file: $err");
+        return (0, 'write_failed');
+    }
 
     unlink $target if -f $target;
     unless (rename($staging, $target)) {
