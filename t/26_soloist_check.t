@@ -170,6 +170,24 @@ sub reset_stub { @created = (); $auto_mode = 'none'; }
 1;
 END
 
+# Phase 72: ensureBinary() now calls ensureLauncher() as its first action
+# (RESEARCH Pitfall 5), which requires Slim::Utils::Misc::addFindBinPaths()
+# and Plugins::SpotOn::Plugin->_pluginDataFor('basedir') at runtime. Stub
+# both so tests 10-13 (which call ensureBinary()/downloadBinary()) don't
+# fall through to the real system Slim::Utils::Misc.
+write_stub($stub_dir, 'Slim::Utils::Misc', <<'END');
+package Slim::Utils::Misc;
+our @findbin_calls = ();
+sub addFindBinPaths { push @findbin_calls, $_[0]; }
+1;
+END
+
+write_stub($stub_dir, 'Plugins::SpotOn::Plugin', <<'END');
+package Plugins::SpotOn::Plugin;
+sub _pluginDataFor { return 'test-basedir' }
+1;
+END
+
 # ============================================================
 # main:: constants
 # ============================================================
@@ -260,7 +278,11 @@ sub write_fake_binary {
 }
 
 # ============================================================
-# Test 5: No findbin/addFindBinPaths usage anywhere in the source
+# Test 5: findbin() is never used for *binary discovery* (Anti-Pattern,
+# cachedir-based discovery stays intact). Phase 72: addFindBinPaths() IS now
+# called by ensureLauncher() -- purely so the static [spoton-soloist] token
+# in custom-convert.conf can resolve the generated wrapper; it never
+# participates in locating the soloist binary itself (still cachedir-based).
 # ============================================================
 {
     my $src = do {
@@ -269,8 +291,11 @@ sub write_fake_binary {
         <$fh>;
     };
     (my $codeOnly = $src) =~ s/^\s*#.*$//mg;
-    my $hits = () = $codeOnly =~ /findbin|addFindBinPaths/gi;
-    is($hits, 0, 'Soloist.pm never calls findbin()/addFindBinPaths() (Anti-Pattern, cachedir-based discovery)');
+    my $findbinHits = () = $codeOnly =~ /(?<!add)findbin\s*\(/gi;
+    is($findbinHits, 0, 'Soloist.pm never calls findbin() for binary discovery (Anti-Pattern, cachedir-based discovery)');
+
+    like($codeOnly, qr/addFindBinPaths\(\s*_rootDir\(\)\s*\)/,
+        'Soloist.pm calls addFindBinPaths(_rootDir()) so the [spoton-soloist] convert-rule token resolves (Phase 72)');
 }
 
 # ============================================================

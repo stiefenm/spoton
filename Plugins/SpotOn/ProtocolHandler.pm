@@ -71,7 +71,12 @@ use constant MAX_BROWSE_404_RETRIES => 3;
 use constant BROWSE_404_RETRY_DELAY => 2;   # seconds between retries
 my %_browse404Retries;  # "$clientId|$trackUrl" => attempt_count
 
-sub contentType { 'son' }
+# _useSoloist() -- Phase 72 D-01: pure runtime backend-pref check. spoton://
+# URLs are unchanged across backends; every entry point below branches on
+# this instead of the URL shape.
+sub _useSoloist { ($prefs->get('backend') || 'librespot') eq 'soloist' }
+
+sub contentType { _useSoloist() ? 'sol' : 'son' }
 
 sub isRemote    { 1 }
 
@@ -94,6 +99,10 @@ sub trackGain {
 # - 'son' for single-track Browse URLs (default)
 sub getFormatForURL {
     my ($class, $url) = @_;
+    # Phase 72 D-02/D-03: soloist branch first — ahead of the URL-shape
+    # branches below — so Browse spoton:// URLs route to the sol-* transcoder
+    # profile instead of the daemon-proxy 'soc' default.
+    return 'sol' if _useSoloist() && $url && $url =~ m{^spoton://(?:track|episode):};
     return 'soc' if $url && $url =~ m{spoton://connect-};
     return 'pcm' if $url && $url =~ m{:\d+/stream\b};
     return 'soc' if $url && $url =~ m{:\d+/(?:track|episode)/};  # Phase 28: Browse daemon HTTP URLs
@@ -111,6 +120,14 @@ sub formatOverride {
 
     my $client = $song->master;
     my $url = $song->track->url || '';
+
+    # Phase 72 D-02/D-03: without this branch, LMS Song.pm would build a
+    # son-*/soc-* profile key for a soloist-backed Browse URL and no sol-*
+    # rule would ever match (silent playback failure).
+    if (_useSoloist() && $url =~ m{^spoton://(?:track|episode):}) {
+        $log->warn("[DIAG] formatOverride: mac=" . ($client ? $client->id : 'none') . " url=$url result=sol (soloist)") if $prefs->get('diagnosticMode');
+        return 'sol';
+    }
 
     require Plugins::SpotOn::Unified::DaemonManager;
     my $fmt = Plugins::SpotOn::Unified::DaemonManager->resolvePassthroughForClient($client)
@@ -149,6 +166,15 @@ sub canDirectStream {
     my ($class, $client, $url) = @_;
 
     return 0 unless $client;
+
+    # D-03: soloist has no HTTP-serving daemon for Browse — LMS must use the
+    # sol-* transcoder path (custom-convert.conf) instead. Placed before the
+    # streamingMode gate below so this check needs no per-client pref stubs.
+    # Connect URLs (spoton://connect-) are deliberately untouched (Phase 73).
+    if (_useSoloist() && $url && $url =~ m{^spoton://(?:track|episode):}) {
+        $log->warn("[DIAG] canDirectStream: url=$url result=0 reason=soloist_transcoder_path") if $prefs->get('diagnosticMode');
+        return 0;
+    }
 
     # COMPAT-02: per-player streamingMode=proxy (or per-player 'global' resolving
     # to a global streamingMode=proxy default) forces LMS-relayed streaming for

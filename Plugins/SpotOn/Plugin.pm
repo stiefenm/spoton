@@ -138,6 +138,11 @@ sub initPlugin {
     require Plugins::SpotOn::Soloist;
     Plugins::SpotOn::Soloist->init();
 
+    # Phase 72 (Pitfall 5): regenerate the per-track launcher wrapper on
+    # every boot -- cheap, idempotent, self-guards for OS/arch. Registers
+    # the findbin path before TranscodingHelper ever resolves a profile.
+    Plugins::SpotOn::Soloist::ensureLauncher() if !main::SCANNER;
+
     require Plugins::SpotOn::API::TokenManager;
     require Plugins::SpotOn::API::Client;
 
