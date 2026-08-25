@@ -482,9 +482,9 @@ Items discovered during development — not assigned to a milestone.
   - **Plans:** 3 plans (Wave 1: 72-01 · Wave 2: 72-02 · Gap Closure: 72-03)
   - [x] 72-01-PLAN.md — Tracer: sol-Transcoder-Pfad end-to-end (Launcher-Wrapper, sol-Convert-Rules, ProtocolHandler-Dispatch, D-06 Retry, Tests)
   - [x] 72-02-PLAN.md — Settings D-07 Reorg: Backend als Top-Level-Sektion, conditional librespot/soloist-Felder, Pairing-Status, i18n (11 Sprachen)
-  - [ ] 72-03-PLAN.md — Gap Closure: CR-01 spoton://→spotify: URI-Translation im Launcher + argv-Capture-Regressionstest, WR-01 -k-argv Trade-off dokumentiert + test-pinned
-- [ ] **Phase 73: Soloist Connect Mode** — WebSocket API Integration (Events → LMS Player State), Connect Transfer-Playback, Daemon-Lifecycle pro Player, Sync-Group Support
-- [ ] **Phase 74: Soloist Polish** — Lifetime-Patcher (optional, Settings-Toggle), 24-Bit FLAC (Enum-Patch), Quality-Dropdown (OGG/FLAC/Lossless), Per-Player Backend-Auswahl, Diagnostics
+  - [x] 72-03-PLAN.md — Gap Closure: CR-01 spoton://→spotify: URI-Translation im Launcher + argv-Capture-Regressionstest, WR-01 -k-argv Trade-off dokumentiert + test-pinned
+- [ ] **Phase 73: Soloist Connect Mode** — WebSocket API Integration (Events → LMS Player State), Connect Transfer-Playback, Daemon-Lifecycle pro Player, Sync-Group Support. **Prerequisite:** persistenter Daemon löst auch das Browse-Session-Lock-Problem (data-dir Lock blockiert Gapless/Crossfade bei Per-Track-Spawning — Tracks werden übersprungen oder zu früh gewechselt)
+- [ ] **Phase 74: Soloist Polish** — Lifetime-Patcher (optional, Settings-Toggle), 24-Bit FLAC (Enum-Patch), Quality-Dropdown (OGG/FLAC/Lossless), Per-Player Backend-Auswahl, Pairing-Flow in Settings (kein SSH nötig), Diagnostics
   **Note:** Patches (Lifetime, 24-Bit) müssen als Pattern-Scanner implementiert werden, nicht als statische Offsets — Instruction Encoding unterscheidet sich zwischen x86_64/arm64/arm32. Alle 3 Binaries runterladen und validieren.
 
 - [ ] **Phase 75: Soloist UAT + Release** — E2E-Tests (Browse, Connect, Sync Groups, Format-Switching), Plattform-Tests (x86_64, arm64, arm32), TROUBLESHOOTING, CHANGELOG, v4.0.0 Release

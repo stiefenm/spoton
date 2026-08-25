@@ -2,19 +2,19 @@
 gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: Soloist Integration
-current_phase: 71
-current_phase_name: Soloist Foundation
-status: completed
-stopped_at: Phase 71 context gathered
-last_updated: "2026-08-25T08:30:39.383Z"
-last_activity: 2026-08-24
-last_activity_desc: Phase 71 execution started
-state_head: b5098bf471f47e0cb1f379a149e149091e1838a9
+current_phase: 72
+current_phase_name: Soloist Browse Playback
+status: verifying
+stopped_at: Completed 72-03-PLAN.md (gap closure)
+last_updated: "2026-08-25T14:03:58.858Z"
+last_activity: 2026-08-25
+last_activity_desc: Phase 72 execution started
+state_head: 225b89db44631515a55bd55e501c4485f0889297
 progress:
   total_phases: 14
   completed_phases: 0
-  total_plans: 4
-  completed_plans: 0
+  total_plans: 7
+  completed_plans: 5
   percent: 0
 ---
 
@@ -30,14 +30,14 @@ See: .planning/PROJECT.md (updated 2026-06-30)
 
 **Core Value:** Reliable Spotify playback and Connect integration on LMS — Browse, stream, and control via Spotify app, without 429 bursts, zombie daemons, or audio glitches.
 
-**Current Focus:** Phase 71 — Soloist Foundation
+**Current Focus:** Phase 72 — Soloist Browse Playback
 
 ## Current Position
 
-Phase: 71 (Soloist Foundation) — EXECUTING
-Plan: 1 of 4
-Status: Phase 71 complete — 4/4 plans executed, UAT 12/12 passed, code review 0 Critical 0 Warning
-Last activity: 2026-08-24 — Phase 71 execution started
+Phase: 72 (Soloist Browse Playback) — EXECUTING
+Plan: 2 of 2
+Status: Phase complete — ready for verification
+Last activity: 2026-08-25 — Phase 72 execution started
 
 ## Progress Bar
 
@@ -99,6 +99,9 @@ Phase 75: [ ] Soloist UAT + Release (E2E, Platform Tests, v4.0.0)
 | Phase 70 P02 | ~20min | 2 tasks | 1 files |
 | Phase 70 P03 | ~15min | 3 tasks | 2 files |
 | Phase 70 P05 | 4m | 1 tasks | 1 files |
+| Phase 72 P01 | ~13min | 3 tasks | 11 files |
+| Phase 72 P02 | ~15min | 2 tasks | 4 files |
+| Phase 72 P03 | ~10min | 2 tasks | 2 files |
 
 ## Deferred Items
 
@@ -240,6 +243,14 @@ Items carried forward from previous milestones:
 - [Phase 70]: [Phase 70][70-03] _multiTypeSearch (overview aggregator) left untouched -- confirmed via git diff, no hunk touches it during search feed conversion
 - [Phase 70]: [Phase 70][70-03] _albumFeed offset==0 branch only converts to _fetchPages when quantity exceeds embedded getAlbum seed tracks AND album has more -- preserves zero-extra-API-call short-circuit for typical browse loads
 - [Phase 70]: [Phase 70][70-03] SpotOnAddToPlaylist error path kept as NO_RESULTS textarea (not _authRequiredItem) -- matches its pre-existing distinct error convention
+- [Phase 72]: [Phase 72][72-01] Launcher wrapper (not findbin token/symlink) generated at cachedir/spoton/soloist/spoton-soloist -- only mechanism that can set LD_LIBRARY_PATH, keep the spak-key off argv, and resolve a cachedir-resident binary from a static convert-rule token
+- [Phase 72]: [Phase 72][72-01] D-06 retry/skip implemented at the wrapper (shell) level, not via LMS's BROWSE_404_RETRY logic -- that logic is HTTP-status-driven and has no equivalent on the pipe-based transcoder path
+- [Phase 72]: [Phase 72][72-01] FLAC target declared --bps=32 (not 24) -- Soloist emits S32LE and flac cannot down-convert; true 24-bit deferred to Phase 74 HiFi enum patch
+- [Phase 72]: [Phase 72][72-02] Two duplicate-id #librespot-fields divs (Account Player Auth block + Global Binary/Bitrate/Streaming/Normalization block) toggled together via querySelectorAll, not one contiguous div -- the two D-07 librespot-only groups are not DOM-adjacent once Backend is promoted above Account
+- [Phase 72]: [Phase 72][72-02] helperMissing (librespot binary-missing warning) suppressed when backend=soloist -- D-07 hides librespot-specific state under Soloist
+- [Phase 72]: [Phase 72][72-02] Pairing-status block (paired/not-paired + exact --pair command) nested inside the existing spak-key WRAPPER rather than a new titled WRAPPER -- no dedicated pairing-block title string in the plan's new-strings list
+- [Phase 72]: [Phase 72][72-03] WR-01 resolved via the verification gap's sanctioned documented-trade-off branch (not a code fix) -- soloist 1.3.7.489's --help and binary strings confirm -k/--api-key is the only key mechanism, no env/stdin alternative exists
+- [Phase 72]: [Phase 72][72-03] Translation loop uses argc/argi/a variable names to avoid colliding with the D-06 retry loop's n/rc/start/now/elapsed in the same launcher heredoc
 
 ### Blockers/Concerns
 
@@ -267,10 +278,10 @@ Items carried forward from previous milestones:
 
 ## Session Continuity
 
-**Resume file:** .planning/phases/71-soloist-foundation/71-CONTEXT.md
+**Resume file:** None
 
-**Last session:** 2026-08-24T16:57:12.271Z
-**Stopped at:** Phase 71 context gathered
+**Last session:** 2026-08-25T14:03:58.804Z
+**Stopped at:** Completed 72-03-PLAN.md (gap closure)
 
 **Completed this session (2026-08-24):**
 
