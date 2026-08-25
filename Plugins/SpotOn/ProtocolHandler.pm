@@ -566,7 +566,7 @@ sub getNextTrack {
     if (_useSoloist() && $url =~ m{^spoton://(?:track|episode):}) {
         my $track = $song->track;
         if ($track) {
-            $track->samplesize(32)    if $track->can('samplesize');
+            $track->samplesize(16)    if $track->can('samplesize');
             $track->samplerate(44100) if $track->can('samplerate');
             $track->channels(2)       if $track->can('channels');
         }
