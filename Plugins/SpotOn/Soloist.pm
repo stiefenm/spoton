@@ -35,6 +35,13 @@ my $log         = logger('plugin.spoton');
 
 my ($binary, $version);
 
+# WR-07: in-flight guard. ensureBinary() is now wired to every Settings save
+# with backend=soloist (CR-01) -- without this flag, repeated saves during a
+# slow async download would stack full parallel multi-MB downloads and tar
+# extractions over the same destination. Cleared in both download callbacks
+# (success and error) so a failed/retried download is never stuck blocked.
+my $downloadInFlight;
+
 # osArch (Spotify's vocabulary) -> { download (Spotify URL vocab),
 # bindir (SpotOn's Bin/<arch>/ vocab) } -- RESEARCH.md Pitfall 4.
 my @ARCH_MAP = (
@@ -180,6 +187,7 @@ sub _versionCompare {
 sub ensureBinary {
     return if main::ISWINDOWS || main::ISMAC;
     return if get();    # already have a working, version-matched binary
+    return if $downloadInFlight;    # WR-07: a download is already running
 
     my $archInfo = _arch();
     return unless $archInfo;
@@ -189,6 +197,8 @@ sub ensureBinary {
 
 sub downloadBinary {
     my ($archInfo) = @_;
+    return if $downloadInFlight;    # WR-07: guard against concurrent downloads
+
     $archInfo ||= _arch();
     return unless $archInfo;
 
@@ -215,6 +225,8 @@ sub downloadBinary {
 
     main::INFOLOG && $log->is_info && $log->info("Soloist: downloading $url");
 
+    $downloadInFlight = 1;
+
     Slim::Networking::SimpleAsyncHTTP->new(
         sub { _onSoloistDownloadDone(shift, $archivePath, $destDir) },
         sub { my ($http, $error) = @_; _onSoloistDownloadError($http, $error, $archivePath) },
@@ -224,6 +236,8 @@ sub downloadBinary {
 
 sub _onSoloistDownloadDone {
     my ($http, $archivePath, $destDir) = @_;
+
+    $downloadInFlight = 0;    # WR-07: clear before any early return below
 
     unless (-f $archivePath && -s $archivePath) {
         $log->warn("Soloist: download completed but archive missing/empty");
@@ -271,6 +285,7 @@ sub _onSoloistDownloadDone {
 
 sub _onSoloistDownloadError {
     my ($http, $error, $archivePath) = @_;
+    $downloadInFlight = 0;    # WR-07: clear on failure so a retry can proceed
     $log->warn("Soloist: download failed: " . ($error || 'unknown error'));
     unlink $archivePath if $archivePath && -f $archivePath;
 }
