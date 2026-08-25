@@ -230,6 +230,7 @@ Plugins::SpotOn::Soloist->storeKey($DUMMY_KEY);
         'launcher reads the spak-key via command substitution from keyPath()');
 
     like($content, qr/-k "\$KEY"/, 'launcher passes the key via a quoted shell variable, not a literal');
+    like($content, qr/WR-01/, 'launcher script text contains the WR-01 accepted-trade-off marker');
 
     my $dataDir = Plugins::SpotOn::Soloist::dataDir();
     like($content, qr/-D "\Q$dataDir\E"/, 'launcher passes -D followed by dataDir()');

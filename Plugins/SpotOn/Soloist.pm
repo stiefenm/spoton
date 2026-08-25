@@ -352,6 +352,10 @@ sub launcherPath {
 }
 
 # _launcherScript($lib, $key, $binary, $data)
+# NOTE: the generated script's -k argv trade-off (spak-key visible on the
+# soloist child's /proc/<pid>/cmdline) is documented and accepted per
+# WR-01 / 72-VERIFICATION.md gap #2 -- see the comment block above
+# KEY=$(cat "__KEY__") in the template below.
 # Builds the wrapper script body. Non-interpolating single-quoted heredoc --
 # every shell variable ($KEY/$@/$rc/$n/$start/$now/${LD_LIBRARY_PATH}) stays
 # completely literal; only these four Perl-computed paths are substituted
@@ -367,6 +371,18 @@ sub _launcherScript {
 # edit by hand; changes will be overwritten.
 export LD_LIBRARY_PATH="__LIB__:${LD_LIBRARY_PATH}"
 export SPOTON_SOLOIST_PCM_FD=1
+# The key is command-substituted from the 0600 spak.key file so it never
+# appears in the convert rule, LMS config, this wrapper's own argv, or the
+# script text below. Soloist 1.3.7.489 accepts the key ONLY via its
+# -k/--api-key argument (verified against --help and the distributed
+# binary's `strings` output -- no env-var or stdin alternative exists;
+# the only recognized env vars are SPOTIFY_SSL_CERT_FILE/_DIR). So for the
+# duration of each track transcode, the key IS visible in the spawned
+# soloist child's /proc/<pid>/cmdline to local users on the host. This is
+# an ACCEPTED RISK (WR-01) -- the 0700 root dir + 0600 key file remain the
+# primary control; revisit if a future soloist release adds an env/stdin
+# key path. On shared multi-user hosts, mounting /proc with hidepid=2
+# removes this exposure.
 KEY=$(cat "__KEY__") || exit 1
 
 # CR-01: LMS's $URL$ convert-rule token hands this wrapper the
