@@ -661,13 +661,15 @@ sub startHelper {
             return;
         }
 
-        # Prerequisites are met, but the actual Soloist daemon spawn
-        # (LD_LIBRARY_PATH, --api-key via env, --single-track/--ws) is
-        # explicitly out of scope for this plan -- Phase 72/73 (RESEARCH.md
-        # Pitfall 7). No librespot daemon is started for a soloist-backed
-        # player either.
+        # Phase 72: Browse playback is served per-track by the generated
+        # custom-convert.conf launcher (spoton-soloist wrapper) -- no
+        # persistent daemon is needed or started for Browse; ProtocolHandler's
+        # canDirectStream()=0 on the soloist path routes LMS straight into the
+        # sol-flc/sol-pcm transcoder profile instead. The persistent WebSocket
+        # daemon (--ws) arrives with Phase 73 Connect. No librespot daemon is
+        # started for a soloist-backed player either.
         main::INFOLOG && $log->is_info && $log->info(
-            "Soloist prerequisites met for $clientId - daemon spawn deferred to a future phase"
+            "Soloist prerequisites met for $clientId - Browse served via per-track transcoder (Phase 72); persistent daemon arrives with Phase 73 Connect"
         );
         return;
     }

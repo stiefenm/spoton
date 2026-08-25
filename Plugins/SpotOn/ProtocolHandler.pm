@@ -437,7 +437,15 @@ sub new {
 
     # (b2) Browse sync-group proxy — substitute Unified daemon HTTP URL for synced players.
     # T-28-08: trackId extracted via [A-Za-z0-9]+ regex from already-validated spoton:// URL.
-    if ($url =~ m{^spoton://(track|episode):([A-Za-z0-9]+)$} && $url !~ m{spoton://connect-}) {
+    # D-03: soloist has no unified daemon for Browse -- there is never a
+    # daemon to proxy through, so this block must not run on the soloist
+    # path (it would otherwise return undef whenever no daemon is alive).
+    # Guarded out entirely so the URL falls straight through to the final
+    # Slim::Player::Protocols::HTTP->new($args) below, unchanged -- exactly
+    # what the pre-Phase-30 transcoder-model handler did (f93c9d2: browse
+    # URLs reached HTTP->new() untouched; the `R` capability convert rule
+    # consumes $URL$ itself, so this stream object carries no audio data).
+    if (!_useSoloist() && $url =~ m{^spoton://(track|episode):([A-Za-z0-9]+)$} && $url !~ m{spoton://connect-}) {
         my $contentType = $1;
         my $trackId = $2;
         my $client  = $args->{client};
@@ -546,6 +554,19 @@ sub getNextTrack {
     my $browseMeta = $cache->get('spoton_meta_' . md5_hex($url));
     if ($browseMeta && $browseMeta->{duration} && $browseMeta->{duration} > 0) {
         $song->duration($browseMeta->{duration});
+    }
+
+    # D-04/Pitfall-2: Soloist emits raw S32LE/44100/stereo PCM. Without these
+    # hints the sol-pcm profile would be announced as 16-bit and produce
+    # garbage; the flc target is self-describing (--bps=32 in the convert
+    # rule) and unaffected by this.
+    if (_useSoloist() && $url =~ m{^spoton://(?:track|episode):}) {
+        my $track = $song->track;
+        if ($track) {
+            $track->samplesize(32)    if $track->can('samplesize');
+            $track->samplerate(44100) if $track->can('samplerate');
+            $track->channels(2)       if $track->can('channels');
+        }
     }
 
     $successCb->();
@@ -788,6 +809,10 @@ sub isRepeatingStream {
 
 sub canSeek {
     my ($class, $client) = @_;
+    # Pitfall 3: soloist single-track mode has no seek/offset flag at all --
+    # advertising seekability would make the seek bar restart tracks.
+    # Browse-seek for soloist revisits in Phase 74 raw-capture work.
+    return 0 if _useSoloist();
     return Slim::Utils::Versions->compareVersions($::VERSION, '7.9.1') >= 0;
 }
 
@@ -796,6 +821,9 @@ sub canTranscodeSeek {
     # Unified daemon: seek is handled via ?start_position=N in canDirectStreamSong,
     # not via $START$ in the transcoding command. Returning 0 keeps canDoSeek at 1
     # so streamMode 'I' stays in the profile search and soc-pcm-*-* matches.
+    # 0 is also the correct answer on the soloist path (Pitfall 3) -- Soloist
+    # has no --start-position flag to template into the sol-* convert rules;
+    # canSeek()=0 above already prevents seek entry on that path.
     return 0;
 }
 
