@@ -295,6 +295,33 @@
 		[% END %]
 	[% END %]
 
+	[% WRAPPER setting title="PLUGIN_SPOTON_BACKEND" desc="PLUGIN_SPOTON_BACKEND_DESC" %]
+		<select class="stdedit" name="pref_backend" id="pref_backend">
+			<option value="librespot" [% IF backend == 'librespot' %]selected[% END %]>librespot</option>
+			<option value="soloist"  [% IF backend == 'soloist'  %]selected[% END %]>Soloist</option>
+		</select>
+	[% END %]
+
+	<div id="soloist-fields" style="[% IF backend == 'soloist' %]display:block[% ELSE %]display:none[% END %]">
+		[% WRAPPER setting title="PLUGIN_SPOTON_SOLOIST_KEY" desc="PLUGIN_SPOTON_SOLOIST_KEY_DESC" %]
+			<input type="text" class="stdedit" name="pref_soloistKey" id="pref_soloistKey"
+			       value="[% soloistKeyMasked | html %]"
+			       placeholder="[% 'PLUGIN_SPOTON_SOLOIST_KEY' | string | html %]"/>
+
+			<div style="margin-top:6px; font-size:0.9em">
+				[% IF soloistUnsupportedOS %]
+				<span style="color: red">&#9679; [% 'PLUGIN_SPOTON_SOLOIST_UNSUPPORTED_OS' | string %]</span>
+				[% ELSIF soloistMissing %]
+				<span style="color: red">&#9679; [% 'PLUGIN_SPOTON_SOLOIST_BINARY_MISSING' | string %]</span>
+				[% ELSIF soloistKeyMissing %]
+				<span style="color: orange">&#9679; [% 'PLUGIN_SPOTON_SOLOIST_KEY_MISSING' | string %]</span>
+				[% ELSE %]
+				<span style="color: green">&#9679; [% 'PLUGIN_SPOTON_SOLOIST_STATUS' | string %] [% soloistVersion | html %]</span>
+				[% END %]
+			</div>
+		[% END %]
+	</div>
+
 	[% WRAPPER setting title="PLUGIN_SPOTON_BITRATE" desc="" %]
 		<select class="stdedit" name="pref_bitrate" id="pref_bitrate">
 			<option value="320" [% IF prefs.pref_bitrate == 320 %]selected[% END %]>320 kbps</option>
@@ -622,6 +649,21 @@
 		};
 		xhr.send();
 	}
+
+	// Phase 71 (D-08): live backend dropdown toggle -- shows/hides the
+	// Soloist spak-key field without a page reload. The div's initial
+	// visibility is already server-rendered correctly (backend == 'soloist'
+	// above); this listener only keeps it in sync with further client-side
+	// changes before the next save.
+	(function() {
+		var backendSelect = document.getElementById('pref_backend');
+		var soloistFields  = document.getElementById('soloist-fields');
+		if (backendSelect && soloistFields) {
+			backendSelect.addEventListener('change', function() {
+				soloistFields.style.display = (backendSelect.value === 'soloist') ? 'block' : 'none';
+			});
+		}
+	})();
 	</script>
 
 	<p style="opacity:0.6; font-size:0.85em; margin-top:24px; text-align:center">
