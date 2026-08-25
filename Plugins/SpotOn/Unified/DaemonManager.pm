@@ -604,10 +604,63 @@ sub _staggeredStart {
     $class->startHelper($client);
 }
 
+# _backendPrereqState($backend)
+# D-07/D-09: pure decision logic for startHelper()'s backend dispatch,
+# extracted so it is testable without a full client/daemon context (t/28).
+# Reads no state beyond its argument, main::ISWINDOWS/ISMAC, and
+# Plugins::SpotOn::Soloist->get()/hasKey() -- no $prefs access here, callers
+# resolve the backend pref themselves (single read site stays in startHelper).
+# Returns one of: 'librespot' | 'soloist_ready' | 'soloist_missing_binary'
+# | 'soloist_missing_key' | 'soloist_unsupported_os'.
+sub _backendPrereqState {
+    my ($backend) = @_;
+    $backend //= 'librespot';
+
+    return 'librespot' unless $backend eq 'soloist';
+
+    return 'soloist_unsupported_os' if main::ISWINDOWS || main::ISMAC;
+
+    require Plugins::SpotOn::Soloist;
+
+    return 'soloist_missing_binary' unless Plugins::SpotOn::Soloist->get();
+    return 'soloist_missing_key'    unless Plugins::SpotOn::Soloist->hasKey();
+
+    return 'soloist_ready';
+}
+
 sub startHelper {
     my ($class, $clientId) = @_;
 
     $clientId = $clientId->id if $clientId && blessed $clientId;
+
+    # D-07: single, server-wide backend selection point where librespot and
+    # Soloist coexist (D-02). T-71-05: unknown/tampered pref values fall back
+    # to 'librespot' rather than driving an arbitrary binary path.
+    my $backend = $prefs->get('backend') // 'librespot';
+
+    if ($backend eq 'soloist') {
+        my $state = _backendPrereqState($backend);
+
+        if ($state ne 'soloist_ready') {
+            # D-09/T-71-07: prerequisites (binary + spak-key + Linux) not
+            # met -- early return, no daemon start, no crash. Activation in
+            # Settings (Plan 03) stays allowed regardless of this gate.
+            main::INFOLOG && $log->is_info && $log->info(
+                "Skipping Soloist daemon for $clientId - prerequisites not met ($state)"
+            );
+            return;
+        }
+
+        # Prerequisites are met, but the actual Soloist daemon spawn
+        # (LD_LIBRARY_PATH, --api-key via env, --single-track/--ws) is
+        # explicitly out of scope for this plan -- Phase 72/73 (RESEARCH.md
+        # Pitfall 7). No librespot daemon is started for a soloist-backed
+        # player either.
+        main::INFOLOG && $log->is_info && $log->info(
+            "Soloist prerequisites met for $clientId - daemon spawn deferred to a future phase"
+        );
+        return;
+    }
 
     # Credential pre-check: skip daemon start if no cached credentials exist.
     # Mirrors Daemon.pm start() cache dir construction (CON-01 account-level scope).
