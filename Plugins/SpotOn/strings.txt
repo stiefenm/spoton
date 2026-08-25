@@ -167,6 +167,19 @@ PLUGIN_SPOTON_SOLOIST_STATUS
 	PL	Soloist gotowy
 	SV	Soloist redo
 
+PLUGIN_SPOTON_SOLOIST_KEY_INVALID
+	CS	Klíč spak obsahuje neplatné znaky nebo je příliš krátký — nebyl uložen.
+	DA	Spak-nøglen indeholder ugyldige tegn eller er for kort — den blev ikke gemt.
+	DE	Der spak-Key enthält ungültige Zeichen oder ist zu kurz — er wurde nicht gespeichert.
+	EN	The spak-key contains invalid characters or is too short — it was not saved.
+	ES	La spak-key contiene caracteres no válidos o es demasiado corta — no se guardó.
+	FR	La spak-key contient des caractères non valides ou est trop courte — elle n'a pas été enregistrée.
+	IT	La spak-key contiene caratteri non validi o è troppo corta — non è stata salvata.
+	NL	De spak-key bevat ongeldige tekens of is te kort — deze is niet opgeslagen.
+	NO	Spak-nøkkelen inneholder ugyldige tegn eller er for kort — den ble ikke lagret.
+	PL	Klucz spak zawiera nieprawidłowe znaki lub jest zbyt krótki — nie został zapisany.
+	SV	Spak-nyckeln innehåller ogiltiga tecken eller är för kort — den sparades inte.
+
 PLUGIN_SPOTON_BITRATE
 	CS	Přenosová rychlost
 	DA	Bithastighed

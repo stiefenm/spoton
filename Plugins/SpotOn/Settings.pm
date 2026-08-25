@@ -207,10 +207,23 @@ sub handler {
             if (length $raw) {
                 my $currentMasked = Plugins::SpotOn::Soloist::hasKey() ? SOLOIST_KEY_MASKED_PREVIEW : '';
                 if ($raw ne $currentMasked) {
-                    my $key = $raw;
-                    $key =~ s/[^A-Za-z0-9_\-\.]//g;    # T-71-06: known charset — strips newlines/shell metachars
-                    $key = substr($key, 0, 8192);       # length cap
-                    Plugins::SpotOn::Soloist->storeKey($key) if length $key;
+                    # WR-03: reject instead of silently stripping
+                    # disallowed characters -- a charset-filtered key was
+                    # previously stored with no user-visible error, only
+                    # discoverable later when pairing fails with no
+                    # traceable cause (also silently destroyed a valid
+                    # key if the user edited the masked placeholder
+                    # instead of replacing it). The real spak-key
+                    # alphabet is unverified (RESEARCH.md A1/A5); this
+                    # whitelist + minimum length is a conservative
+                    # placeholder pending empirical confirmation against
+                    # a real key (T-71-06).
+                    if ($raw =~ /^[A-Za-z0-9_\-\.]{16,8192}\z/) {
+                        Plugins::SpotOn::Soloist->storeKey($raw);
+                    }
+                    else {
+                        $paramRef->{'warning'} = string('PLUGIN_SPOTON_SOLOIST_KEY_INVALID');
+                    }
                 }
             }
             elsif (Plugins::SpotOn::Soloist::hasKey()) {
