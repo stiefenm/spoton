@@ -19,6 +19,15 @@ use Plugins::SpotOn::Helper;
 
 use constant SETTINGS_URL => 'plugins/SpotOn/settings/basic.html';
 
+# T-71-02/D-11: Soloist.pm exposes no read-back API for the stored spak-key
+# (by design -- storeKey/hasKey/clearKey only), so unlike sp_dc's per-account
+# WebPlayer->spDcMaskedPreview (first 4 chars + '****'), the template can only
+# ever show this fixed placeholder when a key is present. Shared between the
+# template-value assignment and the save-handler's unchanged-resubmit guard
+# below -- an unrelated settings save must never overwrite/clear an existing
+# key just because this field round-tripped its own masked placeholder.
+use constant SOLOIST_KEY_MASKED_PREVIEW => '********';
+
 my $log   = Slim::Utils::Log->logger('plugin.spoton');
 my $prefs = preferences('plugin.spoton');
 
@@ -104,8 +113,9 @@ sub page {
 }
 
 sub prefs {
-    # clientId is saved manually with sanitization in handler() — not listed here
-    # to prevent Slim::Web::Settings::handler from overwriting with raw form input.
+    # clientId and backend are saved manually with sanitization in handler() —
+    # not listed here to prevent Slim::Web::Settings::handler from overwriting
+    # with raw form input (backend: whitelist against %valid_backends, D-08/T-71-05).
     return ($prefs, 'bitrate', 'binary', 'normalization', 'diagnosticMode');
 }
 
@@ -147,6 +157,53 @@ sub handler {
         # immediately so formatOverride() and daemon output stay in sync.
         require Plugins::SpotOn::Unified::DaemonManager;
         Plugins::SpotOn::Unified::DaemonManager->scheduleInit();
+
+        # Save backend pref (D-08/Phase 71, T-71-05): whitelist against the
+        # known enum before persisting — an unknown/tampered POST value falls
+        # back to 'librespot'. NOT part of the base prefs() list (see comment
+        # there) so Slim::Web::Settings::handler cannot overwrite this with
+        # unsanitized raw form input. A backend switch restarts daemons via
+        # the same scheduleInit() pattern used above for normalization.
+        if (defined $paramRef->{'pref_backend'}) {
+            my %valid_backends = map { $_ => 1 } qw(librespot soloist);
+            my $backend = $paramRef->{'pref_backend'} // '';
+            $backend = 'librespot' unless $valid_backends{$backend};
+            $prefs->set('backend', $backend);
+            Plugins::SpotOn::Unified::DaemonManager->scheduleInit();
+        }
+
+        # Save spak-key for the Soloist backend (D-11, T-71-06). Fail-closed
+        # format validation before Soloist->storeKey persists it: trim
+        # whitespace, restrict to the sp_dc-style known charset (also strips
+        # newlines and shell metacharacters), cap length. Deliberately NOT
+        # part of the base prefs() list (mirrors pref_clientId/pref_spDc) —
+        # the raw key must never round-trip into $paramRef/the rendered
+        # template (T-71-02); only the fixed masked placeholder or an empty
+        # field is ever shown. The "unchanged" comparison MUST happen against
+        # the raw (whitespace-trimmed only) submitted value BEFORE charset
+        # sanitization strips the placeholder's asterisks — otherwise every
+        # unrelated settings save would resubmit the placeholder, have it
+        # charset-filtered down to empty, and incorrectly clear the real
+        # stored key (mirrors the pref_spDc unchanged-resubmit guard above).
+        # Empty submission clears an existing key (WR-03 pattern).
+        if (defined $paramRef->{'pref_soloistKey'}) {
+            my $raw = $paramRef->{'pref_soloistKey'} // '';
+            $raw =~ s/^\s+|\s+$//g;    # trim whitespace only, for comparison
+
+            require Plugins::SpotOn::Soloist;
+            if (length $raw) {
+                my $currentMasked = Plugins::SpotOn::Soloist::hasKey() ? SOLOIST_KEY_MASKED_PREVIEW : '';
+                if ($raw ne $currentMasked) {
+                    my $key = $raw;
+                    $key =~ s/[^A-Za-z0-9_\-\.]//g;    # T-71-06: known charset — strips newlines/shell metachars
+                    $key = substr($key, 0, 8192);       # length cap
+                    Plugins::SpotOn::Soloist->storeKey($key) if length $key;
+                }
+            }
+            elsif (Plugins::SpotOn::Soloist::hasKey()) {
+                Plugins::SpotOn::Soloist::clearKey();
+            }
+        }
 
         # Save Client-ID pref (D-02, T-04.4-01)
         # T-04.4-01: Input validation — alphanumeric only, max 32 chars.
@@ -397,6 +454,24 @@ sub handler {
     # exposes the currently stored value (or empty string) so the Settings
     # field can be pre-filled (Plan 52-06).
     $paramRef->{pathfinderHash} = $prefs->get('pathfinderHash') || '';
+
+    # D-08/D-09 (Phase 71): Soloist backend selection + status warnings for
+    # template. backend value drives the select#pref_backend pre-selection;
+    # the four soloist* flags drive the conditional status lines inside
+    # div#soloist-fields (unsupported OS / binary missing / key missing /
+    # version-ready), covering all D-09 degraded states while activation
+    # itself always stays possible.
+    require Plugins::SpotOn::Soloist;
+    $paramRef->{backend}              = $prefs->get('backend') || 'librespot';
+    $paramRef->{soloistUnsupportedOS} = (main::ISWINDOWS || main::ISMAC) ? 1 : 0;
+    my ($soloistBinary, $soloistVersion) = Plugins::SpotOn::Soloist->get();
+    $paramRef->{soloistVersion}       = $soloistVersion || '';
+    $paramRef->{soloistMissing}       = $soloistBinary ? 0 : 1;
+    my $soloistHasKey                 = Plugins::SpotOn::Soloist->hasKey() ? 1 : 0;
+    $paramRef->{soloistKeyMissing}    = $soloistHasKey ? 0 : 1;
+    # T-71-02: fixed placeholder only when a key is stored — the raw key is
+    # never read back (Soloist.pm exposes no accessor for it).
+    $paramRef->{soloistKeyMasked}     = $soloistHasKey ? SOLOIST_KEY_MASKED_PREVIEW : '';
 
     # Diagnostic mode status for template (#3)
     $paramRef->{diagnosticEnabled} = $prefs->get('diagnosticMode') ? 1 : 0;

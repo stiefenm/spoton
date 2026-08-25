@@ -63,6 +63,110 @@ PLUGIN_SPOTON_ACCOUNT_SETTINGS
 	PL	Ustawienia konta
 	SV	Kontoinställningar
 
+PLUGIN_SPOTON_BACKEND
+	CS	Přehrávací backend
+	DA	Afspilningsbackend
+	DE	Wiedergabe-Backend
+	EN	Playback Backend
+	ES	Backend de reproducción
+	FR	Moteur de lecture
+	IT	Backend di riproduzione
+	NL	Afspeel-backend
+	NO	Avspillingsbackend
+	PL	Backend odtwarzania
+	SV	Uppspelningsbackend
+
+PLUGIN_SPOTON_BACKEND_DESC
+	CS	Vyberte přehrávací engine použitý pro streamování: librespot (výchozí, dobře otestovaný) nebo Soloist (oficiální binární soubor Spotify, vyžaduje spak-key). Přepnutí restartuje démony.
+	DA	Vælg den afspilningsmotor, der bruges til streaming: librespot (standard, veltestet) eller Soloist (Spotifys officielle binærfil, kræver en spak-nøgle). Skift genstarter dæmonerne.
+	DE	Wähle die für das Streaming verwendete Wiedergabe-Engine: librespot (Standard, gut getestet) oder Soloist (Spotifys offizielles Binary, benötigt einen spak-Key). Der Wechsel startet die Daemons neu.
+	EN	Choose the playback engine used for streaming: librespot (default, well-tested) or Soloist (Spotify's official binary, requires a spak-key). Switching restarts the daemons.
+	ES	Elige el motor de reproducción usado para el streaming: librespot (predeterminado, bien probado) o Soloist (el binario oficial de Spotify, requiere una spak-key). Cambiar reinicia los daemons.
+	FR	Choisissez le moteur de lecture utilisé pour le streaming : librespot (par défaut, bien testé) ou Soloist (le binaire officiel de Spotify, nécessite une spak-key). Le changement redémarre les démons.
+	IT	Scegli il motore di riproduzione usato per lo streaming: librespot (predefinito, ben testato) o Soloist (il binario ufficiale di Spotify, richiede una spak-key). Il cambio riavvia i demoni.
+	NL	Kies de afspeel-engine die wordt gebruikt voor streaming: librespot (standaard, goed getest) of Soloist (Spotify's officiële binaire bestand, vereist een spak-key). Wisselen herstart de daemons.
+	NO	Velg avspillingsmotoren som brukes for strømming: librespot (standard, godt testet) eller Soloist (Spotifys offisielle binærfil, krever en spak-nøkkel). Bytte starter daemonene på nytt.
+	PL	Wybierz silnik odtwarzania używany do strumieniowania: librespot (domyślny, dobrze przetestowany) lub Soloist (oficjalny plik binarny Spotify, wymaga klucza spak). Przełączenie restartuje demony.
+	SV	Välj uppspelningsmotorn som används för streaming: librespot (standard, väl testad) eller Soloist (Spotifys officiella binärfil, kräver en spak-nyckel). Byte startar om demonerna.
+
+PLUGIN_SPOTON_SOLOIST_KEY
+	CS	spak-key
+	DA	spak-nøgle
+	DE	spak-Key
+	EN	spak-Key
+	ES	spak-key
+	FR	spak-key
+	IT	spak-key
+	NL	spak-key
+	NO	spak-nøkkel
+	PL	klucz spak
+	SV	spak-nyckel
+
+PLUGIN_SPOTON_SOLOIST_KEY_DESC
+	CS	Klíč spak potřebný ke spuštění binárního souboru Soloist. Získejte jej ze svého předplatného Spotify Premium podle dokumentace Soloist od Spotify. Ukládá se lokálně, SpotOn jej nikam nepřenáší.
+	DA	Spak-nøglen, der kræves for at køre Soloist-binærfilen. Hentes fra din Spotify Premium-konto ifølge Spotifys Soloist-dokumentation. Gemmes lokalt og overføres aldrig nogen steder af SpotOn.
+	DE	Der spak-Key, der zum Ausführen des Soloist-Binaries benötigt wird. Über dein Spotify-Premium-Konto gemäß Spotifys Soloist-Dokumentation zu beziehen. Wird lokal gespeichert und von SpotOn nirgendwohin übertragen.
+	EN	The spak-key required to run the Soloist binary. Obtain it from your Spotify Premium account per Spotify's Soloist documentation. Stored locally, never transmitted anywhere by SpotOn.
+	ES	La spak-key necesaria para ejecutar el binario Soloist. Obténla desde tu cuenta de Spotify Premium según la documentación de Soloist de Spotify. Se guarda localmente y SpotOn nunca la transmite a ningún sitio.
+	FR	La spak-key nécessaire pour exécuter le binaire Soloist. À obtenir depuis votre compte Spotify Premium selon la documentation Soloist de Spotify. Stockée localement, jamais transmise nulle part par SpotOn.
+	IT	La spak-key necessaria per eseguire il binario Soloist. Ottienila dal tuo account Spotify Premium secondo la documentazione Soloist di Spotify. Salvata localmente, mai trasmessa altrove da SpotOn.
+	NL	De spak-key die nodig is om het Soloist binaire bestand uit te voeren. Verkrijgbaar via je Spotify Premium-account volgens Spotify's Soloist-documentatie. Wordt lokaal opgeslagen en nooit door SpotOn ergens naartoe verzonden.
+	NO	Spak-nøkkelen som kreves for å kjøre Soloist-binærfilen. Hentes fra Spotify Premium-kontoen din i henhold til Spotifys Soloist-dokumentasjon. Lagres lokalt og overføres aldri noe sted av SpotOn.
+	PL	Klucz spak wymagany do uruchomienia pliku binarnego Soloist. Uzyskaj go ze swojego konta Spotify Premium zgodnie z dokumentacją Soloist firmy Spotify. Przechowywany lokalnie, nigdy nie jest wysyłany przez SpotOn.
+	SV	Spak-nyckeln som krävs för att köra Soloist-binärfilen. Hämtas från ditt Spotify Premium-konto enligt Spotifys Soloist-dokumentation. Lagras lokalt och skickas aldrig någonstans av SpotOn.
+
+PLUGIN_SPOTON_SOLOIST_BINARY_MISSING
+	CS	Binární soubor Soloist nebyl nalezen — bude v případě potřeby automaticky stažen.
+	DA	Soloist-binærfilen blev ikke fundet — den downloades automatisk ved behov.
+	DE	Soloist-Binary nicht gefunden — es wird bei Bedarf automatisch heruntergeladen.
+	EN	Soloist binary not found — it will be downloaded automatically when needed.
+	ES	No se encontró el binario de Soloist — se descargará automáticamente cuando sea necesario.
+	FR	Binaire Soloist introuvable — il sera téléchargé automatiquement si nécessaire.
+	IT	Binario Soloist non trovato — verrà scaricato automaticamente quando necessario.
+	NL	Soloist binair bestand niet gevonden — wordt automatisch gedownload indien nodig.
+	NO	Fant ikke Soloist-binærfilen — den lastes ned automatisk ved behov.
+	PL	Nie znaleziono pliku binarnego Soloist — zostanie pobrany automatycznie w razie potrzeby.
+	SV	Soloist-binärfilen hittades inte — den laddas ner automatiskt vid behov.
+
+PLUGIN_SPOTON_SOLOIST_KEY_MISSING
+	CS	Není nakonfigurován žádný klíč spak — Soloist bez něj nemůže spustit.
+	DA	Ingen spak-nøgle konfigureret — Soloist kan ikke starte uden en.
+	DE	Kein spak-Key konfiguriert — Soloist kann ohne diesen nicht starten.
+	EN	No spak-key configured — Soloist cannot start without one.
+	ES	No hay ninguna spak-key configurada — Soloist no puede iniciarse sin una.
+	FR	Aucune spak-key configurée — Soloist ne peut pas démarrer sans.
+	IT	Nessuna spak-key configurata — Soloist non può avviarsi senza.
+	NL	Geen spak-key geconfigureerd — Soloist kan niet starten zonder.
+	NO	Ingen spak-nøkkel konfigurert — Soloist kan ikke starte uten en.
+	PL	Nie skonfigurowano klucza spak — Soloist nie może się uruchomić bez niego.
+	SV	Ingen spak-nyckel konfigurerad — Soloist kan inte starta utan en.
+
+PLUGIN_SPOTON_SOLOIST_UNSUPPORTED_OS
+	CS	Soloist je podporován pouze na Linuxu. Na této platformě prosím použijte librespot.
+	DA	Soloist understøttes kun på Linux. Brug venligst librespot på denne platform.
+	DE	Soloist wird nur unter Linux unterstützt. Bitte auf dieser Plattform librespot verwenden.
+	EN	Soloist is only supported on Linux. Please use librespot on this platform.
+	ES	Soloist solo es compatible con Linux. Usa librespot en esta plataforma.
+	FR	Soloist n'est pris en charge que sous Linux. Veuillez utiliser librespot sur cette plateforme.
+	IT	Soloist è supportato solo su Linux. Utilizza librespot su questa piattaforma.
+	NL	Soloist wordt alleen ondersteund op Linux. Gebruik librespot op dit platform.
+	NO	Soloist støttes kun på Linux. Bruk librespot på denne plattformen.
+	PL	Soloist jest obsługiwany tylko w systemie Linux. Na tej platformie użyj librespot.
+	SV	Soloist stöds endast på Linux. Använd librespot på denna plattform.
+
+PLUGIN_SPOTON_SOLOIST_STATUS
+	CS	Soloist připraven
+	DA	Soloist klar
+	DE	Soloist bereit
+	EN	Soloist ready
+	ES	Soloist listo
+	FR	Soloist prêt
+	IT	Soloist pronto
+	NL	Soloist gereed
+	NO	Soloist klar
+	PL	Soloist gotowy
+	SV	Soloist redo
+
 PLUGIN_SPOTON_BITRATE
 	CS	Přenosová rychlost
 	DA	Bithastighed

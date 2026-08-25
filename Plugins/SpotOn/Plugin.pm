@@ -120,6 +120,7 @@ sub initPlugin {
         streamingMode        => 'direct', # COMPAT-01: global streaming mode default (direct|proxy); per-player override lives in same-name client pref (GH #96)
         recentSearches => [],
         credProvenanceMigrated => 0,   # GH #147 plan 65-03: one-shot legacy-credential provenance migration marker
+        backend              => 'librespot', # D-08/Phase 71: playback daemon backend ('librespot'|'soloist'), default librespot
     });
 
     # D-02: cacheSchemaVersion guard — log when cache namespace version was bumped
@@ -130,6 +131,12 @@ sub initPlugin {
 
     require Plugins::SpotOn::Helper;
     Plugins::SpotOn::Helper->init();
+
+    # Phase 71 (D-08): Soloist backend module -- registers a prefs->setChange
+    # watcher on 'backend' that invalidates its cached binary/version on
+    # switch, mirroring Helper->init() above for the librespot backend.
+    require Plugins::SpotOn::Soloist;
+    Plugins::SpotOn::Soloist->init();
 
     require Plugins::SpotOn::API::TokenManager;
     require Plugins::SpotOn::API::Client;
