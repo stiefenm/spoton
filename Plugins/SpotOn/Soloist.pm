@@ -16,6 +16,7 @@ use File::Spec::Functions qw(catdir catfile);
 use File::Temp ();
 
 use Slim::Utils::Log;
+use Slim::Utils::OSDetect;
 use Slim::Utils::Prefs;
 use Slim::Networking::SimpleAsyncHTTP;
 
@@ -95,6 +96,12 @@ sub keyPath {
 sub libPath {
     my $archInfo = _arch();
     return undef unless $archInfo;
+
+    # WR-05: runtime require (not a top-level `use`) to avoid a
+    # Plugin.pm <-> Soloist.pm compile-time cycle -- load-cycle-safe
+    # since libPath() is only ever called at runtime, well after both
+    # modules have finished loading in the live LMS process.
+    require Plugins::SpotOn::Plugin;
 
     return catdir(Plugins::SpotOn::Plugin->_pluginDataFor('basedir'), 'Bin', $archInfo->{bindir});
 }
