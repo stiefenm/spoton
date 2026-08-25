@@ -376,7 +376,12 @@ sub _launcherScript {
 # footgun; this wrapper also runs `--pair` interactively per the
 # Settings howto, where CWD is genuinely uncontrolled).
 export LD_LIBRARY_PATH="__LIB__${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-export SPOTON_SOLOIST_PCM_FD=1
+# A1 stdout hygiene: Soloist logs to fd 1 (stdout), which collides with
+# PCM output when SPOTON_SOLOIST_PCM_FD=1. Use fd 3 instead — fake-libpulse
+# writes PCM to fd 3, and the invocation lines below redirect 3>&1 so LMS's
+# pipe consumer receives the PCM on its stdin. Soloist's own stdout logs go
+# to /dev/null (1>/dev/null) to keep the pipe clean.
+export SPOTON_SOLOIST_PCM_FD=3
 # The key is command-substituted from the 0600 spak.key file so it never
 # appears in the convert rule, LMS config, this wrapper's own argv, or the
 # script text below. Soloist 1.3.7.489 accepts the key ONLY via its
@@ -417,7 +422,7 @@ done
 n=0
 while [ "$n" -lt 2 ]; do
     start=$(date +%s)
-    "__BIN__" -n "SpotOn" -k "$KEY" -D "__DATA__" -C "__DATA__/cache" "$@"
+    "__BIN__" -n "SpotOn" -k "$KEY" -D "__DATA__" -C "__DATA__/cache" "$@" 3>&1 1>/dev/null
     rc=$?
     if [ "$rc" -eq 0 ]; then
         exit 0
@@ -432,7 +437,7 @@ while [ "$n" -lt 2 ]; do
 done
 
 # Final attempt: exec so LMS's process management sees soloist directly.
-exec "__BIN__" -n "SpotOn" -k "$KEY" -D "__DATA__" -C "__DATA__/cache" "$@"
+exec "__BIN__" -n "SpotOn" -k "$KEY" -D "__DATA__" -C "__DATA__/cache" "$@" 3>&1 1>/dev/null
 SCRIPT
 
     $tmpl =~ s/__LIB__/$lib/g;

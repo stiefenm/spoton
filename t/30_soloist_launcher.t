@@ -222,7 +222,7 @@ Plugins::SpotOn::Soloist->storeKey($DUMMY_KEY);
 
     ok(index($content, "#!/bin/sh") == 0, 'launcher content starts with #!/bin/sh');
 
-    like($content, qr/SPOTON_SOLOIST_PCM_FD=1/, 'launcher sets SPOTON_SOLOIST_PCM_FD=1');
+    like($content, qr/SPOTON_SOLOIST_PCM_FD=3/, 'launcher sets SPOTON_SOLOIST_PCM_FD=3 (A1: dedicated FD, not stdout)');
     like($content, qr/export LD_LIBRARY_PATH=/, 'launcher exports LD_LIBRARY_PATH');
 
     my $keyPath = Plugins::SpotOn::Soloist::keyPath();
