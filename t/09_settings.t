@@ -200,6 +200,17 @@ sub utf8toLatin1Transliterate { $_[1] }
 1;
 END
 
+# Stub: Slim::Utils::OSDetect (Phase 71 -- Settings.pm handler() now requires
+# the real Plugins::SpotOn::Soloist module, whose _arch() calls
+# Slim::Utils::OSDetect::details() fully-qualified without an explicit
+# require, relying on it already being loaded elsewhere -- true in the real
+# LMS runtime, not in this stub harness).
+write_stub($stub_dir, 'Slim::Utils::OSDetect', <<'END');
+package Slim::Utils::OSDetect;
+sub details { return { osArch => 'x86_64' } }
+1;
+END
+
 # Stub: JSON::XS::VersionOneAndTwo
 write_stub($stub_dir, 'JSON::XS::VersionOneAndTwo', <<'END');
 package JSON::XS::VersionOneAndTwo;
@@ -533,6 +544,12 @@ BEGIN {
 
 # Add to @INC
 unshift @INC, $stub_dir, $project_dir;
+
+# Phase 71: pre-load the OSDetect stub -- Soloist.pm calls
+# Slim::Utils::OSDetect::details() fully-qualified without its own require,
+# relying on it already being loaded (true in the real LMS runtime where
+# many other modules require it first; not automatic in this stub harness).
+require Slim::Utils::OSDetect;
 
 # ============================================================
 # AUTH-04: Filesystem permission tests (immediate — no module required)
