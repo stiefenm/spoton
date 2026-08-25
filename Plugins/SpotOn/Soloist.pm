@@ -13,9 +13,11 @@ package Plugins::SpotOn::Soloist;
 use strict;
 use warnings;
 use File::Spec::Functions qw(catdir catfile);
+use File::Temp ();
 
 use Slim::Utils::Log;
 use Slim::Utils::Prefs;
+use Slim::Networking::SimpleAsyncHTTP;
 
 # D-05: validated 2026-08-25 against a real download (x86_64) --
 # `soloist --version` => "soloist 1.3.7.489 build 1787637711 (20260825)
@@ -162,6 +164,124 @@ sub _versionCompare {
         return $diff if $diff;
     }
     return 0;
+}
+
+# ---------------------------------------------------------------------------
+# Download-and-cache (Pattern 2, D-03/D-04)
+# ---------------------------------------------------------------------------
+
+sub ensureBinary {
+    return if main::ISWINDOWS || main::ISMAC;
+    return if get();    # already have a working, version-matched binary
+
+    my $archInfo = _arch();
+    return unless $archInfo;
+
+    downloadBinary($archInfo);
+}
+
+sub downloadBinary {
+    my ($archInfo) = @_;
+    $archInfo ||= _arch();
+    return unless $archInfo;
+
+    my $destDir = _cacheDir($archInfo);
+
+    # D-04 structural protection: never re-download/overwrite an already
+    # cached binary except via an explicit cache-clear (which removes this
+    # file out-of-band).
+    my $existing = catfile($destDir, BINARY_NAME);
+    if (-f $existing && -x $existing) {
+        main::INFOLOG && $log->is_info && $log->info(
+            "Soloist: binary already present at $existing -- skipping download (D-04)");
+        return;
+    }
+
+    require File::Path;
+    File::Path::make_path($destDir, { mode => 0700 }) unless -d $destDir;
+
+    my (undef, $archivePath) = File::Temp::tempfile(
+        'soloist-XXXX', DIR => $destDir, SUFFIX => '.tar.gz', UNLINK => 0, OPEN => 0,
+    );
+
+    my $url = _downloadUrl($archInfo);
+
+    main::INFOLOG && $log->is_info && $log->info("Soloist: downloading $url");
+
+    Slim::Networking::SimpleAsyncHTTP->new(
+        sub { _onSoloistDownloadDone(shift, $archivePath, $destDir) },
+        sub { my ($http, $error) = @_; _onSoloistDownloadError($http, $error, $archivePath) },
+        { saveAs => $archivePath, timeout => 30 },
+    )->get($url);
+}
+
+sub _onSoloistDownloadDone {
+    my ($http, $archivePath, $destDir) = @_;
+
+    unless (-f $archivePath && -s $archivePath) {
+        $log->warn("Soloist: download completed but archive missing/empty");
+        return;
+    }
+
+    # T-71-04: array-form system(), never an interpolated shell string.
+    my $rc = system('tar', 'xzf', $archivePath, '-C', $destDir);
+    unlink $archivePath;
+
+    if ($rc != 0) {
+        $log->warn("Soloist: tar extraction failed (rc=$rc)");
+        return;
+    }
+
+    # A3: archive is flat (confirmed empirically), but search recursively as
+    # a defensive fallback in case a future build nests the binary.
+    my $extracted = _findExtractedBinary($destDir);
+    unless ($extracted) {
+        $log->warn("Soloist: no '" . BINARY_NAME . "' binary found after extraction");
+        return;
+    }
+
+    chmod(0755, $extracted);
+
+    my $canonical = catfile($destDir, BINARY_NAME);
+    if ($extracted ne $canonical) {
+        require File::Copy;
+        unless (File::Copy::move($extracted, $canonical)) {
+            $log->warn("Soloist: failed to move extracted binary into place: $!");
+            return;
+        }
+        chmod(0755, $canonical);
+    }
+
+    # Fail-closed: only activate on a matching post-download version check.
+    if (_versionCheck($canonical)) {
+        $binary = $canonical;
+        main::INFOLOG && $log->is_info && $log->info(
+            "Soloist: binary activated, version " . ($version || '?'));
+    } else {
+        $log->warn("Soloist: downloaded binary failed version check -- not activated (fail-closed)");
+    }
+}
+
+sub _onSoloistDownloadError {
+    my ($http, $error, $archivePath) = @_;
+    $log->warn("Soloist: download failed: " . ($error || 'unknown error'));
+    unlink $archivePath if $archivePath && -f $archivePath;
+}
+
+sub _findExtractedBinary {
+    my ($dir) = @_;
+
+    my $direct = catfile($dir, BINARY_NAME);
+    return $direct if -f $direct;
+
+    require File::Find;
+    my $found;
+    File::Find::find(sub {
+        return if $found;
+        $found = $File::Find::name if $_ eq BINARY_NAME && -f $File::Find::name;
+    }, $dir);
+
+    return $found;
 }
 
 1;

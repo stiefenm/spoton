@@ -17,6 +17,13 @@ unless (-f $module) {
     plan skip_all => 'Plugins/SpotOn/Soloist.pm not yet present in this checkout';
 }
 
+# skip gracefully if system `tar` is not available -- mirrors t/06's
+# skip-if-absent pattern (RESEARCH.md Validation Architecture); only the
+# download-pipeline tests below need it.
+unless (`tar --version 2>&1` && $? == 0) {
+    plan skip_all => 'system tar not available -- required for extraction tests';
+}
+
 my $stub_dir  = tempdir(CLEANUP => 1);
 my $cache_dir = tempdir(CLEANUP => 1);
 
@@ -133,6 +140,36 @@ sub getOS   { return bless {}, 'Slim::Utils::OSDetect' }
 1;
 END
 
+# Controllable SimpleAsyncHTTP stub: records every ->new()/->get() call and
+# supports synchronous cb/ecb invocation via $auto_mode, so download tests
+# never touch the real network (RESEARCH.md "Don't Hand-Roll").
+write_stub($stub_dir, 'Slim::Networking::SimpleAsyncHTTP', <<'END');
+package Slim::Networking::SimpleAsyncHTTP;
+our @created   = ();
+our $auto_mode  = 'none';   # none | success | error
+our $auto_error = 'simulated network error';
+
+sub new {
+    my ($class, $cb, $ecb, $opts) = @_;
+    my $self = bless { cb => $cb, ecb => $ecb, opts => $opts }, $class;
+    push @created, $self;
+    return $self;
+}
+sub get {
+    my ($self, $url) = @_;
+    $self->{url} = $url;
+    if ($auto_mode eq 'success') {
+        $self->{cb}->($self);
+    } elsif ($auto_mode eq 'error') {
+        $self->{ecb}->($self, $auto_error);
+    }
+    return;
+}
+sub content { '' }
+sub reset_stub { @created = (); $auto_mode = 'none'; }
+1;
+END
+
 # ============================================================
 # main:: constants
 # ============================================================
@@ -154,6 +191,7 @@ Slim::Utils::Prefs->import();
 require Slim::Utils::Log;
 Slim::Utils::Log->import();
 require Slim::Utils::OSDetect;
+require Slim::Networking::SimpleAsyncHTTP;
 
 require_ok('Plugins::SpotOn::Soloist')
     or BAIL_OUT("Failed to load Plugins::SpotOn::Soloist");
@@ -168,6 +206,7 @@ my $reset_counter = 0;
 # cache -- the latter via a real 'backend' pref-change, exactly the
 # invalidation path Soloist->init() wires up.
 sub reset_all {
+    Slim::Networking::SimpleAsyncHTTP::reset_stub();
     $Slim::Utils::OSDetect::osArch = 'x86_64';
     preferences('plugin.spoton')->set('backend', 'reset-' . $reset_counter++);
 }
@@ -287,6 +326,104 @@ sub write_fake_binary {
 
     my $path = Plugins::SpotOn::Soloist::get();
     ok(!defined($path), 'get() refuses to activate a binary reporting an unexpected version (D-05)');
+}
+
+# ============================================================
+# Test 10: ensureBinary() does NOT re-download when a working binary exists
+# ============================================================
+{
+    reset_all();
+    $Slim::Utils::OSDetect::osArch = 'x86_64';
+
+    my $binDir = catdir($cache_dir, 'spoton', 'soloist', 'x86_64-linux');
+    make_path($binDir);
+    write_fake_binary(catfile($binDir, 'soloist'), '1.3.7.489');
+
+    Plugins::SpotOn::Soloist::ensureBinary();
+    is(scalar(@Slim::Networking::SimpleAsyncHTTP::created), 0,
+        'ensureBinary() triggers no download when a working binary is already cached (D-04)');
+}
+
+# ============================================================
+# Test 11: downloadBinary() refuses to overwrite an existing binary file
+# even when it hasn't been version-validated by get() yet (D-04 structural)
+# ============================================================
+{
+    reset_all();
+    $Slim::Utils::OSDetect::osArch = 'aarch64';
+
+    my $binDir = catdir($cache_dir, 'spoton', 'soloist', 'aarch64-linux');
+    make_path($binDir);
+    write_fake_binary(catfile($binDir, 'soloist'), '1.3.7.489');
+
+    my $archInfo = { download => 'arm64', bindir => 'aarch64-linux' };
+    Plugins::SpotOn::Soloist::downloadBinary($archInfo);
+    is(scalar(@Slim::Networking::SimpleAsyncHTTP::created), 0,
+        'downloadBinary() skips download when a binary file already exists at the target path');
+}
+
+# ============================================================
+# Test 12: full download pipeline -- saveAs -> tar extract -> version check
+# -> activate, using a real tar.gz fixture (no network)
+# ============================================================
+{
+    reset_all();
+    $Slim::Utils::OSDetect::osArch = 'x86_64';
+
+    my $destDir = catdir($cache_dir, 'download-pipeline', 'x86_64-linux');
+    make_path($destDir);
+
+    my $srcDir = tempdir(CLEANUP => 1);
+    write_fake_binary(catfile($srcDir, 'soloist'), '1.3.7.489');
+
+    my $archivePath = catfile($destDir, 'staged.tar.gz');
+    my $rc = system('tar', 'czf', $archivePath, '-C', $srcDir, 'soloist');
+    is($rc, 0, 'tar fixture created successfully') or diag("tar rc=$rc");
+
+    my $fakeHttp = bless {}, 'Slim::Networking::SimpleAsyncHTTP';
+    Plugins::SpotOn::Soloist::_onSoloistDownloadDone($fakeHttp, $archivePath, $destDir);
+
+    ok(!-f $archivePath, 'archive is removed after extraction');
+    my $canonical = catfile($destDir, 'soloist');
+    ok(-f $canonical, 'extracted binary is placed at the canonical path');
+
+    # _onSoloistDownloadDone() activates $binary in-process on a successful
+    # version check -- get() must now return exactly that same path without
+    # touching the filesystem again (proves activation flows into get()'s cache).
+    my $path = Plugins::SpotOn::Soloist::get();
+    is($path, $canonical, 'get() returns the just-activated, version-matched binary path');
+}
+
+# ============================================================
+# Test 13: onError path leaves get() undef, without throwing
+# ============================================================
+{
+    reset_all();
+    $Slim::Utils::OSDetect::osArch = 'armv7l';
+
+    my $archInfo = { download => 'arm32', bindir => 'armhf-linux' };
+    no warnings 'once';
+    $Slim::Networking::SimpleAsyncHTTP::auto_mode = 'error';
+
+    my $ok = eval { Plugins::SpotOn::Soloist::downloadBinary($archInfo); 1 };
+    ok($ok, 'downloadBinary() does not die when the download errors out') or diag($@);
+
+    my $path = Plugins::SpotOn::Soloist::get();
+    ok(!defined($path), 'get() remains undef after a failed download');
+}
+
+# ============================================================
+# Test 14: activation is coupled to a successful version check (code
+# assertion -- $binary is only assigned inside the version-ok branch)
+# ============================================================
+{
+    my $src = do {
+        local $/;
+        open(my $fh, '<', "$project_dir/Plugins/SpotOn/Soloist.pm") or die $!;
+        <$fh>;
+    };
+    like($src, qr/if \s* \( _versionCheck\(\$canonical\) \) \s* \{\s*\n\s*\$binary \s*=/x,
+        'post-download activation ($binary = ...) is gated on a successful _versionCheck()');
 }
 
 done_testing();
