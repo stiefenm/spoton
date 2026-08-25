@@ -448,9 +448,26 @@ sub ensureLauncher {
     my $archInfo = _arch();
     return unless $archInfo;
 
+    # WR-04: File::Path::make_path() croaks on failure (e.g. read-only or
+    # full cachedir) when no `error =>` option is given. ensureLauncher()
+    # is called unconditionally from initPlugin() -- even for pure-librespot
+    # installs -- so an uncaught croak here would propagate out of
+    # initPlugin and take the whole plugin down (LMS's PluginManager treats
+    # a failed initPlugin as a failed plugin load). eval-wrap so a staging
+    # failure degrades to a logged error and a graceful return instead.
     require File::Path;
-    File::Path::make_path(_rootDir(), { mode => 0700 }) unless -d _rootDir();
-    File::Path::make_path(dataDir(),  { mode => 0700 }) unless -d dataDir();
+    unless (-d _rootDir()) {
+        unless (eval { File::Path::make_path(_rootDir(), { mode => 0700 }); 1 }) {
+            $log->error('Soloist: failed to create root dir: ' . ($@ || $!));
+            return;
+        }
+    }
+    unless (-d dataDir()) {
+        unless (eval { File::Path::make_path(dataDir(), { mode => 0700 }); 1 }) {
+            $log->error('Soloist: failed to create data dir: ' . ($@ || $!));
+            return;
+        }
+    }
 
     # Register the launcher dir for convert-rule token resolution: the
     # static `[spoton-soloist]` token in custom-convert.conf cannot resolve
@@ -475,9 +492,14 @@ sub ensureLauncher {
     my $target = launcherPath();
 
     # Atomic write (mirrors storeKey()): stage via File::Temp, then rename.
-    my ($fh, $staging) = File::Temp::tempfile('spoton-soloist-XXXX', DIR => _rootDir(), UNLINK => 0);
+    # WR-04: File::Temp::tempfile() croaks on failure -- it never returns a
+    # false $fh -- so without the eval wrap this call could take down the
+    # whole plugin the same way the make_path calls above could.
+    my ($fh, $staging) = eval {
+        File::Temp::tempfile('spoton-soloist-XXXX', DIR => _rootDir(), UNLINK => 0)
+    };
     unless ($fh) {
-        $log->error('Soloist: failed to create staging file for launcher');
+        $log->error('Soloist: failed to create staging file for launcher: ' . ($@ || $!));
         return;
     }
     unless (print $fh $script) {
