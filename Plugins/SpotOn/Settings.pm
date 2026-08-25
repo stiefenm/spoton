@@ -169,6 +169,19 @@ sub handler {
             my $backend = $paramRef->{'pref_backend'} // '';
             $backend = 'librespot' unless $valid_backends{$backend};
             $prefs->set('backend', $backend);
+
+            # CR-01: trigger the auto-download pipeline (D-03) the moment
+            # Soloist is activated -- ensureBinary() is a no-op when a
+            # working, version-matched binary is already cached (D-04).
+            # Without this call, ensureBinary()/downloadBinary() have no
+            # production call site and the backend can never leave the
+            # soloist_missing_binary state (startHelper() only ever reads
+            # the prerequisite state, it never triggers a download).
+            if ($backend eq 'soloist') {
+                require Plugins::SpotOn::Soloist;
+                Plugins::SpotOn::Soloist::ensureBinary();
+            }
+
             Plugins::SpotOn::Unified::DaemonManager->scheduleInit();
         }
 
