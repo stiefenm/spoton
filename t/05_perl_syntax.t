@@ -15,6 +15,7 @@ my @pm_files = (
     "$project_dir/Plugins/SpotOn/Plugin.pm",
     "$project_dir/Plugins/SpotOn/ProtocolHandler.pm",
     "$project_dir/Plugins/SpotOn/Helper.pm",
+    "$project_dir/Plugins/SpotOn/Soloist.pm",
     "$project_dir/Plugins/SpotOn/Settings.pm",
     "$project_dir/Plugins/SpotOn/API/TokenManager.pm",
     "$project_dir/Plugins/SpotOn/API/Client.pm",
