@@ -1197,7 +1197,7 @@ sub _trackItem {
 
     # T-04.1-01: Extract path from Spotify URI to prevent double-prefix.
     # spotify:track:ID -> track:ID; fallback preserves original URI if no match.
-    my ($track_path) = ($track->{uri} // '') =~ /^spotify:((?:track|episode):.+)/;
+    my ($track_path) = ($track->{uri} // '') =~ /^spotify:((?:track|episode):[A-Za-z0-9]+)$/;
     $track_path //= ($track->{uri} // '');
     my $spoton_url = 'spoton://' . $track_path;
 
@@ -2284,7 +2284,7 @@ sub _episodeItem {
 
     my $line2 = _formatEpisodeLine2($client, $duration, $date);
 
-    my ($ep_path) = ($episode->{uri} // '') =~ /^spotify:((?:track|episode):.+)/;
+    my ($ep_path) = ($episode->{uri} // '') =~ /^spotify:((?:track|episode):[A-Za-z0-9]+)$/;
     $ep_path //= ($episode->{uri} // '');
     my $spoton_url = 'spoton://' . $ep_path;
 
@@ -3437,7 +3437,7 @@ sub _albumTrackItem {
 
     # T-04.1-01: Extract path from Spotify URI to prevent double-prefix.
     # spotify:track:ID -> track:ID; fallback preserves original URI if no match.
-    my ($track_path) = ($track->{uri} // '') =~ /^spotify:((?:track|episode):.+)/;
+    my ($track_path) = ($track->{uri} // '') =~ /^spotify:((?:track|episode):[A-Za-z0-9]+)$/;
     $track_path //= ($track->{uri} // '');
     my $spoton_url = 'spoton://' . $track_path;
 
