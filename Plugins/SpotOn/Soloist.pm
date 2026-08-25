@@ -118,7 +118,7 @@ sub libPath {
     # modules have finished loading in the live LMS process.
     require Plugins::SpotOn::Plugin;
 
-    return catdir(Plugins::SpotOn::Plugin->_pluginDataFor('basedir'), 'Bin', $archInfo->{bindir});
+    return catdir(Plugins::SpotOn::Plugin->_pluginDataFor('basedir'), 'Bin', 'fake-libpulse');
 }
 
 # ---------------------------------------------------------------------------
