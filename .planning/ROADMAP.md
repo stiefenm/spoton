@@ -463,6 +463,7 @@ Items discovered during development — not assigned to a milestone.
 | **24-Bit FLAC Patch** | TEILWEISE | 6 Enum-Downgrade-Gates gefunden (cmp 6/mov 5), 5 davon sicher patchbar (Gate 4 crasht). Aber: Patch allein reicht nicht — Soloist muss `supported_audio_quality=HIFI_24` in DeviceCapabilities announcen UND Spotify muss die Quality-Stufe serverseitig zuweisen. A/B-Test zeigt identische CDN-Dateigrößen (~4.5 MB OGG). Needs deeper analysis in Phase 74. |
 
 **Key Decisions:**
+
 - Soloist ist Community-Alternative neben librespot im öffentlichen Repo
 - Kein Key im Repo, keine Key-Verteilung — reines BYOK (Spotify's eigenes Modell)
 - Fake-libpulse statt PulseAudio-Capture — kein Systemprozess-Overhead, kein Binary-Patch für Audio
@@ -473,17 +474,22 @@ Items discovered during development — not assigned to a milestone.
 
 - [ ] **Phase 71: Soloist Foundation** — Soloist.pm Backend-Modul (Download/Version-Check/Lifecycle), Fake-libpulse.so Build-Pipeline (3 Architekturen), Helper.pm Backend-Auswahl (librespot vs soloist), BYOK Key-Management (Settings UI, mode 0600 Datei)
   - **Plans:** 4 plans (Wave 1: 71-01, 71-04 parallel · Wave 2: 71-02, 71-03 parallel)
-  - [ ] 71-01-PLAN.md — Soloist.pm Backend-Modul (Tracer): Arch-Map, Auto-Download, Version-Check, spak.key mode 0600
+  - [x] 71-01-PLAN.md — Soloist.pm Backend-Modul (Tracer): Arch-Map, Auto-Download, Version-Check, spak.key mode 0600
   - [ ] 71-02-PLAN.md — DaemonManager Backend-Dispatch + D-09 Voraussetzungs-Gate
-  - [ ] 71-03-PLAN.md — Settings UI: Backend-Dropdown, conditional spak-Key-Feld, Format-Validierung, i18n
+  - [x] 71-03-PLAN.md — Settings UI: Backend-Dropdown, conditional spak-Key-Feld, Format-Validierung, i18n
   - [ ] 71-04-PLAN.md — Fake-libpulse CI Build-Pipeline (glibc cross-gcc, 3 Architekturen)
-- [ ] **Phase 72: Soloist Browse Playback** — ProtocolHandler soloist://-Modus, `--single-track` Integration, Audio-Pipeline (S32LE → FLAC/PCM via custom-convert.conf), FD-basiertes Streaming an LMS StreamServer
+- [ ] **Phase 72: Soloist Browse Playback** — ProtocolHandler Runtime-Backend-Dispatch (sol/son), `--single-track` Integration via generiertem Launcher-Wrapper, Audio-Pipeline (S32LE → FLAC32/PCM via custom-convert.conf), FD-basiertes Streaming an LMS StreamServer
+  - **Plans:** 2 plans (Wave 1: 72-01 · Wave 2: 72-02)
+  - [ ] 72-01-PLAN.md — Tracer: sol-Transcoder-Pfad end-to-end (Launcher-Wrapper, sol-Convert-Rules, ProtocolHandler-Dispatch, D-06 Retry, Tests)
+  - [ ] 72-02-PLAN.md — Settings D-07 Reorg: Backend als Top-Level-Sektion, conditional librespot/soloist-Felder, Pairing-Status, i18n (11 Sprachen)
 - [ ] **Phase 73: Soloist Connect Mode** — WebSocket API Integration (Events → LMS Player State), Connect Transfer-Playback, Daemon-Lifecycle pro Player, Sync-Group Support
 - [ ] **Phase 74: Soloist Polish** — Lifetime-Patcher (optional, Settings-Toggle), 24-Bit FLAC (Enum-Patch), Quality-Dropdown (OGG/FLAC/Lossless), Per-Player Backend-Auswahl, Diagnostics
   **Note:** Patches (Lifetime, 24-Bit) müssen als Pattern-Scanner implementiert werden, nicht als statische Offsets — Instruction Encoding unterscheidet sich zwischen x86_64/arm64/arm32. Alle 3 Binaries runterladen und validieren.
+
 - [ ] **Phase 75: Soloist UAT + Release** — E2E-Tests (Browse, Connect, Sync Groups, Format-Switching), Plattform-Tests (x86_64, arm64, arm32), TROUBLESHOOTING, CHANGELOG, v4.0.0 Release
 
 **Risks:**
+
 - Spotify kann Soloist-API-Terms ändern oder Keys revoken
 - Build-Expiry-Mechanismus kann serverseitig verschärft werden
 - Soloist ist Linux-only (kein macOS/Windows)
@@ -491,6 +497,7 @@ Items discovered during development — not assigned to a milestone.
 - Dynamisches Linking gegen glibc — ältere Distros könnten Probleme haben
 
 **References:**
+
 - Spotify Docs: developer.spotify.com/documentation/soloist
 - Downloads: developer.spotify.com/documentation/soloist/reference/downloads-and-updates
 - GitHub: github.com/spotify/soloist
@@ -506,6 +513,7 @@ Items discovered during development — not assigned to a milestone.
 **Phases:** TBD — to be broken down when milestone becomes active.
 
 **Key Decisions (from v2.3 research):**
+
 - Importer follows OnlineLibraryBase pattern (Spotty, Qobuz, TIDAL, Deezer)
 - me/tracks returns full objects — no individual entity fetches needed
 - Incremental sync via added_at early-exit
