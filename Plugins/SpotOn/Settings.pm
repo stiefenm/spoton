@@ -515,15 +515,10 @@ sub handler {
     # never read back (Soloist.pm exposes no accessor for it).
     $paramRef->{soloistKeyMasked}     = $soloistHasKey ? SOLOIST_KEY_MASKED_PREVIEW : '';
 
-    # D-07 (Phase 72 Plan 02): pairing state for the Settings pairing-status
-    # block -- isPaired() drives the paired/not-paired status line,
-    # launcherPath() is the exact command the not-paired hint tells the user
-    # to run (same generated wrapper the sol-pcm convert rule spawns — CR-02
-    # removed the sol-flc rule, see ProtocolHandler.pm/custom-convert.conf —
-    # so a --pair run here writes into the SAME dataDir() the wrapper reads —
-    # RESEARCH A3).
-    $paramRef->{soloistPaired}        = Plugins::SpotOn::Soloist::isPaired() ? 1 : 0;
-    $paramRef->{soloistLauncherPath}  = Plugins::SpotOn::Soloist::launcherPath() || '';
+    # Phase 73 Task 1 (D-03 completion): the Phase-72 shared-dir pairing
+    # status/launcher-path params are retired along with isPaired()/
+    # launcherPath() themselves (per-track launcher machinery gone). Task 3
+    # replaces this with the per-player `soloistPlayers` status block below.
 
     # Diagnostic mode status for template (#3)
     $paramRef->{diagnosticEnabled} = $prefs->get('diagnosticMode') ? 1 : 0;

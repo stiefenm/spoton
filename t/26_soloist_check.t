@@ -170,18 +170,11 @@ sub reset_stub { @created = (); $auto_mode = 'none'; }
 1;
 END
 
-# Phase 72: ensureBinary() now calls ensureLauncher() as its first action
-# (RESEARCH Pitfall 5), which requires Slim::Utils::Misc::addFindBinPaths()
-# and Plugins::SpotOn::Plugin->_pluginDataFor('basedir') at runtime. Stub
-# both so tests 10-13 (which call ensureBinary()/downloadBinary()) don't
-# fall through to the real system Slim::Utils::Misc.
-write_stub($stub_dir, 'Slim::Utils::Misc', <<'END');
-package Slim::Utils::Misc;
-our @findbin_calls = ();
-sub addFindBinPaths { push @findbin_calls, $_[0]; }
-1;
-END
-
+# Phase 73 (D-03 completion): the Phase-72 per-track launcher (and its
+# Slim::Utils::Misc::addFindBinPaths() registration) is retired -- ensureBinary()
+# no longer calls ensureLauncher() at all, so no Slim::Utils::Misc stub is
+# needed here anymore. Plugins::SpotOn::Plugin->_pluginDataFor('basedir') is
+# still read by libPath(), so keep that stub.
 write_stub($stub_dir, 'Plugins::SpotOn::Plugin', <<'END');
 package Plugins::SpotOn::Plugin;
 sub _pluginDataFor { return 'test-basedir' }
@@ -278,11 +271,9 @@ sub write_fake_binary {
 }
 
 # ============================================================
-# Test 5: findbin() is never used for *binary discovery* (Anti-Pattern,
-# cachedir-based discovery stays intact). Phase 72: addFindBinPaths() IS now
-# called by ensureLauncher() -- purely so the static [spoton-soloist] token
-# in custom-convert.conf can resolve the generated wrapper; it never
-# participates in locating the soloist binary itself (still cachedir-based).
+# Test 5: findbin() is never used at all (D-03 completion) -- the Phase-72
+# addFindBinPaths() registration (the one and only caller) is retired along
+# with the per-track launcher wrapper it existed to resolve.
 # ============================================================
 {
     my $src = do {
@@ -294,8 +285,8 @@ sub write_fake_binary {
     my $findbinHits = () = $codeOnly =~ /(?<!add)findbin\s*\(/gi;
     is($findbinHits, 0, 'Soloist.pm never calls findbin() for binary discovery (Anti-Pattern, cachedir-based discovery)');
 
-    like($codeOnly, qr/addFindBinPaths\(\s*_rootDir\(\)\s*\)/,
-        'Soloist.pm calls addFindBinPaths(_rootDir()) so the [spoton-soloist] convert-rule token resolves (Phase 72)');
+    my $addFindBinHits = () = $codeOnly =~ /addFindBinPaths\s*\(/gi;
+    is($addFindBinHits, 0, 'Soloist.pm no longer calls addFindBinPaths() anywhere (D-03: findbin is again unused entirely)');
 }
 
 # ============================================================

@@ -13,7 +13,7 @@ my $conf_file   = "$project_dir/Plugins/SpotOn/custom-convert.conf";
 ok(-f $conf_file, "custom-convert.conf exists at $conf_file");
 
 SKIP: {
-    skip "custom-convert.conf not found", 10 unless -f $conf_file;
+    skip "custom-convert.conf not found", 9 unless -f $conf_file;
 
     open(my $fh, '<', $conf_file) or die "Cannot open $conf_file: $!";
     my $content = do { local $/; <$fh> };
@@ -29,25 +29,19 @@ SKIP: {
     # Command line is '-' (direct streaming, no transcoder)
     ok($content =~ m{^\t-$}m, "Pipeline command is '-' (direct streaming)");
 
-    # Phase 72 (D-02/D-04): sol pcm per-track transcoder rule
-    ok($content =~ m{^sol pcm \* \*}m, "sol pcm pipeline header exists");
+    # Phase 73 (D-03 completion): the Phase-72 per-track `sol` transcoder
+    # rule is retired -- the persistent Soloist daemon (73-01/73-03) replaced
+    # per-track --single-track spawning entirely, and with it went the only
+    # external audio-converter dependency this plugin ever had.
+    # <!-- planner-discipline-allow: sox -->
+    ok($content !~ m{^sol pcm \* \*}m, "sol pcm pipeline header is gone (D-03 retirement)");
+    ok($content !~ m{^sol flc \* \*}m, "sol flc rule absent (retired with the rest of the sol family)");
+    ok($content !~ m{spoton-soloist}, "no [spoton-soloist] launcher token anywhere in convert.conf");
+    ok($content !~ m{\bsox\b}i, "no sox reference anywhere in convert.conf (external converter dependency gone)");
 
-    # Phase 72: sol-flc removed — S32LE frames mis-frame at any bps<32, and
-    # flac 1.3.x rejects bps=32. PCM-only until Phase 74 adds proper downsampling.
-    ok($content !~ m{^sol flc \* \*}m, "sol flc rule absent (S32LE/flac bps mismatch)");
-
-    my $solPcmCmd = ($content =~ m{^sol pcm \* \*\n\t[^\n]*\n\t([^\n]*)}m) ? $1 : '';
-
-    like($solPcmCmd, qr{\[spoton-soloist\]}, "sol pcm command references [spoton-soloist]");
-    like($solPcmCmd, qr{--single-track \$URL\$}, "sol pcm command uses --single-track \$URL\$");
-
-    # Seek templating must never return for sol (Soloist has no
-    # --start-position flag -- RESEARCH Anti-Pattern / Pitfall 3)
+    # Seek templating must never return here (unrelated to sol -- soc/son
+    # never used $START$ either).
     ok($content !~ m{\$START\$}, "no \$START\$ substitution variable anywhere in convert.conf");
-
-    # 3-line format guard (Pitfall 6): each sol header is immediately
-    # followed by a TAB-indented capabilities/comment line.
-    ok($content =~ m{^sol pcm \* \*\n\t\S}m, "sol pcm header followed by a TAB-indented line (3-line format)");
 }
 
 done_testing();
