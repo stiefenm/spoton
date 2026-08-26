@@ -5,16 +5,16 @@ milestone_name: Soloist Integration
 current_phase: 73
 current_phase_name: Soloist Connect Mode
 status: executing
-stopped_at: Completed 73-01-PLAN.md (fake-libpulse HTTP mode, SoloistDaemon, SoloistWS) -- E2E parked as UAT
-last_updated: "2026-08-26T17:00:31.058Z"
+stopped_at: Completed 73-02-PLAN.md (control-command dispatch, reconnect resync, repeat/shuffle, build-expiry hardening)
+last_updated: "2026-08-26T17:16:43.387Z"
 last_activity: 2026-08-26
 last_activity_desc: Phase 73 execution resumed (wave continue)
-state_head: e31bcf4377e0ee512b6e55552331f6dc9098dde5
+state_head: e79fc05d7e45c7a262d18d21f3ccad8b6de9b05c
 progress:
   total_phases: 14
   completed_phases: 2
   total_plans: 11
-  completed_plans: 8
+  completed_plans: 9
   percent: 14
 ---
 
@@ -35,7 +35,7 @@ See: .planning/PROJECT.md (updated 2026-06-30)
 ## Current Position
 
 Phase: 73 (Soloist Connect Mode) — EXECUTING
-Plan: 2 of 4
+Plan: 3 of 4
 Status: Ready to execute
 Last activity: 2026-08-26 — Completed 73-01 (fake-libpulse HTTP mode, SoloistDaemon, SoloistWS)
 
@@ -103,6 +103,7 @@ Phase 75: [ ] Soloist UAT + Release (E2E, Platform Tests, v4.0.0)
 | Phase 72 P02 | ~15min | 2 tasks | 4 files |
 | Phase 72 P03 | ~10min | 2 tasks | 2 files |
 | Phase 73 P01 | ~35min | 3 tasks | 24 files |
+| Phase 73 P02 | ~10min | 3 tasks | 7 files |
 
 ## Deferred Items
 
@@ -255,6 +256,8 @@ Items carried forward from previous milestones:
 - [Phase 73]: [Phase 73][73-01] Vendored Protocol::WebSocket 0.26 verbatim from the real LMS 9.2 install tree (unifying its CPAN/+lib/ split layout) into Plugins/SpotOn/Vendor/ -- ensureWsLib() prefers an LMS-bundled copy (push, not unshift) so Soloist Connect works on LMS 8.0+ with no version gate (D-08)
 - [Phase 73]: [Phase 73][73-01] SoloistDaemon is a separate lifecycle class parallel to Daemon.pm rather than an extension of it -- structural differences (two ports, no credentials.json gate, per-player dirs, LD_LIBRARY_PATH env) outweigh code reuse; _streamAlivePoll's librespot-only blocks are isa-gated instead of duplicating the poll loop
 - [Phase 73]: [Phase 73][73-01] resolvePassthroughForClient short-circuits to 0 for backend=soloist as the first statement -- Phase 73 is S16LE-PCM-only end to end via fake-libpulse HTTP mode, sox/OGG formats land in Phase 74
+- [Phase 73]: [Phase 73][73-02] _sendControlCommand resolves the backend via DaemonManager->helperForClient + isa('...::SoloistDaemon') rather than a prefs read -- the object owning the WS connection is the single source of truth for which transport is live
+- [Phase 73]: [Phase 73][73-02] Exit-code-10 (Pitfall 7 build expiry) permanently parks the soloist daemon via a 'never'-TTL cache flag instead of feeding CRASH_BACKOFF; Soloist::_versionCheck's success path self-heals the flag
 
 ### Blockers/Concerns
 
@@ -284,8 +287,8 @@ Items carried forward from previous milestones:
 
 **Resume file:** None
 
-**Last session:** 2026-08-26T17:00:30.868Z
-**Stopped at:** Completed 73-01-PLAN.md (fake-libpulse HTTP mode, SoloistDaemon, SoloistWS) -- E2E parked as UAT
+**Last session:** 2026-08-26T17:16:43.208Z
+**Stopped at:** Completed 73-02-PLAN.md (control-command dispatch, reconnect resync, repeat/shuffle, build-expiry hardening)
 
 **Completed this session (2026-08-24):**
 
