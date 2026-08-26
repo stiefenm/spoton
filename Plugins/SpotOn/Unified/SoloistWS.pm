@@ -63,6 +63,7 @@ __PACKAGE__->mk_accessor( rw => qw(
 	browseCurrentUri
 	browseSeededUri
 	browseAdvancePending
+	browseAdvanceTs
 	reconnectDelay
 	_sock
 	_client
@@ -90,6 +91,17 @@ __PACKAGE__->mk_accessor( weak => qw( daemon ) );
 #                        reads+clears this to skip re-issuing `play` for a
 #                        track Soloist is already playing (re-entry guard,
 #                        T-73-11).
+# browseAdvanceTs:       wallclock time of the last browse-advance/start
+#                        request this module issued to LMS (CR-02) -- LMS
+#                        internally stops the PREVIOUS playlist item during a
+#                        playlist jump (or the very first play), generating
+#                        an un-sourced stop/pause notification. The source
+#                        marker on the ['playlist','index','+1'] request
+#                        itself doesn't catch that internal notification, so
+#                        Connect.pm's _onPause browse branch instead checks
+#                        this timestamp (short grace window) before
+#                        forwarding a pause to the daemon -- mirroring the
+#                        Connect path's own connectStartTime grace period.
 
 my $prefs = preferences('plugin.spoton');
 my $log   = logger('plugin.spoton');
@@ -501,6 +513,11 @@ sub _onBrowseTrackChanged {
 		$self->browseAdvancePending(1);
 		$self->browseCurrentUri($uri);
 		$self->browseSeededUri(undef);
+		# CR-02: LMS internally stops the previous playlist item during this
+		# jump, generating an un-sourced stop/pause notification -- record
+		# the timestamp so Connect.pm's _onPause browse branch can suppress
+		# forwarding that internal event as a real pause (see browseAdvanceTs).
+		$self->browseAdvanceTs(Time::HiRes::time());
 
 		my $req = Slim::Control::Request->new($client->id, ['playlist', 'index', '+1']);
 		$req->source('PLUGIN_SPOTON_SOLOIST_BROWSE');
@@ -699,6 +716,11 @@ sub startBrowseTrack {
 	$self->browseCurrentUri($uri);
 	$self->browseSeededUri(undef);
 	$self->browseAdvancePending(0);
+	# CR-02: a fresh browse play also triggers an internal stop of the
+	# previous item -- today that pause is immediately overridden by this
+	# same play, but it is a race, not a guarantee. Same grace timestamp as
+	# the seeded-advance path above.
+	$self->browseAdvanceTs(Time::HiRes::time());
 
 	main::INFOLOG && $log->is_info && $log->info(
 		"SoloistWS: startBrowseTrack($uri) for " . ($self->mac // '?')

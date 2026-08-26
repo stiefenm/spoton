@@ -30,6 +30,11 @@ use constant VOLUME_GRACE_PERIOD => 3;
 # Seconds; suppress spurious stop events during session setup (mid-playback transfer)
 use constant CONNECT_START_GRACE => 12;
 
+# Seconds; CR-02 — suppress the un-sourced pause/stop notification LMS fires
+# internally during a soloist-browse advance/start (mirrors CONNECT_START_GRACE
+# for the Connect path).
+use constant BROWSE_ADVANCE_GRACE => 3;
+
 # Volume debounce: merge rapid volume events into one (0.5s window)
 use constant VOLUME_DEBOUNCE => 0.5;
 
@@ -447,6 +452,21 @@ sub _onPause {
             $browseWs->sendCommand('play');
         }
         else {
+            # CR-02: LMS internally stops the PREVIOUS playlist item during a
+            # seeded browse advance (['playlist','index','+1'], or a fresh
+            # startBrowseTrack's initial play) -- that internal stop arrives
+            # as this same un-sourced pause notification (the source marker
+            # on the advance request itself doesn't cover it). Suppress
+            # forwarding within a short grace window after our own
+            # advance/start request, mirroring the Connect path's own
+            # connectStartTime grace period above.
+            my $advTs = $browseWs->can('browseAdvanceTs') ? ($browseWs->browseAdvanceTs || 0) : 0;
+            if (Time::HiRes::time() - $advTs < BROWSE_ADVANCE_GRACE) {
+                main::INFOLOG && $log->is_info && $log->info(
+                    "Soloist browse: suppressing pause within browse-advance grace period"
+                );
+                return;
+            }
             main::INFOLOG && $log->is_info && $log->info(
                 "Soloist browse: forwarding pause to daemon via WS pause"
             );
