@@ -5,16 +5,16 @@ milestone_name: Soloist Integration
 current_phase: 73
 current_phase_name: Soloist Connect Mode
 status: executing
-stopped_at: Completed 73-02-PLAN.md (control-command dispatch, reconnect resync, repeat/shuffle, build-expiry hardening)
-last_updated: "2026-08-26T17:17:36.652Z"
+stopped_at: Completed 73-03-PLAN.md (Soloist Browse on the persistent daemon, Modell B — D-03)
+last_updated: "2026-08-26T17:39:12.704Z"
 last_activity: 2026-08-26
 last_activity_desc: Phase 73 execution resumed (wave continue)
-state_head: d773a948d0da3a2f139c103502959ca5ecc158c3
+state_head: 2c016f20b0248be8e9a11859e71930f2ba77fc00
 progress:
   total_phases: 14
   completed_phases: 2
   total_plans: 11
-  completed_plans: 9
+  completed_plans: 10
   percent: 14
 ---
 
@@ -35,7 +35,7 @@ See: .planning/PROJECT.md (updated 2026-06-30)
 ## Current Position
 
 Phase: 73 (Soloist Connect Mode) — EXECUTING
-Plan: 3 of 4
+Plan: 4 of 4
 Status: Ready to execute
 Last activity: 2026-08-26 — Completed 73-02 (control-command dispatch, reconnect resync, repeat/shuffle, build-expiry hardening)
 
@@ -104,6 +104,7 @@ Phase 75: [ ] Soloist UAT + Release (E2E, Platform Tests, v4.0.0)
 | Phase 72 P03 | ~10min | 2 tasks | 2 files |
 | Phase 73 P01 | ~35min | 3 tasks | 24 files |
 | Phase 73 P02 | ~10min | 3 tasks | 7 files |
+| Phase 73 P03 | ~35min | 3 tasks | 6 files |
 
 ## Deferred Items
 
@@ -258,6 +259,9 @@ Items carried forward from previous milestones:
 - [Phase 73]: [Phase 73][73-01] resolvePassthroughForClient short-circuits to 0 for backend=soloist as the first statement -- Phase 73 is S16LE-PCM-only end to end via fake-libpulse HTTP mode, sox/OGG formats land in Phase 74
 - [Phase 73]: [Phase 73][73-02] _sendControlCommand resolves the backend via DaemonManager->helperForClient + isa('...::SoloistDaemon') rather than a prefs read -- the object owning the WS connection is the single source of truth for which transport is live
 - [Phase 73]: [Phase 73][73-02] Exit-code-10 (Pitfall 7 build expiry) permanently parks the soloist daemon via a 'never'-TTL cache flag instead of feeding CRASH_BACKOFF; Soloist::_versionCheck's success path self-heals the flag
+- [Phase 73]: [Phase 73][73-03] Wave-0 spike filed DEFERRED — no paired daemon/Spotify app reachable in this environment; browse advance/correction implemented against RESEARCH-default assumptions, live spike tracked as mandatory UAT (WINDOWS.md)
+- [Phase 73]: [Phase 73][73-03] Pitfall-4 corrective play() retargets to browseCurrentUri (never the next LMS entry) — only the seeded-match advance branch is ever allowed to move the LMS playlist pointer
+- [Phase 73]: [Phase 73][73-03] Soloist Browse now serves through the SAME daemon /stream endpoint Connect uses (not a per-track URL) — D-03 Modell B
 
 ### Blockers/Concerns
 
@@ -287,8 +291,8 @@ Items carried forward from previous milestones:
 
 **Resume file:** None
 
-**Last session:** 2026-08-26T17:16:43.208Z
-**Stopped at:** Completed 73-02-PLAN.md (control-command dispatch, reconnect resync, repeat/shuffle, build-expiry hardening)
+**Last session:** 2026-08-26T17:39:12.495Z
+**Stopped at:** Completed 73-03-PLAN.md (Soloist Browse on the persistent daemon, Modell B — D-03)
 
 **Completed this session (2026-08-24):**
 
