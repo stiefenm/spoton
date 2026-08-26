@@ -2,6 +2,7 @@
  * fake-libpulse.c -- PulseAudio client API stub for Spotify Soloist
  *
  * SpotOn v4.0 (Soloist Integration), Phase 71 Plan 04, decision D-06.
+ * Extended Phase 73 Plan 01, decision D-04 (HTTP streaming mode).
  *
  * Spike-validated (.planning/ROADMAP.md "v4.0 Spike Results" and
  * .planning/phases/71-soloist-foundation/71-RESEARCH.md, Architecture
@@ -21,13 +22,16 @@
  * there is nothing to wait for (no real audio subsystem).
  *
  * The single load-bearing function is pa_stream_write(): it receives
- * the PCM buffer Soloist itself already encoded (S32LE, 44100 Hz,
- * 2 channels -- see ROADMAP.md "Audio Interface" spike result) and
- * forwards those bytes verbatim to an output file descriptor. This
- * stub does not decode, resample, or otherwise touch the audio data.
+ * the PCM buffer Soloist itself already encoded (float32, 44100 Hz,
+ * 2 channels -- see ROADMAP.md "Audio Interface" spike result, and
+ * Phase 72 UAT correction) and either (Phase 71/72, unchanged when
+ * SPOTON_SOLOIST_HTTP_PORT_FILE is unset) forwards those bytes
+ * verbatim to an output file descriptor, or (Phase 73, D-04, HTTP
+ * mode) converts to S16LE and serves them over a tiny in-process
+ * HTTP/1.0 server for the persistent per-player daemon.
  *
- * PCM output target (resolved once, lazily, on first pa_stream_write()
- * call):
+ * PCM output target resolution (non-HTTP mode, unchanged from Phase
+ * 71/72, resolved once, lazily, on first pa_stream_write() call):
  *   1. SPOTON_SOLOIST_PCM_FD   -- an already-open file descriptor
  *      number (e.g. inherited from the parent process); used as-is.
  *   2. SPOTON_SOLOIST_PCM_PATH -- a filesystem path, opened
@@ -35,8 +39,21 @@
  *   3. Fallback: STDOUT_FILENO (1) -- keeps this library self-
  *      contained for standalone/manual testing without either env
  *      var set.
- * Phase 72 (LMS StreamServer coupling) is expected to set one of
- * these two env vars before spawning the Soloist daemon process.
+ *
+ * HTTP streaming mode (Phase 73, D-04): activated when
+ * SPOTON_SOLOIST_HTTP_PORT_FILE is set in the environment BEFORE
+ * dlopen() (SoloistDaemon.pm sets it in the spawn env block). When
+ * active, pa_stream_write() converts incoming samples to S16LE and
+ * pushes them into a bounded ring buffer; a dedicated server thread
+ * (started from the constructor, before Soloist calls any pa_*
+ * symbol) serves the ring's contents over HTTP GET /stream --
+ * semantically identical to the existing librespot /stream relay
+ * (librespot-spoton/src/unified.rs, the validated blueprint). This is
+ * the ONLY mode used when SPOTON_SOLOIST_HTTP_PORT_FILE is set -- the
+ * FD/path resolution above is completely bypassed in that case, and
+ * vice versa: when the env var is unset, HTTP mode never activates
+ * and all Phase 71/72 behavior is byte-identical (the Phase-72
+ * per-track launcher keeps working until 73-04 retires it).
  *
  * This file references no external or private paths -- it ships
  * inside the public SpotOn plugin zip (Bin/<arch>/libpulse.so.0 via
@@ -45,29 +62,18 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <math.h>
+#include <netinet/in.h>
+#include <poll.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
-
-/* WR-02: on Linux, write() to a pipe whose read end is closed delivers
- * SIGPIPE, whose default disposition terminates the process -- the
- * `w < 0` / errno == EPIPE branch in pa_stream_write() below is
- * otherwise unreachable, and the "drop the remainder, keep Soloist
- * alive" graceful-degradation path documented there is dead code.
- * Ignore SIGPIPE from this stub itself so write() returns EPIPE as
- * that code already expects, regardless of whether the Soloist binary
- * (closed-source, unverified) ignores/resets it itself. Constructor
- * runs once at dlopen() time, before Soloist calls into any pa_*
- * symbol. */
-__attribute__((constructor))
-static void _fake_libpulse_init(void) {
-    signal(SIGPIPE, SIG_IGN);
-}
 
 /* ------------------------------------------------------------------ */
 /* Public PulseAudio types this stub must reproduce byte-for-byte,    */
@@ -238,7 +244,7 @@ struct pa_proplist {
 static uint32_t next_stream_index = 1;
 
 /* ------------------------------------------------------------------ */
-/* PCM output target resolution (see file header).                    */
+/* PCM output target resolution (non-HTTP mode, see file header).     */
 /* ------------------------------------------------------------------ */
 
 static int pcm_output_fd = -2; /* -2 = unresolved, >=0 = ready */
@@ -269,6 +275,435 @@ static int _pcm_output_fd(void) {
 
     pcm_output_fd = STDOUT_FILENO;
     return pcm_output_fd;
+}
+
+/* ------------------------------------------------------------------ */
+/* HTTP streaming mode (Phase 73, D-04).                               */
+/*                                                                      */
+/* Activated only when SPOTON_SOLOIST_HTTP_PORT_FILE is set in the     */
+/* environment at dlopen() time (see the constructor at the bottom of  */
+/* this section). Everything below is dormant (g_http_mode == 0) and   */
+/* zero-cost when unset -- the FD/path path above is used instead.     */
+/* ------------------------------------------------------------------ */
+
+/* ~4s of S16LE 44100 Hz stereo (44100 * 2ch * 2bytes = 176400 B/s). */
+#define RING_CAPACITY (352800 * 2)
+
+/* Bounded read of the HTTP request head (GET line + headers); any GET
+ * is answered -- path checking beyond the fixed /stream endpoint is
+ * unnecessary on this single-purpose port. */
+#define HTTP_REQUEST_BUF_SIZE 4096
+#define HTTP_REQUEST_TIMEOUT_MS 2000
+
+static int g_http_mode = 0; /* 0 = off (Phase 71/72 behavior), 1 = on */
+static int g_http_listen_fd = -1;
+static pthread_t g_http_thread;
+
+typedef struct {
+    unsigned char  *buf;
+    size_t          capacity;
+    size_t          head;   /* next write offset */
+    size_t          tail;   /* next read offset */
+    size_t          fill;   /* bytes currently held */
+    int             client_connected;
+    pthread_mutex_t lock;
+    pthread_cond_t  space_avail; /* signaled when bytes are popped */
+    pthread_cond_t  data_avail;  /* signaled when bytes are pushed */
+} ring_buffer_t;
+
+static ring_buffer_t g_ring;
+
+static void _ring_init(ring_buffer_t *r) {
+    r->buf = malloc(RING_CAPACITY);
+    r->capacity = RING_CAPACITY;
+    r->head = r->tail = r->fill = 0;
+    r->client_connected = 0;
+    pthread_mutex_init(&r->lock, NULL);
+    pthread_cond_init(&r->space_avail, NULL);
+    pthread_cond_init(&r->data_avail, NULL);
+}
+
+/* Push already-converted S16LE bytes into the ring.
+ *
+ * Full ring + a client connected: block (cond_wait on space_avail) --
+ * this IS the realtime pacing (RESEARCH "Don't Hand-Roll"): Soloist
+ * writes as fast as pa_stream_write() accepts it; a bounded ring plus
+ * the server thread's real-time drain rate throttles Soloist to
+ * approximately real time, exactly like a real PulseAudio sink's
+ * tlength buffer attribute.
+ *
+ * Full ring + no client connected: drop the oldest bytes instead of
+ * blocking -- Soloist must never hang just because LMS isn't reading
+ * (e.g. Connect session active but the LMS player is paused). */
+static void _ring_push(ring_buffer_t *r, const unsigned char *data, size_t n) {
+    pthread_mutex_lock(&r->lock);
+    while (n > 0) {
+        if (r->fill == r->capacity) {
+            if (r->client_connected) {
+                pthread_cond_wait(&r->space_avail, &r->lock);
+                continue;
+            }
+            size_t drop = n < r->fill ? n : r->fill;
+            r->tail = (r->tail + drop) % r->capacity;
+            r->fill -= drop;
+            continue;
+        }
+
+        size_t space = r->capacity - r->fill;
+        size_t chunk = n < space ? n : space;
+        size_t toEnd = r->capacity - r->head;
+        size_t firstPart = chunk < toEnd ? chunk : toEnd;
+
+        memcpy(r->buf + r->head, data, firstPart);
+        if (chunk > firstPart) {
+            memcpy(r->buf, data + firstPart, chunk - firstPart);
+        }
+
+        r->head = (r->head + chunk) % r->capacity;
+        r->fill += chunk;
+        data += chunk;
+        n -= chunk;
+
+        pthread_cond_broadcast(&r->data_avail);
+    }
+    pthread_mutex_unlock(&r->lock);
+}
+
+/* Pop up to maxlen bytes, waiting up to timeout_ms for data to arrive
+ * (returns 0 on timeout with the ring still empty). Bounded wait (not
+ * an unbounded block) so the HTTP server thread's single loop can
+ * still service new accept()s / connection takeover promptly even
+ * while a client is attached and the ring is momentarily empty. */
+static size_t _ring_pop_timed(ring_buffer_t *r, unsigned char *out, size_t maxlen, int timeout_ms) {
+    pthread_mutex_lock(&r->lock);
+
+    if (r->fill == 0) {
+        struct timeval now;
+        gettimeofday(&now, NULL);
+        long usec = now.tv_usec + (long)(timeout_ms % 1000) * 1000;
+        struct timespec ts;
+        ts.tv_sec  = now.tv_sec + timeout_ms / 1000 + usec / 1000000;
+        ts.tv_nsec = (usec % 1000000) * 1000;
+        pthread_cond_timedwait(&r->data_avail, &r->lock, &ts);
+    }
+
+    size_t chunk = 0;
+    if (r->fill > 0) {
+        chunk = maxlen < r->fill ? maxlen : r->fill;
+        size_t toEnd = r->capacity - r->tail;
+        size_t firstPart = chunk < toEnd ? chunk : toEnd;
+
+        memcpy(out, r->buf + r->tail, firstPart);
+        if (chunk > firstPart) {
+            memcpy(out + firstPart, r->buf, chunk - firstPart);
+        }
+
+        r->tail = (r->tail + chunk) % r->capacity;
+        r->fill -= chunk;
+        pthread_cond_broadcast(&r->space_avail);
+    }
+
+    pthread_mutex_unlock(&r->lock);
+    return chunk;
+}
+
+/* Converts already-decoded samples to S16LE per the stream's captured
+ * sample_spec.format and pushes the result into the ring:
+ *   FLOAT32LE -> s16 = (int16_t)lrintf(clamp(f, -1, 1) * 32767.0f)
+ *   S32LE     -> arithmetic shift right 16
+ *   S16LE     -> memcpy (already the target format)
+ * Soloist emits float32 (Phase-72 UAT); the other two branches are
+ * cheap defensive completeness, not speculation. Unknown formats are
+ * dropped silently rather than risk feeding misinterpreted bytes into
+ * the S16LE-only HTTP path. */
+static void _convert_and_push(pa_sample_format_t fmt, const void *data, size_t nbytes) {
+    if (fmt == PA_SAMPLE_S16LE) {
+        _ring_push(&g_ring, (const unsigned char *)data, nbytes);
+        return;
+    }
+
+    int16_t stackbuf[1024];
+
+    if (fmt == PA_SAMPLE_FLOAT32LE) {
+        size_t nsamples = nbytes / sizeof(float);
+        const float *src = (const float *)data;
+        size_t i = 0;
+        while (i < nsamples) {
+            size_t batch = nsamples - i;
+            if (batch > 1024) batch = 1024;
+            for (size_t j = 0; j < batch; j++) {
+                float f = src[i + j];
+                if (f > 1.0f) f = 1.0f;
+                if (f < -1.0f) f = -1.0f;
+                stackbuf[j] = (int16_t)lrintf(f * 32767.0f);
+            }
+            _ring_push(&g_ring, (const unsigned char *)stackbuf, batch * sizeof(int16_t));
+            i += batch;
+        }
+        return;
+    }
+
+    if (fmt == PA_SAMPLE_S32LE) {
+        size_t nsamples = nbytes / sizeof(int32_t);
+        const int32_t *src = (const int32_t *)data;
+        size_t i = 0;
+        while (i < nsamples) {
+            size_t batch = nsamples - i;
+            if (batch > 1024) batch = 1024;
+            for (size_t j = 0; j < batch; j++) {
+                stackbuf[j] = (int16_t)(src[i + j] >> 16);
+            }
+            _ring_push(&g_ring, (const unsigned char *)stackbuf, batch * sizeof(int16_t));
+            i += batch;
+        }
+        return;
+    }
+}
+
+static void _set_nonblocking(int fd) {
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags >= 0) {
+        fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    }
+}
+
+/* Reads and discards the request head (up to the blank line) from a
+ * freshly accepted, non-blocking client socket. Bounded by both a
+ * fixed buffer and a 2s wall-clock timeout -- this port serves exactly
+ * one purpose (GET /stream) so the request body is never inspected. */
+static void _http_discard_request(int fd) {
+    char buf[HTTP_REQUEST_BUF_SIZE];
+    size_t total = 0;
+    struct timeval start, now;
+    gettimeofday(&start, NULL);
+
+    for (;;) {
+        long elapsed_ms = 0;
+        gettimeofday(&now, NULL);
+        elapsed_ms = (now.tv_sec - start.tv_sec) * 1000
+                   + (now.tv_usec - start.tv_usec) / 1000;
+        if (elapsed_ms >= HTTP_REQUEST_TIMEOUT_MS) {
+            return;
+        }
+
+        struct pollfd pfd;
+        pfd.fd = fd;
+        pfd.events = POLLIN;
+        int rc = poll(&pfd, 1, (int)(HTTP_REQUEST_TIMEOUT_MS - elapsed_ms));
+        if (rc <= 0) {
+            continue;
+        }
+        if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+            return;
+        }
+        if (!(pfd.revents & POLLIN)) {
+            continue;
+        }
+        if (total >= sizeof(buf) - 1) {
+            return; /* bounded -- give up parsing, still answer the GET */
+        }
+
+        ssize_t n = read(fd, buf + total, sizeof(buf) - 1 - total);
+        if (n <= 0) {
+            return;
+        }
+        total += (size_t)n;
+        buf[total] = '\0';
+
+        if (strstr(buf, "\r\n\r\n") || strstr(buf, "\n\n")) {
+            return;
+        }
+    }
+}
+
+/* Blocking-with-poll write: waits for writability (bounded), then
+ * writes; returns -1 on error/hangup/timeout (caller treats this as
+ * "client gone" and closes the fd), 0 on full success. fd is expected
+ * to be O_NONBLOCK (set at accept time). */
+static int _http_write_all(int fd, const unsigned char *data, size_t n) {
+    size_t off = 0;
+    while (off < n) {
+        struct pollfd pfd;
+        pfd.fd = fd;
+        pfd.events = POLLOUT;
+        int rc = poll(&pfd, 1, 2000);
+        if (rc <= 0) {
+            return -1;
+        }
+        if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+            return -1;
+        }
+        ssize_t w = write(fd, data + off, n - off);
+        if (w < 0) {
+            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
+                continue;
+            }
+            return -1;
+        }
+        off += (size_t)w;
+    }
+    return 0;
+}
+
+/* librespot parity (unified.rs) -- endless stream, no Content-Length.
+ * ProtocolHandler already suppresses Range/Enhanced-HTTP for /stream
+ * URLs and getFormatForURL maps :port/stream to 'pcm'. */
+static const char HTTP_RESPONSE_HEADER[] =
+    "HTTP/1.0 200 OK\r\n"
+    "Content-Type: audio/L16;rate=44100;channels=2\r\n"
+    "Connection: close\r\n"
+    "\r\n";
+
+/* Single server thread, multiplexing accept + streaming with poll()
+ * over {listen_fd, client_fd}. A new accept() while a client is
+ * already attached takes over immediately (old fd closed, new fd
+ * streamed) -- the same relay-generation takeover semantics as
+ * librespot-spoton/src/unified.rs (blueprint, M15). */
+static void *_http_thread_fn(void *arg) {
+    (void)arg;
+    int client_fd = -1;
+
+    for (;;) {
+        struct pollfd fds[1];
+        fds[0].fd = g_http_listen_fd;
+        fds[0].events = POLLIN;
+
+        int rc = poll(fds, 1, 50); /* 50ms tick: keep servicing the ring
+                                       even with no incoming connection */
+
+        if (rc > 0 && (fds[0].revents & POLLIN)) {
+            int newfd = accept(g_http_listen_fd, NULL, NULL);
+            if (newfd >= 0) {
+                _set_nonblocking(newfd);
+
+                if (client_fd >= 0) {
+                    /* Takeover: close the previous client, a new GET
+                     * /stream always wins (RESEARCH Pattern 1). */
+                    close(client_fd);
+                    client_fd = -1;
+                    pthread_mutex_lock(&g_ring.lock);
+                    g_ring.client_connected = 0;
+                    pthread_cond_broadcast(&g_ring.space_avail);
+                    pthread_mutex_unlock(&g_ring.lock);
+                }
+
+                _http_discard_request(newfd);
+
+                if (_http_write_all(newfd, (const unsigned char *)HTTP_RESPONSE_HEADER,
+                                     sizeof(HTTP_RESPONSE_HEADER) - 1) == 0) {
+                    client_fd = newfd;
+                    pthread_mutex_lock(&g_ring.lock);
+                    g_ring.client_connected = 1;
+                    pthread_mutex_unlock(&g_ring.lock);
+                } else {
+                    close(newfd);
+                }
+            }
+        }
+
+        if (client_fd >= 0) {
+            unsigned char chunk[16384];
+            size_t n = _ring_pop_timed(&g_ring, chunk, sizeof(chunk), 50);
+            if (n > 0) {
+                if (_http_write_all(client_fd, chunk, n) != 0) {
+                    close(client_fd);
+                    client_fd = -1;
+                    pthread_mutex_lock(&g_ring.lock);
+                    g_ring.client_connected = 0;
+                    pthread_cond_broadcast(&g_ring.space_avail);
+                    pthread_mutex_unlock(&g_ring.lock);
+                }
+            }
+        }
+    }
+
+    return NULL; /* unreachable -- daemon lifetime == process lifetime */
+}
+
+/* Binds 127.0.0.1... no: binds INADDR_ANY:0 deliberately (see below),
+ * announces the resulting port via the file named by
+ * SPOTON_SOLOIST_HTTP_PORT_FILE, and starts the server thread.
+ *
+ * Wildcard bind is deliberate: LMS players stream /stream directly
+ * from the LAN -- identical exposure to the existing librespot
+ * /stream (RESEARCH Security V4; the Soloist WS control API in
+ * contrast stays 127.0.0.1-only, enforced Perl-side in
+ * SoloistDaemon.pm/SoloistWS.pm). */
+static void _http_start_server(const char *portFilePath) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
+        return;
+    }
+
+    int one = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    addr.sin_port = htons(0);
+
+    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        close(fd);
+        return;
+    }
+    if (listen(fd, 1) < 0) {
+        close(fd);
+        return;
+    }
+
+    struct sockaddr_in bound;
+    socklen_t boundlen = sizeof(bound);
+    if (getsockname(fd, (struct sockaddr *)&bound, &boundlen) < 0) {
+        close(fd);
+        return;
+    }
+
+    int port = ntohs(bound.sin_port);
+
+    int pf = open(portFilePath, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (pf >= 0) {
+        char line[32];
+        int len = snprintf(line, sizeof(line), "%d\n", port);
+        if (len > 0) {
+            ssize_t written = write(pf, line, (size_t)len);
+            (void)written;
+        }
+        close(pf);
+    }
+
+    g_http_listen_fd = fd;
+
+    if (pthread_create(&g_http_thread, NULL, _http_thread_fn, NULL) != 0) {
+        close(fd);
+        g_http_listen_fd = -1;
+    }
+}
+
+/* WR-02: on Linux, write() to a pipe/socket whose read end is closed
+ * delivers SIGPIPE, whose default disposition terminates the process
+ * -- ignore it so write() returns EPIPE instead (both the non-HTTP FD
+ * path and the HTTP server thread's client writes rely on this).
+ * Constructor runs once at dlopen() time, before Soloist calls into
+ * any pa_* symbol.
+ *
+ * D-04: also the HTTP-mode activation point. When
+ * SPOTON_SOLOIST_HTTP_PORT_FILE is set, the port must be announced
+ * (and the server socket listening) before Soloist's own playback
+ * setup completes, so SoloistDaemon.pm's async port-file poll
+ * succeeds -- start the ring + server thread synchronously here,
+ * before returning control to the dynamic loader. */
+__attribute__((constructor))
+static void _fake_libpulse_init(void) {
+    signal(SIGPIPE, SIG_IGN);
+
+    const char *portFileEnv = getenv("SPOTON_SOLOIST_HTTP_PORT_FILE");
+    if (portFileEnv && *portFileEnv) {
+        g_http_mode = 1;
+        _ring_init(&g_ring);
+        _http_start_server(portFileEnv);
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -308,11 +743,26 @@ static void _stream_refresh_timing(pa_stream *s) {
     s->timing.timestamp = now;
     s->timing.synchronized_clocks = 1;
     s->timing.playing = s->corked ? 0 : 1;
-    /* No real sink buffer to lag behind -- report the write index as
-     * already fully drained (read == write) since bytes handed to
-     * pa_stream_write() are forwarded to the output FD synchronously. */
-    s->timing.write_index = s->bytes_written;
-    s->timing.read_index = s->bytes_written;
+
+    if (g_http_mode) {
+        /* Position soloist reports tracks what has actually left
+         * toward the player (bounded ring depth), limiting
+         * position_sync drift (RESEARCH Pitfall 5) -- unlike the
+         * non-HTTP path, read_index lags write_index by the ring's
+         * current fill. */
+        pthread_mutex_lock(&g_ring.lock);
+        int64_t fill = (int64_t)g_ring.fill;
+        pthread_mutex_unlock(&g_ring.lock);
+        s->timing.write_index = s->bytes_written;
+        s->timing.read_index = s->bytes_written - fill;
+    } else {
+        /* No real sink buffer to lag behind -- report the write index
+         * as already fully drained (read == write) since bytes handed
+         * to pa_stream_write() are forwarded to the output FD
+         * synchronously. */
+        s->timing.write_index = s->bytes_written;
+        s->timing.read_index = s->bytes_written;
+    }
 }
 
 static pa_operation *_operation_new_done(void) {
@@ -663,15 +1113,24 @@ const pa_timing_info *pa_stream_get_timing_info(pa_stream *s) {
 
 size_t pa_stream_writable_size(const pa_stream *s) {
     (void)s;
+    if (g_http_mode) {
+        /* Bounded pacing signal (D-04) -- free ring space, fixes the
+         * constant-65536 decode-ahead of RESEARCH Pitfall 5. */
+        pthread_mutex_lock(&g_ring.lock);
+        size_t freeSpace = g_ring.capacity - g_ring.fill;
+        pthread_mutex_unlock(&g_ring.lock);
+        return freeSpace;
+    }
     /* Generous, constant "always ready" size -- this stub forwards
      * every write to the output FD synchronously, so Soloist never
      * needs to throttle against a real ring buffer. */
     return 65536;
 }
 
-/* The load-bearing function: forward Soloist's already-encoded PCM
- * (S32LE / 44100 Hz / stereo, per spike results) to the resolved
- * output FD (see _pcm_output_fd() / file header). */
+/* The load-bearing function: consume Soloist's already-decoded PCM.
+ * Non-HTTP mode (unchanged, Phase 71/72): forward verbatim to the
+ * resolved output FD. HTTP mode (Phase 73, D-04): convert to S16LE
+ * and push into the bounded ring the HTTP server thread drains. */
 int pa_stream_write(pa_stream *s, const void *data, size_t nbytes,
                      pa_free_cb_t free_cb, int64_t offset, pa_seek_mode_t seek) {
     (void)offset;
@@ -681,23 +1140,27 @@ int pa_stream_write(pa_stream *s, const void *data, size_t nbytes,
     }
 
     if (data && nbytes > 0) {
-        int fd = _pcm_output_fd();
-        const char *p = (const char *)data;
-        size_t remaining = nbytes;
-        while (fd >= 0 && remaining > 0) {
-            ssize_t w = write(fd, p, remaining);
-            if (w < 0) {
-                if (errno == EINTR) {
-                    continue;
+        if (g_http_mode) {
+            _convert_and_push(s->sample_spec.format, data, nbytes);
+        } else {
+            int fd = _pcm_output_fd();
+            const char *p = (const char *)data;
+            size_t remaining = nbytes;
+            while (fd >= 0 && remaining > 0) {
+                ssize_t w = write(fd, p, remaining);
+                if (w < 0) {
+                    if (errno == EINTR) {
+                        continue;
+                    }
+                    /* Output target gone (e.g. reader closed the pipe) --
+                     * drop the remainder rather than block Soloist
+                     * forever; playback continuing silently is preferable
+                     * to a hung daemon. */
+                    break;
                 }
-                /* Output target gone (e.g. reader closed the pipe) --
-                 * drop the remainder rather than block Soloist
-                 * forever; playback continuing silently is preferable
-                 * to a hung daemon. */
-                break;
+                p += w;
+                remaining -= (size_t)w;
             }
-            p += w;
-            remaining -= (size_t)w;
         }
     }
 
@@ -798,3 +1261,260 @@ const char *pa_strerror(int error) {
     (void)error;
     return "fake-libpulse: no error (stub, D-06)";
 }
+
+/* ==================================================================== */
+/* Host test harness (Phase 73, D-04) -- built only via                 */
+/* `make test` (FAKE_LIBPULSE_TEST), never linked into libpulse.so.0.    */
+/* ==================================================================== */
+#ifdef FAKE_LIBPULSE_TEST
+
+#include <arpa/inet.h>
+
+static int _test_connect_loopback(int port) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
+        return -1;
+    }
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = htons((uint16_t)port);
+
+    for (int i = 0; i < 100; i++) {
+        if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
+            return fd;
+        }
+        usleep(20000);
+    }
+    close(fd);
+    return -1;
+}
+
+/* Reads and validates the HTTP response header, then reads exactly
+ * 'want' bytes of body into out. Returns 0 on success. */
+static int _test_read_response(int fd, unsigned char *out, size_t want, int timeout_ms) {
+    char hdrbuf[4096];
+    size_t hdrlen = 0;
+    struct timeval start, now;
+    gettimeofday(&start, NULL);
+
+    for (;;) {
+        struct pollfd pfd;
+        pfd.fd = fd;
+        pfd.events = POLLIN;
+        int rc = poll(&pfd, 1, 200);
+        if (rc > 0 && (pfd.revents & POLLIN)) {
+            char c;
+            ssize_t n = read(fd, &c, 1);
+            if (n <= 0) {
+                return -1;
+            }
+            if (hdrlen < sizeof(hdrbuf) - 1) {
+                hdrbuf[hdrlen++] = c;
+                hdrbuf[hdrlen] = '\0';
+            }
+            if (hdrlen >= 4 && memcmp(hdrbuf + hdrlen - 4, "\r\n\r\n", 4) == 0) {
+                break;
+            }
+        }
+        gettimeofday(&now, NULL);
+        if ((now.tv_sec - start.tv_sec) * 1000 >= timeout_ms) {
+            return -1;
+        }
+    }
+
+    if (strncmp(hdrbuf, "HTTP/1.0 200 OK", 15) != 0) {
+        fprintf(stderr, "  bad status line: %.40s\n", hdrbuf);
+        return -1;
+    }
+    if (!strstr(hdrbuf, "audio/L16;rate=44100;channels=2")) {
+        fprintf(stderr, "  missing Content-Type header\n");
+        return -1;
+    }
+
+    size_t got = 0;
+    gettimeofday(&start, NULL);
+    while (got < want) {
+        struct pollfd pfd;
+        pfd.fd = fd;
+        pfd.events = POLLIN;
+        int rc = poll(&pfd, 1, 200);
+        if (rc > 0 && (pfd.revents & POLLIN)) {
+            ssize_t n = read(fd, out + got, want - got);
+            if (n <= 0) {
+                return -1;
+            }
+            got += (size_t)n;
+        }
+        gettimeofday(&now, NULL);
+        if ((now.tv_sec - start.tv_sec) * 1000 >= timeout_ms) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+int main(void) {
+    int failures = 0;
+
+    char portFilePath[256];
+    snprintf(portFilePath, sizeof(portFilePath), "/tmp/fake-libpulse-test-port-%d", (int)getpid());
+    unlink(portFilePath);
+    setenv("SPOTON_SOLOIST_HTTP_PORT_FILE", portFilePath, 1);
+
+    /* Runs the same constructor path the dynamic loader would run on
+     * dlopen() -- this test binary just calls it explicitly instead of
+     * relying on __attribute__((constructor)) auto-invocation, so the
+     * env var above (set in this same process) is visible to it. */
+    _fake_libpulse_init();
+
+    int port = -1;
+    for (int i = 0; i < 100 && port < 0; i++) {
+        FILE *pf = fopen(portFilePath, "r");
+        if (pf) {
+            if (fscanf(pf, "%d", &port) != 1) {
+                port = -1;
+            }
+            fclose(pf);
+        }
+        if (port < 0) {
+            usleep(20000);
+        }
+    }
+    if (port <= 0) {
+        fprintf(stderr, "FAIL: port file never appeared at %s\n", portFilePath);
+        return 1;
+    }
+    printf("ok: HTTP port announced (%d)\n", port);
+
+    pa_sample_spec ss;
+    ss.format = PA_SAMPLE_FLOAT32LE;
+    ss.rate = 44100;
+    ss.channels = 2;
+    pa_stream *s = pa_stream_new(NULL, "test", &ss, NULL);
+    if (!s) {
+        fprintf(stderr, "FAIL: pa_stream_new returned NULL\n");
+        return 1;
+    }
+    pa_stream_connect_playback(s, NULL, NULL, 0, NULL, NULL);
+
+    int client = _test_connect_loopback(port);
+    if (client < 0) {
+        fprintf(stderr, "FAIL: could not connect to announced port\n");
+        return 1;
+    }
+
+    static const char req[] = "GET /stream HTTP/1.0\r\n\r\n";
+    if (write(client, req, sizeof(req) - 1) < 0) {
+        fprintf(stderr, "FAIL: could not send GET /stream\n");
+        return 1;
+    }
+
+    /* Known pattern: 1.0, -1.0, 0.5, 2.0 (clamped), -3.0 (clamped), 0.0 */
+    float pattern[6] = { 1.0f, -1.0f, 0.5f, 2.0f, -3.0f, 0.0f };
+    pa_stream_write(s, pattern, sizeof(pattern), NULL, 0, 0);
+
+    int16_t expected[6] = { 32767, -32767, 16384, 32767, -32767, 0 };
+    unsigned char got[12];
+    if (_test_read_response(client, got, sizeof(got), 3000) != 0) {
+        fprintf(stderr, "FAIL: did not receive expected HTTP response\n");
+        failures++;
+    } else if (memcmp(got, expected, sizeof(expected)) != 0) {
+        int16_t gotVals[6];
+        memcpy(gotVals, got, sizeof(gotVals));
+        fprintf(stderr, "FAIL: f32->s16 conversion mismatch: got %d %d %d %d %d %d\n",
+                gotVals[0], gotVals[1], gotVals[2], gotVals[3], gotVals[4], gotVals[5]);
+        failures++;
+    } else {
+        printf("ok: f32->s16 conversion + clamping (header + body over real /stream)\n");
+    }
+
+    close(client);
+
+    /* Drop-oldest test: force client_connected=0 and an empty ring
+     * directly (same translation unit, direct struct access), then
+     * push far more than RING_CAPACITY worth of samples and confirm
+     * the call returns promptly (no producer block) with the ring
+     * left completely (but only) full -- oldest bytes were dropped,
+     * never blocked on. */
+    {
+        pthread_mutex_lock(&g_ring.lock);
+        g_ring.head = g_ring.tail = g_ring.fill = 0;
+        g_ring.client_connected = 0;
+        pthread_mutex_unlock(&g_ring.lock);
+
+        size_t nfloats = (RING_CAPACITY / sizeof(int16_t)) + 1000;
+        float *big = malloc(nfloats * sizeof(float));
+        if (!big) {
+            fprintf(stderr, "FAIL: malloc for drop-oldest test\n");
+            failures++;
+        } else {
+            for (size_t i = 0; i < nfloats; i++) {
+                big[i] = 0.25f;
+            }
+
+            struct timeval t0, t1;
+            gettimeofday(&t0, NULL);
+            pa_stream_write(s, big, nfloats * sizeof(float), NULL, 0, 0);
+            gettimeofday(&t1, NULL);
+            free(big);
+
+            long ms = (t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_usec - t0.tv_usec) / 1000;
+
+            pthread_mutex_lock(&g_ring.lock);
+            size_t fillAfter = g_ring.fill;
+            pthread_mutex_unlock(&g_ring.lock);
+
+            if (ms > 5000) {
+                fprintf(stderr, "FAIL: pa_stream_write blocked for %ldms with no client connected\n", ms);
+                failures++;
+            } else if (fillAfter != RING_CAPACITY) {
+                fprintf(stderr, "FAIL: ring not full after over-capacity write (fill=%zu, capacity=%d)\n",
+                        fillAfter, RING_CAPACITY);
+                failures++;
+            } else {
+                printf("ok: drop-oldest with no client connected (took %ldms, ring full=%zu)\n", ms, fillAfter);
+            }
+        }
+    }
+
+    /* writable_size shrinks as the ring fills. */
+    {
+        pthread_mutex_lock(&g_ring.lock);
+        g_ring.head = g_ring.tail = g_ring.fill = 0;
+        g_ring.client_connected = 0;
+        pthread_mutex_unlock(&g_ring.lock);
+
+        size_t before = pa_stream_writable_size(s);
+
+        float chunk[1000];
+        for (int i = 0; i < 1000; i++) {
+            chunk[i] = 0.1f;
+        }
+        pa_stream_write(s, chunk, sizeof(chunk), NULL, 0, 0);
+
+        size_t after = pa_stream_writable_size(s);
+
+        if (before != (size_t)RING_CAPACITY) {
+            fprintf(stderr, "FAIL: writable_size before write != capacity (before=%zu)\n", before);
+            failures++;
+        } else if (!(after < before)) {
+            fprintf(stderr, "FAIL: writable_size did not shrink (before=%zu after=%zu)\n", before, after);
+            failures++;
+        } else {
+            printf("ok: writable_size shrinks as the ring fills (before=%zu after=%zu)\n", before, after);
+        }
+    }
+
+    unlink(portFilePath);
+
+    if (failures) {
+        fprintf(stderr, "%d test(s) FAILED\n", failures);
+        return 1;
+    }
+    printf("All fake-libpulse HTTP mode tests passed\n");
+    return 0;
+}
+
+#endif /* FAKE_LIBPULSE_TEST */

@@ -17,12 +17,22 @@ LDFLAGS ?=
 TARGET  := libpulse.so.0
 SRC     := fake-libpulse.c
 
-.PHONY: all clean
+.PHONY: all clean test
 
 all: $(TARGET)
 
 $(TARGET): $(SRC)
-	$(CC) $(CFLAGS) -shared -fPIC -o $(TARGET) $(SRC) -lpthread $(LDFLAGS)
+	$(CC) $(CFLAGS) -shared -fPIC -o $(TARGET) $(SRC) -lpthread -lm $(LDFLAGS)
+
+# Phase 73 D-04: host-build smoke test for the HTTP streaming mode
+# (ring buffer, f32/s32->s16 conversion, drop-oldest, writable_size).
+# Native-only -- cross-compiled test binaries cannot run on the CI
+# runner (see .github/workflows/build-fake-libpulse.yml, x86_64 leg only).
+test: fake-libpulse-test
+	./fake-libpulse-test
+
+fake-libpulse-test: $(SRC)
+	$(CC) $(CFLAGS) -DFAKE_LIBPULSE_TEST -o fake-libpulse-test $(SRC) -lpthread -lm $(LDFLAGS)
 
 clean:
-	rm -f $(TARGET)
+	rm -f $(TARGET) fake-libpulse-test
