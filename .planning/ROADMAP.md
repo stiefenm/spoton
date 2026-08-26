@@ -472,12 +472,12 @@ Items discovered during development — not assigned to a milestone.
 
 **Phases:**
 
-- [ ] **Phase 71: Soloist Foundation** — Soloist.pm Backend-Modul (Download/Version-Check/Lifecycle), Fake-libpulse.so Build-Pipeline (3 Architekturen), Helper.pm Backend-Auswahl (librespot vs soloist), BYOK Key-Management (Settings UI, mode 0600 Datei)
+- [x] **Phase 71: Soloist Foundation** — Soloist.pm Backend-Modul (Download/Version-Check/Lifecycle), Fake-libpulse.so Build-Pipeline (3 Architekturen), Helper.pm Backend-Auswahl (librespot vs soloist), BYOK Key-Management (Settings UI, mode 0600 Datei) (completed 2026-08-26)
   - **Plans:** 4 plans (Wave 1: 71-01, 71-04 parallel · Wave 2: 71-02, 71-03 parallel)
   - [x] 71-01-PLAN.md — Soloist.pm Backend-Modul (Tracer): Arch-Map, Auto-Download, Version-Check, spak.key mode 0600
-  - [ ] 71-02-PLAN.md — DaemonManager Backend-Dispatch + D-09 Voraussetzungs-Gate
+  - [x] 71-02-PLAN.md — DaemonManager Backend-Dispatch + D-09 Voraussetzungs-Gate
   - [x] 71-03-PLAN.md — Settings UI: Backend-Dropdown, conditional spak-Key-Feld, Format-Validierung, i18n
-  - [ ] 71-04-PLAN.md — Fake-libpulse CI Build-Pipeline (glibc cross-gcc, 3 Architekturen)
+  - [x] 71-04-PLAN.md — Fake-libpulse CI Build-Pipeline (glibc cross-gcc, 3 Architekturen)
 - [x] **Phase 72: Soloist Browse Playback** — ProtocolHandler Runtime-Backend-Dispatch (sol/son), `--single-track` Integration via generiertem Launcher-Wrapper, Audio-Pipeline (S32LE → FLAC32/PCM via custom-convert.conf), FD-basiertes Streaming an LMS StreamServer (completed 2026-08-26)
   - **Plans:** 3 plans (Wave 1: 72-01 · Wave 2: 72-02 · Gap Closure: 72-03)
   - [x] 72-01-PLAN.md — Tracer: sol-Transcoder-Pfad end-to-end (Launcher-Wrapper, sol-Convert-Rules, ProtocolHandler-Dispatch, D-06 Retry, Tests)

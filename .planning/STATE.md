@@ -2,20 +2,20 @@
 gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: Soloist Integration
-current_phase: 71
-current_phase_name: soloist foundation
+current_phase: 72
+current_phase_name: soloist browse playback
 status: planning
-stopped_at: Phase 72 complete, ready to plan Phase 71
-last_updated: "2026-08-26T14:34:25.940Z"
+stopped_at: Phase 71 complete, ready to plan Phase 72
+last_updated: "2026-08-26T14:47:23.692Z"
 last_activity: 2026-08-26
-last_activity_desc: Phase 72 complete, transitioned to Phase 71
-state_head: 32e47abdfbab2b8110898aa5c402f16536cb8d14
+last_activity_desc: Phase 71 complete, transitioned to Phase 72
+state_head: f5ef22245a288197357482fd26c4580d06287e59
 progress:
   total_phases: 14
-  completed_phases: 1
+  completed_phases: 2
   total_plans: 7
-  completed_plans: 5
-  percent: 7
+  completed_plans: 7
+  percent: 14
 ---
 
 # Project State: SpotOn
@@ -30,14 +30,14 @@ See: .planning/PROJECT.md (updated 2026-06-30)
 
 **Core Value:** Reliable Spotify playback and Connect integration on LMS — Browse, stream, and control via Spotify app, without 429 bursts, zombie daemons, or audio glitches.
 
-**Current Focus:** Phase 72 — Soloist Browse Playback
+**Current Focus:** Phase 71 — Soloist Foundation
 
 ## Current Position
 
-Phase: 71 — soloist foundation
+Phase: 72 — soloist browse playback
 Plan: Not started
 Status: Ready to plan
-Last activity: 2026-08-26 — Phase 72 complete, transitioned to Phase 71
+Last activity: 2026-08-26 — Phase 71 complete, transitioned to Phase 72
 
 ## Progress Bar
 
@@ -281,7 +281,7 @@ Items carried forward from previous milestones:
 **Resume file:** None
 
 **Last session:** 2026-08-25T14:03:58.804Z
-**Stopped at:** Phase 72 complete, ready to plan Phase 71
+**Stopped at:** Phase 71 complete, ready to plan Phase 72
 
 **Completed this session (2026-08-24):**
 
