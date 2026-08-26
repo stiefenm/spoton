@@ -504,7 +504,10 @@ sub _onDeviceChanged {
 sub _onTrackChanged {
 	my ($self, $msg) = @_;
 
-	my $uri = $msg->{item} && $msg->{item}{uri};
+	# WR-08: `item` payload shapes are unconfirmed (A4) -- guard against a
+	# non-HASH item (scalar/array) dying with "Not a HASH reference", which
+	# would abort processing of every remaining frame in this read burst.
+	my $uri = (ref($msg->{item}) eq 'HASH') ? $msg->{item}{uri} : undef;
 	main::DEBUGLOG && $log->is_debug && $log->debug(
 		"SoloistWS: track_changed raw event (" . ($self->mac // '?') . "): " . ($uri // 'no uri')
 	);
@@ -868,8 +871,10 @@ sub endBrowseSession {
 sub _onPlaybackState {
 	my ($self, $msg) = @_;
 
+	# WR-08: guard against a non-HASH item, mirroring the `position` handling
+	# just below (already ref-checked).
 	my $item = $msg->{item};
-	my $uri  = $item && $item->{uri};
+	my $uri  = (ref($item) eq 'HASH') ? $item->{uri} : undef;
 	my $newId;
 	if (defined $uri && $uri =~ /^spotify:(?:track|episode):([A-Za-z0-9]+)$/) {
 		$newId = $1;
