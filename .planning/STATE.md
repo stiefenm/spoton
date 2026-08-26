@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: Soloist Integration
-current_phase: 72
-current_phase_name: soloist browse playback
-status: planning
+current_phase: 73
+current_phase_name: Soloist Connect Mode
+status: executing
 stopped_at: Phase 71 complete, ready to plan Phase 72
-last_updated: "2026-08-26T14:47:23.692Z"
+last_updated: "2026-08-26T14:47:58.166Z"
 last_activity: 2026-08-26
-last_activity_desc: Phase 71 complete, transitioned to Phase 72
-state_head: f5ef22245a288197357482fd26c4580d06287e59
+last_activity_desc: Phase 73 execution started
+state_head: 62b74765c0447822662cf5d89572e9858dfe2c13
 progress:
   total_phases: 14
   completed_phases: 2
@@ -30,14 +30,14 @@ See: .planning/PROJECT.md (updated 2026-06-30)
 
 **Core Value:** Reliable Spotify playback and Connect integration on LMS — Browse, stream, and control via Spotify app, without 429 bursts, zombie daemons, or audio glitches.
 
-**Current Focus:** Phase 71 — Soloist Foundation
+**Current Focus:** Phase 73 — Soloist Connect Mode
 
 ## Current Position
 
-Phase: 72 — soloist browse playback
-Plan: Not started
-Status: Ready to plan
-Last activity: 2026-08-26 — Phase 71 complete, transitioned to Phase 72
+Phase: 73 (Soloist Connect Mode) — EXECUTING
+Plan: 1 of ?
+Status: Executing Phase 73
+Last activity: 2026-08-26 — Phase 73 execution started
 
 ## Progress Bar
 
