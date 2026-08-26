@@ -439,52 +439,29 @@ sub _killOrphanedProcesses {
     }
 
     unless ($isBusy) {
-        my ($helper) = Plugins::SpotOn::Helper->get();
-        if ($helper) {
-            eval {
-                if (main::ISWINDOWS) {
-                    my $name = basename($helper);
-                    $name =~ s/[^A-Za-z0-9._-]//g;
-                    if ($name) {
-                        my %unifiedPids;
-                        if ($INC{'Plugins/SpotOn/Unified/DaemonManager.pm'}) {
-                            %unifiedPids = map { $_ => 1 }
-                                Plugins::SpotOn::Unified::DaemonManager->helperPids();
-                        }
-                        my @pids = map { /^"[^"]*","(\d+)"/ ? $1 : () }
-                            `tasklist /FI "IMAGENAME eq $name" /FO CSV /NH 2>nul`;
-                        for my $pid (@pids) {
-                            next if $activePids{$pid};
-                            next if $unifiedPids{$pid};
-                            kill 'KILL', $pid;
-                            main::DEBUGLOG && $log->is_debug && $log->debug("Killed orphaned spoton process PID $pid (Windows)");
-                        }
-                    }
-                } else {
-                    # CR-01: Use PID-based kill to avoid killing active transcoding processes.
-                    # Find all matching PIDs, exclude active ones, kill only orphans.
-                    # CON-09: Exclude Unified daemon PIDs from orphan cleanup.
-                    my %unifiedPids;
-                    if ($INC{'Plugins/SpotOn/Unified/DaemonManager.pm'}) {
-                        %unifiedPids = map { $_ => 1 }
-                            Plugins::SpotOn::Unified::DaemonManager->helperPids();
-                    }
+        # CON-09: Exclude Unified daemon PIDs from orphan cleanup -- this
+        # already includes live SoloistDaemon PIDs (helperPids()), so the
+        # soloist sweep below only ever kills genuine orphans.
+        my %unifiedPids;
+        if ($INC{'Plugins/SpotOn/Unified/DaemonManager.pm'}) {
+            %unifiedPids = map { $_ => 1 }
+                Plugins::SpotOn::Unified::DaemonManager->helperPids();
+        }
 
-                    # M6: pgrep -f treats the pattern as an extended regex —
-                    # quotemeta the helper path FIRST so dots and other
-                    # metacharacters cannot match (and kill) foreign processes,
-                    # THEN apply the single-quote shell escaping.
-                    (my $safeHelper = quotemeta($helper)) =~ s/'/'\\''/g;
-                    my @pids = map { /^\s*(\d+)/ ? $1 : () } `pgrep -f '$safeHelper'`;
-                    for my $pid (@pids) {
-                        next if $activePids{$pid};
-                        next if $unifiedPids{$pid};    # CON-09: protect Unified daemon PIDs
-                        kill 'TERM', $pid;
-                        main::DEBUGLOG && $log->is_debug && $log->debug("Killed orphaned spoton process PID $pid");
-                    }
-                }
-            };
-            $@ && $log->warn("Could not kill orphaned spoton processes: $@");
+        my ($helper) = Plugins::SpotOn::Helper->get();
+        _killOrphansForBinary($helper, \%activePids, \%unifiedPids) if $helper;
+
+        # WR-09: orphan cleanup previously only targeted the librespot
+        # helper binary name -- die_upon_destroy does not survive a
+        # SIGKILLed/OOM-killed/crashed LMS, so a leftover soloist process
+        # kept its per-player data-dir lock, WS port, and HTTP port. After
+        # LMS restarted, the fresh spawn for the same player collided with
+        # the survivor -- exactly the zombie-daemon/data-dir-lock failure
+        # class this project (and Phase 73's Model B specifically) set out
+        # to eliminate.
+        if ($INC{'Plugins/SpotOn/Soloist.pm'}) {
+            my $soloistBin = Plugins::SpotOn::Soloist->get();
+            _killOrphansForBinary($soloistBin, \%activePids, \%unifiedPids) if $soloistBin;
         }
     }
 
@@ -494,6 +471,48 @@ sub _killOrphanedProcesses {
         Time::HiRes::time() + KILL_PROCESS_INTERVAL,
         \&_killOrphanedProcesses
     );
+}
+
+# _killOrphansForBinary($binary, \%activePids, \%unifiedPids) -- WR-09:
+# shared by the librespot-helper and soloist-binary sweeps in
+# _killOrphanedProcesses above. Windows is a structural no-op for the
+# soloist call today (soloist is Linux-only), but kept parallel to the Unix
+# branch so the guard stays structural if that ever changes.
+sub _killOrphansForBinary {
+    my ($binary, $activePids, $unifiedPids) = @_;
+
+    eval {
+        if (main::ISWINDOWS) {
+            my $name = basename($binary);
+            $name =~ s/[^A-Za-z0-9._-]//g;
+            if ($name) {
+                my @pids = map { /^"[^"]*","(\d+)"/ ? $1 : () }
+                    `tasklist /FI "IMAGENAME eq $name" /FO CSV /NH 2>nul`;
+                for my $pid (@pids) {
+                    next if $activePids->{$pid};
+                    next if $unifiedPids->{$pid};
+                    kill 'KILL', $pid;
+                    main::DEBUGLOG && $log->is_debug && $log->debug("Killed orphaned spoton process PID $pid (Windows)");
+                }
+            }
+        } else {
+            # CR-01: Use PID-based kill to avoid killing active transcoding processes.
+            # Find all matching PIDs, exclude active ones, kill only orphans.
+            # M6: pgrep -f treats the pattern as an extended regex — quotemeta
+            # the binary path FIRST so dots and other metacharacters cannot
+            # match (and kill) foreign processes, THEN apply the single-quote
+            # shell escaping.
+            (my $safeBinary = quotemeta($binary)) =~ s/'/'\\''/g;
+            my @pids = map { /^\s*(\d+)/ ? $1 : () } `pgrep -f '$safeBinary'`;
+            for my $pid (@pids) {
+                next if $activePids->{$pid};
+                next if $unifiedPids->{$pid};    # CON-09: protect Unified daemon PIDs
+                kill 'TERM', $pid;
+                main::DEBUGLOG && $log->is_debug && $log->debug("Killed orphaned spoton process PID $pid");
+            }
+        }
+    };
+    $@ && $log->warn("Could not kill orphaned spoton processes ($binary): $@");
 }
 
 sub handleFeed {
