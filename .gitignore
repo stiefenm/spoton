@@ -12,6 +12,7 @@ Plugins/SpotOn/Bin/*
 Plugins/SpotOn/Bin/fake-libpulse/*.so
 Plugins/SpotOn/Bin/fake-libpulse/*.so.*
 Plugins/SpotOn/Bin/fake-libpulse/*.o
+Plugins/SpotOn/Bin/fake-libpulse/fake-libpulse-test
 
 # Release ZIP archives (built locally, distributed via GitHub Releases)
 SpotOn-v*.zip
