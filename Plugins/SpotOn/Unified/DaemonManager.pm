@@ -398,15 +398,21 @@ sub _streamAlivePoll {
             # credential-rejection error escalates to the persistent
             # playback-auth flag and the daemon stays down (GH #147 D-04);
             # anything else falls through to the plain restart path.
-            # Soloist crashes take the plain CRASH_BACKOFF path unconditionally
-            # -- SoloistDaemon has no credentials.json/Login5 concept (the
-            # spak-key is server-wide, not per-account); exit-code-10
-            # (build-expiry) refinement is 73-02 (RESEARCH Pitfall 7).
+            # Soloist crashes are classified by exit code (73-02, Pitfall 7):
+            # exit code 10 = expired build (permanent, park it); anything
+            # else takes the plain CRASH_BACKOFF path -- SoloistDaemon has no
+            # credentials.json/Login5 concept (the spak-key is server-wide,
+            # not per-account).
             my $isLibrespot = $helper->isa('Plugins::SpotOn::Unified::Daemon');
+            my $isSoloist   = $helper->isa('Plugins::SpotOn::Unified::SoloistDaemon');
             require Plugins::SpotOn::API::Credentials if $isLibrespot;
             my $tail = $isLibrespot ? $helper->stderrTail(STDERR_TAIL_BYTES) : '';
+            my $soloistExitCode = $isSoloist ? $class->_soloistExitCode($helper) : undef;
+
             if ($isLibrespot && Plugins::SpotOn::API::Credentials->isCredentialError($tail)) {
                 $class->_handleCredentialCrash($helper);
+            } elsif ($isSoloist && defined $soloistExitCode && $soloistExitCode == 10) {
+                $class->_handleSoloistBuildExpiry($helper);
             } else {
                 # GH #147 D-05: exponential backoff for non-credential crash
                 # restarts -- a persistently crashing daemon no longer
@@ -590,6 +596,57 @@ sub _handleCredentialCrash {
     $class->stopHelper($helper->mac);
 }
 
+# _soloistExitCode($class, $helper)
+# Best-effort accessor for a dead SoloistDaemon's process exit code (73-02,
+# Pitfall 7 escalation). Proc::Background's underlying wait() on an
+# already-dead process returns the raw wait() status word (exit code is the
+# high byte, hence >>8) -- eval-guarded since exact behavior against an
+# already-reaped process is not something this codebase has previously
+# depended on (Unified::Daemon's own crash classification reads stderr, not
+# exit codes). Returns undef on any failure -- callers must not treat undef
+# as "not expired", only as "unknown", and fall through to the generic
+# backoff path.
+sub _soloistExitCode {
+    my ($class, $helper) = @_;
+
+    my $proc = $helper->_proc or return undef;
+    my $status = eval { $proc->wait };
+    return undef if $@ || !defined $status;
+
+    return $status >> 8;
+}
+
+# _handleSoloistBuildExpiry($class, $helper)
+# Pitfall 7 (RESEARCH): soloist builds expire 90 days after creation and
+# subsequently exit with code 10 on every launch -- this is permanent, not
+# transient, so feeding it to the generic CRASH_BACKOFF path would restart
+# it forever (5s, 10s, 20s ... 300s, indefinitely) for a binary that can
+# never succeed again. Escalates a 'never'-TTL cache flag (mirrors
+# _handleCredentialCrash's stay-down discipline) -- cleared only when
+# Soloist::_versionCheck next activates a binary successfully (self-healing
+# after e.g. re-downloading a fresh copy of the pinned version) -- and stops
+# the daemon for good. startHelper()'s soloist branch checks the flag via
+# the synthetic 'soloist_build_expired' state and refuses to restart it, so
+# the 60s watchdog cannot resurrect it either.
+sub _handleSoloistBuildExpiry {
+    my ($class, $helper) = @_;
+
+    require Plugins::SpotOn::Soloist;
+    my $version = Plugins::SpotOn::Soloist::SOLOIST_VERSION();
+
+    unless ($cache->get('spoton_soloist_expired')) {
+        $log->warn(
+            "SpotOn Soloist daemon for " . $helper->mac . " exited with code 10 -- "
+            . "this build (pinned version $version) has expired (90-day lifetime, "
+            . "RESEARCH Pitfall 7). The daemon will NOT be restarted automatically. "
+            . "A future SpotOn release will re-validate and re-pin a newer soloist build."
+        );
+    }
+
+    $cache->set('spoton_soloist_expired', { version => $version, at => time() }, 'never');
+    $class->stopHelper($helper->mac);
+}
+
 sub _cleanupOrphanedLogs {
     my $baseDir = catdir($serverPrefs->get('cachedir'), 'spoton');
 
@@ -688,7 +745,15 @@ sub startHelper {
             $existing = undef;
         }
 
-        my $state = _backendPrereqState($backend);
+        # 73-02 Pitfall 7: an escalated build-expiry flag (set by
+        # _handleSoloistBuildExpiry on an exit-code-10 crash) permanently
+        # gates this branch off -- folded into the same prereq-state skip
+        # log as a synthetic state so the 60s watchdog cannot resurrect a
+        # daemon whose binary can never succeed again. Cleared only by
+        # Soloist::_versionCheck's next successful activation.
+        my $state = $cache->get('spoton_soloist_expired')
+            ? 'soloist_build_expired'
+            : _backendPrereqState($backend);
 
         if ($state ne 'soloist_ready') {
             # D-09/T-71-07: prerequisites (binary + spak-key + Linux) not
@@ -729,6 +794,11 @@ sub startHelper {
         }
 
         if (!$helper) {
+            # 73-02 Pitfall 9 (mDNS contention): startHelper() is the ONLY
+            # spawn entry point for SoloistDaemon, same as the librespot
+            # path below -- initHelpers()'s @pendingStarts/STAGGER_DELAY
+            # staggering (initHelpers, ~L356-379) therefore applies to
+            # soloist daemons unchanged, no separate staggering needed here.
             main::INFOLOG && $log->is_info && $log->info("Need to create Soloist daemon for $clientId");
             require Plugins::SpotOn::Unified::SoloistDaemon;
             $helper = $helperInstances{$clientId} = Plugins::SpotOn::Unified::SoloistDaemon->new($clientId);
@@ -1128,6 +1198,10 @@ sub streamPortForClient {
 # Returns list of PIDs for all currently-alive Unified daemons.
 # Called by Plugin.pm::_killOrphanedProcesses to exclude Unified daemon PIDs
 # from orphan cleanup (CON-09 / Pitfall 6).
+# 73-02: this iterates %helperInstances generically (grep { $_->alive }),
+# so SoloistDaemon instances are included automatically alongside
+# Unified::Daemon ones -- no soloist-specific change needed here, orphan
+# cleanup never kills a live soloist daemon.
 sub helperPids {
     my $class = shift;
     return map { $_->pid } grep { $_->alive } values %helperInstances;

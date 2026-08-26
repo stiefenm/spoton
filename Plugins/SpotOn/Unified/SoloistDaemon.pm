@@ -313,6 +313,12 @@ sub _pollWsPort {
 		"SpotOn Soloist daemon ws.port announced: $port (mac=" . $self->mac . ")"
 	);
 
+	# 73-02 Pitfall 7: the daemon is demonstrably up and its startup banner
+	# (which includes the "client expires in N days" line) has had time to
+	# flush to the stderr-capture file by the time ws.port appears -- parse
+	# once per start, no re-poll needed for a 90-day clock.
+	$self->_parseExpiryDays;
+
 	require Plugins::SpotOn::Unified::SoloistWS;
 	$self->_ws( Plugins::SpotOn::Unified::SoloistWS->new(
 		daemon => $self,
@@ -388,6 +394,11 @@ sub stop {
 
 	$self->_cancelPortPolls;
 
+	# 73-02 backoff-interplay audit: SoloistWS::disconnect() already calls
+	# Slim::Utils::Timers::killTimers($ws, \&_reconnectTimer) internally --
+	# verified, no separate killTimers needed here. Without this, a stopped
+	# daemon's WS client could still fire a delayed reconnect attempt against
+	# a port that no longer belongs to it.
 	if ($self->_ws) {
 		$self->_ws->disconnect;
 		$self->_ws(undef);
@@ -448,6 +459,40 @@ sub stderrTail {
 	};
 	return '' if $@ || !defined $text;
 	return $text;
+}
+
+# _parseExpiryDays($self)
+# 73-02 (Pitfall 7): soloist logs "client expires in N days" on stdout at
+# startup (live-verified, RESEARCH). Bounded 8 KiB head-read of the
+# per-player stderr/stdout capture file (Proc::Background redirects both
+# here, see start()); host-global cache key -- the pinned binary is shared
+# across all players, last writer wins is fine for a Settings display
+# (73-04 consumes it). Called once per daemon start from _pollWsPort, no
+# timer/re-poll -- a 90-day clock needs no finer granularity than that.
+sub _parseExpiryDays {
+	my $self = shift;
+
+	my $file = $self->_stderrFile;
+	return unless $file && -f $file;
+
+	my $head = eval {
+		open(my $fh, '<', $file) or die "open failed: $!";
+		read($fh, my $buf, 8192);
+		close($fh);
+		$buf;
+	};
+	return if $@ || !defined $head;
+
+	return unless $head =~ /client expires in (\d+) days/;
+	my $days = $1;
+
+	eval {
+		require Slim::Utils::Cache;
+		require Plugins::SpotOn::Plugin;
+		my $cache = Slim::Utils::Cache->new('spoton', Plugins::SpotOn::Plugin::SPOTON_CACHE_VERSION());
+		$cache->set('spoton_soloist_expiry_days', { days => $days, checked_at => time() }, 'never');
+		1;
+	};
 }
 
 1;

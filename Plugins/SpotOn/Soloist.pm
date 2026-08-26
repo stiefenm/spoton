@@ -170,6 +170,22 @@ sub _versionCheck {
         }
 
         $version = $parsedVersion;
+
+        # 73-02 Pitfall 7: self-heal DaemonManager's build-expiry escalation
+        # -- a binary that just passed activation validation here is not
+        # (yet) known to be an expired one; clearing on every successful
+        # activation means a re-downloaded/replaced copy of the pinned
+        # version un-parks the daemon without any manual cache-flush step.
+        # One cache write, no daemon restart triggered from here --
+        # DaemonManager's own initHelpers/60s watchdog picks it up next cycle.
+        eval {
+            require Slim::Utils::Cache;
+            require Plugins::SpotOn::Plugin;
+            Slim::Utils::Cache->new('spoton', Plugins::SpotOn::Plugin::SPOTON_CACHE_VERSION())
+                ->remove('spoton_soloist_expired');
+            1;
+        };
+
         return 1;
     }
 
