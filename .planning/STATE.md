@@ -4,17 +4,17 @@ milestone: v4.0
 milestone_name: Soloist Integration
 current_phase: 73
 current_phase_name: Soloist Connect Mode
-status: executing
-stopped_at: Completed 73-03-PLAN.md (Soloist Browse on the persistent daemon, Modell B — D-03)
-last_updated: "2026-08-26T17:39:12.704Z"
+status: verifying
+stopped_at: Completed 73-04-PLAN.md (Soloist Connect Mode cleanup — launcher retirement, sync pinning, Settings i18n) — Phase 73 complete
+last_updated: "2026-08-26T18:03:21.593Z"
 last_activity: 2026-08-26
 last_activity_desc: Phase 73 execution resumed (wave continue)
-state_head: 2c016f20b0248be8e9a11859e71930f2ba77fc00
+state_head: 3ccf6db1e71b1ec251d9a10df271c595db3adc75
 progress:
   total_phases: 14
   completed_phases: 2
   total_plans: 11
-  completed_plans: 10
+  completed_plans: 11
   percent: 14
 ---
 
@@ -36,7 +36,7 @@ See: .planning/PROJECT.md (updated 2026-06-30)
 
 Phase: 73 (Soloist Connect Mode) — EXECUTING
 Plan: 4 of 4
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-08-26 — Completed 73-02 (control-command dispatch, reconnect resync, repeat/shuffle, build-expiry hardening)
 
 ## Progress Bar
@@ -105,6 +105,7 @@ Phase 75: [ ] Soloist UAT + Release (E2E, Platform Tests, v4.0.0)
 | Phase 73 P01 | ~35min | 3 tasks | 24 files |
 | Phase 73 P02 | ~10min | 3 tasks | 7 files |
 | Phase 73 P03 | ~35min | 3 tasks | 6 files |
+| Phase 73 P04 | ~40min | 3 tasks | 13 files |
 
 ## Deferred Items
 
@@ -262,6 +263,9 @@ Items carried forward from previous milestones:
 - [Phase 73]: [Phase 73][73-03] Wave-0 spike filed DEFERRED — no paired daemon/Spotify app reachable in this environment; browse advance/correction implemented against RESEARCH-default assumptions, live spike tracked as mandatory UAT (WINDOWS.md)
 - [Phase 73]: [Phase 73][73-03] Pitfall-4 corrective play() retargets to browseCurrentUri (never the next LMS entry) — only the seeded-match advance branch is ever allowed to move the LMS playlist pointer
 - [Phase 73]: [Phase 73][73-03] Soloist Browse now serves through the SAME daemon /stream endpoint Connect uses (not a per-track URL) — D-03 Modell B
+- [Phase 73]: [Phase 73][73-04] Settings.pm's isPaired()/launcherPath() calls fixed inline during Task 1 (Rule 3) to keep prove -l t/ green, not deferred to Task 3 which replaces them fully
+- [Phase 73]: [Phase 73][73-04] Sync-group pinning found no gap in DaemonManager.pm/SoloistDaemon.pm -- Pattern 7's librespot-to-soloist 1:1 transfer confirmed via tests against the real module, zero production code changed
+- [Phase 73]: [Phase 73][73-04] WS auth state shown via daemon-status color coding, not a 5th new i18n key; actual 11-language set verified as CS/DA/DE/EN/ES/FR/IT/NL/NO/PL/SV (PL not FI) against strings.txt before translating
 
 ### Blockers/Concerns
 
@@ -291,8 +295,8 @@ Items carried forward from previous milestones:
 
 **Resume file:** None
 
-**Last session:** 2026-08-26T17:39:12.495Z
-**Stopped at:** Completed 73-03-PLAN.md (Soloist Browse on the persistent daemon, Modell B — D-03)
+**Last session:** 2026-08-26T18:03:21.399Z
+**Stopped at:** Completed 73-04-PLAN.md (Soloist Connect Mode cleanup — launcher retirement, sync pinning, Settings i18n) — Phase 73 complete
 
 **Completed this session (2026-08-24):**
 

@@ -488,7 +488,7 @@ Items discovered during development — not assigned to a milestone.
   - [x] 73-01-PLAN.md — Tracer: fake-libpulse HTTP-Server (Ring, f32→S16LE) + SoloistDaemon.pm + SoloistWS.pm + DaemonManager-Lifecycle + Connect-Transfer end-to-end (D-01/D-02/D-04/D-05/D-07)
   - [x] 73-02-PLAN.md — Command-Richtung LMS→Soloist (Connect.pm WS-Dispatch), Reconnect-Resync, Repeat-Matrix, Build-Expiry-Härtung (rc=10), Tests t/31 + t/32 (D-05/D-06)
   - [x] 73-03-PLAN.md — Browse über den persistenten Daemon (Modell B): Wave-0-Spike (Track-Ende/Autoplay/Queue-Echo), play/add_to_queue-Seeding, Event-getriebener Playlist-Advance, Seek via WS, t/29-Rewrite (D-03)
-  - [ ] 73-04-PLAN.md — Phase-72-Rückbau (Launcher/sol-Rules/sox), Sync-Group-Tests, Settings-Daemon-Status + Pairing-Howto (App-Tap) + i18n 11 Sprachen, CHANGELOG (D-01/D-02/D-03)
+  - [x] 73-04-PLAN.md — Phase-72-Rückbau (Launcher/sol-Rules/sox), Sync-Group-Tests, Settings-Daemon-Status + Pairing-Howto (App-Tap) + i18n 11 Sprachen, CHANGELOG (D-01/D-02/D-03)
 - [ ] **Phase 74: Soloist Polish** — Lifetime-Patcher (optional, Settings-Toggle), 24-Bit FLAC (Enum-Patch), Quality-Dropdown (OGG/FLAC/Lossless), Per-Player Backend-Auswahl, Pairing-Flow in Settings (kein SSH nötig), Diagnostics
   **Note:** Patches (Lifetime, 24-Bit) müssen als Pattern-Scanner implementiert werden, nicht als statische Offsets — Instruction Encoding unterscheidet sich zwischen x86_64/arm64/arm32. Alle 3 Binaries runterladen und validieren.
 
