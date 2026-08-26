@@ -616,15 +616,32 @@ sub _onPlaybackChanged {
 		# pause/unpause forwarding is Connect.pm's job (Task 3).
 		if ($status eq 'stopped' && !defined $self->browseSeededUri) {
 			my $client = Slim::Player::Client::getClient($self->mac);
+
+			# WR-06: verify LMS is still actually on the browse track this WS
+			# believes is current BEFORE advancing -- if the user has already
+			# moved elsewhere (playlist jump, different selection) while this
+			# stop event was in flight, advancing would otherwise fire an
+			# unrequested skip into the user's CURRENT (unrelated) playlist.
+			my $expected = $self->browseCurrentUri;
+			my $stillOnBrowseTrack = defined $expected
+				&& defined _clientCurrentSpotifyUri($client)
+				&& _clientCurrentSpotifyUri($client) eq $expected;
+
 			main::INFOLOG && $log->is_info && $log->info(
 				"SoloistWS: browse track ended with no seed -- ending session, advancing LMS normally ("
 				. ($self->mac // '?') . ")"
 			);
 			$self->endBrowseSession('track_end');
-			if ($client && _hasNextPlaylistEntry($client)) {
+			if ($client && $stillOnBrowseTrack && _hasNextPlaylistEntry($client)) {
 				my $req = Slim::Control::Request->new($client->id, ['playlist', 'index', '+1']);
 				$req->source('PLUGIN_SPOTON_SOLOIST_BROWSE');
 				$req->execute();
+			}
+			elsif ($client && !$stillOnBrowseTrack) {
+				main::INFOLOG && $log->is_info && $log->info(
+					"SoloistWS: browse track ended but LMS has already moved on -- skipping advance (WR-06, mac="
+					. ($self->mac // '?') . ")"
+				);
 			}
 		}
 		return;   # browse-session events never reach the Connect translation
@@ -745,6 +762,24 @@ sub _nextBrowseSpotifyUri {
 	return undef unless $track;
 
 	my $url = (blessed($track) && $track->can('url')) ? $track->url : $track;
+	return undef unless defined $url;
+	return undef unless $url =~ m{^spoton://(track|episode):([A-Za-z0-9]+)$};
+	return "spotify:$1:$2";
+}
+
+# _clientCurrentSpotifyUri($client) -- WR-06: the spotify:track:/episode:
+# URI for the URL the client is CURRENTLY streaming, or undef if that isn't
+# a spoton:// Browse URL right now. Used to verify LMS hasn't already moved
+# off the browse track before firing an advance request.
+sub _clientCurrentSpotifyUri {
+	my ($client) = @_;
+	return undef unless $client;
+
+	my $song = $client->can('playingSong') ? $client->playingSong : undef;
+	return undef unless $song;
+
+	my $track = $song->can('track') ? $song->track : undef;
+	my $url = ($track && $track->can('url')) ? $track->url : ($song->can('streamUrl') ? $song->streamUrl : undef);
 	return undef unless defined $url;
 	return undef unless $url =~ m{^spoton://(track|episode):([A-Za-z0-9]+)$};
 	return "spotify:$1:$2";

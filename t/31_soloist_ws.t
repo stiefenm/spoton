@@ -148,8 +148,14 @@ sub id { return $_[0]->{mac}; }
 sub playingSong { return $_[0]->{_song}; }
 sub setPlayingSong { my ($self, $song) = @_; $self->{_song} = $song; }
 package Test::FakeSong;
-sub new      { my ($class, $duration) = @_; return bless { duration => $duration }, $class; }
-sub duration { return $_[0]->{duration}; }
+sub new       { my ($class, $duration, $url) = @_; return bless { duration => $duration, url => $url }, $class; }
+sub duration  { return $_[0]->{duration}; }
+# WR-06: the song object stands in for its own "track" (real LMS exposes
+# $song->track->url; this stub collapses that one level since nothing else
+# here needs a separate track object).
+sub track     { return $_[0]; }
+sub url       { return $_[0]->{url}; }
+sub streamUrl { return $_[0]->{url}; }
 1;
 END
 
@@ -908,6 +914,14 @@ sub new_ws {
     $ws->startBrowseTrack('spotify:track:expected', undef);
     $fakeClient->{writes} = [];
 
+    # WR-06: the advance guard verifies LMS is still actually on the browse
+    # track before firing ['playlist','index','+1'] -- set up the fake
+    # client's current song to match browseCurrentUri (the normal case:
+    # nothing else has moved LMS elsewhere since startBrowseTrack).
+    Slim::Player::Client::getClient($ws->mac)->setPlayingSong(
+        Test::FakeSong->new(0, 'spoton://track:expected')
+    );
+
     $ws->_onMessage('{"type":"playback_changed","status":"stopped"}');
 
     is($ws->browseSession, 0, "track-end stop with no seed ends the browse session");
@@ -915,6 +929,34 @@ sub new_ws {
     is(scalar(@Slim::Control::Request::EXECUTED), 1, "track-end with a next LMS entry advances the playlist");
     is_deeply($Slim::Control::Request::EXECUTED[0]{cmd}, ['playlist', 'index', '+1'],
         "track-end advance is ['playlist','index','+1']");
+}
+
+# WR-06: playback_changed{stopped}/no-seed arrives, but LMS has ALREADY
+# moved off the browse track (e.g. the user jumped elsewhere while this
+# event was in flight) -- the session still ends, but NO advance request is
+# fired into the user's now-unrelated current playlist.
+{
+    @Slim::Control::Request::EXECUTED = ();
+    local $Slim::Player::Source::STREAMING_INDEX = 0;
+    local @Slim::Player::Playlist::TRACKS = ('spoton://track:expected', 'x://internet-radio');
+
+    my $ws         = new_ws();
+    my $fakeClient = Test::FakeWsClient->new;
+    $ws->_client($fakeClient);
+    $ws->connected(1);
+    $ws->startBrowseTrack('spotify:track:expected', undef);
+    $fakeClient->{writes} = [];
+
+    # LMS has already moved on to something unrelated to the browse track.
+    Slim::Player::Client::getClient($ws->mac)->setPlayingSong(
+        Test::FakeSong->new(0, 'x://internet-radio')
+    );
+
+    $ws->_onMessage('{"type":"playback_changed","status":"stopped"}');
+
+    is($ws->browseSession, 0, "stale track-end stop still ends the browse session");
+    is(scalar(@Slim::Control::Request::EXECUTED), 0,
+        "WR-06: no advance fired when LMS has already moved off the browse track");
 }
 
 # playback_changed{stopped} with no seed AND no next LMS entry -- still

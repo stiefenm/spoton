@@ -381,6 +381,25 @@ sub _onNewSong {
     return if !defined $client;
     $client = $client->master;
 
+    # WR-06: a new song has started that is NOT a soloist Browse
+    # spoton://track|episode: URL while a browse session is still marked
+    # active on the daemon side (e.g. the user navigated to a non-Spotify
+    # playlist entry) -- end it from the LMS side. Without this hook,
+    # browseSession could stay stuck set: a later app-driven transfer-in
+    # would be mis-routed into the stale browse state machine, and Soloist
+    # reaching its own track end while the user has moved on elsewhere would
+    # fire an unrequested skip into the user's current playlist.
+    if (my $browseWs = _soloistBrowseWs($client)) {
+        my $song = $client->playingSong();
+        my $newSongUrl = $song ? ($song->track->url || $song->streamUrl || '') : '';
+        unless ($newSongUrl =~ m{^spoton://(?:track|episode):}) {
+            main::INFOLOG && $log->is_info && $log->info(
+                "New song without Browse URL — ending soloist browse session for " . $client->id
+            );
+            $browseWs->endBrowseSession('lms_newsong');
+        }
+    }
+
     # CON-17: Apply stored progress for Connect sessions
     if (__PACKAGE__->isSpotifyConnect($client)) {
         if (my $progress = $client->pluginData('progress')) {
@@ -463,14 +482,33 @@ sub _onPause {
             my $advTs = $browseWs->can('browseAdvanceTs') ? ($browseWs->browseAdvanceTs || 0) : 0;
             if (Time::HiRes::time() - $advTs < BROWSE_ADVANCE_GRACE) {
                 main::INFOLOG && $log->is_info && $log->info(
-                    "Soloist browse: suppressing pause within browse-advance grace period"
+                    "Soloist browse: suppressing pause/stop within browse-advance grace period"
                 );
                 return;
             }
-            main::INFOLOG && $log->is_info && $log->info(
-                "Soloist browse: forwarding pause to daemon via WS pause"
-            );
-            $browseWs->sendCommand('pause');
+
+            if ($request->isCommand([['playlist'], ['stop']])) {
+                # WR-06: a genuine LMS-side stop (user stop, playlist clear,
+                # power-off, starting non-Spotify playback -- NOT our own
+                # advance echo, already suppressed above) -- end the browse
+                # session from the LMS side. Without this, browseSession
+                # stays set forever: a later app-driven transfer-in arrives
+                # as device_changed/track_changed and gets mis-routed into
+                # the (stale) browse state machine, and Soloist reaching its
+                # own track end while the user has moved on to something else
+                # would fire an unrequested skip into the user's current
+                # playlist.
+                main::INFOLOG && $log->is_info && $log->info(
+                    "Soloist browse: LMS stop -- ending browse session"
+                );
+                $browseWs->endBrowseSession('lms_stop');
+            }
+            else {
+                main::INFOLOG && $log->is_info && $log->info(
+                    "Soloist browse: forwarding pause to daemon via WS pause"
+                );
+                $browseWs->sendCommand('pause');
+            }
         }
         return;
     }
