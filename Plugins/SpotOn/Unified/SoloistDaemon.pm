@@ -229,8 +229,14 @@ sub start {
 	# Pitfall 3 (RESEARCH): Soloist prefers PipeWire over PulseAudio when
 	# available -- on a desktop LMS host with a live PipeWire session,
 	# Soloist would play audio on the LMS host's own soundcard instead of
-	# routing through fake-libpulse. Force the PipeWire probe to fail.
+	# routing through fake-libpulse. Block PipeWire at every level:
+	# runtime dir, remote socket, SPA plugin path, and the native PW
+	# module. Without all four, Soloist dlopen()s libpipewire, initialises
+	# it, discovers a working session, and never calls pa_stream_write().
 	$ENV{PIPEWIRE_RUNTIME_DIR} = '/nonexistent';
+	$ENV{PIPEWIRE_REMOTE}      = '/nonexistent';
+	$ENV{SPA_PLUGIN_DIR}       = '/nonexistent';
+	$ENV{PIPEWIRE_MODULE_DIR}  = '/nonexistent';
 	delete $ENV{XDG_RUNTIME_DIR};
 
 	eval {
@@ -244,6 +250,9 @@ sub start {
 
 	delete $ENV{SPOTON_SOLOIST_HTTP_PORT_FILE};
 	delete $ENV{PIPEWIRE_RUNTIME_DIR};
+	delete $ENV{PIPEWIRE_REMOTE};
+	delete $ENV{SPA_PLUGIN_DIR};
+	delete $ENV{PIPEWIRE_MODULE_DIR};
 	if (defined $savedLdPreload)     { $ENV{LD_PRELOAD} = $savedLdPreload; }
 	else                             { delete $ENV{LD_PRELOAD}; }
 	if (defined $savedLdLibraryPath) { $ENV{LD_LIBRARY_PATH} = $savedLdLibraryPath; }
