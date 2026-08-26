@@ -421,4 +421,191 @@ require_ok('Plugins::SpotOn::Unified::SoloistDaemon')
     );
 }
 
+# ============================================================
+# Task 2 (73-04): Sync-group pinning for the soloist backend. Pattern 7 says
+# the librespot sync machinery (initHelpers()'s slave-delegates-to-master
+# branch, deviceNameForClient()'s suffix, and the sync-change handler's
+# name-comparison restart) transfers 1:1 to SoloistDaemon, unmodified. This
+# section PROVES it against the REAL DaemonManager module (not a stub of it).
+#
+# Minimal stand-ins for Slim::Player::Client / Slim::Player::Sync /
+# Slim::Control::Request: DaemonManager.pm only ever calls these
+# fully-qualified (never `use`s them), so a plain in-process package
+# declaration is sufficient -- no stub file on disk needed.
+# ============================================================
+require Time::HiRes;    # real core module (t/31's own precedent) -- needed
+                         # once initHelpers()/init() start evaluating timer args.
+
+{
+    package Test::SyncClient;
+    sub new {
+        my ($class, %args) = @_;
+        return bless {
+            id     => $args{id},
+            name   => $args{name} // 'Player',
+            synced => $args{synced} // 0,
+            master => $args{master},
+            model  => $args{model} // 'squeezebox',
+        }, $class;
+    }
+    sub id          { return $_[0]->{id}; }
+    sub name        { return $_[0]->{name}; }
+    sub isSynced    { return $_[0]->{synced}; }
+    sub master      { return $_[0]->{master}; }
+    sub model       { return $_[0]->{model}; }
+    sub volume      { return 40; }
+    sub isPlaying   { return 0; }
+    sub playingSong { return undef; }
+    sub connected   { return 1; }
+    sub formats     { return (); }
+}
+
+{
+    package Slim::Player::Client;
+    our @ALL_CLIENTS = ();
+    our %BY_ID       = ();
+    sub clients   { return @ALL_CLIENTS; }
+    sub getClient { return $BY_ID{ $_[0] }; }
+}
+
+{
+    package Slim::Player::Sync;
+    our %SLAVE_OF = ();    # slaveId => masterId
+    sub isSlave { return exists $SLAVE_OF{ $_[0]->id } ? 1 : 0; }
+    sub slaves  { return (); }    # not exercised by this 2-player scenario
+}
+
+{
+    package Slim::Control::Request;
+    our @SUBSCRIPTIONS = ();
+    sub subscribe   { push @SUBSCRIPTIONS, [ $_[0], $_[1] ]; }
+    sub unsubscribe { }
+}
+
+{
+    package Test::SyncRequest;
+    sub new          { return bless { client => $_[1] }, $_[0]; }
+    sub isNotCommand { return 0; }    # pretend it IS a ['sync'] command
+    sub client       { return $_[0]->{client}; }
+}
+
+# Test double for SoloistDaemon's process-lifecycle methods only -- name()/
+# mac() stay the REAL Slim::Utils::Accessor-generated accessors (mk_accessor
+# ran for real at module-load time), so blessed hash fields work normally.
+# Blessed into the literal production package name (73-03-SUMMARY.md
+# precedent) so every isa('...::SoloistDaemon') check in DaemonManager.pm
+# still passes.
+my (@NEW_CALLS, @STOP_CALLS, @STOPFORSYNC_CALLS);
+{
+    no warnings 'redefine';
+    *Plugins::SpotOn::Unified::SoloistDaemon::new = sub {
+        my ($class, $id) = @_;
+        push @NEW_CALLS, $id;
+        my $self = bless {}, $class;
+        $self->mac($id);
+        return $self;
+    };
+    *Plugins::SpotOn::Unified::SoloistDaemon::alive = sub {
+        return $_[0]->{_test_alive} // 1;
+    };
+    *Plugins::SpotOn::Unified::SoloistDaemon::stop = sub {
+        my $self = shift;
+        push @STOP_CALLS, $self->mac;
+        $self->{_test_alive} = 0;
+    };
+    *Plugins::SpotOn::Unified::SoloistDaemon::stopForSync = sub {
+        my $self = shift;
+        push @STOPFORSYNC_CALLS, $self->mac;
+        $self->{_test_alive} = 0;
+    };
+}
+
+reset_all();
+$FAKE_BINARY  = '/fake/cachedir/spoton/soloist/x86_64-linux/soloist';
+$FAKE_HAS_KEY = 1;
+local $Slim::Utils::Prefs::FAKE_VALUES{backend} = 'soloist';
+
+my $master = Test::SyncClient->new(id => 'aa:bb:cc:dd:ee:01', name => 'Living Room', synced => 1);
+my $slave  = Test::SyncClient->new(id => 'aa:bb:cc:dd:ee:02', name => 'Kitchen',      synced => 1, master => $master);
+
+$Slim::Player::Client::BY_ID{ $master->id } = $master;
+$Slim::Player::Client::BY_ID{ $slave->id }  = $slave;
+@Slim::Player::Client::ALL_CLIENTS          = ( $slave, $master );
+$Slim::Player::Sync::SLAVE_OF{ $slave->id } = $master->id;
+
+# ============================================================
+# (a) initHelpers() delegation: a synced client-pair stub (slave with
+# master) -- the soloist evaluation path delegates the daemon to the
+# master's MAC and stops any slave-tracked helper (mirrors the librespot
+# flow, GH #143 mechanism unmodified for soloist).
+# ============================================================
+{
+    # Pre-condition: the slave was previously a standalone soloist player
+    # and already has its own tracked daemon (simulates "was solo, just got
+    # synced" -- the scenario where a slave-tracked helper must be stopped).
+    Plugins::SpotOn::Unified::DaemonManager->startHelper($slave);
+    is(scalar(@NEW_CALLS), 1, "pre-condition: slave's standalone soloist daemon was created");
+
+    @NEW_CALLS = ();    # isolate the delegation call below
+
+    Plugins::SpotOn::Unified::DaemonManager::initHelpers();
+
+    is_deeply(\@NEW_CALLS, [ $master->id ],
+        "initHelpers() creates exactly one SoloistDaemon, keyed by the sync MASTER's mac (Pattern 7 delegation)");
+    is_deeply(\@STOP_CALLS, [ $slave->id ],
+        "initHelpers() stops the slave's own previously-tracked soloist daemon (Pattern 7)");
+
+    my @remaining = map { $_->mac } Plugins::SpotOn::Unified::DaemonManager->helperInstances();
+    is_deeply(\@remaining, [ $master->id ],
+        "only the sync master's daemon remains registered after delegation");
+
+    ok(Plugins::SpotOn::Unified::DaemonManager->helperForClient($slave->id),
+        "helperForClient() resolves the slave's id to the master's daemon via the sync fallback");
+}
+
+# ============================================================
+# (b) deviceNameForClient() suffix/cap + soloist start-path name consumption:
+# a synced non-group client gets the localized suffix appended within the
+# 60-char cap -- and the soloist start path (_spawnArgs) consumes exactly
+# this name.
+# ============================================================
+{
+    no warnings 'redefine';
+    local *Plugins::SpotOn::Unified::DaemonManager::cstring = sub { return 'Sync Group'; };
+
+    my $expectedName = Plugins::SpotOn::Unified::DaemonManager->deviceNameForClient($master);
+    like($expectedName, qr/Sync Group$/,
+        "deviceNameForClient() appends the localized sync-group suffix for a synced non-group client");
+    ok(length($expectedName) <= 60, "deviceNameForClient() result stays within the 60-char cap");
+
+    my @spawnArgs = Plugins::SpotOn::Unified::SoloistDaemon->_spawnArgs(
+        '/fake/soloist', 'the-spak-key', $expectedName, '/fake/data', '/fake/cache', 40,
+    );
+    is($spawnArgs[2], $expectedName,
+        "the soloist start path (_spawnArgs) consumes exactly deviceNameForClient()'s synced name");
+
+    # ============================================================
+    # (c) sync-change handler: the same name-comparison restart DaemonManager
+    # uses for librespot also applies to a SoloistDaemon instance -- a
+    # helper->name vs deviceNameForClient mismatch triggers stopForSync()
+    # when idle.
+    # ============================================================
+    Plugins::SpotOn::Unified::DaemonManager->init();
+
+    my ($syncEntry) = grep { ref($_->[1]) eq 'ARRAY' && ($_->[1][0][0] // '') eq 'sync' }
+        @Slim::Control::Request::SUBSCRIPTIONS;
+    ok($syncEntry, "DaemonManager->init() subscribed a ['sync'] request handler");
+
+    my $masterHelper = Plugins::SpotOn::Unified::DaemonManager->helperForClient($master->id);
+    $masterHelper->name('Stale Old Name');    # real Slim::Utils::Accessor-generated accessor
+
+    @STOPFORSYNC_CALLS = ();
+
+    $syncEntry->[0]->( Test::SyncRequest->new($slave) );
+
+    is_deeply(\@STOPFORSYNC_CALLS, [ $master->id ],
+        "sync-change handler calls stopForSync() on a SoloistDaemon whose name no longer matches "
+        . "deviceNameForClient (idle) -- GH #143 mechanism unmodified for soloist");
+}
+
 done_testing();
