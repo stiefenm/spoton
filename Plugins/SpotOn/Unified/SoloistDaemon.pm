@@ -354,34 +354,30 @@ sub _pollHttpPort {
 		return;
 	}
 
-	# WR-07: unlink only THIS daemon's own tmpfile here. The previous glob
-	# sweep of every 'spoton-soloist-http-*' file on every poll completion
-	# (success or failure) raced multi-daemon starts: fake-libpulse writes
-	# its port exactly once at dlopen, so daemon A's cleanup could delete
-	# daemon B's port file after B's constructor wrote it but before B's poll
-	# read it, timing B out and stopping a perfectly healthy daemon. The
-	# global stale-file sweep now lives once at boot in
-	# DaemonManager::_cleanupOrphanedLogs, where no daemon can be
-	# mid-announcement.
-	$self->_httpPortTmpfile(undef);
-	unlink $tmpfile;
-
 	unless (defined $port) {
 		if ($procAlive) {
-			# fake-libpulse starts its HTTP server only at pa_simple_new() time
-			# (first audio output), so an idle daemon legitimately has no HTTP
-			# port. Keep it alive — the port is re-polled on demand via
-			# ensureHttpPort() when ProtocolHandler/Connect actually need the
-			# stream URL.
+			# fake-libpulse starts its HTTP server at dlopen time, but the
+			# port file may not be written yet if the constructor's bind/listen
+			# takes longer than our poll window. Keep the tmpfile path and the
+			# daemon alive — ensureHttpPort() re-polls on demand when the
+			# stream URL is actually needed.
 			main::INFOLOG && $log->is_info && $log->info(
-				"SpotOn Soloist daemon HTTP stream port not yet announced — daemon idle, will poll on demand (mac="
+				"SpotOn Soloist daemon HTTP stream port not yet announced — will poll on demand (mac="
 				. $self->mac . ")");
 		}
 		else {
 			$log->warn("SpotOn Soloist daemon exited before announcing HTTP stream port (mac=" . $self->mac . ")");
+			$self->_httpPortTmpfile(undef);
+			unlink $tmpfile;
 		}
 		return;
 	}
+
+	# WR-07: unlink only THIS daemon's own tmpfile once the port is
+	# successfully read. Never unlink while the daemon might still need
+	# to write it (the idle-daemon path above).
+	$self->_httpPortTmpfile(undef);
+	unlink $tmpfile;
 
 	$self->_streamPort($port);
 	main::INFOLOG && $log->is_info && $log->info(
@@ -396,15 +392,7 @@ sub ensureHttpPort {
 	return $cb->(undef) unless $self->_proc && $self->_proc->alive;
 
 	my $tmpfile = $self->_httpPortTmpfile;
-	unless ($tmpfile) {
-		require File::Temp;
-		my ($fh, $tf) = File::Temp::tempfile('spoton-soloist-http-XXXX',
-			DIR => File::Spec::Functions::tmpdir(), UNLINK => 0);
-		close($fh);
-		unlink $tf;
-		$tmpfile = $tf;
-		$self->_httpPortTmpfile($tmpfile);
-	}
+	return $cb->(undef) unless $tmpfile;
 
 	my $attempts = 0;
 	my $poll; $poll = sub {
