@@ -478,7 +478,7 @@ Items discovered during development — not assigned to a milestone.
   - [ ] 71-02-PLAN.md — DaemonManager Backend-Dispatch + D-09 Voraussetzungs-Gate
   - [x] 71-03-PLAN.md — Settings UI: Backend-Dropdown, conditional spak-Key-Feld, Format-Validierung, i18n
   - [ ] 71-04-PLAN.md — Fake-libpulse CI Build-Pipeline (glibc cross-gcc, 3 Architekturen)
-- [ ] **Phase 72: Soloist Browse Playback** — ProtocolHandler Runtime-Backend-Dispatch (sol/son), `--single-track` Integration via generiertem Launcher-Wrapper, Audio-Pipeline (S32LE → FLAC32/PCM via custom-convert.conf), FD-basiertes Streaming an LMS StreamServer
+- [x] **Phase 72: Soloist Browse Playback** — ProtocolHandler Runtime-Backend-Dispatch (sol/son), `--single-track` Integration via generiertem Launcher-Wrapper, Audio-Pipeline (S32LE → FLAC32/PCM via custom-convert.conf), FD-basiertes Streaming an LMS StreamServer (completed 2026-08-26)
   - **Plans:** 3 plans (Wave 1: 72-01 · Wave 2: 72-02 · Gap Closure: 72-03)
   - [x] 72-01-PLAN.md — Tracer: sol-Transcoder-Pfad end-to-end (Launcher-Wrapper, sol-Convert-Rules, ProtocolHandler-Dispatch, D-06 Retry, Tests)
   - [x] 72-02-PLAN.md — Settings D-07 Reorg: Backend als Top-Level-Sektion, conditional librespot/soloist-Felder, Pairing-Status, i18n (11 Sprachen)

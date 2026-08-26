@@ -2,20 +2,20 @@
 gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: Soloist Integration
-current_phase: 72
-current_phase_name: Soloist Browse Playback
-status: verifying
-stopped_at: Completed 72-03-PLAN.md (gap closure)
-last_updated: "2026-08-25T14:03:58.858Z"
-last_activity: 2026-08-25
-last_activity_desc: Phase 72 execution started
-state_head: 225b89db44631515a55bd55e501c4485f0889297
+current_phase: 71
+current_phase_name: soloist foundation
+status: planning
+stopped_at: Phase 72 complete, ready to plan Phase 71
+last_updated: "2026-08-26T14:34:25.940Z"
+last_activity: 2026-08-26
+last_activity_desc: Phase 72 complete, transitioned to Phase 71
+state_head: 32e47abdfbab2b8110898aa5c402f16536cb8d14
 progress:
   total_phases: 14
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 7
   completed_plans: 5
-  percent: 0
+  percent: 7
 ---
 
 # Project State: SpotOn
@@ -34,10 +34,10 @@ See: .planning/PROJECT.md (updated 2026-06-30)
 
 ## Current Position
 
-Phase: 72 (Soloist Browse Playback) — EXECUTING
-Plan: 2 of 2
-Status: Phase complete — ready for verification
-Last activity: 2026-08-25 — Phase 72 execution started
+Phase: 71 — soloist foundation
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-08-26 — Phase 72 complete, transitioned to Phase 71
 
 ## Progress Bar
 
@@ -281,7 +281,7 @@ Items carried forward from previous milestones:
 **Resume file:** None
 
 **Last session:** 2026-08-25T14:03:58.804Z
-**Stopped at:** Completed 72-03-PLAN.md (gap closure)
+**Stopped at:** Phase 72 complete, ready to plan Phase 71
 
 **Completed this session (2026-08-24):**
 
