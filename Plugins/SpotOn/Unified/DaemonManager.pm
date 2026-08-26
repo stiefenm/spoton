@@ -265,6 +265,11 @@ sub init {
     # Delayed cleanup of orphaned unified log files from players no longer connected.
     # 30s delay ensures players have had time to reconnect after LMS restart.
     Slim::Utils::Timers::setTimer($class, Time::HiRes::time() + ORPHAN_LOG_CLEANUP_DELAY, \&_cleanupOrphanedLogs);
+
+    # WR-07: same boot-time delay for the stale Soloist HTTP port-file sweep
+    # (moved here from a per-poll glob-unlink in SoloistDaemon::_pollHttpPort
+    # to eliminate a multi-daemon race).
+    Slim::Utils::Timers::setTimer($class, Time::HiRes::time() + ORPHAN_LOG_CLEANUP_DELAY, \&_cleanupStaleHttpPortFiles);
 }
 
 sub initHelpers {
@@ -669,6 +674,31 @@ sub _cleanupOrphanedLogs {
                 unlink $f;
                 $log->warn("Cleaned up orphaned Unified log: " . basename($f));
             }
+        }
+    }
+}
+
+# WR-07: the per-poll glob-unlink of every 'spoton-soloist-http-*' file
+# (formerly in SoloistDaemon::_pollHttpPort) raced multi-daemon starts --
+# fake-libpulse writes its port file exactly once at dlopen, and daemon A's
+# cleanup could delete daemon B's freshly-written port file before B's own
+# poll ever read it. The sweep now runs exactly once here, at the same
+# boot-time delay as _cleanupOrphanedLogs, where no daemon can plausibly
+# still be mid-announcement (SoloistDaemon's own port poll times out after
+# ~10s; 60s is a generous margin). Each daemon still unlinks its own
+# tmpfile immediately once its poll completes -- this only mops up files
+# left behind by a daemon that crashed/never got read (e.g. after a hard
+# LMS restart).
+sub _cleanupStaleHttpPortFiles {
+    my $baseDir = catdir($serverPrefs->get('cachedir'), 'spoton');
+
+    return unless -d $baseDir;
+
+    for my $f (bsd_glob(catfile($baseDir, 'spoton-soloist-http-*'))) {
+        my $mtime = (stat($f))[9] || 0;
+        if (time() - $mtime > 60) {
+            unlink $f;
+            $log->warn("Cleaned up stale Soloist HTTP port file: " . basename($f));
         }
     }
 }

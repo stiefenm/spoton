@@ -15,7 +15,6 @@ use warnings;
 
 use base qw(Slim::Utils::Accessor);
 
-use File::Glob qw(bsd_glob);
 use File::Spec::Functions qw(catdir catfile);
 use File::Temp qw(tempfile);
 
@@ -355,11 +354,17 @@ sub _pollHttpPort {
 		return;
 	}
 
+	# WR-07: unlink only THIS daemon's own tmpfile here. The previous glob
+	# sweep of every 'spoton-soloist-http-*' file on every poll completion
+	# (success or failure) raced multi-daemon starts: fake-libpulse writes
+	# its port exactly once at dlopen, so daemon A's cleanup could delete
+	# daemon B's port file after B's constructor wrote it but before B's poll
+	# read it, timing B out and stopping a perfectly healthy daemon. The
+	# global stale-file sweep now lives once at boot in
+	# DaemonManager::_cleanupOrphanedLogs, where no daemon can be
+	# mid-announcement.
 	$self->_httpPortTmpfile(undef);
 	unlink $tmpfile;
-	for my $stale (bsd_glob(catfile(catdir($serverPrefs->get('cachedir'), 'spoton'), 'spoton-soloist-http-*'))) {
-		unlink $stale;
-	}
 
 	unless (defined $port) {
 		if ($procAlive) {
