@@ -733,15 +733,20 @@ static void _http_start_server(const char *portFilePath) {
  * setup completes, so SoloistDaemon.pm's async port-file poll
  * succeeds -- start the ring + server thread synchronously here,
  * before returning control to the dynamic loader. */
+static int g_debug_trace = 0;
+
 __attribute__((constructor))
 static void _fake_libpulse_init(void) {
     signal(SIGPIPE, SIG_IGN);
+    g_debug_trace = (getenv("SPOTON_FAKEPULSE_DEBUG") != NULL);
+    if (g_debug_trace) fprintf(stderr, "[fakepulse] constructor: loaded\n");
 
     const char *portFileEnv = getenv("SPOTON_SOLOIST_HTTP_PORT_FILE");
     if (portFileEnv && *portFileEnv) {
         g_http_mode = 1;
         _ring_init(&g_ring);
         _http_start_server(portFileEnv);
+        if (g_debug_trace) fprintf(stderr, "[fakepulse] constructor: HTTP mode, port file=%s, listen_fd=%d\n", portFileEnv, g_http_listen_fd);
     }
 }
 
@@ -918,6 +923,7 @@ pa_mainloop_api *pa_threaded_mainloop_get_api(pa_threaded_mainloop *m) {
 /* ==================================================================== */
 
 pa_context *pa_context_new(pa_mainloop_api *mainloop, const char *name) {
+    if (g_debug_trace) fprintf(stderr, "[fakepulse] pa_context_new(name=%s)\n", name ? name : "(null)");
     (void)name;
     pa_context *c = calloc(1, sizeof(*c));
     if (!c) {
@@ -958,15 +964,13 @@ pa_context_state_t pa_context_get_state(const pa_context *c) {
 }
 
 int pa_context_connect(pa_context *c, const char *server, pa_context_flags_t flags, const pa_spawn_api *api) {
+    if (g_debug_trace) fprintf(stderr, "[fakepulse] pa_context_connect(server=%s)\n", server ? server : "(null)");
     (void)server;
     (void)flags;
     (void)api;
     if (!c) {
         return -1;
     }
-    /* Real PulseAudio transitions CONNECTING -> AUTHORIZING ->
-     * SETTING_NAME -> READY asynchronously; this stub has no server
-     * round-trip to wait for, so it settles directly on READY. */
     _context_set_state(c, PA_CONTEXT_READY);
     return 0;
 }
@@ -1084,6 +1088,7 @@ void pa_stream_set_underflow_callback(pa_stream *s, pa_stream_notify_cb_t cb, vo
 
 int pa_stream_connect_playback(pa_stream *s, const char *dev, const pa_buffer_attr *attr,
                                 pa_stream_flags_t flags, const pa_cvolume *volume, pa_stream *sync_stream) {
+    if (g_debug_trace) fprintf(stderr, "[fakepulse] pa_stream_connect_playback(dev=%s)\n", dev ? dev : "(null)");
     (void)dev;
     (void)attr;
     (void)flags;
@@ -1172,6 +1177,12 @@ size_t pa_stream_writable_size(const pa_stream *s) {
  * and push into the bounded ring the HTTP server thread drains. */
 int pa_stream_write(pa_stream *s, const void *data, size_t nbytes,
                      pa_free_cb_t free_cb, int64_t offset, pa_seek_mode_t seek) {
+    static int _write_trace_count = 0;
+    if (g_debug_trace && _write_trace_count < 5) {
+        fprintf(stderr, "[fakepulse] pa_stream_write(nbytes=%zu)\n", nbytes);
+        _write_trace_count++;
+        if (_write_trace_count == 5) fprintf(stderr, "[fakepulse] (suppressing further pa_stream_write traces)\n");
+    }
     (void)offset;
     (void)seek;
     if (!s || (!data && nbytes > 0)) {

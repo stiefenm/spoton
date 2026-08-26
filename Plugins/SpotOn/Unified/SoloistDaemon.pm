@@ -226,17 +226,20 @@ sub start {
 			if -f $soPath;
 	}
 	$ENV{SPOTON_SOLOIST_HTTP_PORT_FILE} = $http_tmpfile;
+	$ENV{SPOTON_FAKEPULSE_DEBUG} = 1;  # TODO: remove after UAT
 	# Pitfall 3 (RESEARCH): Soloist prefers PipeWire over PulseAudio when
 	# available -- on a desktop LMS host with a live PipeWire session,
 	# Soloist would play audio on the LMS host's own soundcard instead of
-	# routing through fake-libpulse. Block PipeWire at every level:
-	# runtime dir, remote socket, SPA plugin path, and the native PW
-	# module. Without all four, Soloist dlopen()s libpipewire, initialises
-	# it, discovers a working session, and never calls pa_stream_write().
+	# routing through fake-libpulse. Block PipeWire at the *connection*
+	# level (runtime dir, remote socket, XDG_RUNTIME_DIR removal) so its
+	# dlopen succeeds, init runs, but the socket connect fails -- that is
+	# the code path that triggers the PulseAudio fallback. Do NOT poison
+	# SPA_PLUGIN_DIR or PIPEWIRE_MODULE_DIR: that aborts init itself
+	# (before the fallback branch) and Soloist never calls pa_context_*.
+	# LD_LIBRARY_PATH also carries a decoy libpipewire-0.3.so.0 (invalid
+	# ELF) so dlopen fails instantly on headless systems with no real PW.
 	$ENV{PIPEWIRE_RUNTIME_DIR} = '/nonexistent';
 	$ENV{PIPEWIRE_REMOTE}      = '/nonexistent';
-	$ENV{SPA_PLUGIN_DIR}       = '/nonexistent';
-	$ENV{PIPEWIRE_MODULE_DIR}  = '/nonexistent';
 	delete $ENV{XDG_RUNTIME_DIR};
 
 	eval {
@@ -251,8 +254,6 @@ sub start {
 	delete $ENV{SPOTON_SOLOIST_HTTP_PORT_FILE};
 	delete $ENV{PIPEWIRE_RUNTIME_DIR};
 	delete $ENV{PIPEWIRE_REMOTE};
-	delete $ENV{SPA_PLUGIN_DIR};
-	delete $ENV{PIPEWIRE_MODULE_DIR};
 	if (defined $savedLdPreload)     { $ENV{LD_PRELOAD} = $savedLdPreload; }
 	else                             { delete $ENV{LD_PRELOAD}; }
 	if (defined $savedLdLibraryPath) { $ENV{LD_LIBRARY_PATH} = $savedLdLibraryPath; }
