@@ -76,6 +76,24 @@ my %_browse404Retries;  # "$clientId|$trackUrl" => attempt_count
 # this instead of the URL shape.
 sub _useSoloist { ($prefs->get('backend') || 'librespot') eq 'soloist' }
 
+# _streamingModeIsProxy($client) -- WR-05: per-player streamingMode=proxy (or
+# per-player 'global' resolving to a global streamingMode=proxy default,
+# GH #96) forces LMS-relayed streaming. Shared by canDirectStream's COMPAT-02
+# gate, its soloist-Browse branch (which used to return a direct URL BEFORE
+# that gate ever ran, silently bypassing the per-player preference), and
+# new()'s soloist-Browse sync-group proxy substitution.
+sub _streamingModeIsProxy {
+    my ($client) = @_;
+    return 0 unless $client;
+
+    my $gateClient = $client->can('master') ? $client->master : $client;
+    my $mode = $prefs->client($gateClient)->get('streamingMode') || 'global';
+    if ($mode eq 'global') {
+        $mode = $prefs->get('streamingMode') || 'direct';
+    }
+    return $mode eq 'proxy' ? 1 : 0;
+}
+
 sub contentType { _useSoloist() ? 'soc' : 'son' }
 
 sub isRemote    { 1 }
@@ -179,6 +197,16 @@ sub canDirectStream {
     # are handled by their own branch further down, untouched.
     if (_useSoloist() && $url && $url =~ m{^spoton://(?:track|episode):}) {
         my $browseClient = $client->can('master') ? $client->master : $client;
+
+        # WR-05: this branch returns before the COMPAT-02 streamingMode gate
+        # further down ever runs -- evaluate the same proxy resolution here
+        # so a player configured with streamingMode=proxy (e.g. the GH #96
+        # WiiM metadata workaround) does not silently direct-stream anyway.
+        if (_streamingModeIsProxy($browseClient)) {
+            $log->warn("[DIAG] canDirectStream: soloist browse url=$url result=0 reason=streamingMode_proxy") if $prefs->get('diagnosticMode');
+            return 0;   # new()'s soloist sync-group proxy block handles substitution
+        }
+
         require Plugins::SpotOn::Unified::DaemonManager;
         my $helper = Plugins::SpotOn::Unified::DaemonManager->helperForClient($browseClient);
         if ($helper && $helper->alive && $helper->_streamPort) {
@@ -209,19 +237,11 @@ sub canDirectStream {
     # can remain in %_translatedConnectUrls; if the user later switches back to
     # direct, one stale entry causes a single harmless extra return 0 (the proxy
     # path in new() absorbs it) — bounded and accepted, no mitigation needed.
-    {
-        my $gateClient = $client->can('master') ? $client->master : $client;
-        my $mode = $prefs->client($gateClient)->get('streamingMode') || 'global';
-        if ($mode eq 'global') {
-            # GH #96: per-player unset/global resolves against the global default
-            $mode = $prefs->get('streamingMode') || 'direct';
-        }
-        if ($mode eq 'proxy') {
-            main::INFOLOG && $log->is_info && $log->info(
-                "canDirectStream: 0 (streamingMode=proxy)"
-            );
-            return 0;
-        }
+    if (_streamingModeIsProxy($client)) {
+        main::INFOLOG && $log->is_info && $log->info(
+            "canDirectStream: 0 (streamingMode=proxy)"
+        );
+        return 0;
     }
 
     # Browse URL: direct stream to unified daemon /track/{id}
@@ -498,14 +518,16 @@ sub new {
     # (b3) D-03 (Phase 73, Modell B): soloist Browse sync-group proxy —
     # mirrors the Connect (b) block below verbatim (same /stream endpoint,
     # same daemon, same proxy pattern) since soloist Browse plays through
-    # the identical HTTP /stream server Connect uses. Unsynced soloist
-    # browse clients need no substitution here — canDirectStream() above
-    # already returns the direct /stream URL for them.
+    # the identical HTTP /stream server Connect uses. Unsynced, non-proxy
+    # soloist browse clients need no substitution here — canDirectStream()
+    # above already returns the direct /stream URL for them. WR-05: also
+    # substitute for an UNSYNCED player in streamingMode=proxy, since
+    # canDirectStream() now returns 0 for that case too instead of a direct URL.
     if (_useSoloist() && $url =~ m{^spoton://(?:track|episode):[A-Za-z0-9]+$} && $url !~ m{spoton://connect-}) {
         my $client = $args->{client};
         if ($client) {
             $client = $client->master if $client->can('master');
-            if ($client->isSynced()) {
+            if ($client->isSynced() || _streamingModeIsProxy($client)) {
                 require Plugins::SpotOn::Unified::DaemonManager;
                 my $helper = Plugins::SpotOn::Unified::DaemonManager->helperForClient($client);
                 if ($helper && $helper->alive && $helper->_streamPort) {
