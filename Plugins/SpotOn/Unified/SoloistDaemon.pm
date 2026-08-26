@@ -209,12 +209,22 @@ sub start {
 	my $libPath = Plugins::SpotOn::Soloist::libPath();
 
 	my $savedLdLibraryPath = $ENV{LD_LIBRARY_PATH};
+	my $savedLdPreload     = $ENV{LD_PRELOAD};
 	my $savedXdgRuntimeDir = $ENV{XDG_RUNTIME_DIR};
 	my $hadXdgRuntimeDir   = exists $ENV{XDG_RUNTIME_DIR};
 
 	$ENV{LD_LIBRARY_PATH} = defined $libPath
 		? ($savedLdLibraryPath ? "$libPath:$savedLdLibraryPath" : $libPath)
 		: $savedLdLibraryPath;
+	# Soloist dlopen()s libpulse at runtime — LD_LIBRARY_PATH only resolves
+	# NEEDED entries. LD_PRELOAD forces the fake library into the process at
+	# startup so the constructor runs immediately and the HTTP port is
+	# announced before the WS events arrive.
+	if (defined $libPath) {
+		my $soPath = File::Spec::Functions::catfile($libPath, 'libpulse.so.0');
+		$ENV{LD_PRELOAD} = $savedLdPreload ? "$soPath:$savedLdPreload" : $soPath
+			if -f $soPath;
+	}
 	$ENV{SPOTON_SOLOIST_HTTP_PORT_FILE} = $http_tmpfile;
 	# Pitfall 3 (RESEARCH): Soloist prefers PipeWire over PulseAudio when
 	# available -- on a desktop LMS host with a live PipeWire session,
@@ -234,6 +244,8 @@ sub start {
 
 	delete $ENV{SPOTON_SOLOIST_HTTP_PORT_FILE};
 	delete $ENV{PIPEWIRE_RUNTIME_DIR};
+	if (defined $savedLdPreload)     { $ENV{LD_PRELOAD} = $savedLdPreload; }
+	else                             { delete $ENV{LD_PRELOAD}; }
 	if (defined $savedLdLibraryPath) { $ENV{LD_LIBRARY_PATH} = $savedLdLibraryPath; }
 	else                             { delete $ENV{LD_LIBRARY_PATH}; }
 	if ($hadXdgRuntimeDir) { $ENV{XDG_RUNTIME_DIR} = $savedXdgRuntimeDir; }
