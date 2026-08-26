@@ -368,9 +368,14 @@ sub _pollHttpPort {
 
 	unless (defined $port) {
 		if ($procAlive) {
-			$log->warn("SpotOn Soloist daemon did not announce HTTP stream port in time - stopping (mac="
+			# fake-libpulse starts its HTTP server only at pa_simple_new() time
+			# (first audio output), so an idle daemon legitimately has no HTTP
+			# port. Keep it alive — the port is re-polled on demand via
+			# ensureHttpPort() when ProtocolHandler/Connect actually need the
+			# stream URL.
+			main::INFOLOG && $log->is_info && $log->info(
+				"SpotOn Soloist daemon HTTP stream port not yet announced — daemon idle, will poll on demand (mac="
 				. $self->mac . ")");
-			$self->stop();
 		}
 		else {
 			$log->warn("SpotOn Soloist daemon exited before announcing HTTP stream port (mac=" . $self->mac . ")");
@@ -382,6 +387,51 @@ sub _pollHttpPort {
 	main::INFOLOG && $log->is_info && $log->info(
 		"SpotOn Soloist daemon HTTP stream port announced: $port (mac=" . $self->mac . ")"
 	);
+}
+
+sub ensureHttpPort {
+	my ($self, $cb) = @_;
+
+	return $cb->($self->_streamPort) if $self->_streamPort;
+	return $cb->(undef) unless $self->_proc && $self->_proc->alive;
+
+	my $tmpfile = $self->_httpPortTmpfile;
+	unless ($tmpfile) {
+		require File::Temp;
+		my ($fh, $tf) = File::Temp::tempfile('spoton-soloist-http-XXXX',
+			DIR => File::Spec::Functions::tmpdir(), UNLINK => 0);
+		close($fh);
+		unlink $tf;
+		$tmpfile = $tf;
+		$self->_httpPortTmpfile($tmpfile);
+	}
+
+	my $attempts = 0;
+	my $poll; $poll = sub {
+		$attempts++;
+		if (-s $tmpfile) {
+			if (open(my $fh, '<', $tmpfile)) {
+				my $line = readline($fh);
+				close($fh);
+				if (defined $line && $line =~ /^(\d+)\s*$/) {
+					my $port = $1 + 0;
+					$self->_streamPort($port);
+					$self->_httpPortTmpfile(undef);
+					unlink $tmpfile;
+					main::INFOLOG && $log->is_info && $log->info(
+						"SpotOn Soloist daemon HTTP stream port announced on demand: $port (mac=" . $self->mac . ")");
+					return $cb->($port);
+				}
+			}
+		}
+		if ($attempts < PORT_POLL_MAX_ATTEMPTS && $self->_proc && $self->_proc->alive) {
+			Slim::Utils::Timers::setTimer(undef, Time::HiRes::time() + PORT_POLL_INTERVAL, $poll);
+		} else {
+			$log->warn("SpotOn Soloist daemon HTTP stream port not available on demand (mac=" . $self->mac . ")");
+			$cb->(undef);
+		}
+	};
+	$poll->();
 }
 
 sub _cancelPortPolls {
