@@ -469,16 +469,16 @@ static void *http_thread(void *arg) {
 | A6 | Mehrere Soloist-Instanzen auf einem Host koexistieren (mDNS, Cast-Discovery) `[ASSUMED]` | Pitfall 9 | Multi-Player-Systeme zeigen nur ein Gerät; Stagger mildert, löst aber nicht jede Kollision |
 | A7 | `-i/--initial-volume` und Default 40 gelten auch im Daemon-Betrieb; Volume-Seeding analog librespot nötig `[VERIFIED Flag-Existenz via --help; ASSUMED Verhalten]` | Pattern 5 | Falsches Start-Volume nach Transfer — kosmetisch |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Was passiert am Ende eines WS-`play {uri}`-Einzeltracks (A2)?**
+1. **Was passiert am Ende eines WS-`play {uri}`-Einzeltracks (A2)?** — **RESOLVED-BY-SPIKE (73-03 Task 1):** Wave-0-Spike (`soloist ctl trace`) ist als verpflichtender erster Task in Plan 73-03 eingeplant; Protokoll landet in 73-SPIKE-NOTES.md.
    - What we know: `play` akzeptiert optional eine URI; Soloist hat Autoplay/Smart-Shuffle als Produktfeatures; `--single-track` (anderer Modus) beendet den Prozess nach dem Track.
    - What's unclear: stoppt/pausiert der Daemon, feuert `playback_changed{status:stopped}`, oder greift Autoplay?
    - Recommendation: Wave-0-Task: paired Daemon + `soloist ctl trace` + einen Track spielen; Events am Track-Ende protokollieren. Erst danach die Modell-B-Advance-Logik festschreiben.
-2. **Verhält sich `play {uri}` mit Album-/Playlist-URIs kontextbildend?** (Für Repeat-Context/Autoplay-Beherrschung relevant.) Recommendation: im selben Wave-0-Test mitprüfen.
-3. **LMS-Versions-Gate vs. Vendoring (A1)** — Produktentscheidung; im Discuss/Plan-Schritt mit dem User klären. Empfehlung: Vendoring (geringer Aufwand, pure Perl), Gate nur als Fallback.
-4. **Werden `queue_changed`-Events auch bei `add_to_queue` durch den WS-Client selbst gefeuert (Echo)?** Wichtig für Modell-B-Bestätigungslogik. Wave-0-Trace.
-5. **Bleibt die Session gültig, wenn der User Free-Account nutzt und Premium-Features (Gapless/Crossfade "Premium only") wegfallen?** Erwartung: ja, ohne Crossfade — kein Blocker, aber UX-Doku.
+2. **Verhält sich `play {uri}` mit Album-/Playlist-URIs kontextbildend?** (Für Repeat-Context/Autoplay-Beherrschung relevant.) — **RESOLVED-BY-SPIKE (73-03 Task 1):** im selben Wave-0-Spike abgedeckt.
+3. **LMS-Versions-Gate vs. Vendoring (A1)** — **RESOLVED (User-Entscheidung, 2026-08-26): Vendoring.** Protocol::WebSocket 0.26 (pure Perl) wird ins Plugin-Zip vendored (`Plugins/SpotOn/Vendor/Protocol/WebSocket/`); kein LMS-Versions-Gate, Soloist Connect läuft auf LMS 8.0+. Die LMS-gebündelte Kopie (ab 9.1) hat Vorrang, der Vendor-Fallback greift nur bei fehlendem Bundle. → D-08 in 73-CONTEXT.md, umgesetzt in 73-01 Task 2.
+4. **Werden `queue_changed`-Events auch bei `add_to_queue` durch den WS-Client selbst gefeuert (Echo)?** Wichtig für Modell-B-Bestätigungslogik. — **RESOLVED-BY-SPIKE (73-03 Task 1):** Wave-0-Trace im Spike-Protokoll.
+5. **Bleibt die Session gültig, wenn der User Free-Account nutzt und Premium-Features (Gapless/Crossfade "Premium only") wegfallen?** Erwartung: ja, ohne Crossfade — kein Blocker, aber UX-Doku. (Kein Planungs-Blocker — als TROUBLESHOOTING/Doku-Punkt getragen, keine offene Entscheidung.)
 
 ## Environment Availability
 
