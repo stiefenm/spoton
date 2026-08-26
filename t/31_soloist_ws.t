@@ -127,7 +127,9 @@ sub _pluginDataFor { return 'test-basedir' }
 END
 
 # getClient() returns a recorder whose execute() pushes to a shared array
-# -- this is how the tests observe spottyconnect emissions.
+# -- this is how the tests observe spottyconnect emissions. id()/playingSong()
+# added for the 73-03 browse-engine tests (Slim::Control::Request::new needs
+# $client->id; the seeding logic reads $client->playingSong->duration).
 write_stub($stub_dir, 'Slim::Player::Client', <<'END');
 package Slim::Player::Client;
 our @EXECUTED;
@@ -141,6 +143,53 @@ package Slim::Player::Client::Recorder;
 sub execute {
     my ($self, $req) = @_;
     push @Slim::Player::Client::EXECUTED, $req;
+}
+sub id { return $_[0]->{mac}; }
+sub playingSong { return $_[0]->{_song}; }
+sub setPlayingSong { my ($self, $song) = @_; $self->{_song} = $song; }
+package Test::FakeSong;
+sub new      { my ($class, $duration) = @_; return bless { duration => $duration }, $class; }
+sub duration { return $_[0]->{duration}; }
+1;
+END
+
+# 73-03 Task 2: browse advance / correction navigate the real LMS playlist.
+# Controllable via package vars so each test case can set the current
+# streaming index and the playlist's URL list.
+write_stub($stub_dir, 'Slim::Player::Source', <<'END');
+package Slim::Player::Source;
+our $STREAMING_INDEX;
+sub streamingSongIndex { return $STREAMING_INDEX; }
+1;
+END
+
+write_stub($stub_dir, 'Slim::Player::Playlist', <<'END');
+package Slim::Player::Playlist;
+our @TRACKS;
+sub count { return scalar @TRACKS; }
+sub track { my ($client, $idx) = @_; return $TRACKS[$idx]; }
+1;
+END
+
+# Slim::Control::Request object stub -- records constructed+executed
+# requests (id, cmd array, source) separately from the spottyconnect
+# @EXECUTED recorder above, so browse-advance requests (['playlist','index',
+# '+1']) are observable independent of any spottyconnect emission.
+write_stub($stub_dir, 'Slim::Control::Request', <<'END');
+package Slim::Control::Request;
+our @EXECUTED;
+sub new {
+    my ($class, $id, $cmd) = @_;
+    return bless { id => $id, cmd => $cmd, source => undef }, $class;
+}
+sub source {
+    my $self = shift;
+    $self->{source} = shift if @_;
+    return $self->{source};
+}
+sub execute {
+    my $self = shift;
+    push @EXECUTED, { id => $self->{id}, cmd => $self->{cmd}, source => $self->{source} };
 }
 1;
 END
@@ -178,6 +227,12 @@ unshift @INC, $stub_dir, $project_dir;
 # test harness.
 require_ok('Slim::Player::Client')
     or BAIL_OUT("Failed to load the Slim::Player::Client stub");
+require_ok('Slim::Player::Source')
+    or BAIL_OUT("Failed to load the Slim::Player::Source stub");
+require_ok('Slim::Player::Playlist')
+    or BAIL_OUT("Failed to load the Slim::Player::Playlist stub");
+require_ok('Slim::Control::Request')
+    or BAIL_OUT("Failed to load the Slim::Control::Request stub");
 
 require_ok('Plugins::SpotOn::Unified::SoloistWS')
     or BAIL_OUT("Failed to load Plugins::SpotOn::Unified::SoloistWS");
@@ -693,6 +748,267 @@ sub new_ws {
         [ [ 'spottyconnect', 'seek', '40.000', '' ] ],
         "playback_state snapshot beyond tolerance (>3s) emits exactly one seek"
     );
+}
+
+# ============================================================
+# Phase 73-03 Task 2 (D-03, RESEARCH Pattern 6 Modell B): browse session
+# engine -- startBrowseTrack, seeded-match advance, Pitfall-4 defensive
+# correction, track-end handling, device handover, and queue seeding.
+# ============================================================
+
+# startBrowseTrack(): sets browseSession + sends `play {uri}`
+{
+    my $ws         = new_ws();
+    my $fakeClient = Test::FakeWsClient->new;
+    $ws->_client($fakeClient);
+    $ws->connected(1);
+
+    my $ok = $ws->startBrowseTrack('spotify:track:abc', undef);
+    is($ok, 1, "startBrowseTrack() reports success");
+    is($ws->browseSession, 1, "startBrowseTrack() sets browseSession=1");
+    is($ws->browseCurrentUri, 'spotify:track:abc', "startBrowseTrack() sets browseCurrentUri");
+    is($ws->browseSeededUri, undef, "startBrowseTrack() clears any prior seed");
+
+    my $parsed = JSON::PP->new->decode($fakeClient->{writes}[-1]);
+    is_deeply($parsed, { type => 'command', command => 'play', uri => 'spotify:track:abc' },
+        "startBrowseTrack() sends play with the uri");
+}
+
+# startBrowseTrack() refuses a malformed uri (T-22-01 discipline)
+{
+    my $ws = new_ws();
+    is($ws->startBrowseTrack('not-a-spotify-uri', undef), 0, "startBrowseTrack() refuses an invalid uri");
+    is($ws->browseSession, 0, "invalid startBrowseTrack() call does not arm a browse session");
+}
+
+# track_changed matching the seeded uri -> advances via a source-marked
+# Slim::Control::Request, and emits NO spottyconnect command.
+{
+    local $Slim::Utils::Prefs::FAKE_VALUES{enableSpotifyConnect} = 1;
+    @Slim::Player::Client::EXECUTED  = ();
+    @Slim::Control::Request::EXECUTED = ();
+
+    my $ws         = new_ws();
+    my $fakeClient = Test::FakeWsClient->new;
+    $ws->_client($fakeClient);
+    $ws->connected(1);
+    $ws->startBrowseTrack('spotify:track:abc', undef);
+    $ws->browseSeededUri('spotify:track:def');
+
+    $ws->_onMessage('{"type":"track_changed","item":{"uri":"spotify:track:def"}}');
+
+    is($ws->browseAdvancePending, 1, "seeded-match track_changed sets browseAdvancePending");
+    is($ws->browseCurrentUri, 'spotify:track:def', "seeded-match track_changed updates browseCurrentUri");
+    is($ws->browseSeededUri, undef, "seeded-match track_changed clears browseSeededUri");
+
+    is(scalar(@Slim::Control::Request::EXECUTED), 1, "seeded-match track_changed issues exactly one playlist-index request");
+    is_deeply($Slim::Control::Request::EXECUTED[0]{cmd}, ['playlist', 'index', '+1'],
+        "advance request is ['playlist','index','+1']");
+    is($Slim::Control::Request::EXECUTED[0]{source}, 'PLUGIN_SPOTON_SOLOIST_BROWSE',
+        "advance request is source-marked PLUGIN_SPOTON_SOLOIST_BROWSE");
+
+    is_deeply(\@Slim::Player::Client::EXECUTED, [], "seeded-match advance emits no spottyconnect command");
+}
+
+# track_changed with an unexpected uri (Pitfall 4) -- a next LMS track
+# exists -> corrective play(expected), browse session stays active, and the
+# LMS playlist pointer is NOT touched.
+{
+    @Slim::Control::Request::EXECUTED = ();
+    local $Slim::Player::Source::STREAMING_INDEX = 0;
+    local @Slim::Player::Playlist::TRACKS = ('spoton://track:expected', 'spoton://track:nextone');
+
+    my $ws         = new_ws();
+    my $fakeClient = Test::FakeWsClient->new;
+    $ws->_client($fakeClient);
+    $ws->connected(1);
+    $ws->startBrowseTrack('spotify:track:expected', undef);
+    $fakeClient->{writes} = [];    # clear the startBrowseTrack play write
+
+    $ws->_onMessage('{"type":"track_changed","item":{"uri":"spotify:track:rogue"}}');
+
+    ok($ws->browseSession, "unexpected-uri correction stays in the browse session (next track exists)");
+    my $parsed = JSON::PP->new->decode($fakeClient->{writes}[-1]);
+    is_deeply($parsed, { type => 'command', command => 'play', uri => 'spotify:track:expected' },
+        "unexpected uri with a next LMS track sends corrective play(expected) (Pitfall 4)");
+    is(scalar(@Slim::Control::Request::EXECUTED), 0, "correction does not touch the LMS playlist pointer");
+}
+
+# track_changed with an unexpected uri (Pitfall 4) -- no next LMS track ->
+# pause + end the browse session (never let autoplay free-run).
+{
+    local $Slim::Player::Source::STREAMING_INDEX = 0;
+    local @Slim::Player::Playlist::TRACKS = ('spoton://track:expected');
+
+    my $ws         = new_ws();
+    my $fakeClient = Test::FakeWsClient->new;
+    $ws->_client($fakeClient);
+    $ws->connected(1);
+    $ws->startBrowseTrack('spotify:track:expected', undef);
+    $fakeClient->{writes} = [];
+
+    $ws->_onMessage('{"type":"track_changed","item":{"uri":"spotify:track:rogue"}}');
+
+    is($ws->browseSession, 0, "unexpected uri with no next LMS track ends the browse session (Pitfall 4)");
+    my $parsed = JSON::PP->new->decode($fakeClient->{writes}[-1]);
+    is($parsed->{command}, 'pause', "no-next-track correction sends pause");
+}
+
+# device_changed(is_active:false) during a browse session -- the app took
+# over (handover to Connect): end the session, but send NO pause (Connect
+# owns transport from here).
+{
+    my $ws         = new_ws();
+    my $fakeClient = Test::FakeWsClient->new;
+    $ws->_client($fakeClient);
+    $ws->connected(1);
+    $ws->startBrowseTrack('spotify:track:expected', undef);
+    $fakeClient->{writes} = [];
+
+    $ws->_onMessage('{"type":"device_changed","is_active":false}');
+
+    is($ws->browseSession, 0, "device_changed(is_active:false) ends the browse session");
+    is(scalar(@{ $fakeClient->{writes} }), 0, "handover reason sends no pause command");
+}
+
+# playback_changed{stopped} with no seed pending (Task-1-DEFERRED default
+# stop signal) -- ends the browse session WITHOUT pause, and advances the
+# LMS playlist normally when a next entry exists (of any type).
+{
+    @Slim::Control::Request::EXECUTED = ();
+    local $Slim::Player::Source::STREAMING_INDEX = 0;
+    local @Slim::Player::Playlist::TRACKS = ('spoton://track:expected', 'x://internet-radio');
+
+    my $ws         = new_ws();
+    my $fakeClient = Test::FakeWsClient->new;
+    $ws->_client($fakeClient);
+    $ws->connected(1);
+    $ws->startBrowseTrack('spotify:track:expected', undef);
+    $fakeClient->{writes} = [];
+
+    $ws->_onMessage('{"type":"playback_changed","status":"stopped"}');
+
+    is($ws->browseSession, 0, "track-end stop with no seed ends the browse session");
+    is(scalar(@{ $fakeClient->{writes} }), 0, "track_end reason sends no pause command");
+    is(scalar(@Slim::Control::Request::EXECUTED), 1, "track-end with a next LMS entry advances the playlist");
+    is_deeply($Slim::Control::Request::EXECUTED[0]{cmd}, ['playlist', 'index', '+1'],
+        "track-end advance is ['playlist','index','+1']");
+}
+
+# playback_changed{stopped} with no seed AND no next LMS entry -- still
+# ends the session, but issues no advance request (playlist genuinely over).
+{
+    @Slim::Control::Request::EXECUTED = ();
+    local $Slim::Player::Source::STREAMING_INDEX = 0;
+    local @Slim::Player::Playlist::TRACKS = ('spoton://track:expected');
+
+    my $ws = new_ws();
+    $ws->startBrowseTrack('spotify:track:expected', undef);
+
+    $ws->_onMessage('{"type":"playback_changed","status":"stopped"}');
+
+    is($ws->browseSession, 0, "track-end stop with no next entry still ends the browse session");
+    is(scalar(@Slim::Control::Request::EXECUTED), 0, "no next entry -- no advance request issued");
+}
+
+# playback_changed{stopped} while a seed IS pending -- not the track-end
+# case (Soloist should transition into the seed instead); browse session
+# stays untouched.
+{
+    my $ws = new_ws();
+    $ws->startBrowseTrack('spotify:track:expected', undef);
+    $ws->browseSeededUri('spotify:track:next');
+
+    $ws->_onMessage('{"type":"playback_changed","status":"stopped"}');
+
+    is($ws->browseSession, 1, "stopped status with a pending seed does not end the browse session");
+}
+
+# position_sync seeding: inside the lead window, next entry is a spoton://
+# Browse URL -> add_to_queue sent with the translated spotify: uri.
+{
+    my $ws         = new_ws();
+    my $fakeClient = Test::FakeWsClient->new;
+    $ws->_client($fakeClient);
+    $ws->connected(1);
+    $ws->startBrowseTrack('spotify:track:expected', undef);
+    $fakeClient->{writes} = [];
+
+    Slim::Player::Client::getClient($ws->mac)->setPlayingSong(Test::FakeSong->new(180));
+
+    local $Slim::Player::Source::STREAMING_INDEX = 0;
+    local @Slim::Player::Playlist::TRACKS = ('spoton://track:expected', 'spoton://episode:nextep');
+
+    # 170s elapsed of a 180s track -> 10s remaining, inside the 15s lead window.
+    $ws->_onMessage('{"type":"position_sync","position_ms":170000}');
+
+    is($ws->browseSeededUri, 'spotify:episode:nextep',
+        "position_sync seeds the next spoton:// entry once inside the lead window");
+    my $parsed = JSON::PP->new->decode($fakeClient->{writes}[-1]);
+    is_deeply($parsed, { type => 'command', command => 'add_to_queue', uri => 'spotify:episode:nextep' },
+        "position_sync seeding sends add_to_queue with the translated spotify: uri");
+}
+
+# position_sync: outside the lead window -> no seed yet.
+{
+    my $ws         = new_ws();
+    my $fakeClient = Test::FakeWsClient->new;
+    $ws->_client($fakeClient);
+    $ws->connected(1);
+    $ws->startBrowseTrack('spotify:track:expected', undef);
+    $fakeClient->{writes} = [];
+
+    Slim::Player::Client::getClient($ws->mac)->setPlayingSong(Test::FakeSong->new(180));
+
+    local $Slim::Player::Source::STREAMING_INDEX = 0;
+    local @Slim::Player::Playlist::TRACKS = ('spoton://track:expected', 'spoton://track:nextone');
+
+    # 100s elapsed of a 180s track -> 80s remaining, well outside the lead window.
+    $ws->_onMessage('{"type":"position_sync","position_ms":100000}');
+
+    is($ws->browseSeededUri, undef, "position_sync does not seed before the lead window");
+    is(scalar(@{ $fakeClient->{writes} }), 0, "no add_to_queue sent before the lead window");
+}
+
+# position_sync: next entry is not a Spotify Browse URL (radio/local) -> no seed.
+{
+    my $ws         = new_ws();
+    my $fakeClient = Test::FakeWsClient->new;
+    $ws->_client($fakeClient);
+    $ws->connected(1);
+    $ws->startBrowseTrack('spotify:track:expected', undef);
+    $fakeClient->{writes} = [];
+
+    Slim::Player::Client::getClient($ws->mac)->setPlayingSong(Test::FakeSong->new(180));
+
+    local $Slim::Player::Source::STREAMING_INDEX = 0;
+    local @Slim::Player::Playlist::TRACKS = ('spoton://track:expected', 'x://internet-radio');
+
+    $ws->_onMessage('{"type":"position_sync","position_ms":170000}');
+
+    is($ws->browseSeededUri, undef, "position_sync does not seed a non-Spotify next entry (radio/local)");
+    is(scalar(@{ $fakeClient->{writes} }), 0, "no add_to_queue sent for a non-Spotify next entry");
+}
+
+# position_sync: already seeded -- does not re-seed on a subsequent call.
+{
+    my $ws         = new_ws();
+    my $fakeClient = Test::FakeWsClient->new;
+    $ws->_client($fakeClient);
+    $ws->connected(1);
+    $ws->startBrowseTrack('spotify:track:expected', undef);
+    $ws->browseSeededUri('spotify:track:alreadyseeded');
+    $fakeClient->{writes} = [];
+
+    Slim::Player::Client::getClient($ws->mac)->setPlayingSong(Test::FakeSong->new(180));
+
+    local $Slim::Player::Source::STREAMING_INDEX = 0;
+    local @Slim::Player::Playlist::TRACKS = ('spoton://track:expected', 'spoton://track:nextone');
+
+    $ws->_onMessage('{"type":"position_sync","position_ms":170000}');
+
+    is($ws->browseSeededUri, 'spotify:track:alreadyseeded', "position_sync does not re-seed once a seed is already recorded");
+    is(scalar(@{ $fakeClient->{writes} }), 0, "no add_to_queue sent when already seeded");
 }
 
 done_testing();

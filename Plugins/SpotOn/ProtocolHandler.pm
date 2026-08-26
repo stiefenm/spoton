@@ -76,7 +76,7 @@ my %_browse404Retries;  # "$clientId|$trackUrl" => attempt_count
 # this instead of the URL shape.
 sub _useSoloist { ($prefs->get('backend') || 'librespot') eq 'soloist' }
 
-sub contentType { _useSoloist() ? 'sol' : 'son' }
+sub contentType { _useSoloist() ? 'soc' : 'son' }
 
 sub isRemote    { 1 }
 
@@ -99,10 +99,13 @@ sub trackGain {
 # - 'son' for single-track Browse URLs (default)
 sub getFormatForURL {
     my ($class, $url) = @_;
-    # Phase 72 D-02/D-03: soloist branch first — ahead of the URL-shape
-    # branches below — so Browse spoton:// URLs route to the sol-* transcoder
-    # profile instead of the daemon-proxy 'soc' default.
-    return 'sol' if _useSoloist() && $url && $url =~ m{^spoton://(?:track|episode):};
+    # Phase 73 D-03: soloist Browse now plays through the persistent daemon's
+    # HTTP /stream endpoint -- the same 'soc' PCM-direct/proxy family as
+    # librespot -- instead of the retired per-track 'sol' transcoder profile
+    # (conf cleanup: 73-04). Kept as an explicit branch (even though 'soc' is
+    # also the fall-through default below) so the D-03 intent survives
+    # independent of the URL-shape branches below.
+    return 'soc' if _useSoloist() && $url && $url =~ m{^spoton://(?:track|episode):};
     return 'soc' if $url && $url =~ m{spoton://connect-};
     return 'pcm' if $url && $url =~ m{:\d+/stream\b};
     return 'soc' if $url && $url =~ m{:\d+/(?:track|episode)/};  # Phase 28: Browse daemon HTTP URLs
@@ -121,12 +124,12 @@ sub formatOverride {
     my $client = $song->master;
     my $url = $song->track->url || '';
 
-    # Phase 72 D-02/D-03: without this branch, LMS Song.pm would build a
-    # son-*/soc-* profile key for a soloist-backed Browse URL and no sol-*
-    # rule would ever match (silent playback failure).
+    # Phase 73 D-03: soloist Browse now uses the same 'soc' daemon-proxy
+    # family as librespot (HTTP /stream, Modell B) -- the per-track 'sol'
+    # transcoder profile is retired.
     if (_useSoloist() && $url =~ m{^spoton://(?:track|episode):}) {
-        $log->warn("[DIAG] formatOverride: mac=" . ($client ? $client->id : 'none') . " url=$url result=sol (soloist)") if $prefs->get('diagnosticMode');
-        return 'sol';
+        $log->warn("[DIAG] formatOverride: mac=" . ($client ? $client->id : 'none') . " url=$url result=soc (soloist)") if $prefs->get('diagnosticMode');
+        return 'soc';
     }
 
     require Plugins::SpotOn::Unified::DaemonManager;
@@ -167,12 +170,31 @@ sub canDirectStream {
 
     return 0 unless $client;
 
-    # D-03: soloist has no HTTP-serving daemon for Browse — LMS must use the
-    # sol-* transcoder path (custom-convert.conf) instead. Placed before the
-    # streamingMode gate below so this check needs no per-client pref stubs.
-    # Connect URLs (spoton://connect-) are deliberately untouched (Phase 73).
+    # D-03 (Phase 73, Modell B): soloist Browse now plays through the
+    # persistent daemon's HTTP /stream endpoint -- the SAME endpoint Connect
+    # uses (the daemon has exactly one fake-libpulse HTTP server, not a
+    # per-track URL scheme) -- instead of the retired per-track 'sol'
+    # transcoder path. Placed before the streamingMode gate below so this
+    # check needs no per-client pref stubs. Connect URLs (spoton://connect-)
+    # are handled by their own branch further down, untouched.
     if (_useSoloist() && $url && $url =~ m{^spoton://(?:track|episode):}) {
-        $log->warn("[DIAG] canDirectStream: url=$url result=0 reason=soloist_transcoder_path") if $prefs->get('diagnosticMode');
+        my $browseClient = $client->can('master') ? $client->master : $client;
+        require Plugins::SpotOn::Unified::DaemonManager;
+        my $helper = Plugins::SpotOn::Unified::DaemonManager->helperForClient($browseClient);
+        if ($helper && $helper->alive && $helper->_streamPort) {
+            if ($browseClient->isSynced()) {
+                $log->warn("[DIAG] canDirectStream: soloist browse url=$url result=0 reason=synced") if $prefs->get('diagnosticMode');
+                return 0;   # Synced: new() proxy handles
+            }
+            my $host   = Slim::Utils::Network::serverAddr();
+            my $ds_url = "http://$host:" . $helper->_streamPort . "/stream";
+            $log->warn("[DIAG] canDirectStream: soloist browse url=$ds_url") if $prefs->get('diagnosticMode');
+            return $ds_url;
+        }
+        main::INFOLOG && $log->is_info && $log->info(
+            "canDirectStream: soloist browse — no alive daemon/stream port for "
+            . ($browseClient ? $browseClient->id : '?')
+        );
         return 0;
     }
 
@@ -473,6 +495,34 @@ sub new {
         }
     }
 
+    # (b3) D-03 (Phase 73, Modell B): soloist Browse sync-group proxy —
+    # mirrors the Connect (b) block below verbatim (same /stream endpoint,
+    # same daemon, same proxy pattern) since soloist Browse plays through
+    # the identical HTTP /stream server Connect uses. Unsynced soloist
+    # browse clients need no substitution here — canDirectStream() above
+    # already returns the direct /stream URL for them.
+    if (_useSoloist() && $url =~ m{^spoton://(?:track|episode):[A-Za-z0-9]+$} && $url !~ m{spoton://connect-}) {
+        my $client = $args->{client};
+        if ($client) {
+            $client = $client->master if $client->can('master');
+            if ($client->isSynced()) {
+                require Plugins::SpotOn::Unified::DaemonManager;
+                my $helper = Plugins::SpotOn::Unified::DaemonManager->helperForClient($client);
+                if ($helper && $helper->alive && $helper->_streamPort) {
+                    my $host    = Slim::Utils::Network::serverAddr();
+                    my $httpUrl = "http://$host:" . $helper->_streamPort . "/stream";
+                    $log->warn("[DIAG] soloist_browse_sync_proxy: mac=" . $client->id . " http_url=$httpUrl") if $prefs->get('diagnosticMode');
+                    $args = { %$args, url => $httpUrl };
+                } else {
+                    main::INFOLOG && $log->is_info && $log->info(
+                        "Soloist browse URL but no active daemon for " . $client->id . " — returning undef"
+                    );
+                    return undef;
+                }
+            }
+        }
+    }
+
     # (b) D-06: spoton://connect-* URL — substitute HTTP stream URL for sync-group proxy
     if ($url =~ m{spoton://connect-}) {
         my $client = $args->{client};
@@ -556,19 +606,53 @@ sub getNextTrack {
         $song->duration($browseMeta->{duration});
     }
 
-    # D-04/Pitfall-2: Soloist emits raw S32LE/44100/stereo PCM. Without these
-    # hints the sol-pcm profile would be announced as 16-bit and produce
-    # garbage. CR-02 (72-REVIEW.md): the sol-flc rule was removed -- the
-    # LMS-bundled flac (1.3.x) rejects --bps=32, and declaring --bps=24
-    # against the unmodified 32-bit frames would mis-frame every sample
-    # instead (72-RESEARCH.md Pitfall 2/A2/A4). PCM-only is the Phase-72
-    # baseline; true 24-bit FLAC is deferred to Phase 74.
-    if (_useSoloist() && $url =~ m{^spoton://(?:track|episode):}) {
+    # D-04/Pitfall-2: Soloist emits raw S32LE/44100/stereo PCM via
+    # fake-libpulse's HTTP /stream (D-04); without these hints the profile
+    # would be announced as 16-bit and produce garbage. CR-02 (72-REVIEW.md):
+    # the sol-flc rule was removed -- the LMS-bundled flac (1.3.x) rejects
+    # --bps=32, and declaring --bps=24 against the unmodified 32-bit frames
+    # would mis-frame every sample instead (72-RESEARCH.md Pitfall 2/A2/A4).
+    # PCM-only remains the baseline; true 24-bit FLAC is deferred to Phase 74.
+    if (_useSoloist() && $url =~ m{^spoton://(track|episode):([A-Za-z0-9]+)$}) {
+        my ($type, $id) = ($1, $2);
         my $track = $song->track;
         if ($track) {
             $track->samplesize(16)    if $track->can('samplesize');
             $track->samplerate(44100) if $track->can('samplerate');
             $track->channels(2)       if $track->can('channels');
+        }
+
+        # D-03 (Phase 73, Modell B): dispatch the actual play command to the
+        # persistent daemon over WS. browseAdvancePending is set by
+        # SoloistWS when THIS getNextTrack re-entry is the LMS-side mirror
+        # of a track_changed the daemon already transitioned into (seeded
+        # gapless advance, T-73-11 re-entry guard) -- Soloist is already
+        # playing this track, so issuing another `play` would restart audio
+        # that doesn't need restarting.
+        my $client = $song->master;
+        require Plugins::SpotOn::Unified::DaemonManager;
+        my $helper = Plugins::SpotOn::Unified::DaemonManager->helperForClient($client);
+        my $ws = ($helper && $helper->can('_ws')) ? $helper->_ws : undef;
+
+        unless ($ws && $ws->connected) {
+            main::INFOLOG && $log->is_info && $log->info(
+                "getNextTrack: soloist browse -- WS not connected for " . ($client ? $client->id : '?')
+            );
+            $errorCb->('PROBLEM_OPENING', 'Soloist daemon not ready');
+            return;
+        }
+
+        if ($ws->browseAdvancePending) {
+            $ws->browseAdvancePending(0);
+            main::INFOLOG && $log->is_info && $log->info(
+                "getNextTrack: soloist browse advance re-entry for $url -- skipping play (already playing)"
+            );
+        }
+        else {
+            main::INFOLOG && $log->is_info && $log->info(
+                "getNextTrack: soloist browse -- startBrowseTrack(spotify:$type:$id)"
+            );
+            $ws->startBrowseTrack("spotify:$type:$id", $client);
         }
     }
 
@@ -812,10 +896,10 @@ sub isRepeatingStream {
 
 sub canSeek {
     my ($class, $client) = @_;
-    # Pitfall 3: soloist single-track mode has no seek/offset flag at all --
-    # advertising seekability would make the seek bar restart tracks.
-    # Browse-seek for soloist revisits in Phase 74 raw-capture work.
-    return 0 if _useSoloist();
+    # D-03 (Phase 73, Modell B): soloist Browse now supports seek via the
+    # daemon's WS `seek` command (the persistent daemon lifted the
+    # Phase-72 hard 0 -- single-track mode had no seek/offset flag at all).
+    # Both backends fall through to the same LMS-version gate.
     return Slim::Utils::Versions->compareVersions($::VERSION, '7.9.1') >= 0;
 }
 
@@ -824,9 +908,10 @@ sub canTranscodeSeek {
     # Unified daemon: seek is handled via ?start_position=N in canDirectStreamSong,
     # not via $START$ in the transcoding command. Returning 0 keeps canDoSeek at 1
     # so streamMode 'I' stays in the profile search and soc-pcm-*-* matches.
-    # 0 is also the correct answer on the soloist path (Pitfall 3) -- Soloist
-    # has no --start-position flag to template into the sol-* convert rules;
-    # canSeek()=0 above already prevents seek entry on that path.
+    # 0 is also the correct answer on the soloist path (D-03): seek there is
+    # WS-based now (getSeekData returns undef + Connect.pm-style forwarding
+    # for the browse session, 73-03 Task 3) -- there is no transcoding-side
+    # $START$ template to fill for soloist either.
     return 0;
 }
 
@@ -848,6 +933,17 @@ sub getSeekData {
     #   getSeekData. No handler hook exists; accepted as known limitation.
     return undef if Plugins::SpotOn::Connect->isSpotifyConnect($client);
 
+    # D-03 (Phase 73, Modell B): soloist Browse seek is also WS-based --
+    # the browse session forwards the seek to Soloist itself
+    # (Connect.pm-style soloist-browse forwarding, 73-03 Task 3). Suppress
+    # the LMS-side stream restart here too (same GH #129 pattern as the
+    # Connect branch above) so the daemon's own `seek` command is what
+    # actually moves the position, not an LMS-side /stream reconnect.
+    if (_useSoloist() && $song) {
+        my $songUrl = $song->track ? ($song->track->url || '') : '';
+        return undef if $songUrl =~ m{^spoton://(?:track|episode):};
+    }
+
     return { timeOffset => $newtime };
 }
 
@@ -863,14 +959,33 @@ sub getSeekData {
 sub canDoAction {
     my ($class, $client, $url, $action) = @_;
 
-    if ($action eq 'rew' && Plugins::SpotOn::Connect->isSpotifyConnect($client)) {
+    if ($action eq 'rew'
+        && (Plugins::SpotOn::Connect->isSpotifyConnect($client) || _hasActiveSoloistBrowseSession($client)))
+    {
         main::DEBUGLOG && $log->is_debug && $log->debug(
-            "Connect mode: blocking LMS-side restart for 'rew' (seek-to-0 handled by binary)"
+            "Connect/soloist-browse mode: blocking LMS-side restart for 'rew' (seek-to-0 handled by binary)"
         );
         return 0;
     }
 
     return 1;
+}
+
+# _hasActiveSoloistBrowseSession($client) -- 73-03 Task 2 (D-03): true when
+# this client's soloist daemon WS is currently running a browse-managed
+# session. Used to extend the GH #129 seek-to-0 restart suppression
+# (canDoAction('rew')) to soloist Browse the same way it already covers
+# Connect.
+sub _hasActiveSoloistBrowseSession {
+    my ($client) = @_;
+    return 0 unless _useSoloist() && $client;
+
+    my $browseClient = $client->can('master') ? $client->master : $client;
+    require Plugins::SpotOn::Unified::DaemonManager;
+    my $helper = Plugins::SpotOn::Unified::DaemonManager->helperForClient($browseClient);
+    my $ws = ($helper && $helper->can('_ws')) ? $helper->_ws : undef;
+
+    return ($ws && $ws->browseSession) ? 1 : 0;
 }
 
 # getMetadataFor($class, $client, $url)
