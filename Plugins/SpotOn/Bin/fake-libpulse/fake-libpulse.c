@@ -467,53 +467,34 @@ static void _set_nonblocking(int fd) {
     }
 }
 
-/* Reads and discards the request head (up to the blank line) from a
- * freshly accepted, non-blocking client socket. Bounded by both a
- * fixed buffer and a 2s wall-clock timeout -- this port serves exactly
- * one purpose (GET /stream) so the request body is never inspected. */
-static void _http_discard_request(int fd) {
+/* WR-11: a freshly accept()ed connection that hasn't sent its request head
+ * yet (portscanner, health checker, misbehaving client) MUST NOT touch the
+ * currently active client until the head has actually arrived -- reading
+ * it used to be a dedicated blocking-with-poll call (_http_discard_request,
+ * up to HTTP_REQUEST_TIMEOUT_MS) invoked AFTER the takeover already
+ * happened, which both disconnected the active player and froze this
+ * single thread's ring-drain loop for up to 2s per such connection.
+ *
+ * Replaced by non-blocking, incremental state tracked here and read a
+ * little further every _http_thread_fn tick (poll()ed alongside the listen
+ * socket and the active client, never blocking) -- the takeover only
+ * happens once a complete head has actually been read. */
+typedef struct {
+    int fd;
     char buf[HTTP_REQUEST_BUF_SIZE];
-    size_t total = 0;
-    struct timeval start, now;
-    gettimeofday(&start, NULL);
+    size_t len;
+    struct timeval started;
+} pending_conn_t;
 
-    for (;;) {
-        long elapsed_ms = 0;
-        gettimeofday(&now, NULL);
-        elapsed_ms = (now.tv_sec - start.tv_sec) * 1000
-                   + (now.tv_usec - start.tv_usec) / 1000;
-        if (elapsed_ms >= HTTP_REQUEST_TIMEOUT_MS) {
-            return;
-        }
+static int _pending_head_complete(const pending_conn_t *p) {
+    return strstr(p->buf, "\r\n\r\n") != NULL || strstr(p->buf, "\n\n") != NULL;
+}
 
-        struct pollfd pfd;
-        pfd.fd = fd;
-        pfd.events = POLLIN;
-        int rc = poll(&pfd, 1, (int)(HTTP_REQUEST_TIMEOUT_MS - elapsed_ms));
-        if (rc <= 0) {
-            continue;
-        }
-        if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
-            return;
-        }
-        if (!(pfd.revents & POLLIN)) {
-            continue;
-        }
-        if (total >= sizeof(buf) - 1) {
-            return; /* bounded -- give up parsing, still answer the GET */
-        }
-
-        ssize_t n = read(fd, buf + total, sizeof(buf) - 1 - total);
-        if (n <= 0) {
-            return;
-        }
-        total += (size_t)n;
-        buf[total] = '\0';
-
-        if (strstr(buf, "\r\n\r\n") || strstr(buf, "\n\n")) {
-            return;
-        }
-    }
+static long _elapsed_ms(const struct timeval *start) {
+    struct timeval now;
+    gettimeofday(&now, NULL);
+    return (now.tv_sec - start->tv_sec) * 1000
+         + (now.tv_usec - start->tv_usec) / 1000;
 }
 
 /* Blocking-with-poll write: waits for writability (bounded), then
@@ -554,51 +535,109 @@ static const char HTTP_RESPONSE_HEADER[] =
     "Connection: close\r\n"
     "\r\n";
 
-/* Single server thread, multiplexing accept + streaming with poll()
- * over {listen_fd, client_fd}. A new accept() while a client is
- * already attached takes over immediately (old fd closed, new fd
+/* Single server thread, multiplexing accept + pending-request-head +
+ * streaming with poll() over {listen_fd, pending_fd, client_fd}. WR-11: a
+ * newly accepted connection is held in a PENDING slot -- untouched by the
+ * active client -- until its request head has actually arrived (or it
+ * errors/times out); only THEN does it take over (old fd closed, new fd
  * streamed) -- the same relay-generation takeover semantics as
- * librespot-spoton/src/unified.rs (blueprint, M15). */
+ * librespot-spoton/src/unified.rs (blueprint, M15), just no longer
+ * triggered by the mere act of accept()ing. */
 static void *_http_thread_fn(void *arg) {
     (void)arg;
     int client_fd = -1;
+    pending_conn_t pending;
+    pending.fd = -1;
+    pending.len = 0;
+    pending.buf[0] = '\0';
 
     for (;;) {
-        struct pollfd fds[1];
+        struct pollfd fds[2];
         fds[0].fd = g_http_listen_fd;
         fds[0].events = POLLIN;
+        int pending_idx = -1;
+        if (pending.fd >= 0) {
+            pending_idx = 1;
+            fds[1].fd = pending.fd;
+            fds[1].events = POLLIN;
+        }
 
-        int rc = poll(fds, 1, 50); /* 50ms tick: keep servicing the ring
-                                       even with no incoming connection */
+        int rc = poll(fds, pending_idx >= 0 ? 2 : 1, 50); /* 50ms tick: keep
+            servicing the ring even with no incoming/pending activity */
 
         if (rc > 0 && (fds[0].revents & POLLIN)) {
             int newfd = accept(g_http_listen_fd, NULL, NULL);
             if (newfd >= 0) {
-                _set_nonblocking(newfd);
-
-                if (client_fd >= 0) {
-                    /* Takeover: close the previous client, a new GET
-                     * /stream always wins (RESEARCH Pattern 1). */
-                    close(client_fd);
-                    client_fd = -1;
-                    pthread_mutex_lock(&g_ring.lock);
-                    g_ring.client_connected = 0;
-                    pthread_cond_broadcast(&g_ring.space_avail);
-                    pthread_mutex_unlock(&g_ring.lock);
+                if (pending.fd >= 0) {
+                    /* A newer connection preempts a still-unconfirmed
+                     * pending one -- does NOT touch the active client. */
+                    close(pending.fd);
                 }
+                _set_nonblocking(newfd);
+                pending.fd = newfd;
+                pending.len = 0;
+                pending.buf[0] = '\0';    /* clear stale bytes from a prior
+                                             pending connection -- without
+                                             this, a leftover "\r\n\r\n" tail
+                                             in the buffer makes
+                                             _pending_head_complete() return
+                                             true for a brand-new connection
+                                             that hasn't sent a single byte */
+                gettimeofday(&pending.started, NULL);
+            }
+        }
 
-                _http_discard_request(newfd);
-
-                if (_http_write_all(newfd, (const unsigned char *)HTTP_RESPONSE_HEADER,
-                                     sizeof(HTTP_RESPONSE_HEADER) - 1) == 0) {
-                    client_fd = newfd;
-                    pthread_mutex_lock(&g_ring.lock);
-                    g_ring.client_connected = 1;
-                    pthread_mutex_unlock(&g_ring.lock);
+        if (pending.fd >= 0 && pending_idx >= 0 && rc > 0
+            && (fds[pending_idx].revents & (POLLIN | POLLERR | POLLHUP | POLLNVAL)))
+        {
+            if (fds[pending_idx].revents & (POLLERR | POLLHUP | POLLNVAL)) {
+                close(pending.fd);
+                pending.fd = -1;
+            } else if (pending.len < sizeof(pending.buf) - 1) {
+                ssize_t n = read(pending.fd, pending.buf + pending.len,
+                                  sizeof(pending.buf) - 1 - pending.len);
+                if (n <= 0) {
+                    close(pending.fd);
+                    pending.fd = -1;
                 } else {
-                    close(newfd);
+                    pending.len += (size_t)n;
+                    pending.buf[pending.len] = '\0';
                 }
             }
+        }
+
+        if (pending.fd >= 0
+            && (_pending_head_complete(&pending) || pending.len >= sizeof(pending.buf) - 1))
+        {
+            /* Full request head arrived (or the bounded buffer filled,
+             * matching the old discard function's give-up-parsing
+             * behavior) -- NOW take over. */
+            if (client_fd >= 0) {
+                close(client_fd);
+                client_fd = -1;
+                pthread_mutex_lock(&g_ring.lock);
+                g_ring.client_connected = 0;
+                pthread_cond_broadcast(&g_ring.space_avail);
+                pthread_mutex_unlock(&g_ring.lock);
+            }
+
+            if (_http_write_all(pending.fd, (const unsigned char *)HTTP_RESPONSE_HEADER,
+                                 sizeof(HTTP_RESPONSE_HEADER) - 1) == 0) {
+                client_fd = pending.fd;
+                pthread_mutex_lock(&g_ring.lock);
+                g_ring.client_connected = 1;
+                pthread_mutex_unlock(&g_ring.lock);
+            } else {
+                close(pending.fd);
+            }
+            pending.fd = -1;
+            pending.len = 0;
+        } else if (pending.fd >= 0 && _elapsed_ms(&pending.started) >= HTTP_REQUEST_TIMEOUT_MS) {
+            /* Timed out without a complete head and without an error/EOF --
+             * drop silently. The active client (if any) was never touched. */
+            close(pending.fd);
+            pending.fd = -1;
+            pending.len = 0;
         }
 
         if (client_fd >= 0) {
@@ -1291,9 +1330,13 @@ static int _test_connect_loopback(int port) {
     return -1;
 }
 
-/* Reads and validates the HTTP response header, then reads exactly
- * 'want' bytes of body into out. Returns 0 on success. */
-static int _test_read_response(int fd, unsigned char *out, size_t want, int timeout_ms) {
+/* Reads and validates just the HTTP response header (up to the blank
+ * line), byte-at-a-time -- extracted out of _test_read_response so the
+ * WR-11 regression test below can confirm a connection has been promoted
+ * to the active client without also having to know how many body bytes
+ * are available to read next (which depends on ring leftovers from
+ * whichever test ran previously). Returns 0 on success. */
+static int _test_read_header(int fd, int timeout_ms) {
     char hdrbuf[4096];
     size_t hdrlen = 0;
     struct timeval start, now;
@@ -1332,8 +1375,45 @@ static int _test_read_response(int fd, unsigned char *out, size_t want, int time
         fprintf(stderr, "  missing Content-Type header\n");
         return -1;
     }
+    return 0;
+}
 
+/* Reads and validates the HTTP response header, then reads exactly
+ * 'want' bytes of body into out. Returns 0 on success. */
+static int _test_read_response(int fd, unsigned char *out, size_t want, int timeout_ms) {
+    if (_test_read_header(fd, timeout_ms) != 0) {
+        return -1;
+    }
+
+    struct timeval start, now;
     size_t got = 0;
+    gettimeofday(&start, NULL);
+    while (got < want) {
+        struct pollfd pfd;
+        pfd.fd = fd;
+        pfd.events = POLLIN;
+        int rc = poll(&pfd, 1, 200);
+        if (rc > 0 && (pfd.revents & POLLIN)) {
+            ssize_t n = read(fd, out + got, want - got);
+            if (n <= 0) {
+                return -1;
+            }
+            got += (size_t)n;
+        }
+        gettimeofday(&now, NULL);
+        if ((now.tv_sec - start.tv_sec) * 1000 >= timeout_ms) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+/* Reads exactly 'want' raw bytes on an already-streaming connection (no
+ * HTTP header parsing, unlike _test_read_response) -- bounded by
+ * timeout_ms. Returns 0 on success, -1 on timeout/EOF/error. */
+static int _test_read_bytes(int fd, unsigned char *out, size_t want, int timeout_ms) {
+    size_t got = 0;
+    struct timeval start, now;
     gettimeofday(&start, NULL);
     while (got < want) {
         struct pollfd pfd;
@@ -1431,6 +1511,95 @@ int main(void) {
     }
 
     close(client);
+
+    /* WR-11 regression: an idle connection that is accepted but never
+     * sends a request head must not disconnect the active client, and the
+     * active client must keep receiving new PCM data promptly (not stall
+     * for up to HTTP_REQUEST_TIMEOUT_MS -- the exact portscanner/health-
+     * checker scenario this fix addresses). */
+    {
+        int active = _test_connect_loopback(port);
+        if (active < 0) {
+            fprintf(stderr, "FAIL: could not connect active client for WR-11 test\n");
+            failures++;
+        } else {
+            static const char req2[] = "GET /stream HTTP/1.0\r\n\r\n";
+            if (write(active, req2, sizeof(req2) - 1) < 0) {
+                fprintf(stderr, "FAIL: could not send GET /stream for WR-11 test\n");
+                failures++;
+            }
+
+            if (_test_read_header(active, 3000) != 0) {
+                fprintf(stderr, "FAIL: did not receive response header for WR-11 test\n");
+                failures++;
+            }
+
+            /* Accept a second connection that sends NOTHING. */
+            int idle = _test_connect_loopback(port);
+            if (idle < 0) {
+                fprintf(stderr, "FAIL: could not open idle connection for WR-11 test\n");
+                failures++;
+            } else {
+                usleep(100000); /* let the server thread accept() it into
+                                    the pending slot */
+
+                float sample[2] = { 0.5f, -0.5f };
+                struct timeval t0, t1;
+                gettimeofday(&t0, NULL);
+                pa_stream_write(s, sample, sizeof(sample), NULL, 0, 0);
+
+                unsigned char body[4];
+                int ok = (_test_read_bytes(active, body, sizeof(body), 500) == 0);
+                gettimeofday(&t1, NULL);
+                long ms = (t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_usec - t0.tv_usec) / 1000;
+
+                if (!ok) {
+                    fprintf(stderr, "FAIL: active client did not receive new PCM data "
+                                    "while an idle connection was pending (WR-11)\n");
+                    failures++;
+                } else if (ms > 500) {
+                    fprintf(stderr, "FAIL: active client stalled %ldms with an idle "
+                                    "connection pending (WR-11)\n", ms);
+                    failures++;
+                } else {
+                    printf("ok: idle pending connection does not disconnect or stall the active client (WR-11, %ldms)\n", ms);
+                }
+
+                close(idle);
+            }
+
+            close(active);
+
+            /* The server thread only notices a client's close() by trying
+             * to WRITE to it and failing -- and on loopback that failure
+             * doesn't always surface on the very first post-close write
+             * (the kernel can accept one or two more writes into its send
+             * buffer before an RST comes back), so a single fixed sleep is
+             * not reliable here. Keep nudging it with tiny flush writes and
+             * polling client_connected (reset to 0 exactly when the
+             * background thread detects the failure) until it actually
+             * goes false, bounded so a genuine regression fails loudly
+             * instead of hanging. Needed so the drop-oldest test below
+             * starts from a clean "no client" state instead of racing a
+             * delayed write-failure against its own bulk push. */
+            {
+                int stillConnected = 1;
+                for (int i = 0; i < 50 && stillConnected; i++) {
+                    float flush[2] = { 0.0f, 0.0f };
+                    pa_stream_write(s, flush, sizeof(flush), NULL, 0, 0);
+                    usleep(20000);
+                    pthread_mutex_lock(&g_ring.lock);
+                    stillConnected = g_ring.client_connected;
+                    pthread_mutex_unlock(&g_ring.lock);
+                }
+                if (stillConnected) {
+                    fprintf(stderr, "FAIL: server thread never noticed the WR-11 test's "
+                                    "client close (client_connected still true)\n");
+                    failures++;
+                }
+            }
+        }
+    }
 
     /* Drop-oldest test: force client_connected=0 and an empty ring
      * directly (same translation unit, direct struct access), then
