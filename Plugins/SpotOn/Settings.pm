@@ -553,8 +553,21 @@ sub handler {
 
         # D-09/Pitfall 7: build-expiry warning -- read once here, not
         # per-player (the pinned soloist binary is shared host-wide).
+        # WR-10: `days` is a point-in-time reading from whenever it was last
+        # parsed (checked_at) -- a daemon running uninterrupted for weeks
+        # would otherwise show an unchanged countdown, undermining the
+        # <=14-day warning this display exists for. Adjust for wallclock
+        # time elapsed since checked_at, floored at 0.
         my $expiryCache = $wsCache->get('spoton_soloist_expiry_days');
-        $paramRef->{soloistExpiryDays} = ($expiryCache && defined $expiryCache->{days}) ? $expiryCache->{days} : undef;
+        if ($expiryCache && defined $expiryCache->{days}) {
+            my $checkedAt      = $expiryCache->{checked_at} || time();
+            my $elapsedDays    = int((time() - $checkedAt) / 86400);
+            my $adjustedDays   = $expiryCache->{days} - $elapsedDays;
+            $paramRef->{soloistExpiryDays} = $adjustedDays > 0 ? $adjustedDays : 0;
+        }
+        else {
+            $paramRef->{soloistExpiryDays} = undef;
+        }
         $paramRef->{soloistExpiryWarn} = (defined $paramRef->{soloistExpiryDays} && $paramRef->{soloistExpiryDays} <= 14) ? 1 : 0;
         $paramRef->{soloistExpired}    = $wsCache->get('spoton_soloist_expired') ? 1 : 0;
         # Pre-formatted display text (Plugin.pm's sprintf(cstring(...), $n)

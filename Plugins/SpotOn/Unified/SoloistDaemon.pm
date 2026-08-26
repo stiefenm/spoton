@@ -482,6 +482,11 @@ sub _parseExpiryDays {
 
 	my $head = eval {
 		open(my $fh, '<', $file) or die "open failed: $!";
+		# WR-10: diagnosticMode opens this log '>>' (append) -- reading from
+		# offset 0 would parse whatever the FIRST-ever run wrote (the oldest
+		# head in the file), freezing `days` at that stale value forever.
+		# Seek to this run's own start offset instead.
+		seek($fh, $self->_stderrStartOffset || 0, 0);
 		read($fh, my $buf, 8192);
 		close($fh);
 		$buf;
