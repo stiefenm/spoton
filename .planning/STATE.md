@@ -6,10 +6,10 @@ current_phase: 73
 current_phase_name: Soloist Connect Mode
 status: executing
 stopped_at: Completed 73-02-PLAN.md (control-command dispatch, reconnect resync, repeat/shuffle, build-expiry hardening)
-last_updated: "2026-08-26T17:16:43.387Z"
+last_updated: "2026-08-26T17:17:36.652Z"
 last_activity: 2026-08-26
 last_activity_desc: Phase 73 execution resumed (wave continue)
-state_head: e79fc05d7e45c7a262d18d21f3ccad8b6de9b05c
+state_head: d773a948d0da3a2f139c103502959ca5ecc158c3
 progress:
   total_phases: 14
   completed_phases: 2
@@ -37,7 +37,7 @@ See: .planning/PROJECT.md (updated 2026-06-30)
 Phase: 73 (Soloist Connect Mode) — EXECUTING
 Plan: 3 of 4
 Status: Ready to execute
-Last activity: 2026-08-26 — Completed 73-01 (fake-libpulse HTTP mode, SoloistDaemon, SoloistWS)
+Last activity: 2026-08-26 — Completed 73-02 (control-command dispatch, reconnect resync, repeat/shuffle, build-expiry hardening)
 
 ## Progress Bar
 
