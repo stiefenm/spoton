@@ -349,4 +349,350 @@ sub new_ws {
     is($ws->lastTrackId, undef, "lastTrackId untouched by invalid URI");
 }
 
+# ============================================================
+# Phase 73-02 Task 1 (D-06): sendCommand() full command-map serialization
+# ============================================================
+{
+    require JSON::PP;
+
+    my @cases = (
+        [ 'pause',        {},                                    { type => 'command', command => 'pause' } ],
+        [ 'play',         {},                                    { type => 'command', command => 'play' } ],
+        [ 'skip_next',    {},                                    { type => 'command', command => 'skip_next' } ],
+        [ 'skip_prev',    {},                                    { type => 'command', command => 'skip_prev' } ],
+        [ 'seek',         { position_ms => 15000 },              { type => 'command', command => 'seek', position_ms => 15000 } ],
+        [ 'set_volume',   { volume => 42 },                      { type => 'command', command => 'set_volume', volume => 42 } ],
+        [ 'add_to_queue', { uri => 'spotify:track:abc123' },     { type => 'command', command => 'add_to_queue', uri => 'spotify:track:abc123' } ],
+        [ 'get_state',    {},                                    { type => 'command', command => 'get_state' } ],
+        [ 'get_queue',    {},                                    { type => 'command', command => 'get_queue' } ],
+        [ 'activate',     {},                                    { type => 'command', command => 'activate' } ],
+        [ 'deactivate',   {},                                    { type => 'command', command => 'deactivate' } ],
+    );
+
+    for my $case (@cases) {
+        my ($command, $params, $expected) = @$case;
+
+        my $ws         = new_ws();
+        my $fakeClient = Test::FakeWsClient->new;
+        $ws->_client($fakeClient);
+        $ws->connected(1);
+
+        my $ok = $ws->sendCommand($command, %$params);
+        is($ok, 1, "sendCommand('$command') reports success");
+
+        my $parsed = JSON::PP->new->decode($fakeClient->{writes}[-1]);
+        is_deeply($parsed, $expected, "sendCommand('$command') serializes the expected envelope");
+    }
+}
+
+# add_to_queue with a non-track/episode URI is refused before the wire (T-22-01/T-73-07)
+{
+    my $ws         = new_ws();
+    my $fakeClient = Test::FakeWsClient->new;
+    $ws->_client($fakeClient);
+    $ws->connected(1);
+
+    my $ok = $ws->sendCommand('add_to_queue', uri => 'spotify:playlist:notallowed');
+    is($ok, 0, "sendCommand('add_to_queue', uri => playlist-uri) is refused");
+    is(scalar(@{ $fakeClient->{writes} }), 0, "refused command never reaches the wire");
+}
+
+# ============================================================
+# Phase 73-02 Task 1 (Pitfall 6): sendRepeatMode() two-command matrix
+# ============================================================
+{
+    my @cases = (
+        [ 'off',     0, 0 ],
+        [ 'context', 1, 0 ],
+        [ 'track',   0, 1 ],
+    );
+
+    for my $case (@cases) {
+        my ($mode, $wantContext, $wantTrack) = @$case;
+
+        my $ws         = new_ws();
+        my $fakeClient = Test::FakeWsClient->new;
+        $ws->_client($fakeClient);
+        $ws->connected(1);
+
+        my $ok = $ws->sendRepeatMode($mode);
+        is($ok, 1, "sendRepeatMode('$mode') reports success");
+        is(scalar(@{ $fakeClient->{writes} }), 2, "sendRepeatMode('$mode') emits exactly two commands");
+
+        my $p1 = JSON::PP->new->decode($fakeClient->{writes}[0]);
+        my $p2 = JSON::PP->new->decode($fakeClient->{writes}[1]);
+
+        is($p1->{command}, 'set_repeat_context', "sendRepeatMode('$mode') first command is set_repeat_context");
+        is(($p1->{enabled} ? 1 : 0), $wantContext, "sendRepeatMode('$mode') set_repeat_context enabled=$wantContext");
+        is($p2->{command}, 'set_repeat_track', "sendRepeatMode('$mode') second command is set_repeat_track");
+        is(($p2->{enabled} ? 1 : 0), $wantTrack, "sendRepeatMode('$mode') set_repeat_track enabled=$wantTrack");
+    }
+}
+
+# sendShuffle() serialization
+{
+    my $ws         = new_ws();
+    my $fakeClient = Test::FakeWsClient->new;
+    $ws->_client($fakeClient);
+    $ws->connected(1);
+
+    $ws->sendShuffle(1);
+    my $parsed = JSON::PP->new->decode($fakeClient->{writes}[-1]);
+    is($parsed->{command}, 'set_shuffle', "sendShuffle(1) sends set_shuffle");
+    is(($parsed->{enabled} ? 1 : 0), 1, "sendShuffle(1) enabled=true");
+
+    $ws->sendShuffle(0);
+    $parsed = JSON::PP->new->decode($fakeClient->{writes}[-1]);
+    is(($parsed->{enabled} ? 1 : 0), 0, "sendShuffle(0) enabled=false");
+}
+
+# ============================================================
+# Phase 73-02 Task 1 (D-05): reconnect resync -- logged_in auth_state
+# triggers get_state
+# ============================================================
+{
+    my $ws         = new_ws();
+    my $fakeClient = Test::FakeWsClient->new;
+    $ws->_client($fakeClient);
+    $ws->connected(1);
+
+    $ws->_onMessage('{"type":"auth_state","logged_in":true,"is_active":false,"device_name":"Living Room"}');
+
+    my @getStateWrites = grep {
+        JSON::PP->new->decode($_)->{command} eq 'get_state'
+    } @{ $fakeClient->{writes} };
+    is(scalar(@getStateWrites), 1, "logged_in auth_state triggers exactly one get_state request");
+}
+
+# logged_in:false auth_state does NOT trigger get_state
+{
+    my $ws         = new_ws();
+    my $fakeClient = Test::FakeWsClient->new;
+    $ws->_client($fakeClient);
+    $ws->connected(1);
+
+    $ws->_onMessage('{"type":"auth_state","logged_in":false,"is_active":false,"device_name":"Living Room"}');
+
+    is(scalar(@{ $fakeClient->{writes} }), 0, "logged_in:false auth_state sends no get_state request");
+}
+
+# ============================================================
+# Phase 73-02 Task 1 (D-05, Pitfall 5): playback_state snapshot
+# reconciliation -- position tolerance
+# ============================================================
+{
+    local $Slim::Utils::Prefs::FAKE_VALUES{enableSpotifyConnect} = 1;
+    @Slim::Player::Client::EXECUTED = ();
+    my $ws = new_ws();
+    $ws->sessionActive(1);
+    $ws->lastTrackId('abc');
+    $ws->lastPositionMs(10000);
+    $ws->lastPositionTs(Time::HiRes::time() - 1);    # ~1s elapsed -> expected ~11000ms
+
+    # Snapshot reports a position ~6s beyond the expected extrapolation -- over tolerance.
+    $ws->_onMessage('{"type":"playback_state","item":{"uri":"spotify:track:abc"},"position":{"position_ms":17000},"is_active":true,"status":"playing"}');
+
+    is_deeply(
+        \@Slim::Player::Client::EXECUTED,
+        [ [ 'spottyconnect', 'seek', '17.000', '' ] ],
+        "playback_state snapshot >3s off the extrapolated position emits one seek"
+    );
+}
+
+{
+    local $Slim::Utils::Prefs::FAKE_VALUES{enableSpotifyConnect} = 1;
+    @Slim::Player::Client::EXECUTED = ();
+    my $ws = new_ws();
+    $ws->sessionActive(1);
+    $ws->lastTrackId('abc');
+    $ws->lastPositionMs(10000);
+    $ws->lastPositionTs(Time::HiRes::time() - 1);    # expected ~11000ms
+
+    # Snapshot within tolerance (~11500ms, ~0.5s over the extrapolated position).
+    $ws->_onMessage('{"type":"playback_state","item":{"uri":"spotify:track:abc"},"position":{"position_ms":11500},"is_active":true,"status":"playing"}');
+
+    is_deeply(\@Slim::Player::Client::EXECUTED, [], "playback_state snapshot within tolerance emits nothing");
+}
+
+# playback_state track-mismatch reconciliation: an active session whose
+# snapshot reports a DIFFERENT track than we last knew emits 'change'
+# without waiting for a track_changed event that may never re-arrive.
+{
+    local $Slim::Utils::Prefs::FAKE_VALUES{enableSpotifyConnect} = 1;
+    @Slim::Player::Client::EXECUTED = ();
+    my $ws = new_ws();
+    $ws->sessionActive(1);
+    $ws->lastTrackId('oldtrack');
+
+    $ws->_onMessage('{"type":"playback_state","item":{"uri":"spotify:track:newtrack"},"is_active":true,"status":"playing"}');
+
+    is_deeply(
+        \@Slim::Player::Client::EXECUTED,
+        [ [ 'spottyconnect', 'change', 'newtrack', 'oldtrack' ] ],
+        "playback_state snapshot with a mismatched track emits 'change'"
+    );
+    is($ws->lastTrackId, 'newtrack', "lastTrackId updated to the snapshot's track");
+}
+
+# playback_state volume-mismatch reconciliation
+{
+    local $Slim::Utils::Prefs::FAKE_VALUES{enableSpotifyConnect} = 1;
+    @Slim::Player::Client::EXECUTED = ();
+    my $ws = new_ws();
+    $ws->sessionActive(1);
+    $ws->lastVolume(30);
+
+    $ws->_onMessage('{"type":"playback_state","volume":55,"is_active":true,"status":"playing"}');
+
+    is_deeply(
+        \@Slim::Player::Client::EXECUTED,
+        [ [ 'spottyconnect', 'volume', 55, '' ] ],
+        "playback_state snapshot with a mismatched volume emits 'volume'"
+    );
+}
+
+# A cold snapshot (no prior baseline, session not yet active) never emits a
+# correction -- there is nothing yet to have drifted from.
+{
+    local $Slim::Utils::Prefs::FAKE_VALUES{enableSpotifyConnect} = 1;
+    @Slim::Player::Client::EXECUTED = ();
+    my $ws = new_ws();
+
+    $ws->_onMessage('{"type":"playback_state","item":{"uri":"spotify:track:cold"},"position":{"position_ms":9999},"volume":10,"is_active":false,"status":"stopped"}');
+
+    is_deeply(\@Slim::Player::Client::EXECUTED, [], "cold playback_state snapshot (no active session) emits no correction");
+    is($ws->lastTrackId, 'cold', "cold snapshot still seeds lastTrackId for future reconciliation");
+}
+
+# ============================================================
+# Task 1 (73-02): sendCommand() full command-map serialization -- each
+# produces exactly {"type":"command","command":...} plus the documented
+# extra keys, nothing more (RESEARCH Pattern 3 command table).
+# ============================================================
+{
+    require JSON::PP;
+
+    my $ws = new_ws();
+    my $fakeClient = Test::FakeWsClient->new;
+    $ws->_client($fakeClient);
+    $ws->connected(1);
+
+    my @cases = (
+        [ 'pause',        {},                                  { type => 'command', command => 'pause' } ],
+        [ 'play',         {},                                  { type => 'command', command => 'play' } ],
+        [ 'skip_next',    {},                                  { type => 'command', command => 'skip_next' } ],
+        [ 'skip_prev',    {},                                  { type => 'command', command => 'skip_prev' } ],
+        [ 'seek',         { position_ms => 12345 },            { type => 'command', command => 'seek', position_ms => 12345 } ],
+        [ 'set_volume',   { volume => 50 },                     { type => 'command', command => 'set_volume', volume => 50 } ],
+        [ 'add_to_queue', { uri => 'spotify:track:abc123' },    { type => 'command', command => 'add_to_queue', uri => 'spotify:track:abc123' } ],
+        [ 'get_state',    {},                                  { type => 'command', command => 'get_state' } ],
+        [ 'get_queue',    {},                                  { type => 'command', command => 'get_queue' } ],
+        [ 'activate',     {},                                  { type => 'command', command => 'activate' } ],
+        [ 'deactivate',   {},                                  { type => 'command', command => 'deactivate' } ],
+    );
+
+    for my $case (@cases) {
+        my ($command, $params, $expected) = @$case;
+        my $ok = $ws->sendCommand($command, %$params);
+        is($ok, 1, "sendCommand('$command') reports success");
+
+        my $parsed = JSON::PP->new->decode($fakeClient->{writes}[-1]);
+        is_deeply($parsed, $expected, "sendCommand('$command') serializes exactly the expected envelope");
+    }
+}
+
+# ============================================================
+# Task 1 (73-02): T-22-01/T-73-07 -- an invalid uri is refused, never sent
+# ============================================================
+{
+    my $ws = new_ws();
+    my $fakeClient = Test::FakeWsClient->new;
+    $ws->_client($fakeClient);
+    $ws->connected(1);
+
+    my $ok = $ws->sendCommand('add_to_queue', uri => 'not-a-spotify-uri');
+    is($ok, 0, "sendCommand('add_to_queue') with an invalid uri is refused (T-22-01)");
+    is(scalar @{ $fakeClient->{writes} }, 0, "invalid uri never reaches the wire");
+}
+
+# ============================================================
+# Task 1 (73-02): sendRepeatMode() two-command matrix (Pitfall 6 footnote,
+# NOT the contradictory table): off=(false,false), context=(true,false),
+# track=(false,true).
+# ============================================================
+{
+    require JSON::PP;
+    my %matrix = (
+        off     => [0, 0],
+        context => [1, 0],
+        track   => [0, 1],
+    );
+
+    for my $mode (qw(off context track)) {
+        my $ws = new_ws();
+        my $fakeClient = Test::FakeWsClient->new;
+        $ws->_client($fakeClient);
+        $ws->connected(1);
+
+        my $ok = $ws->sendRepeatMode($mode);
+        is($ok, 1, "sendRepeatMode('$mode') reports success");
+        is(scalar @{ $fakeClient->{writes} }, 2, "sendRepeatMode('$mode') sends exactly two commands");
+
+        my $p1 = JSON::PP->new->decode($fakeClient->{writes}[0]);
+        my $p2 = JSON::PP->new->decode($fakeClient->{writes}[1]);
+
+        is($p1->{command}, 'set_repeat_context', "sendRepeatMode('$mode') first command is set_repeat_context");
+        is($p2->{command}, 'set_repeat_track', "sendRepeatMode('$mode') second command is set_repeat_track");
+
+        my ($wantContext, $wantTrack) = @{ $matrix{$mode} };
+        is($p1->{enabled} ? 1 : 0, $wantContext, "sendRepeatMode('$mode') set_repeat_context enabled=$wantContext");
+        is($p2->{enabled} ? 1 : 0, $wantTrack, "sendRepeatMode('$mode') set_repeat_track enabled=$wantTrack");
+    }
+}
+
+# ============================================================
+# Task 1 (73-02): reconnect resync -- auth_state{logged_in:true} triggers
+# get_state; playback_state snapshot reconciliation obeys the SEEK_THRESHOLD
+# tolerance (both outcomes).
+# ============================================================
+{
+    require JSON::PP;
+    local $Slim::Utils::Prefs::FAKE_VALUES{enableSpotifyConnect} = 1;
+
+    my $ws = new_ws();
+    my $fakeClient = Test::FakeWsClient->new;
+    $ws->_client($fakeClient);
+    $ws->connected(1);
+
+    # Pre-existing active session (as if it survived a WS drop) with a known
+    # position baseline established 5s ago.
+    $ws->sessionActive(1);
+    $ws->lastTrackId('abc');
+    $ws->lastPositionMs(10000);
+    $ws->lastPositionTs(Time::HiRes::time() - 5);
+
+    # Simulated reconnect: daemon reports an authenticated session.
+    $ws->_onMessage('{"type":"auth_state","logged_in":true,"is_active":true,"device_name":"Living Room"}');
+
+    my @sentCommands = map { JSON::PP->new->decode($_)->{command} } @{ $fakeClient->{writes} };
+    ok((grep { $_ eq 'get_state' } @sentCommands), "auth_state{logged_in:true} triggers get_state (reconnect resync)");
+
+    # Snapshot within tolerance (expected ~15000ms after 5s elapsed, actual
+    # 15200ms -- 0.2s deviation) -- no seek emitted.
+    @Slim::Player::Client::EXECUTED = ();
+    $ws->_onMessage('{"type":"playback_state","item":{"uri":"spotify:track:abc"},"position":{"position_ms":15200},"volume":50,"is_active":true,"status":"playing"}');
+    is_deeply(\@Slim::Player::Client::EXECUTED, [], "playback_state snapshot within tolerance (<=3s) emits no seek");
+
+    # Snapshot with a large jump (>3s deviation) -- emits exactly one seek.
+    $ws->lastPositionMs(10000);
+    $ws->lastPositionTs(Time::HiRes::time() - 5);
+    @Slim::Player::Client::EXECUTED = ();
+    $ws->_onMessage('{"type":"playback_state","item":{"uri":"spotify:track:abc"},"position":{"position_ms":40000},"volume":50,"is_active":true,"status":"playing"}');
+    is_deeply(
+        \@Slim::Player::Client::EXECUTED,
+        [ [ 'spottyconnect', 'seek', '40.000', '' ] ],
+        "playback_state snapshot beyond tolerance (>3s) emits exactly one seek"
+    );
+}
+
 done_testing();

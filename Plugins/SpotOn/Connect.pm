@@ -183,11 +183,70 @@ sub _stopConnectDaemon {
 # _sendControlCommand($client, $endpoint, $body_hashref)
 # Sends an HTTP control command to the binary's /control/* endpoint (D-14).
 # Falls back to Spotify Web API via API::Client if binary unreachable (D-15).
+#
+# Phase 73-02 (D-06): single dispatch point for backend routing. When the
+# registered helper for this player is a SoloistDaemon, the endpoint is
+# translated into the Soloist WS command vocabulary (RESEARCH Pattern 3) and
+# sent over the daemon's WS connection instead of POSTing to librespot's
+# HTTP /control/* port (which soloist doesn't serve -- that port instead
+# serves fake-libpulse's PCM /stream). When the WS is absent/disconnected or
+# sendCommand() fails, falls through to the same Web API fallback used by
+# the librespot path (D-15 parity -- same Spotify account, same player
+# endpoints). The librespot HTTP path below this block is unmodified.
 sub _sendControlCommand {
     my ($client, $endpoint, $body) = @_;
     return unless $client;
 
     require Plugins::SpotOn::Unified::DaemonManager;
+
+    my $helper = Plugins::SpotOn::Unified::DaemonManager->helperForClient($client->id);
+    if ($helper && $helper->isa('Plugins::SpotOn::Unified::SoloistDaemon')) {
+        my %endpointToCommand = (
+            '/control/pause'  => 'pause',
+            '/control/play'   => 'play',      # no uri: resume semantics
+            '/control/next'   => 'skip_next',
+            '/control/prev'   => 'skip_prev',
+            '/control/seek'   => 'seek',
+            '/control/volume' => 'set_volume',
+        );
+        my $command = $endpointToCommand{$endpoint};
+
+        unless ($command) {
+            main::INFOLOG && $log->is_info && $log->info(
+                "_sendControlCommand: no soloist WS mapping for $endpoint, skipping"
+            );
+            return;
+        }
+
+        my %params;
+        if ($command eq 'seek' && $body && defined $body->{position_ms}) {
+            $params{position_ms} = $body->{position_ms};
+        }
+        elsif ($command eq 'set_volume' && $body && defined $body->{volume}) {
+            $params{volume} = int($body->{volume});
+        }
+
+        $log->warn("[DIAG] control_cmd_sent: mac=" . $client->id . " endpoint=$endpoint backend=soloist command=$command") if $prefs->get('diagnosticMode');
+
+        my $ws   = $helper->_ws;
+        my $sent = ($ws && $ws->connected) ? $ws->sendCommand($command, %params) : 0;
+
+        if ($sent) {
+            main::INFOLOG && $log->is_info && $log->info(
+                "_sendControlCommand: $endpoint -> soloist WS command '$command' sent"
+            );
+            $log->warn("[DIAG] control_cmd_ok: mac=" . $client->id . " endpoint=$endpoint backend=soloist command=$command") if $prefs->get('diagnosticMode');
+            return;
+        }
+
+        main::INFOLOG && $log->is_info && $log->info(
+            "_sendControlCommand: $endpoint via soloist WS unavailable (ws down or send failed) -- Web API fallback (D-15)"
+        );
+        $log->warn("[DIAG] control_cmd_fail: mac=" . $client->id . " endpoint=$endpoint backend=soloist fallback=web_api") if $prefs->get('diagnosticMode');
+        _sendControlFallback($client, $endpoint, $body);
+        return;
+    }
+
     my $port = Plugins::SpotOn::Unified::DaemonManager->streamPortForClient($client->id);
     unless ($port) {
         main::INFOLOG && $log->is_info && $log->info(

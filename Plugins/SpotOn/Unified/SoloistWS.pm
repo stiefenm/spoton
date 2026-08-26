@@ -50,6 +50,8 @@ __PACKAGE__->mk_accessor( rw => qw(
 	lastTrackId
 	lastPositionMs
 	lastPositionTs
+	lastVolume
+	lastCommand
 	sessionActive
 	browseSession
 	reconnectDelay
@@ -202,8 +204,18 @@ sub _onWsError {
 
 # sendCommand($command, %params) -- returns 0 (with a debug log) when not
 # connected; callers (73-02) fall back to the Web API control path.
+#
+# T-22-01/T-73-07 discipline: any command carrying a `uri` param
+# (add_to_queue, play-with-uri) is validated against the track/episode URI
+# shape before it ever reaches the wire -- a malformed or attacker-controlled
+# URI is refused rather than forwarded to the daemon.
 sub sendCommand {
 	my ($self, $command, %params) = @_;
+
+	if (defined $params{uri} && $params{uri} !~ /^spotify:(?:track|episode):[A-Za-z0-9]+$/) {
+		$log->warn("SoloistWS: refusing to send '$command' with invalid uri (" . ($self->mac // '?') . "): " . $params{uri});
+		return 0;
+	}
 
 	my $client = $self->_client;
 	unless ($client && $self->connected) {
@@ -213,9 +225,52 @@ sub sendCommand {
 		return 0;
 	}
 
+	# T-73-09 (repudiation -- silent {type:error} replies): kept 1-deep, no
+	# queue. Enough for the error handler below to log which command a
+	# terse daemon error response was actually reacting to.
+	$self->lastCommand($command);
+
 	$client->write(to_json({ type => 'command', command => $command, %params }));
 	return 1;
 }
+
+# sendRepeatMode($mode) -- RESEARCH Pitfall 6: set_repeat_context and
+# set_repeat_track are independent toggles; the official WS docs table lists
+# a self-contradictory row for 'track' mode and corrects itself in a
+# footnote. This follows the FOOTNOTE, not the table:
+#   off     => (context: false, track: false)
+#   context => (context: true,  track: false)
+#   track   => (context: false, track: true)
+# Two sequential commands -- there is no combined/atomic repeat command in
+# the wire vocabulary. Any unrecognized $mode is treated as 'off'
+# (fail-safe -- never silently arms track-repeat on a typo).
+sub sendRepeatMode {
+	my ($self, $mode) = @_;
+
+	my ($context, $track) = (0, 0);
+	if (($mode // '') eq 'context') {
+		($context, $track) = (1, 0);
+	}
+	elsif (($mode // '') eq 'track') {
+		($context, $track) = (0, 1);
+	}
+
+	my $r1 = $self->sendCommand('set_repeat_context', enabled => ($context ? \1 : \0));
+	my $r2 = $self->sendCommand('set_repeat_track',   enabled => ($track   ? \1 : \0));
+	return $r1 && $r2;
+}
+
+# sendShuffle($bool) -- set_shuffle {enabled}.
+sub sendShuffle {
+	my ($self, $enabled) = @_;
+	return $self->sendCommand('set_shuffle', enabled => ($enabled ? \1 : \0));
+}
+
+# NOTE: activate/deactivate need no dedicated wrapper -- the generic
+# sendCommand() above already covers them (`sendCommand('activate')` /
+# `sendCommand('deactivate')`). They are the LMS-initiated-transfer escape
+# hatch (RESEARCH Pattern 4) and are deliberately left unwired in this plan;
+# transfer-playback in Phase 73 is entirely App/Cloud-driven (D-07).
 
 # _onMessage($json_text) -- V5/T-73-03: never die on malformed input, this
 # runs inside the single LMS process. Dispatches on $msg->{type}.
@@ -252,16 +307,27 @@ sub _onMessage {
 	if ($type eq 'playback_state') {
 		return $self->_onPlaybackState($msg);
 	}
+	if ($type eq 'command_result') {
+		main::DEBUGLOG && $log->is_debug && $log->debug(
+			"SoloistWS: command_result for '" . ($msg->{command} // $self->lastCommand // '?')
+			. "' (" . ($self->mac // '?') . ")"
+		);
+		return;
+	}
 	if ($type eq 'error') {
-		$log->warn("SoloistWS: daemon reported error (" . ($self->mac // '?') . "): " . ($msg->{message} // 'unknown'));
+		# T-73-09 (repudiation): silent {type:error} replies otherwise give no
+		# clue which command failed -- the 1-deep lastCommand context makes
+		# the warn actionable in a log without needing a full request queue.
+		$log->warn("SoloistWS: daemon reported error (" . ($self->mac // '?')
+			. ", last command '" . ($self->lastCommand // 'unknown') . "'): "
+			. ($msg->{message} // 'unknown'));
 		return;
 	}
 
-	# context_changed/options_changed/queue_changed/command_result: debug-log
-	# only in this plan -- not part of the Phase 73 core event set
-	# (queue_changed is consumed by 73-03 for the browse queue-seed
-	# confirmation). Logged at debug so field-name corrections (A4) are
-	# cheap during UAT.
+	# context_changed/options_changed/queue_changed: debug-log only in this
+	# plan -- not part of the Phase 73 core event set (queue_changed is
+	# consumed by 73-03 for the browse queue-seed confirmation). Logged at
+	# debug so field-name corrections (A4) are cheap during UAT.
 	main::DEBUGLOG && $log->is_debug && $log->debug(
 		"SoloistWS: unhandled event type '$type' (" . ($self->mac // '?') . ")"
 	);
@@ -292,6 +358,15 @@ sub _onAuthState {
 		is_active   => $msg->{is_active} ? 1 : 0,
 		device_name => $msg->{device_name},
 	});
+
+	# Phase 73-02 (D-05 reconnect resync): auth_state arrives both
+	# unsolicited on every (re)connect and as the reply to our own
+	# get_auth_state poll -- either way, once we know the session is
+	# logged in, request a fresh get_state snapshot. The playback_state
+	# handler below reconciles track/position/volume against whatever this
+	# WS client still believes, closing the drift window opened while the
+	# connection was down.
+	$self->sendCommand('get_state') if $msg->{logged_in};
 
 	# Per-mac status snapshot for Settings (73-04). Best-effort -- never
 	# lets a cache hiccup break event processing.
@@ -401,21 +476,54 @@ sub _onPositionSync {
 # (re)connect (position/track/volume), and, if the daemon is already active
 # and playing, runs the start flow (covers the case where LMS-side WS
 # reconnected but the Connect session on Soloist's side never dropped).
+#
+# Reconciliation (RESEARCH Pitfall 5 philosophy, D-05): when a session was
+# already active before this snapshot arrived, the snapshot is compared
+# against what this WS client still believes rather than blindly trusted --
+# a track mismatch emits 'change' (a track_changed event may never re-arrive
+# for a track that was already playing across the drop), a volume mismatch
+# emits 'volume', and a position mismatch beyond SEEK_THRESHOLD (extrapolated
+# from the last known position + wallclock elapsed, same tolerance as
+# _onPositionSync) emits 'seek'. A cold snapshot (no prior baseline) never
+# emits a correction -- there is nothing yet to have drifted from.
 sub _onPlaybackState {
 	my ($self, $msg) = @_;
 
 	my $item = $msg->{item};
 	my $uri  = $item && $item->{uri};
+	my $newId;
 	if (defined $uri && $uri =~ /^spotify:(?:track|episode):([A-Za-z0-9]+)$/) {
-		$self->lastTrackId($1);
+		$newId = $1;
 	}
 
+	my $prevId = $self->lastTrackId;
+	if ($self->sessionActive && defined $newId && defined $prevId && $newId ne $prevId) {
+		$self->_emit('change', $newId, $prevId);
+	}
+	$self->lastTrackId($newId) if defined $newId;
+
+	my $posMs;
 	if (defined $msg->{position}) {
-		my $posMs = ref($msg->{position}) eq 'HASH' ? $msg->{position}{position_ms} : $msg->{position};
-		if (defined $posMs) {
-			$self->lastPositionMs($posMs);
-			$self->lastPositionTs(Time::HiRes::time());
+		$posMs = ref($msg->{position}) eq 'HASH' ? $msg->{position}{position_ms} : $msg->{position};
+	}
+	if (defined $posMs) {
+		my $now = Time::HiRes::time();
+		if ($self->sessionActive && defined $self->lastPositionMs && defined $self->lastPositionTs) {
+			my $expectedMs = $self->lastPositionMs + (($now - $self->lastPositionTs) * 1000);
+			my $deltaSec   = abs($posMs - $expectedMs) / 1000;
+			if ($deltaSec > SEEK_THRESHOLD) {
+				$self->_emit('seek', sprintf('%.3f', $posMs / 1000));
+			}
 		}
+		$self->lastPositionMs($posMs);
+		$self->lastPositionTs($now);
+	}
+
+	if (defined $msg->{volume}) {
+		if ($self->sessionActive && defined $self->lastVolume && $msg->{volume} != $self->lastVolume) {
+			$self->_emit('volume', $msg->{volume});
+		}
+		$self->lastVolume($msg->{volume});
 	}
 
 	if ($msg->{is_active} && ($msg->{status} // '') eq 'playing' && !$self->sessionActive) {
