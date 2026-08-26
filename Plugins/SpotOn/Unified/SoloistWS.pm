@@ -41,6 +41,13 @@ use constant RECONNECT_DELAY_MAX => 30;
 # own SEEK_THRESHOLD philosophy for the librespot path.
 use constant SEEK_THRESHOLD => 3;
 
+# Seconds; WR-01 -- the vendored Protocol::WebSocket::Client has no handshake
+# timeout of its own. A daemon that accepts the TCP connect but never answers
+# the WS handshake would otherwise leave this object waiting forever with
+# connected() correctly still false (safe), but the dead socket never cleaned
+# up and no reconnect ever scheduled.
+use constant HANDSHAKE_TIMEOUT => 5;
+
 # 73-03 Task 2 (D-03, RESEARCH Pattern 6, Modell B): seconds of remaining
 # track duration at which the browse session seeds the next LMS-Spotify
 # playlist entry into Soloist's own queue via add_to_queue. Chosen well
@@ -67,6 +74,7 @@ __PACKAGE__->mk_accessor( rw => qw(
 	reconnectDelay
 	_sock
 	_client
+	_sockOpen
 ) );
 # CR-01 fix: Slim::Utils::Accessor objects are blessed ARRAY refs (verified
 # against the real LMS Slim/Utils/Accessor.pm), not hashes -- a plain 'rw'
@@ -102,6 +110,13 @@ __PACKAGE__->mk_accessor( weak => qw( daemon ) );
 #                        this timestamp (short grace window) before
 #                        forwarding a pause to the daemon -- mirroring the
 #                        Connect path's own connectStartTime grace period.
+# _sockOpen:             WR-01 -- true from the moment the TCP socket is
+#                        established until it is torn down, independent of
+#                        `connected` (which is now true only once the WS
+#                        handshake completes). _onClosed's re-entry guard
+#                        checks THIS flag, not `connected`, so a socket that
+#                        never completes the handshake still gets cleaned up
+#                        and reconnected.
 
 my $prefs = preferences('plugin.spoton');
 my $log   = logger('plugin.spoton');
@@ -116,6 +131,7 @@ sub new {
 	$self->port($args{port});
 
 	$self->connected(0);
+	$self->_sockOpen(0);
 	$self->authState({});
 	$self->sessionActive(0);
 	$self->browseSession(0);
@@ -149,6 +165,7 @@ sub connect {
 
 	$self->_sock($sock);
 	$self->_client($client);
+	$self->_sockOpen(1);    # WR-01: socket lifecycle, independent of handshake completion
 
 	$client->on(
 		write   => sub { my $frame = $_[1]; my $s = $self->_sock; syswrite($s, $frame) if $s; },
@@ -156,7 +173,18 @@ sub connect {
 		error   => sub { my $err   = $_[1]; $self->_onWsError($err); },    # NEVER exit (Pitfall 1)
 		ping    => sub { $_[0]->pong($_[1]); },                            # RFC 6455 keepalive
 		eof     => sub { $self->_onClosed; },
-		connect => sub { $self->sendCommand('get_auth_state'); },
+		connect => sub {
+			# WR-01: this fires only once the WS handshake actually completes
+			# -- the vendored Protocol::WebSocket::Client::write() silently
+			# drops frames with only a warn() while is_ready is false, so
+			# connected(1) must NOT be set any earlier (a command sent in
+			# that window would otherwise be reported as delivered while
+			# actually being dropped, defeating the D-15 Web API fallback).
+			Slim::Utils::Timers::killTimers($self, \&_handshakeTimeoutTimer);
+			$self->connected(1);
+			$self->reconnectDelay(RECONNECT_DELAY_MIN);    # WR-02: reset backoff after a successful (re)connect
+			$self->sendCommand('get_auth_state');
+		},
 	);
 
 	$client->connect;
@@ -173,13 +201,30 @@ sub connect {
 		$client->read($buf);
 	});
 
-	$self->connected(1);
+	# WR-01: the vendored client has no handshake timeout of its own -- a
+	# daemon that accepts the TCP connect but never completes the WS
+	# handshake would otherwise leave this socket open (and `connected`
+	# correctly false) forever, with no reconnect ever scheduled.
+	Slim::Utils::Timers::killTimers($self, \&_handshakeTimeoutTimer);
+	Slim::Utils::Timers::setTimer($self, Time::HiRes::time() + HANDSHAKE_TIMEOUT, \&_handshakeTimeoutTimer);
+}
+
+# _handshakeTimeoutTimer($self) -- WR-01: fires HANDSHAKE_TIMEOUT seconds
+# after a TCP connect if the WS handshake ('connect' callback above) never
+# completed. No-op if it already did (timer is killed there).
+sub _handshakeTimeoutTimer {
+	my $self = shift;
+	return if $self->connected;
+
+	$log->warn("SoloistWS: WS handshake timed out for " . ($self->mac // '?'));
+	$self->_onClosed;
 }
 
 sub disconnect {
 	my $self = shift;
 
 	Slim::Utils::Timers::killTimers($self, \&_reconnectTimer);
+	Slim::Utils::Timers::killTimers($self, \&_handshakeTimeoutTimer);
 
 	if (my $sock = $self->_sock) {
 		Slim::Networking::Select::removeRead($sock);
@@ -189,16 +234,19 @@ sub disconnect {
 	$self->_sock(undef);
 	$self->_client(undef);
 	$self->connected(0);
+	$self->_sockOpen(0);
 }
 
 sub _onClosed {
 	my $self = shift;
 
-	return unless $self->connected;    # already handled
+	return unless $self->_sockOpen;    # already handled -- WR-01: gate on socket lifecycle, not handshake state
 
 	main::INFOLOG && $log->is_info && $log->info(
 		"SoloistWS: connection lost for " . ($self->mac // '?')
 	);
+
+	Slim::Utils::Timers::killTimers($self, \&_handshakeTimeoutTimer);
 
 	if (my $sock = $self->_sock) {
 		Slim::Networking::Select::removeRead($sock);
@@ -207,6 +255,7 @@ sub _onClosed {
 	$self->_sock(undef);
 	$self->_client(undef);
 	$self->connected(0);
+	$self->_sockOpen(0);
 
 	$self->_scheduleReconnect;
 }
