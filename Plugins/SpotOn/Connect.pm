@@ -147,6 +147,49 @@ sub _finishNewTrack {
     $client->pluginData(newTrack => 0);
 }
 
+# _soloistBrowseWs($client)
+# 73-03 Task 3 (D-03, Modell B): returns the SoloistWS instance for this
+# client when its registered helper is a SoloistDaemon currently running a
+# browse-managed session (ws->browseSession true), else undef. Used by
+# _onPause/_onSeek to forward LMS-originated pause/unpause/seek to the
+# daemon during soloist Browse -- a browse session is NOT a Connect session
+# (isSpotifyConnect() is false), so it needs its own forwarding branch.
+sub _soloistBrowseWs {
+    my ($client) = @_;
+    return unless $client;
+    $client = $client->master if $client->can('master');
+
+    require Plugins::SpotOn::Unified::DaemonManager;
+    my $helper = Plugins::SpotOn::Unified::DaemonManager->helperForClient($client->id);
+    return unless $helper && $helper->isa('Plugins::SpotOn::Unified::SoloistDaemon');
+
+    my $ws = $helper->_ws;
+    return unless $ws && $ws->browseSession;
+
+    return $ws;
+}
+
+# _seekPositionFromRequest($client, $request)
+# Shared by the Connect and soloist-browse seek forwarders (GH #129
+# pattern): extracts the absolute target position (seconds) from a
+# ['time', N] request, resolving relative (+N/-N) deltas against the
+# current songTime. Never negative.
+sub _seekPositionFromRequest {
+    my ($client, $request) = @_;
+
+    my $newvalue = $request->getParam('_newvalue');
+    my $position;
+    if (defined $newvalue && $newvalue =~ /^[+-]/) {
+        $position = (Slim::Player::Source::songTime($client) || 0) + $newvalue;
+    } elsif (defined $newvalue) {
+        $position = $newvalue;
+    } else {
+        $position = Slim::Player::Source::songTime($client) || 0;
+    }
+    $position = 0 if $position < 0;
+    return $position;
+}
+
 # _isStreamMode($client)
 # Returns true if the unified daemon for this client has an active stream port.
 sub _isStreamMode {
@@ -387,6 +430,31 @@ sub _onPause {
     return if !defined $client;
     $client = $client->master;
 
+    # 73-03 Task 3 (D-03, Modell B): a soloist Browse session is NOT a
+    # Connect session -- isSpotifyConnect() below would be false and this
+    # pause/unpause would otherwise be dropped on the floor. Checked BEFORE
+    # the isSpotifyConnect guard so browse forwarding isn't shadowed by it.
+    if (my $browseWs = _soloistBrowseWs($client)) {
+        # Echo hygiene: skip our own browse-advance/correction requests
+        # (source-marked PLUGIN_SPOTON_SOLOIST_BROWSE) the same way the
+        # top-of-function guard already skips __PACKAGE__-sourced ones.
+        return if $request->source && $request->source eq 'PLUGIN_SPOTON_SOLOIST_BROWSE';
+
+        if ($isUnpause) {
+            main::INFOLOG && $log->is_info && $log->info(
+                "Soloist browse: forwarding unpause to daemon via WS play"
+            );
+            $browseWs->sendCommand('play');
+        }
+        else {
+            main::INFOLOG && $log->is_info && $log->info(
+                "Soloist browse: forwarding pause to daemon via WS pause"
+            );
+            $browseWs->sendCommand('pause');
+        }
+        return;
+    }
+
     return unless __PACKAGE__->isSpotifyConnect($client);
 
     # Echo suppression: _connectEvent's ['pause', 0/1] triggers a playlist
@@ -494,27 +562,52 @@ sub _onSeek {
     return if !defined $client;
     $client = $client->master;
 
+    # 73-03 Task 3 (D-03, Modell B): soloist Browse seek forwarding -- same
+    # GH #129 rationale as the Connect path below (getSeekData returns undef
+    # for a soloist Browse URL too, so LMS never restarts the stream and
+    # songTime still holds the OLD position here). Separate timer key
+    # (_bufferedBrowseSeek is a distinct coderef from _bufferedSeek) so the
+    # Connect and browse debounces cannot collide.
+    if (my $browseWs = _soloistBrowseWs($client)) {
+        return if $request->source && $request->source eq 'PLUGIN_SPOTON_SOLOIST_BROWSE';
+
+        my $position   = _seekPositionFromRequest($client, $request);
+        my $positionMs = int($position * 1000);
+
+        Slim::Utils::Timers::killTimers($client, \&_bufferedBrowseSeek);
+        Slim::Utils::Timers::setTimer($client, Time::HiRes::time() + SEEK_DEBOUNCE, \&_bufferedBrowseSeek, $positionMs);
+        return;
+    }
+
     return unless __PACKAGE__->isSpotifyConnect($client);
 
     # GH #129: read the seek target from the request instead of songTime —
     # with getSeekData returning undef in Connect mode, LMS does not restart
     # the stream, so songTime still holds the OLD position at this point.
-    my $newvalue = $request->getParam('_newvalue');
-    my $position;
-    if (defined $newvalue && $newvalue =~ /^[+-]/) {
-        # Relative seek: +N / -N applied to current position
-        $position = (Slim::Player::Source::songTime($client) || 0) + $newvalue;
-    } elsif (defined $newvalue) {
-        $position = $newvalue;
-    } else {
-        $position = Slim::Player::Source::songTime($client) || 0;
-    }
-    $position = 0 if $position < 0;
+    my $position   = _seekPositionFromRequest($client, $request);
     my $positionMs = int($position * 1000);
 
     # Debounce: coalesce rapid seek events (0.3s window)
     Slim::Utils::Timers::killTimers($client, \&_bufferedSeek);
     Slim::Utils::Timers::setTimer($client, Time::HiRes::time() + SEEK_DEBOUNCE, \&_bufferedSeek, $positionMs);
+}
+
+# _bufferedBrowseSeek($client, $positionMs)
+# 73-03 Task 3: debounced soloist-browse seek forward -- re-checks the
+# browse session is still active (it may have ended during the debounce
+# window) before sending.
+sub _bufferedBrowseSeek {
+    my ($client, $positionMs) = @_;
+
+    my $browseWs = _soloistBrowseWs($client);
+    return unless $browseWs;
+
+    main::INFOLOG && $log->is_info && $log->info(
+        "Soloist browse: forwarding seek to daemon via WS seek: ${positionMs}ms"
+    );
+    $log->warn("[DIAG] browse_seek_to_daemon: mac=" . $client->id . " position_ms=$positionMs debounced=" . SEEK_DEBOUNCE . "s") if $prefs->get('diagnosticMode');
+
+    $browseWs->sendCommand('seek', position_ms => $positionMs);
 }
 
 sub _bufferedSeek {

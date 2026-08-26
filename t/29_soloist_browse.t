@@ -32,7 +32,12 @@ sub write_stub {
 # ============================================================
 # LMS module stubs required to load ProtocolHandler.pm in isolation
 # (Phase 72 Wave-0 gap -- ProtocolHandler.pm has never had dedicated test
-# coverage before this plan; t/28's write_stub pattern is copied verbatim).
+# coverage before that plan; t/28's write_stub pattern is copied verbatim).
+#
+# Phase 73-03 Task 3 (D-03, Modell B): rewritten for the persistent-daemon
+# dispatch matrix -- soloist Browse now shares the SAME 'soc'/HTTP-/stream
+# path as Connect (canDirectStream/new() resolve the daemon's HTTP /stream
+# URL) instead of the retired per-track 'sol' transcoder profile.
 # ============================================================
 
 write_stub($stub_dir, 'Log::Log4perl::Logger', <<'END');
@@ -154,9 +159,16 @@ sub can      { 1 }
 1;
 END
 
+# Records constructor args (as a copied hash on the returned blessed object)
+# so tests can inspect whether new() substituted the daemon /stream URL.
 write_stub($stub_dir, 'Slim::Player::Protocols::HTTP', <<'END');
 package Slim::Player::Protocols::HTTP;
-sub new { return bless {}, shift }
+our @NEW_ARGS;
+sub new {
+    my ($class, $args) = @_;
+    push @NEW_ARGS, $args;
+    return bless { %$args }, $class;
+}
 1;
 END
 
@@ -166,6 +178,16 @@ write_stub($stub_dir, 'Plugins::SpotOn::Plugin', <<'END');
 package Plugins::SpotOn::Plugin;
 use constant SPOTON_CACHE_VERSION => 4;
 sub _pluginDataFor { return 'test-basedir' }
+1;
+END
+
+# 73-03 Task 3: controllable DaemonManager stub. $HELPER is undef (no
+# daemon) by default; test cases assign a Test::FakeSoloistDaemon instance
+# to simulate an alive daemon with a known stream port.
+write_stub($stub_dir, 'Plugins::SpotOn::Unified::DaemonManager', <<'END');
+package Plugins::SpotOn::Unified::DaemonManager;
+our $HELPER;
+sub helperForClient { return $HELPER; }
 1;
 END
 
@@ -184,7 +206,7 @@ BEGIN {
     *main::ISMAC       = sub () { 0 };
 }
 
-# canSeek()'s librespot branch compares $::VERSION -- fix it to a value the
+# canSeek()'s LMS-version check compares $::VERSION -- fix it to a value the
 # real Slim::Utils::Versions stub is happy with regardless (stub always
 # returns 1), but set a plausible LMS version string for realism.
 our $VERSION;
@@ -207,6 +229,9 @@ require_ok('Plugins::SpotOn::ProtocolHandler')
 require_ok('Slim::Player::Protocols::HTTP')
     or BAIL_OUT("Failed to load Slim::Player::Protocols::HTTP stub");
 
+require_ok('Plugins::SpotOn::Unified::DaemonManager')
+    or BAIL_OUT("Failed to load the Plugins::SpotOn::Unified::DaemonManager stub");
+
 sub reset_backend {
     my ($value) = @_;
     if (defined $value) {
@@ -218,46 +243,138 @@ sub reset_backend {
 
 my $pkg = 'Plugins::SpotOn::ProtocolHandler';
 
-# Plain blessed hash -- the soloist gate in canDirectStream() sits before
-# any per-client pref access (->can('master'), streamingMode, etc.), so no
-# richer client double is required.
-my $clientStub = bless {}, 'FakeClient';
-
 # ============================================================
-# backend = 'soloist' (D-01/D-02/D-03/Pitfall 3)
+# Mock client -- can('master') always false (single-player scenario: the
+# ternary `$client->can('master') ? $client->master : $client` in
+# ProtocolHandler.pm then just uses $client itself), isSynced()
+# per-instance controllable.
 # ============================================================
 {
-    reset_backend('soloist');
+    package MockClient;
+    sub new {
+        my ($class, %args) = @_;
+        return bless { id => ($args{id} // 'player1'), synced => ($args{synced} // 0) }, $class;
+    }
+    sub can      { return 0; }
+    sub isSynced { return $_[0]->{synced}; }
+    sub id       { return $_[0]->{id}; }
+}
 
-    is($pkg->contentType(), 'sol', "contentType() eq 'sol' when backend=soloist");
+# 73-03 Task 3: test double for the persistent SoloistDaemon helper.
+# Blessed into the REAL class name (Scalar::Util::blessed trickery, per the
+# plan) so any future isa() check against it behaves like production code
+# would; ProtocolHandler.pm itself only calls alive()/_streamPort()/_ws().
+{
+    package Plugins::SpotOn::Unified::SoloistDaemon;
+    sub new {
+        my ($class, %args) = @_;
+        return bless { %args }, $class;
+    }
+    sub alive       { return $_[0]->{alive} // 1; }
+    sub _streamPort { return $_[0]->{port}; }
+    sub _ws         { return $_[0]->{ws}; }
+}
 
-    is($pkg->getFormatForURL('spoton://track:abc123'), 'sol',
-        "getFormatForURL(track) eq 'sol' when backend=soloist");
-    is($pkg->getFormatForURL('spoton://episode:abc123'), 'sol',
-        "getFormatForURL(episode) eq 'sol' when backend=soloist");
-
-    is($pkg->canDirectStream($clientStub, 'spoton://track:abc123'), 0,
-        "canDirectStream() == 0 for Browse URL when backend=soloist (D-03)");
-
-    is($pkg->canSeek($clientStub), 0,
-        "canSeek() == 0 when backend=soloist (Pitfall 3)");
-
-    my $streamObj = $pkg->new({ url => 'spoton://track:abc123', client => undef });
-    ok(defined $streamObj, "new({url => spoton://track:..., client => undef}) is defined when backend=soloist");
+# Fake SoloistWS double -- only the fields ProtocolHandler.pm's soloist
+# browse paths read (connected/browseAdvancePending/browseSession) plus a
+# recorder for startBrowseTrack (getNextTrack dispatch coverage).
+{
+    package Test::FakeSoloistWs;
+    sub new {
+        my ($class, %args) = @_;
+        return bless { connected => 1, browseSession => 0, browseAdvancePending => 0, started => [], %args }, $class;
+    }
+    sub connected             { return $_[0]->{connected}; }
+    sub browseSession         { my $self = shift; $self->{browseSession} = shift if @_; return $self->{browseSession}; }
+    sub browseAdvancePending  { my $self = shift; $self->{browseAdvancePending} = shift if @_; return $self->{browseAdvancePending}; }
+    sub startBrowseTrack      { my ($self, $uri, $client) = @_; push @{ $self->{started} }, $uri; return 1; }
 }
 
 # ============================================================
-# backend = 'librespot' (pre-phase behavior unchanged)
+# backend = 'soloist' (D-03, Modell B): daemon alive, unsynced player --
+# canDirectStream returns the daemon's HTTP /stream URL directly.
+# ============================================================
+{
+    reset_backend('soloist');
+    $Plugins::SpotOn::Unified::DaemonManager::HELPER =
+        Plugins::SpotOn::Unified::SoloistDaemon->new(alive => 1, port => 39755);
+
+    is($pkg->contentType(), 'soc', "contentType() eq 'soc' when backend=soloist (D-03)");
+
+    is($pkg->getFormatForURL('spoton://track:abc123'), 'soc',
+        "getFormatForURL(track) eq 'soc' when backend=soloist (D-03)");
+    is($pkg->getFormatForURL('spoton://episode:abc123'), 'soc',
+        "getFormatForURL(episode) eq 'soc' when backend=soloist (D-03)");
+
+    my $client = MockClient->new(synced => 0);
+    my $result = $pkg->canDirectStream($client, 'spoton://track:abc123');
+    like($result, qr{^http://127\.0\.0\.1:39755/stream$},
+        "canDirectStream() returns the daemon /stream URL for an unsynced soloist browse client (D-03)");
+
+    ok($pkg->canSeek($client), "canSeek() truthy when backend=soloist (D-03 lifts the Phase-72 hard 0)");
+
+    my $streamObj = $pkg->new({ url => 'spoton://track:abc123', client => $client });
+    ok(defined $streamObj, "new({url => spoton://track:..., unsynced}) is defined when backend=soloist");
+    is($streamObj->{url}, 'spoton://track:abc123',
+        "new() leaves the url untouched for an unsynced soloist browse client (falls through unchanged)");
+}
+
+# ============================================================
+# backend = 'soloist', synced player -- canDirectStream returns 0 (proxy
+# handles it); new() substitutes the daemon /stream URL.
+# ============================================================
+{
+    reset_backend('soloist');
+    $Plugins::SpotOn::Unified::DaemonManager::HELPER =
+        Plugins::SpotOn::Unified::SoloistDaemon->new(alive => 1, port => 39755);
+
+    my $client = MockClient->new(synced => 1);
+
+    is($pkg->canDirectStream($client, 'spoton://track:abc123'), 0,
+        "canDirectStream() == 0 for a synced soloist browse client (D-03 -- new() proxy handles it)");
+
+    my $streamObj = $pkg->new({ url => 'spoton://track:abc123', client => $client });
+    ok(defined $streamObj, "new({url => spoton://track:..., synced}) is defined when backend=soloist");
+    like($streamObj->{url}, qr{^http://127\.0\.0\.1:39755/stream$},
+        "new() substitutes the daemon /stream URL for a synced soloist browse client (D-03 sync-group proxy)");
+}
+
+# ============================================================
+# backend = 'soloist', no daemon alive -- canDirectStream falls back to 0.
+# ============================================================
+{
+    reset_backend('soloist');
+    $Plugins::SpotOn::Unified::DaemonManager::HELPER = undef;
+
+    my $client = MockClient->new(synced => 0);
+    is($pkg->canDirectStream($client, 'spoton://track:abc123'), 0,
+        "canDirectStream() == 0 when no soloist daemon is alive (daemon backoff owns recovery)");
+}
+
+# ============================================================
+# backend = 'librespot' (pre-phase behavior unchanged) -- regression net
+# for BOTH backends per Task 3 acceptance criteria.
 # ============================================================
 {
     reset_backend('librespot');
+    $Plugins::SpotOn::Unified::DaemonManager::HELPER =
+        Plugins::SpotOn::Unified::SoloistDaemon->new(alive => 1, port => 39755);
 
     is($pkg->contentType(), 'son', "contentType() eq 'son' when backend=librespot");
 
     is($pkg->getFormatForURL('spoton://track:abc123'), 'soc',
         "getFormatForURL(track) eq 'soc' when backend=librespot (pre-phase behavior)");
 
-    ok($pkg->canSeek($clientStub), "canSeek() truthy when backend=librespot");
+    my $client = MockClient->new(synced => 0);
+    my $result = $pkg->canDirectStream($client, 'spoton://track:abc123');
+    like($result, qr{^http://127\.0\.0\.1:39755/track/abc123$},
+        "canDirectStream() returns the daemon /track/{id} URL for an unsynced librespot browse client (unchanged)");
+
+    my $syncedClient = MockClient->new(synced => 1);
+    is($pkg->canDirectStream($syncedClient, 'spoton://track:abc123'), 0,
+        "canDirectStream() == 0 for a synced librespot browse client (unchanged -- new() proxy handles it)");
+
+    ok($pkg->canSeek($client), "canSeek() truthy when backend=librespot");
 }
 
 # ============================================================
@@ -271,7 +388,7 @@ my $clientStub = bless {}, 'FakeClient';
     is($pkg->getFormatForURL('spoton://track:abc123'), 'soc',
         "getFormatForURL(track) eq 'soc' when backend is unset (default librespot)");
 
-    ok($pkg->canSeek($clientStub), "canSeek() truthy when backend is unset (default librespot)");
+    ok($pkg->canSeek(MockClient->new), "canSeek() truthy when backend is unset (default librespot)");
 }
 
 done_testing();
