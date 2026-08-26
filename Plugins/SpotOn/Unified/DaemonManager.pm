@@ -106,6 +106,12 @@ sub resolvePassthroughForClient {
     my ($class, $client) = @_;
     return 0 unless $client;
 
+    # Phase 73 (D-04): Soloist Connect is S16LE-PCM-only end to end via
+    # fake-libpulse's HTTP mode -- sox/OGG formats/quality land in Phase 74.
+    # Without this short-circuit, a librespot passthrough capability probe
+    # could mark a soloist /stream as OGG and feed the ogg pipeline raw PCM.
+    return 0 if ($prefs->get('backend') // 'librespot') eq 'soloist';
+
     # Per-client resolution (used for individual check and sync-group iteration)
     my $resolveOne = sub {
         my ($c) = @_;
@@ -392,9 +398,14 @@ sub _streamAlivePoll {
             # credential-rejection error escalates to the persistent
             # playback-auth flag and the daemon stays down (GH #147 D-04);
             # anything else falls through to the plain restart path.
-            require Plugins::SpotOn::API::Credentials;
-            my $tail = $helper->stderrTail(STDERR_TAIL_BYTES);
-            if (Plugins::SpotOn::API::Credentials->isCredentialError($tail)) {
+            # Soloist crashes take the plain CRASH_BACKOFF path unconditionally
+            # -- SoloistDaemon has no credentials.json/Login5 concept (the
+            # spak-key is server-wide, not per-account); exit-code-10
+            # (build-expiry) refinement is 73-02 (RESEARCH Pitfall 7).
+            my $isLibrespot = $helper->isa('Plugins::SpotOn::Unified::Daemon');
+            require Plugins::SpotOn::API::Credentials if $isLibrespot;
+            my $tail = $isLibrespot ? $helper->stderrTail(STDERR_TAIL_BYTES) : '';
+            if ($isLibrespot && Plugins::SpotOn::API::Credentials->isCredentialError($tail)) {
                 $class->_handleCredentialCrash($helper);
             } else {
                 # GH #147 D-05: exponential backoff for non-credential crash
@@ -443,7 +454,9 @@ sub _streamAlivePoll {
         # alive daemon's stderr tail. Never triggers a new process spawn --
         # purely reads the existing stderrTail buffer. Cache write is guarded
         # against redundant writes (same classified state every 5s poll).
-        if ($helper->alive && $helper->_accountId) {
+        # librespot-only (SoloistDaemon's _accountId is always undef, which
+        # already gates this off -- isa check added for clarity/documentation).
+        if ($helper->alive && $helper->isa('Plugins::SpotOn::Unified::Daemon') && $helper->_accountId) {
             require Plugins::SpotOn::API::Credentials;
             my $tail  = $helper->stderrTail(STDERR_TAIL_BYTES);
             my $state = Plugins::SpotOn::API::Credentials->classifyAudioKeyError($tail);
@@ -481,7 +494,11 @@ sub _streamAlivePoll {
             }
         }
 
-        if ($helper->alive && $helper->_streamPort) {
+        # librespot-only: fake-libpulse's HTTP mode has no /health endpoint;
+        # SoloistWS's connection liveness is Pitfall-1-safe by construction
+        # (WS loss never kills LMS, RESEARCH Pattern 2) so no HTTP probe
+        # equivalent is needed for this daemon class.
+        if ($helper->alive && $helper->isa('Plugins::SpotOn::Unified::Daemon') && $helper->_streamPort) {
             my $count = ($helper->_healthCheckCount || 0) + 1;
             $helper->_healthCheckCount($count);
 
@@ -625,6 +642,21 @@ sub _backendPrereqState {
     return 'soloist_missing_binary' unless Plugins::SpotOn::Soloist->get();
     return 'soloist_missing_key'    unless Plugins::SpotOn::Soloist->hasKey();
 
+    # D-08 (user decision, resolves RESEARCH Open Question 3): Protocol::
+    # WebSocket 0.26 is vendored in the plugin zip -- Soloist Connect runs
+    # on LMS 8.0+, no version gate. ensureWsLib() prefers an LMS-bundled
+    # copy (9.1+; the Debian split-layout Pitfall 8 is a bundle concern
+    # only) and falls back to Plugins/SpotOn/Vendor/. On a correctly
+    # installed plugin zip this require cannot fail; eval-guard anyway so a
+    # mutilated install degrades to a single warning rather than a die, and
+    # SoloistDaemon::start's own require-guard (via SoloistWS) keeps the
+    # daemon from spawning a WS client it can't use. No new prereq state --
+    # a broken install without the vendor tree is not a state a user can
+    # act on beyond reinstalling the plugin.
+    unless (eval { Plugins::SpotOn::Soloist::ensureWsLib() }) {
+        $log->warn('Soloist: Protocol::WebSocket unavailable (neither LMS-bundled nor vendored copy loaded) - Connect events will not be received');
+    }
+
     return 'soloist_ready';
 }
 
@@ -640,14 +672,21 @@ sub startHelper {
 
     if ($backend eq 'soloist') {
         # WR-01: stop any already-running librespot daemon for this player
-        # before evaluating Soloist's own prerequisites. Without this,
-        # switching backend -> soloist left an alive librespot helper
-        # (Connect visibility, playback) running until it crashed or LMS
-        # restarted -- contradicting the shipped "switching restarts the
-        # daemons" UI copy (PLUGIN_SPOTON_BACKEND_DESC) and D-07's
-        # single-server-wide-backend semantics. stopHelper() is a no-op if
-        # no helper is tracked for $clientId or it isn't alive.
-        $class->stopHelper($clientId);
+        # before evaluating Soloist's own prerequisites -- but ONLY a
+        # librespot leftover (backend-switch case). A tracked SoloistDaemon
+        # that is merely restarting (crash, sync, name change) must not be
+        # torn down here; the code below handles its own restart decisions.
+        # Without the backend-switch guard, switching backend -> soloist
+        # left an alive librespot helper (Connect visibility, playback)
+        # running until it crashed or LMS restarted -- contradicting the
+        # shipped "switching restarts the daemons" UI copy
+        # (PLUGIN_SPOTON_BACKEND_DESC) and D-07's single-server-wide-backend
+        # semantics. stopHelper() is a no-op if no helper is tracked.
+        my $existing = $helperInstances{$clientId};
+        if ($existing && !$existing->isa('Plugins::SpotOn::Unified::SoloistDaemon')) {
+            $class->stopHelper($clientId);
+            $existing = undef;
+        }
 
         my $state = _backendPrereqState($backend);
 
@@ -661,17 +700,66 @@ sub startHelper {
             return;
         }
 
-        # Phase 72: Browse playback is served per-track by the generated
-        # custom-convert.conf launcher (spoton-soloist wrapper) -- no
-        # persistent daemon is needed or started for Browse; ProtocolHandler's
-        # canDirectStream()=0 on the soloist path routes LMS straight into the
-        # sol-flc/sol-pcm transcoder profile instead. The persistent WebSocket
-        # daemon (--ws) arrives with Phase 73 Connect. No librespot daemon is
-        # started for a soloist-backed player either.
-        main::INFOLOG && $log->is_info && $log->info(
-            "Soloist prerequisites met for $clientId - Browse served via per-track transcoder (Phase 72); persistent daemon arrives with Phase 73 Connect"
-        );
+        my $client = Slim::Player::Client::getClient($clientId);
+        unless ($client) {
+            main::INFOLOG && $log->is_info && $log->info(
+                "Skipping Soloist daemon for $clientId - no client found"
+            );
+            return;
+        }
+
+        my $helper = $existing;
+
+        if ($helper && $helper->alive) {
+            my $expectedName = $class->deviceNameForClient($client);
+            if (($helper->name || '') ne $expectedName) {
+                if ($class->_isStreamActive($helper, $client)) {
+                    main::INFOLOG && $log->is_info && $log->info(
+                        "Soloist name change for $clientId deferred - stream active; watchdog will retry"
+                    );
+                }
+                else {
+                    main::INFOLOG && $log->is_info && $log->info(
+                        "Soloist name changed for $clientId (was '" . ($helper->name || '') . "', now '$expectedName') - restarting daemon"
+                    );
+                    $class->stopHelper($clientId);
+                    $helper = undef;
+                }
+            }
+        }
+
+        if (!$helper) {
+            main::INFOLOG && $log->is_info && $log->info("Need to create Soloist daemon for $clientId");
+            require Plugins::SpotOn::Unified::SoloistDaemon;
+            $helper = $helperInstances{$clientId} = Plugins::SpotOn::Unified::SoloistDaemon->new($clientId);
+        }
+        elsif (!$helper->alive) {
+            main::INFOLOG && $log->is_info && $log->info("Need to (re-)start Soloist daemon for $clientId");
+            $helper->start;
+        }
+
+        # Same fast-poll activation as the librespot path -- crash backoff,
+        # sync lookup, and stream-port resolution all key off this timer.
+        if ($helper && $helper->alive) {
+            Slim::Utils::Timers::killTimers($class, \&_streamAlivePoll);
+            Slim::Utils::Timers::setTimer(
+                $class,
+                Time::HiRes::time() + STREAM_WATCHDOG_INTERVAL,
+                \&_streamAlivePoll
+            );
+        }
+
+        return $helper if $helper && $helper->alive;
         return;
+    }
+
+    # Symmetric backend-switch guard (librespot path): if the tracked
+    # helper for $clientId is a SoloistDaemon, the backend was switched back
+    # to librespot -- stop it before evaluating librespot's own prereqs.
+    if (my $existingSoloist = $helperInstances{$clientId}) {
+        if ($existingSoloist->isa('Plugins::SpotOn::Unified::SoloistDaemon')) {
+            $class->stopHelper($clientId);
+        }
     }
 
     # Credential pre-check: skip daemon start if no cached credentials exist.

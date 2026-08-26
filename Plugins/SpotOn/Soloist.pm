@@ -603,4 +603,66 @@ sub clearKey {
     return 1;
 }
 
+# ---------------------------------------------------------------------------
+# Phase 73: per-player storage (D-01/D-02) + key access for SoloistDaemon.
+# ---------------------------------------------------------------------------
+
+# dataDirForClient($mac) / cacheDirForClient($mac) -- one data-dir and one
+# cache-dir per player under players/<mac>/, distinct from the Phase-72
+# shared dataDir()/launcher machinery (retired in 73-04, no lock interaction).
+# Sharing or cloning a data-dir across players is the documented anti-pattern
+# (lock collision / device_id collision, RESEARCH Anti-Patterns) -- each
+# player pairs itself via app tap (D-07).
+sub dataDirForClient {
+    my ($mac) = @_;
+    (my $clean = $mac || '') =~ s/://g;
+    return catdir(_rootDir(), 'players', $clean, 'data');
+}
+
+sub cacheDirForClient {
+    my ($mac) = @_;
+    (my $clean = $mac || '') =~ s/://g;
+    return catdir(_rootDir(), 'players', $clean, 'cache');
+}
+
+# readKey() -- slurp keyPath(), chomp trailing whitespace, undef unless
+# non-empty. The raw key is NEVER logged (T-71 discipline); callers pass it
+# to SoloistDaemon's -k argv -- the /proc/cmdline exposure is the unchanged
+# ACCEPTED RISK WR-01 (no env/stdin alternative exists in soloist 1.3.7.489).
+sub readKey {
+    my $path = keyPath();
+    return undef unless -f $path;
+
+    my $key = eval {
+        open(my $fh, '<', $path) or die "open failed: $!";
+        local $/;
+        my $data = <$fh>;
+        close($fh);
+        $data;
+    };
+    return undef if $@ || !defined $key;
+
+    $key =~ s/\s+\z//;
+    return length($key) ? $key : undef;
+}
+
+# ensureWsLib() -- D-08 (user decision, replaces the RESEARCH Open Question 3
+# runtime gate): prefer an LMS-bundled Protocol::WebSocket::Client (9.1+),
+# fall back to the vendored copy under Plugins/SpotOn/Vendor/ (pure Perl,
+# Perl >= 5.10-clean, no XS -- Artistic/GPL dual per RESEARCH Package
+# Legitimacy Audit). Never dies. Soloist Connect thus works on any LMS 8.0+
+# install -- there is no soloist_missing_wslib prereq state.
+sub ensureWsLib {
+    return 1 if eval { require Protocol::WebSocket::Client; 1 };
+
+    require Plugins::SpotOn::Plugin;
+    my $vendorDir = catdir(Plugins::SpotOn::Plugin->_pluginDataFor('basedir'), 'Vendor');
+
+    # push, NOT unshift -- an LMS-bundled copy (if one appears later in this
+    # process's lifetime) must always win over the vendored fallback.
+    push @INC, $vendorDir unless grep { $_ eq $vendorDir } @INC;
+
+    return eval { require Protocol::WebSocket::Client; 1 } ? 1 : 0;
+}
+
 1;

@@ -1,6 +1,7 @@
 #!/usr/bin/perl
 use strict;
 use warnings;
+no warnings 'once';
 use Test::More;
 use File::Basename qw(dirname);
 use File::Temp qw(tempdir);
@@ -78,8 +79,11 @@ sub can { 1 }
 1;
 END
 
+# Task 2 (73-01): backed by a package hash so tests can control arbitrary
+# pref keys (e.g. 'backend', 'cachedir') without a bespoke stub per key.
 write_stub($stub_dir, 'Slim::Utils::Prefs', <<'END');
 package Slim::Utils::Prefs;
+our %FAKE_VALUES = ( cachedir => '/tmp/spoton-test-cachedir' );
 sub import {
     my $class = shift;
     my $caller = caller;
@@ -87,8 +91,8 @@ sub import {
     *{"${caller}::preferences"} = \&preferences;
 }
 sub preferences { return bless { _ns => $_[0] }, 'Slim::Utils::Prefs' }
-sub get      { return undef }
-sub set      { }
+sub get      { my ($self, $key) = @_; return $FAKE_VALUES{$key}; }
+sub set      { my ($self, $key, $val) = @_; $FAKE_VALUES{$key} = $val; }
 sub client   { return bless {}, 'Slim::Utils::Prefs' }
 sub setChange { }
 1;
@@ -142,13 +146,42 @@ sub import {
 1;
 END
 
+# Task 2 (73-01): needed for the REAL Plugins::SpotOn::Soloist module (loaded
+# below, not stubbed out) which `use`s this at compile time (_arch()).
+write_stub($stub_dir, 'Slim::Utils::OSDetect', <<'END');
+package Slim::Utils::OSDetect;
+sub details { return { osArch => 'x86_64-linux-gnu-thread-multi' } }
+1;
+END
+
+# Task 2 (73-01): needed for the REAL Plugins::SpotOn::Unified::SoloistDaemon
+# module (isolated-require target below) which `use base qw(Slim::Utils::Accessor)`.
+write_stub($stub_dir, 'Slim::Utils::Accessor', <<'END');
+package Slim::Utils::Accessor;
+sub new { return bless {}, shift }
+sub mk_accessor {
+    my ($class, $type, @names) = @_;
+    no strict 'refs';
+    for my $name (@names) {
+        *{"${class}::${name}"} = sub {
+            my $self = shift;
+            $self->{$name} = shift if @_;
+            return $self->{$name};
+        };
+    }
+}
+1;
+END
+
 # Minimal stand-in -- DaemonManager.pm only needs the CACHE_VERSION constant
-# and _pluginDataFor at load time; both real callers (startHelper's later
-# body, Plugin.pm itself) are out of scope for this dispatch-only test.
+# and _pluginDataFor at load time. Task 2 (73-01): $FAKE_BASEDIR is settable
+# per-test so ensureWsLib()'s vendor-fallback push resolves the REAL
+# Plugins/SpotOn/Vendor tree (see the ensureWsLib block below).
 write_stub($stub_dir, 'Plugins::SpotOn::Plugin', <<'END');
 package Plugins::SpotOn::Plugin;
 use constant SPOTON_CACHE_VERSION => 4;
-sub _pluginDataFor { return 'test-basedir' }
+our $FAKE_BASEDIR = 'test-basedir';
+sub _pluginDataFor { return $FAKE_BASEDIR }
 1;
 END
 
@@ -158,26 +191,6 @@ sub new { return bless {}, shift }
 1;
 END
 
-# Controllable Soloist stub -- $FAKE_BINARY/$FAKE_HAS_KEY are toggled per
-# test case below to drive _backendPrereqState()'s three soloist-branch
-# outcomes without touching the real Soloist.pm (already covered by t/26/27).
-write_stub($stub_dir, 'Plugins::SpotOn::Soloist', <<'END');
-package Plugins::SpotOn::Soloist;
-our $FAKE_BINARY  = undef;   # undef = missing; any true value = present
-our $FAKE_HAS_KEY = 0;
-sub get    { return $FAKE_BINARY }
-sub hasKey { return $FAKE_HAS_KEY }
-1;
-END
-
-# ============================================================
-# main:: constants -- fixed ones via `use constant` (bareword-callable
-# under strict subs), OS flags as real subs reading a togglable package
-# variable so individual test cases can flip ISWINDOWS/ISMAC at runtime.
-# ============================================================
-our $FAKE_ISWINDOWS = 0;
-our $FAKE_ISMAC     = 0;
-
 BEGIN {
     no warnings 'redefine';
     *main::TRANSCODING = sub () { 0 };
@@ -186,26 +199,40 @@ BEGIN {
     *main::INFOLOG     = sub () { 0 };
     *main::DEBUGLOG    = sub () { 0 };
     *main::PERFMON     = sub () { 0 };
+}
+our $FAKE_ISWINDOWS = 0;
+our $FAKE_ISMAC     = 0;
+BEGIN {
+    no warnings 'redefine';
     *main::ISWINDOWS   = sub () { $main::FAKE_ISWINDOWS };
     *main::ISMAC       = sub () { $main::FAKE_ISMAC };
 }
 
 unshift @INC, $stub_dir, $project_dir;
 
+# Task 2 (73-01): the REAL Plugins::SpotOn::Soloist module is loaded (not a
+# fake stand-in) so dataDirForClient/cacheDirForClient/readKey/ensureWsLib
+# are exercised as actual production code. Only get()/hasKey() are
+# monkey-patched afterward (glob assignment) so _backendPrereqState()'s
+# three soloist-branch outcomes stay controllable per test case, exactly
+# like the previous fake-package approach.
+require_ok('Plugins::SpotOn::Soloist')
+    or BAIL_OUT("Failed to load the real Plugins::SpotOn::Soloist");
+
+our $FAKE_BINARY  = undef;   # undef = missing; any true value = present
+our $FAKE_HAS_KEY = 0;
+{
+    no warnings 'redefine';
+    *Plugins::SpotOn::Soloist::get    = sub { return $FAKE_BINARY };
+    *Plugins::SpotOn::Soloist::hasKey = sub { return $FAKE_HAS_KEY };
+}
+
 require_ok('Plugins::SpotOn::Unified::DaemonManager')
     or BAIL_OUT("Failed to load Plugins::SpotOn::Unified::DaemonManager");
 
-# Pre-load the Soloist stub so _backendPrereqState()'s own lazy
-# `require Plugins::SpotOn::Soloist` (which runs on its first soloist-branch
-# call below) is a %INC no-op -- otherwise that require would re-execute the
-# stub's `our $FAKE_BINARY = undef;` init line and clobber whatever value a
-# test case just set immediately beforehand.
-require_ok('Plugins::SpotOn::Soloist')
-    or BAIL_OUT("Failed to load Plugins::SpotOn::Soloist stub");
-
 sub reset_all {
-    $Plugins::SpotOn::Soloist::FAKE_BINARY  = undef;
-    $Plugins::SpotOn::Soloist::FAKE_HAS_KEY = 0;
+    $FAKE_BINARY  = undef;
+    $FAKE_HAS_KEY = 0;
     $FAKE_ISWINDOWS = 0;
     $FAKE_ISMAC     = 0;
 }
@@ -247,8 +274,8 @@ sub reset_all {
 # ============================================================
 {
     reset_all();
-    $Plugins::SpotOn::Soloist::FAKE_BINARY  = '/fake/cachedir/spoton/soloist/x86_64-linux/soloist';
-    $Plugins::SpotOn::Soloist::FAKE_HAS_KEY = 1;
+    $FAKE_BINARY  = '/fake/cachedir/spoton/soloist/x86_64-linux/soloist';
+    $FAKE_HAS_KEY = 1;
 
     is(
         Plugins::SpotOn::Unified::DaemonManager::_backendPrereqState('soloist'),
@@ -262,8 +289,8 @@ sub reset_all {
 # ============================================================
 {
     reset_all();
-    $Plugins::SpotOn::Soloist::FAKE_BINARY  = undef;
-    $Plugins::SpotOn::Soloist::FAKE_HAS_KEY = 1;   # key present is irrelevant -- binary checked first
+    $FAKE_BINARY  = undef;
+    $FAKE_HAS_KEY = 1;   # key present is irrelevant -- binary checked first
 
     is(
         Plugins::SpotOn::Unified::DaemonManager::_backendPrereqState('soloist'),
@@ -277,8 +304,8 @@ sub reset_all {
 # ============================================================
 {
     reset_all();
-    $Plugins::SpotOn::Soloist::FAKE_BINARY  = '/fake/cachedir/spoton/soloist/x86_64-linux/soloist';
-    $Plugins::SpotOn::Soloist::FAKE_HAS_KEY = 0;
+    $FAKE_BINARY  = '/fake/cachedir/spoton/soloist/x86_64-linux/soloist';
+    $FAKE_HAS_KEY = 0;
 
     is(
         Plugins::SpotOn::Unified::DaemonManager::_backendPrereqState('soloist'),
@@ -292,8 +319,8 @@ sub reset_all {
 # ============================================================
 {
     reset_all();
-    $Plugins::SpotOn::Soloist::FAKE_BINARY  = '/fake/soloist';
-    $Plugins::SpotOn::Soloist::FAKE_HAS_KEY = 1;
+    $FAKE_BINARY  = '/fake/soloist';
+    $FAKE_HAS_KEY = 1;
     $FAKE_ISWINDOWS = 1;
 
     is(
@@ -305,14 +332,92 @@ sub reset_all {
 
 {
     reset_all();
-    $Plugins::SpotOn::Soloist::FAKE_BINARY  = '/fake/soloist';
-    $Plugins::SpotOn::Soloist::FAKE_HAS_KEY = 1;
+    $FAKE_BINARY  = '/fake/soloist';
+    $FAKE_HAS_KEY = 1;
     $FAKE_ISMAC = 1;
 
     is(
         Plugins::SpotOn::Unified::DaemonManager::_backendPrereqState('soloist'),
         'soloist_unsupported_os',
         "soloist on ISMAC (even with binary+key present) -> 'soloist_unsupported_os'"
+    );
+}
+
+reset_all();
+
+# ============================================================
+# Task 2 (D-01/D-02): per-player dir shapes (real Soloist.pm code)
+# ============================================================
+{
+    my $dataDir = Plugins::SpotOn::Soloist::dataDirForClient('aa:bb:cc:dd:ee:ff');
+    like($dataDir, qr{players/aabbccddeeff/data$}, "dataDirForClient() shape (D-01 per-player dir)");
+
+    my $cacheDir = Plugins::SpotOn::Soloist::cacheDirForClient('aa:bb:cc:dd:ee:ff');
+    like($cacheDir, qr{players/aabbccddeeff/cache$}, "cacheDirForClient() shape (D-01 per-player dir)");
+}
+
+# ============================================================
+# Task 2 (D-08): ensureWsLib() -- vendor fallback vs. bundled precedence
+# ============================================================
+{
+    # (1) No bundled copy anywhere in @INC -- must fall back to the real
+    # vendored Plugins/SpotOn/Vendor/Protocol/WebSocket/Client.pm tree.
+    delete $INC{'Protocol/WebSocket/Client.pm'};
+    delete $INC{'Protocol/WebSocket.pm'};
+
+    local $Plugins::SpotOn::Plugin::FAKE_BASEDIR = "$project_dir/Plugins/SpotOn";
+
+    my $ok = Plugins::SpotOn::Soloist::ensureWsLib();
+    is($ok, 1, "ensureWsLib() loads the vendored Protocol::WebSocket::Client when no bundled copy is present");
+    like($INC{'Protocol/WebSocket/Client.pm'} // '', qr{Vendor}, "loaded from the real Plugins/SpotOn/Vendor tree (D-08)");
+}
+
+{
+    # (2) A bundled copy earlier in @INC (stub_dir precedes any vendor push)
+    # must win -- push, not unshift, in ensureWsLib().
+    delete $INC{'Protocol/WebSocket/Client.pm'};
+    write_stub($stub_dir, 'Protocol::WebSocket::Client', <<'END');
+package Protocol::WebSocket::Client;
+sub new { bless {}, shift }
+1;
+END
+
+    my $ok = Plugins::SpotOn::Soloist::ensureWsLib();
+    is($ok, 1, "ensureWsLib() succeeds when an LMS-bundled copy is present");
+    like($INC{'Protocol/WebSocket/Client.pm'} // '', qr{^\Q$stub_dir\E}, "prefers the bundled copy over the vendored fallback");
+}
+
+# ============================================================
+# Task 2 (D-04): resolvePassthroughForClient() soloist short-circuit
+# ============================================================
+{
+    local $Slim::Utils::Prefs::FAKE_VALUES{backend} = 'soloist';
+    my $fakeClient = bless {}, 'FakeClient';
+
+    is(
+        Plugins::SpotOn::Unified::DaemonManager->resolvePassthroughForClient($fakeClient),
+        0,
+        "resolvePassthroughForClient() returns 0 unconditionally when backend='soloist' (D-04)"
+    );
+}
+
+# ============================================================
+# Task 2 (D-05): SoloistDaemon.pm isolated-require + _spawnArgs()
+# ============================================================
+require_ok('Plugins::SpotOn::Unified::SoloistDaemon')
+    or BAIL_OUT("Failed to load Plugins::SpotOn::Unified::SoloistDaemon");
+
+{
+    my @args = Plugins::SpotOn::Unified::SoloistDaemon->_spawnArgs(
+        '/fake/soloist', 'the-spak-key', 'Living Room',
+        '/fake/data', '/fake/cache', 40,
+    );
+
+    is_deeply(
+        \@args,
+        [ '/fake/soloist', '-n', 'Living Room', '-k', 'the-spak-key',
+          '-D', '/fake/data', '-C', '/fake/cache', '-w', '127.0.0.1:0', '-i', 40 ],
+        "_spawnArgs() builds the expected argv (D-05, T-73-01 -- hard-coded 127.0.0.1:0 bind)"
     );
 }
 
