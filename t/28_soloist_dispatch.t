@@ -158,16 +158,35 @@ END
 # module (isolated-require target below) which `use base qw(Slim::Utils::Accessor)`.
 write_stub($stub_dir, 'Slim::Utils::Accessor', <<'END');
 package Slim::Utils::Accessor;
-sub new { return bless {}, shift }
+use Scalar::Util qw(weaken);
+my %slot;
+sub new { return bless [], shift }
 sub mk_accessor {
     my ($class, $type, @names) = @_;
     no strict 'refs';
     for my $name (@names) {
-        *{"${class}::${name}"} = sub {
-            my $self = shift;
-            $self->{$name} = shift if @_;
-            return $self->{$name};
-        };
+        my $n = $slot{$class}{$name};
+        if (!defined $n) {
+            $n = keys %{ $slot{$class} };
+            $slot{$class}{$name} = $n;
+        }
+        if ($type eq 'weak') {
+            *{"${class}::${name}"} = sub {
+                my $self = shift;
+                if (@_) {
+                    $self->[$n] = shift;
+                    weaken($self->[$n]) if ref $self->[$n];
+                }
+                return $self->[$n];
+            };
+        }
+        else {
+            *{"${class}::${name}"} = sub {
+                my $self = shift;
+                $self->[$n] = shift if @_;
+                return $self->[$n];
+            };
+        }
     }
 }
 1;
@@ -491,32 +510,37 @@ require Time::HiRes;    # real core module (t/31's own precedent) -- needed
 
 # Test double for SoloistDaemon's process-lifecycle methods only -- name()/
 # mac() stay the REAL Slim::Utils::Accessor-generated accessors (mk_accessor
-# ran for real at module-load time), so blessed hash fields work normally.
-# Blessed into the literal production package name (73-03-SUMMARY.md
+# ran for real at module-load time). CR-01 fix: the Accessor stub is now
+# array-based (blessed ARRAY refs, matching real LMS), so this double must
+# bless an ARRAY ref too -- the test-only "alive" flag can no longer live in
+# a hash slot on $self, so it is tracked in a package-level hash keyed by mac
+# instead. Blessed into the literal production package name (73-03-SUMMARY.md
 # precedent) so every isa('...::SoloistDaemon') check in DaemonManager.pm
 # still passes.
 my (@NEW_CALLS, @STOP_CALLS, @STOPFORSYNC_CALLS);
+my %_TEST_ALIVE;
 {
     no warnings 'redefine';
     *Plugins::SpotOn::Unified::SoloistDaemon::new = sub {
         my ($class, $id) = @_;
         push @NEW_CALLS, $id;
-        my $self = bless {}, $class;
+        my $self = bless [], $class;
         $self->mac($id);
+        $_TEST_ALIVE{$id} = 1;
         return $self;
     };
     *Plugins::SpotOn::Unified::SoloistDaemon::alive = sub {
-        return $_[0]->{_test_alive} // 1;
+        return $_TEST_ALIVE{ $_[0]->mac } // 1;
     };
     *Plugins::SpotOn::Unified::SoloistDaemon::stop = sub {
         my $self = shift;
         push @STOP_CALLS, $self->mac;
-        $self->{_test_alive} = 0;
+        $_TEST_ALIVE{ $self->mac } = 0;
     };
     *Plugins::SpotOn::Unified::SoloistDaemon::stopForSync = sub {
         my $self = shift;
         push @STOPFORSYNC_CALLS, $self->mac;
-        $self->{_test_alive} = 0;
+        $_TEST_ALIVE{ $self->mac } = 0;
     };
 }
 

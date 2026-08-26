@@ -21,7 +21,7 @@ use warnings;
 use base qw(Slim::Utils::Accessor);
 
 use IO::Socket::INET;
-use Scalar::Util qw(blessed weaken);
+use Scalar::Util qw(blessed);
 use Time::HiRes;
 
 use JSON::XS::VersionOneAndTwo;
@@ -49,7 +49,6 @@ use constant SEEK_THRESHOLD => 3;
 use constant BROWSE_SEED_LEAD_SECONDS => 15;
 
 __PACKAGE__->mk_accessor( rw => qw(
-	daemon
 	mac
 	port
 	connected
@@ -68,6 +67,13 @@ __PACKAGE__->mk_accessor( rw => qw(
 	_sock
 	_client
 ) );
+# CR-01 fix: Slim::Utils::Accessor objects are blessed ARRAY refs (verified
+# against the real LMS Slim/Utils/Accessor.pm), not hashes -- a plain 'rw'
+# accessor plus a manual `weaken($self->{daemon})` was a hash dereference on
+# an array ref and died on every real LMS. The 'weak' accessor type weakens
+# the reference natively on every store, so no manual weaken() call is
+# needed at all.
+__PACKAGE__->mk_accessor( weak => qw( daemon ) );
 # 73-03 Task 2: browseSession activates Model B (RESEARCH Pattern 6) -- a
 # browse-managed session and a Connect session are mutually exclusive per
 # player (the browseSession emit gate below, established in 73-01, is what
@@ -93,8 +99,7 @@ sub new {
 
 	my $self = $class->SUPER::new();
 
-	$self->daemon($args{daemon});
-	weaken($self->{daemon}) if $self->{daemon};    # the daemon owns the ws, not vice versa
+	$self->daemon($args{daemon});    # 'weak' accessor -- weakens on store, daemon owns the ws, not vice versa
 	$self->mac($args{mac});
 	$self->port($args{port});
 

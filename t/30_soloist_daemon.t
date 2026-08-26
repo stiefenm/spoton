@@ -150,16 +150,35 @@ END
 # below), which `use base qw(Slim::Utils::Accessor)`.
 write_stub($stub_dir, 'Slim::Utils::Accessor', <<'END');
 package Slim::Utils::Accessor;
-sub new { return bless {}, shift }
+use Scalar::Util qw(weaken);
+my %slot;
+sub new { return bless [], shift }
 sub mk_accessor {
     my ($class, $type, @names) = @_;
     no strict 'refs';
     for my $name (@names) {
-        *{"${class}::${name}"} = sub {
-            my $self = shift;
-            $self->{$name} = shift if @_;
-            return $self->{$name};
-        };
+        my $n = $slot{$class}{$name};
+        if (!defined $n) {
+            $n = keys %{ $slot{$class} };
+            $slot{$class}{$name} = $n;
+        }
+        if ($type eq 'weak') {
+            *{"${class}::${name}"} = sub {
+                my $self = shift;
+                if (@_) {
+                    $self->[$n] = shift;
+                    weaken($self->[$n]) if ref $self->[$n];
+                }
+                return $self->[$n];
+            };
+        }
+        else {
+            *{"${class}::${name}"} = sub {
+                my $self = shift;
+                $self->[$n] = shift if @_;
+                return $self->[$n];
+            };
+        }
     }
 }
 1;
