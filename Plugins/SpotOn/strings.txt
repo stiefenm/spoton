@@ -220,30 +220,82 @@ PLUGIN_SPOTON_SOLOIST_PAIRED
 	SV	Parkopplad med Spotify
 
 PLUGIN_SPOTON_SOLOIST_NOT_PAIRED
-	CS	Zatím nespárováno — přehrávání z Procházení selže, dokud párování nebude dokončeno.
-	DA	Ikke parret endnu — Gennemse-afspilning mislykkes, indtil parring er gennemført.
-	DE	Noch nicht gekoppelt — Browse-Wiedergabe schlägt fehl, bis das Pairing abgeschlossen ist.
-	EN	Not paired yet — Browse playback will fail until pairing is done.
-	ES	Aún no emparejado — la reproducción desde Explorar fallará hasta que se complete el emparejamiento.
-	FR	Pas encore associé — la lecture depuis Parcourir échouera tant que l'association n'est pas terminée.
-	IT	Non ancora associato — la riproduzione da Esplora fallirà finché l'associazione non sarà completata.
-	NL	Nog niet gekoppeld — afspelen vanuit Bladeren mislukt totdat de koppeling is voltooid.
-	NO	Ikke paret ennå — avspilling fra Bla gjennom vil mislykkes før paring er fullført.
-	PL	Jeszcze nie sparowano — odtwarzanie z Przeglądania nie powiedzie się, dopóki parowanie nie zostanie zakończone.
-	SV	Inte parkopplad ännu — uppspelning från Bläddra kommer att misslyckas tills parkopplingen är klar.
+	CS	Zatím nespárováno — přehrávání selže, dokud tento přehrávač jednou nevyberete v aplikaci Spotify.
+	DA	Ikke parret endnu — afspilning mislykkes, indtil denne afspiller er valgt én gang i Spotify-appen.
+	DE	Noch nicht gekoppelt — die Wiedergabe schlägt fehl, bis dieses Gerät einmal in der Spotify-App ausgewählt wurde.
+	EN	Not paired yet — playback will fail until this player is selected once in the Spotify app.
+	ES	Aún no emparejado — la reproducción fallará hasta que este reproductor se seleccione una vez en la app de Spotify.
+	FR	Pas encore associé — la lecture échouera tant que ce lecteur n'aura pas été sélectionné une fois dans l'application Spotify.
+	IT	Non ancora associato — la riproduzione fallirà finché questo lettore non verrà selezionato una volta nell'app Spotify.
+	NL	Nog niet gekoppeld — afspelen mislukt totdat deze speler één keer is geselecteerd in de Spotify-app.
+	NO	Ikke paret ennå — avspilling vil mislykkes før denne spilleren er valgt én gang i Spotify-appen.
+	PL	Jeszcze nie sparowano — odtwarzanie nie powiedzie się, dopóki ten odtwarzacz nie zostanie jednorazowo wybrany w aplikacji Spotify.
+	SV	Inte parkopplad ännu — uppspelning misslyckas tills den här spelaren har valts en gång i Spotify-appen.
 
 PLUGIN_SPOTON_SOLOIST_PAIR_HOWTO
-	CS	Spusťte tento příkaz na hostiteli LMS jako uživatel služby LMS, poté ve své aplikaci Spotify jednou vyberte zařízení „SpotOn“. Párování je jednorázový krok; přihlašovací údaje se ukládají lokálně.
-	DA	Kør denne kommando på LMS-værten som LMS-tjenestebrugeren, og vælg derefter enheden 'SpotOn' i din Spotify-app én gang. Parring er et engangstrin; loginoplysninger gemmes lokalt.
-	DE	Führe diesen Befehl auf dem LMS-Host als LMS-Dienstbenutzer aus und wähle anschließend einmal das Gerät „SpotOn“ in deiner Spotify-App aus. Das Pairing ist ein einmaliger Schritt; Anmeldedaten werden lokal gespeichert.
-	EN	Run this command on the LMS host as the LMS service user, then select the 'SpotOn' device in your Spotify app once. Pairing is a one-time step; credentials are stored locally.
-	ES	Ejecuta este comando en el host de LMS como el usuario del servicio LMS y, a continuación, selecciona una vez el dispositivo "SpotOn" en tu aplicación de Spotify. El emparejamiento es un paso único; las credenciales se guardan localmente.
-	FR	Exécutez cette commande sur l'hôte LMS en tant qu'utilisateur du service LMS, puis sélectionnez une fois l'appareil « SpotOn » dans votre application Spotify. L'association est une étape unique ; les identifiants sont stockés localement.
-	IT	Esegui questo comando sull'host LMS come utente del servizio LMS, quindi seleziona una volta il dispositivo "SpotOn" nella tua app Spotify. L'associazione è un passaggio una tantum; le credenziali vengono salvate localmente.
-	NL	Voer dit commando uit op de LMS-host als de LMS-servicegebruiker en selecteer daarna één keer het apparaat 'SpotOn' in je Spotify-app. Koppelen is een eenmalige stap; inloggegevens worden lokaal opgeslagen.
-	NO	Kjør denne kommandoen på LMS-verten som LMS-tjenestebrukeren, og velg deretter enheten «SpotOn» i Spotify-appen din én gang. Paring er et engangstrinn; legitimasjon lagres lokalt.
-	PL	Uruchom to polecenie na hoście LMS jako użytkownik usługi LMS, a następnie jednorazowo wybierz urządzenie „SpotOn” w aplikacji Spotify. Parowanie to jednorazowy krok; dane uwierzytelniające są przechowywane lokalnie.
-	SV	Kör detta kommando på LMS-värden som LMS-tjänsteanvändaren och välj sedan enheten "SpotOn" i din Spotify-app en gång. Parkoppling är ett engångssteg; autentiseringsuppgifter lagras lokalt.
+	CS	Zapněte backend Soloist a počkejte, až se spustí daemon, poté jednou vyberte tento přehrávač ve výběru zařízení v aplikaci Spotify. Párování probíhá pro každý přehrávač zvlášť a zcela automaticky — není potřeba žádný příkazový řádek; přihlašovací údaje se ukládají lokálně.
+	DA	Aktivér Soloist-backenden, og vent til daemonen starter, vælg derefter denne afspiller én gang i enhedsvælgeren i din Spotify-app. Parring foregår pr. afspiller og er helt automatisk — ingen kommandolinje nødvendig; loginoplysninger gemmes lokalt.
+	DE	Aktiviere das Soloist-Backend und warte, bis der Daemon gestartet ist, wähle dann dieses Gerät einmal in der Geräteauswahl deiner Spotify-App aus. Das Pairing erfolgt pro Player automatisch — keine Kommandozeile nötig; Anmeldedaten werden lokal gespeichert.
+	EN	Enable the Soloist backend and wait for the daemon to start, then select this player once in your Spotify app's device picker. Pairing is per player and fully automatic — no command line needed; credentials are stored locally.
+	ES	Activa el backend Soloist y espera a que el daemon se inicie, luego selecciona este reproductor una vez en el selector de dispositivos de tu app de Spotify. El emparejamiento es por reproductor y totalmente automático — no se necesita línea de comandos; las credenciales se guardan localmente.
+	FR	Activez le backend Soloist et attendez que le daemon démarre, puis sélectionnez ce lecteur une fois dans le sélecteur d'appareils de votre application Spotify. L'association se fait par lecteur et est entièrement automatique — aucune ligne de commande nécessaire ; les identifiants sont stockés localement.
+	IT	Attiva il backend Soloist e attendi che il daemon si avvii, quindi seleziona questo lettore una volta nel selettore dispositivi della tua app Spotify. L'associazione avviene per singolo lettore ed è completamente automatica — nessuna riga di comando necessaria; le credenziali vengono salvate localmente.
+	NL	Schakel de Soloist-backend in en wacht tot de daemon is gestart, selecteer dan deze speler één keer in de apparaatkiezer van je Spotify-app. Koppelen gebeurt per speler en volledig automatisch — geen opdrachtregel nodig; inloggegevens worden lokaal opgeslagen.
+	NO	Aktiver Soloist-backenden og vent til daemonen starter, velg deretter denne spilleren én gang i enhetsvelgeren i Spotify-appen din. Paring skjer per spiller og er helt automatisk — ingen kommandolinje nødvendig; legitimasjon lagres lokalt.
+	PL	Włącz backend Soloist i poczekaj, aż uruchomi się demon, następnie jednorazowo wybierz ten odtwarzacz w selektorze urządzeń w aplikacji Spotify. Parowanie odbywa się dla każdego odtwarzacza osobno i w pełni automatycznie — nie jest potrzebny wiersz poleceń; dane uwierzytelniające są przechowywane lokalnie.
+	SV	Aktivera Soloist-backend och vänta tills daemonen startar, välj sedan den här spelaren en gång i enhetsväljaren i din Spotify-app. Parkoppling sker per spelare och helt automatiskt — ingen kommandorad behövs; autentiseringsuppgifter sparas lokalt.
+
+PLUGIN_SPOTON_SOLOIST_DAEMON_RUNNING
+	CS	Daemon běží
+	DA	Daemon kører
+	DE	Daemon läuft
+	EN	Daemon running
+	ES	Daemon en ejecución
+	FR	Daemon actif
+	IT	Daemon in esecuzione
+	NL	Daemon actief
+	NO	Daemon kjører
+	PL	Demon działa
+	SV	Daemon körs
+
+PLUGIN_SPOTON_SOLOIST_DAEMON_STOPPED
+	CS	Daemon zastaven
+	DA	Daemon stoppet
+	DE	Daemon gestoppt
+	EN	Daemon stopped
+	ES	Daemon detenido
+	FR	Daemon arrêté
+	IT	Daemon arrestato
+	NL	Daemon gestopt
+	NO	Daemon stoppet
+	PL	Demon zatrzymany
+	SV	Daemon stoppad
+
+PLUGIN_SPOTON_SOLOIST_EXPIRY_DAYS
+	CS	Toto sestavení Soloist vyprší za %s dní
+	DA	Denne Soloist-build udløber om %s dage
+	DE	Dieser Soloist-Build läuft in %s Tagen ab
+	EN	This Soloist build expires in %s days
+	ES	Esta compilación de Soloist caduca en %s días
+	FR	Cette build de Soloist expire dans %s jours
+	IT	Questa build di Soloist scade tra %s giorni
+	NL	Deze Soloist-build verloopt over %s dagen
+	NO	Denne Soloist-bygningen utløper om %s dager
+	PL	Ta wersja Soloist wygaśnie za %s dni
+	SV	Den här Soloist-versionen upphör om %s dagar
+
+PLUGIN_SPOTON_SOLOIST_EXPIRED
+	CS	Toto sestavení Soloist vypršelo — je nutná aktualizace
+	DA	Denne Soloist-build er udløbet — opdatering påkrævet
+	DE	Dieser Soloist-Build ist abgelaufen — Aktualisierung erforderlich
+	EN	This Soloist build has expired — update required
+	ES	Esta compilación de Soloist ha caducado — se requiere una actualización
+	FR	Cette build de Soloist a expiré — une mise à jour est requise
+	IT	Questa build di Soloist è scaduta — è richiesto un aggiornamento
+	NL	Deze Soloist-build is verlopen — update vereist
+	NO	Denne Soloist-bygningen har utløpt — oppdatering kreves
+	PL	Ta wersja Soloist wygasła — wymagana aktualizacja
+	SV	Den här Soloist-versionen har upphört — uppdatering krävs
 
 PLUGIN_SPOTON_BITRATE
 	CS	Přenosová rychlost

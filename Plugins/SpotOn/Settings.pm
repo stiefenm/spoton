@@ -515,10 +515,54 @@ sub handler {
     # never read back (Soloist.pm exposes no accessor for it).
     $paramRef->{soloistKeyMasked}     = $soloistHasKey ? SOLOIST_KEY_MASKED_PREVIEW : '';
 
-    # Phase 73 Task 1 (D-03 completion): the Phase-72 shared-dir pairing
-    # status/launcher-path params are retired along with isPaired()/
-    # launcherPath() themselves (per-track launcher machinery gone). Task 3
-    # replaces this with the per-player `soloistPlayers` status block below.
+    # D-01/D-02 (Phase 73 Task 3): per-player daemon/pairing status for the
+    # Settings status table -- pairing is per player now (app-tap, D-07), so
+    # the Phase-72 shared-dir paired/not-paired line becomes one row per
+    # connected player. Only computed when backend=soloist (matches the
+    # existing conditional pattern the four soloist* status flags above
+    # follow, and avoids iterating every connected client + a cache lookup
+    # per player on a pure-librespot install).
+    $paramRef->{soloistPlayers} = [];
+    if ((($prefs->get('backend') || 'librespot') eq 'soloist')) {
+        require Plugins::SpotOn::Unified::DaemonManager;
+        require Slim::Utils::Cache;
+        require Plugins::SpotOn::Plugin;
+        my $wsCache = Slim::Utils::Cache->new('spoton', Plugins::SpotOn::Plugin::SPOTON_CACHE_VERSION());
+
+        for my $c (Slim::Player::Client::clients()) {
+            my $mac = $c->id;
+            (my $macClean = $mac || '') =~ s/://g;
+
+            my $helper = Plugins::SpotOn::Unified::DaemonManager->helperForClient($c);
+            my $daemonAlive = ($helper && $helper->alive
+                && $helper->isa('Plugins::SpotOn::Unified::SoloistDaemon')) ? 1 : 0;
+
+            # T-73-13: only booleans/names cross into the template -- no
+            # spak-key, no data-dir paths (those stay host-local).
+            my $wsState = $wsCache->get("spoton_soloist_ws_$macClean");
+
+            push @{ $paramRef->{soloistPlayers} }, {
+                name        => $c->name,
+                mac         => $mac,
+                paired      => Plugins::SpotOn::Soloist::isPairedForClient($mac) ? 1 : 0,
+                daemonAlive => $daemonAlive,
+                loggedIn    => ($wsState && $wsState->{logged_in}) ? 1 : 0,
+                isActive    => ($wsState && $wsState->{is_active}) ? 1 : 0,
+            };
+        }
+
+        # D-09/Pitfall 7: build-expiry warning -- read once here, not
+        # per-player (the pinned soloist binary is shared host-wide).
+        my $expiryCache = $wsCache->get('spoton_soloist_expiry_days');
+        $paramRef->{soloistExpiryDays} = ($expiryCache && defined $expiryCache->{days}) ? $expiryCache->{days} : undef;
+        $paramRef->{soloistExpiryWarn} = (defined $paramRef->{soloistExpiryDays} && $paramRef->{soloistExpiryDays} <= 14) ? 1 : 0;
+        $paramRef->{soloistExpired}    = $wsCache->get('spoton_soloist_expired') ? 1 : 0;
+        # Pre-formatted display text (Plugin.pm's sprintf(cstring(...), $n)
+        # convention, Settings.pm variant using string() -- no $client here).
+        $paramRef->{soloistExpiryText} = defined $paramRef->{soloistExpiryDays}
+            ? sprintf(string('PLUGIN_SPOTON_SOLOIST_EXPIRY_DAYS'), $paramRef->{soloistExpiryDays})
+            : '';
+    }
 
     # Diagnostic mode status for template (#3)
     $paramRef->{diagnosticEnabled} = $prefs->get('diagnosticMode') ? 1 : 0;

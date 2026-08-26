@@ -105,13 +105,38 @@
 
 			[% IF !soloistUnsupportedOS && !soloistMissing && !soloistKeyMissing %]
 			<div style="margin-top:12px; font-size:0.9em">
-				[% IF soloistPaired %]
-				<span style="color: green">&#9679; [% 'PLUGIN_SPOTON_SOLOIST_PAIRED' | string %]</span>
-				[% ELSE %]
-				<span style="color: orange">&#9679; [% 'PLUGIN_SPOTON_SOLOIST_NOT_PAIRED' | string %]</span>
-				<p style="margin:6px 0 4px 0; font-size:0.9em; opacity:0.85">[% 'PLUGIN_SPOTON_SOLOIST_PAIR_HOWTO' | string %]</p>
-				<p style="margin:0">
-					<code style="background:rgba(128,128,128,0.1); padding:2px 6px; border-radius:3px">[% soloistLauncherPath | html %] --pair</code>
+				[% IF soloistPlayers.size %]
+				<table style="width:100%">
+					[% FOREACH p IN soloistPlayers %]
+					<tr>
+						<td style="padding:2px 8px 2px 0">[% p.name | html %]</td>
+						<td style="padding:2px 8px 2px 0">
+							[% IF p.daemonAlive && p.loggedIn %]
+							<span style="color: green">&#9679; [% 'PLUGIN_SPOTON_SOLOIST_DAEMON_RUNNING' | string %]</span>
+							[% ELSIF p.daemonAlive %]
+							<span style="color: orange">&#9679; [% 'PLUGIN_SPOTON_SOLOIST_DAEMON_RUNNING' | string %]</span>
+							[% ELSE %]
+							<span style="color: red">&#9679; [% 'PLUGIN_SPOTON_SOLOIST_DAEMON_STOPPED' | string %]</span>
+							[% END %]
+						</td>
+						<td style="padding:2px 0">
+							[% IF p.paired %]
+							<span style="color: green">&#9679; [% 'PLUGIN_SPOTON_SOLOIST_PAIRED' | string %]</span>
+							[% ELSE %]
+							<span style="color: orange">&#9679; [% 'PLUGIN_SPOTON_SOLOIST_NOT_PAIRED' | string %]</span>
+							[% END %]
+						</td>
+					</tr>
+					[% END %]
+				</table>
+				[% END %]
+				<p style="margin:8px 0 4px 0; font-size:0.9em; opacity:0.85">[% 'PLUGIN_SPOTON_SOLOIST_PAIR_HOWTO' | string %]</p>
+
+				[% IF soloistExpired %]
+				<p style="color: red; margin-top:10px">&#9679; [% 'PLUGIN_SPOTON_SOLOIST_EXPIRED' | string %]</p>
+				[% ELSIF soloistExpiryText %]
+				<p style="[% IF soloistExpiryWarn %]color: orange[% ELSE %]opacity:0.7[% END %]; margin-top:10px; font-size:0.85em">
+					&#9679; [% soloistExpiryText | html %]
 				</p>
 				[% END %]
 			</div>
