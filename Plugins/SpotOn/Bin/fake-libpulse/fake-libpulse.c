@@ -734,11 +734,18 @@ static void _http_start_server(const char *portFilePath) {
  * succeeds -- start the ring + server thread synchronously here,
  * before returning control to the dynamic loader. */
 static int g_debug_trace = 0;
+static int g_init_done = 0;
 
 __attribute__((constructor))
 static void _fake_libpulse_init(void) {
     signal(SIGPIPE, SIG_IGN);
     g_debug_trace = (getenv("SPOTON_FAKEPULSE_DEBUG") != NULL);
+
+    if (g_init_done) {
+        if (g_debug_trace) fprintf(stderr, "[fakepulse] constructor: skipped (already initialized)\n");
+        return;
+    }
+    g_init_done = 1;
     if (g_debug_trace) fprintf(stderr, "[fakepulse] constructor: loaded\n");
 
     const char *portFileEnv = getenv("SPOTON_SOLOIST_HTTP_PORT_FILE");
