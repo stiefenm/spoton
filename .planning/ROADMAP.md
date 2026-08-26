@@ -485,7 +485,7 @@ Items discovered during development — not assigned to a milestone.
   - [x] 72-03-PLAN.md — Gap Closure: CR-01 spoton://→spotify: URI-Translation im Launcher + argv-Capture-Regressionstest, WR-01 -k-argv Trade-off dokumentiert + test-pinned
 - [ ] **Phase 73: Soloist Connect Mode** — WebSocket API Integration (Events → LMS Player State), Connect Transfer-Playback, Daemon-Lifecycle pro Player, Sync-Group Support. **Prerequisite:** persistenter Daemon löst auch das Browse-Session-Lock-Problem (data-dir Lock blockiert Gapless/Crossfade bei Per-Track-Spawning — Tracks werden übersprungen oder zu früh gewechselt)
   - **Plans:** 4 plans (Wave 1: 73-01 Tracer · Wave 2: 73-02 · Wave 3: 73-03 · Wave 4: 73-04)
-  - [ ] 73-01-PLAN.md — Tracer: fake-libpulse HTTP-Server (Ring, f32→S16LE) + SoloistDaemon.pm + SoloistWS.pm + DaemonManager-Lifecycle + Connect-Transfer end-to-end (D-01/D-02/D-04/D-05/D-07)
+  - [x] 73-01-PLAN.md — Tracer: fake-libpulse HTTP-Server (Ring, f32→S16LE) + SoloistDaemon.pm + SoloistWS.pm + DaemonManager-Lifecycle + Connect-Transfer end-to-end (D-01/D-02/D-04/D-05/D-07)
   - [ ] 73-02-PLAN.md — Command-Richtung LMS→Soloist (Connect.pm WS-Dispatch), Reconnect-Resync, Repeat-Matrix, Build-Expiry-Härtung (rc=10), Tests t/31 + t/32 (D-05/D-06)
   - [ ] 73-03-PLAN.md — Browse über den persistenten Daemon (Modell B): Wave-0-Spike (Track-Ende/Autoplay/Queue-Echo), play/add_to_queue-Seeding, Event-getriebener Playlist-Advance, Seek via WS, t/29-Rewrite (D-03)
   - [ ] 73-04-PLAN.md — Phase-72-Rückbau (Launcher/sol-Rules/sox), Sync-Group-Tests, Settings-Daemon-Status + Pairing-Howto (App-Tap) + i18n 11 Sprachen, CHANGELOG (D-01/D-02/D-03)

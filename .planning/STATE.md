@@ -5,16 +5,16 @@ milestone_name: Soloist Integration
 current_phase: 73
 current_phase_name: Soloist Connect Mode
 status: executing
-stopped_at: Phase 71 complete, ready to plan Phase 72
-last_updated: "2026-08-26T14:47:58.166Z"
+stopped_at: Completed 73-01-PLAN.md (fake-libpulse HTTP mode, SoloistDaemon, SoloistWS) -- E2E parked as UAT
+last_updated: "2026-08-26T17:00:31.058Z"
 last_activity: 2026-08-26
-last_activity_desc: Phase 73 execution started
-state_head: 62b74765c0447822662cf5d89572e9858dfe2c13
+last_activity_desc: Phase 73 execution resumed (wave continue)
+state_head: e31bcf4377e0ee512b6e55552331f6dc9098dde5
 progress:
   total_phases: 14
   completed_phases: 2
-  total_plans: 7
-  completed_plans: 7
+  total_plans: 11
+  completed_plans: 8
   percent: 14
 ---
 
@@ -35,9 +35,9 @@ See: .planning/PROJECT.md (updated 2026-06-30)
 ## Current Position
 
 Phase: 73 (Soloist Connect Mode) — EXECUTING
-Plan: 1 of ?
-Status: Executing Phase 73
-Last activity: 2026-08-26 — Phase 73 execution started
+Plan: 2 of 4
+Status: Ready to execute
+Last activity: 2026-08-26 — Completed 73-01 (fake-libpulse HTTP mode, SoloistDaemon, SoloistWS)
 
 ## Progress Bar
 
@@ -102,6 +102,7 @@ Phase 75: [ ] Soloist UAT + Release (E2E, Platform Tests, v4.0.0)
 | Phase 72 P01 | ~13min | 3 tasks | 11 files |
 | Phase 72 P02 | ~15min | 2 tasks | 4 files |
 | Phase 72 P03 | ~10min | 2 tasks | 2 files |
+| Phase 73 P01 | ~35min | 3 tasks | 24 files |
 
 ## Deferred Items
 
@@ -251,6 +252,9 @@ Items carried forward from previous milestones:
 - [Phase 72]: [Phase 72][72-02] Pairing-status block (paired/not-paired + exact --pair command) nested inside the existing spak-key WRAPPER rather than a new titled WRAPPER -- no dedicated pairing-block title string in the plan's new-strings list
 - [Phase 72]: [Phase 72][72-03] WR-01 resolved via the verification gap's sanctioned documented-trade-off branch (not a code fix) -- soloist 1.3.7.489's --help and binary strings confirm -k/--api-key is the only key mechanism, no env/stdin alternative exists
 - [Phase 72]: [Phase 72][72-03] Translation loop uses argc/argi/a variable names to avoid colliding with the D-06 retry loop's n/rc/start/now/elapsed in the same launcher heredoc
+- [Phase 73]: [Phase 73][73-01] Vendored Protocol::WebSocket 0.26 verbatim from the real LMS 9.2 install tree (unifying its CPAN/+lib/ split layout) into Plugins/SpotOn/Vendor/ -- ensureWsLib() prefers an LMS-bundled copy (push, not unshift) so Soloist Connect works on LMS 8.0+ with no version gate (D-08)
+- [Phase 73]: [Phase 73][73-01] SoloistDaemon is a separate lifecycle class parallel to Daemon.pm rather than an extension of it -- structural differences (two ports, no credentials.json gate, per-player dirs, LD_LIBRARY_PATH env) outweigh code reuse; _streamAlivePoll's librespot-only blocks are isa-gated instead of duplicating the poll loop
+- [Phase 73]: [Phase 73][73-01] resolvePassthroughForClient short-circuits to 0 for backend=soloist as the first statement -- Phase 73 is S16LE-PCM-only end to end via fake-libpulse HTTP mode, sox/OGG formats land in Phase 74
 
 ### Blockers/Concerns
 
@@ -280,8 +284,8 @@ Items carried forward from previous milestones:
 
 **Resume file:** None
 
-**Last session:** 2026-08-25T14:03:58.804Z
-**Stopped at:** Phase 71 complete, ready to plan Phase 72
+**Last session:** 2026-08-26T17:00:30.868Z
+**Stopped at:** Completed 73-01-PLAN.md (fake-libpulse HTTP mode, SoloistDaemon, SoloistWS) -- E2E parked as UAT
 
 **Completed this session (2026-08-24):**
 
