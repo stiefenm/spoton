@@ -642,8 +642,18 @@ sub getNextTrack {
             return;
         }
 
-        if ($ws->browseAdvancePending) {
-            $ws->browseAdvancePending(0);
+        # WR-04: only honor the re-entry guard when the requested URI matches
+        # browseCurrentUri (the track Soloist actually transitioned into) --
+        # consuming the flag unconditionally for whatever track getNextTrack
+        # happens to be called with meant a user skip racing a seeded advance
+        # could swallow the play command for the user's own chosen track.
+        # Cleared unconditionally on every entry so it can never leak into a
+        # later, unrelated getNextTrack call (e.g. via the WS-not-connected
+        # error path above, which previously left it set).
+        my $pending = $ws->browseAdvancePending;
+        $ws->browseAdvancePending(0);
+
+        if ($pending && ($ws->browseCurrentUri // '') eq "spotify:$type:$id") {
             main::INFOLOG && $log->is_info && $log->info(
                 "getNextTrack: soloist browse advance re-entry for $url -- skipping play (already playing)"
             );
@@ -652,7 +662,14 @@ sub getNextTrack {
             main::INFOLOG && $log->is_info && $log->info(
                 "getNextTrack: soloist browse -- startBrowseTrack(spotify:$type:$id)"
             );
-            $ws->startBrowseTrack("spotify:$type:$id", $client);
+            # WR-03: check startBrowseTrack's return value -- a failed send
+            # (not connected / pre-handshake drop / write error) must not
+            # proceed to open /stream and play silence over a browse session
+            # that never actually started on the daemon side.
+            unless ($ws->startBrowseTrack("spotify:$type:$id", $client)) {
+                $errorCb->('PROBLEM_OPENING', 'Soloist daemon send failed');
+                return;
+            }
         }
     }
 

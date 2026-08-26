@@ -938,6 +938,9 @@ sub new_ws {
 # stays untouched.
 {
     my $ws = new_ws();
+    my $fakeClient = Test::FakeWsClient->new;
+    $ws->_client($fakeClient);
+    $ws->connected(1);    # WR-03: startBrowseTrack's sendCommand now must succeed to set browseSession
     $ws->startBrowseTrack('spotify:track:expected', undef);
     $ws->browseSeededUri('spotify:track:next');
 

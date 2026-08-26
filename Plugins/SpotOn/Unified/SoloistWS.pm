@@ -775,7 +775,19 @@ sub startBrowseTrack {
 		"SoloistWS: startBrowseTrack($uri) for " . ($self->mac // '?')
 	);
 
-	return $self->sendCommand('play', uri => $uri);
+	my $sent = $self->sendCommand('play', uri => $uri);
+	unless ($sent) {
+		# WR-03: the send failed (not connected / pre-handshake drop / write
+		# error) -- roll back the browse state set above. Without this,
+		# browseSession stays 1 (suppressing all Connect translation via
+		# _emitAllowed) while LMS proceeds to open /stream and play silence,
+		# a stuck state that persists until some other path ends the session.
+		$log->warn("SoloistWS: startBrowseTrack($uri) send failed for " . ($self->mac // '?') . " -- rolling back browse state");
+		$self->browseSession(0);
+		$self->browseCurrentUri(undef);
+		$self->browseAdvanceTs(0);
+	}
+	return $sent;
 }
 
 # Reasons that skip the `pause` send in endBrowseSession(): 'track_end'
