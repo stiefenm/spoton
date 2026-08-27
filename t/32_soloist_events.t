@@ -272,6 +272,14 @@ local $Slim::Utils::Prefs::FAKE_VALUES{enableSpotifyConnect} = 1;
         "track_changed (subsequent, prior track known) emits 'change' with prev id");
 }
 
+# --- track_changed: same track re-announced (newId==prevId) is a no-op ---
+{
+    my $ws = new_ws(lastTrackId => 'tid1', sessionStarted => 1);
+    my $got = run_fixtures($ws, '{"type":"track_changed","item":{"uri":"spotify:track:tid1"}}');
+    is_deeply($got, [], "track_changed re-announcing the SAME track id emits nothing (no-op, not 'change')");
+    is($ws->lastTrackId, 'tid1', "lastTrackId is unchanged by the same-track re-announcement");
+}
+
 # --- playback_changed: paused -> stop (stop-collapse, librespot parity) ---
 {
     my $ws = new_ws();
@@ -352,6 +360,14 @@ local $Slim::Utils::Prefs::FAKE_VALUES{enableSpotifyConnect} = 1;
     my $got = run_fixtures($ws, '{"type":"device_changed","is_active":true}');
     is_deeply($got, [ [ 'spottyconnect', 'start', 'tid9', '' ] ],
         "device_changed is_active=true (track known) emits 'start'");
+    is($ws->sessionStarted, 1, "_emitStart sets sessionStarted after firing");
+}
+
+# --- device_changed: redundant is_active=true for already-started session ---
+{
+    my $ws = new_ws(lastTrackId => 'tid9', sessionStarted => 1);
+    my $got = run_fixtures($ws, '{"type":"device_changed","is_active":true}');
+    is_deeply($got, [], "device_changed is_active=true for an already-started session emits nothing (no restart)");
 }
 
 # --- device_changed: inactive -> 'stop' (transfer away from Soloist) ---

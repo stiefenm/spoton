@@ -67,6 +67,7 @@ __PACKAGE__->mk_accessor( rw => qw(
 	lastCommand
 	sessionActive
 	sessionPaused
+	sessionStarted
 	browseSession
 	browseCurrentUri
 	browseSeededUri
@@ -111,6 +112,8 @@ __PACKAGE__->mk_accessor( weak => qw( daemon ) );
 #                        this timestamp (short grace window) before
 #                        forwarding a pause to the daemon -- mirroring the
 #                        Connect path's own connectStartTime grace period.
+# sessionStarted:        true once _emitStart has fired; prevents redundant
+#                        'start' on device re-activation mid-session.
 # sessionPaused:         73-05 (D-06 gap 1, RESEARCH Pitfall 5): true while
 #                        the daemon believes playback is paused/stopped --
 #                        set by playback_changed('paused'/'stopped'), by a
@@ -148,6 +151,7 @@ sub new {
 	$self->authState({});
 	$self->sessionActive(0);
 	$self->sessionPaused(0);
+	$self->sessionStarted(0);
 	$self->browseSession(0);
 	$self->reconnectDelay(RECONNECT_DELAY_MIN);
 
@@ -520,6 +524,7 @@ sub _onDeviceChanged {
 	if ($msg->{is_active}) {
 		$self->sessionActive(1);
 		# Reconnect mid-session: track_changed may already have arrived.
+		# _emitStart is idempotent (sessionStarted guard).
 		$self->_emitStart($self->lastTrackId) if defined $self->lastTrackId;
 	}
 	else {
@@ -563,6 +568,10 @@ sub _onTrackChanged {
 	}
 
 	my $prevId = $self->lastTrackId;
+
+	# Same-track re-announcement (e.g. device re-activation) — not a real transition.
+	return if defined $prevId && $newId eq $prevId;
+
 	$self->lastTrackId($newId);
 
 	if (!defined $prevId) {
@@ -1015,6 +1024,11 @@ sub _onPlaybackState {
 
 sub _emitStart {
 	my ($self, $trackId) = @_;
+
+	# Fire at most once per WS-client lifetime — new object on genuine restart.
+	return if $self->sessionStarted;
+	$self->sessionStarted(1);
+
 	$self->_emit('start', $trackId, '');
 }
 
