@@ -1145,6 +1145,11 @@ int pa_stream_connect_playback(pa_stream *s, const char *dev, const pa_buffer_at
     if (!s) {
         return -1;
     }
+    /* New stream starts at bytes_written=0; flush stale ring data so
+     * read_index doesn't go negative from leftover fill. */
+    if (g_http_mode) {
+        _ring_flush(&g_ring);
+    }
     _stream_set_state(s, PA_STREAM_READY);
     if (s->started_cb) {
         s->started_cb(s, s->started_userdata);
