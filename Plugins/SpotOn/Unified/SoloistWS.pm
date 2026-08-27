@@ -68,6 +68,7 @@ __PACKAGE__->mk_accessor( rw => qw(
 	sessionActive
 	sessionPaused
 	sessionStarted
+	deactivating
 	browseSession
 	browseCurrentUri
 	browseSeededUri
@@ -126,6 +127,14 @@ __PACKAGE__->mk_accessor( weak => qw( daemon ) );
 #                        wallclock position extrapolation while paused (the
 #                        expected position IS the pause position -- it does
 #                        not advance just because time passes).
+# deactivating:          260827-jqa (transfer-away/back position drift):
+#                        set the instant _onDeviceChanged(is_active:false)
+#                        begins tearing down the session, cleared the instant
+#                        _onDeviceChanged(is_active:true) reactivates it.
+#                        _onPlaybackChanged reads this to suppress a bogus
+#                        stopped->playing blip that otherwise arrives from the
+#                        daemon mid-transfer-away and would emit a spurious
+#                        'resume' with a stale/corrupted position.
 # _sockOpen:             WR-01 -- true from the moment the TCP socket is
 #                        established until it is torn down, independent of
 #                        `connected` (which is now true only once the WS
@@ -152,6 +161,7 @@ sub new {
 	$self->sessionActive(0);
 	$self->sessionPaused(0);
 	$self->sessionStarted(0);
+	$self->deactivating(0);
 	$self->browseSession(0);
 	$self->reconnectDelay(RECONNECT_DELAY_MIN);
 
@@ -522,10 +532,31 @@ sub _onDeviceChanged {
 	my ($self, $msg) = @_;
 
 	if ($msg->{is_active}) {
+		# 260827-jqa: clear the deactivation guard FIRST -- this is a genuine
+		# re-activation (whether transfer-back or a reconnect mid-session),
+		# so any bogus stopped->playing blip suppression from a prior
+		# transfer-away must not leak into this new active period.
+		$self->deactivating(0);
+
 		$self->sessionActive(1);
 		# Reconnect mid-session: track_changed may already have arrived.
 		# _emitStart is idempotent (sessionStarted guard).
 		$self->_emitStart($self->lastTrackId) if defined $self->lastTrackId;
+
+		# 260827-jqa (Fix B -- position re-sync on re-activation): if
+		# sessionStarted was ALREADY true before the _emitStart call above
+		# (i.e. this is a re-activation, not the first start of a session)
+		# and the daemon's last known position is known, sync LMS to that
+		# position via seek. First activation is handled entirely by the
+		# normal start flow above and must not also emit a seek.
+		if ($self->sessionStarted && defined $self->lastPositionMs) {
+			my $posSec = sprintf('%.3f', $self->lastPositionMs / 1000);
+			main::INFOLOG && $log->is_info && $log->info(
+				"SoloistWS: re-activation position sync -- seeking to ${posSec}s ("
+				. ($self->mac // '?') . ")"
+			);
+			$self->_emit('seek', $posSec);
+		}
 	}
 	else {
 		# 73-03: is_active:false while a browse session is running means the
@@ -540,6 +571,12 @@ sub _onDeviceChanged {
 			);
 			$self->endBrowseSession('handover');
 		}
+
+		# 260827-jqa (Fix A -- deactivation guard): set BEFORE sessionActive/
+		# _emit('stop') below so _onPlaybackChanged can immediately suppress
+		# any bogus stopped->playing blip the daemon sends mid-transfer-away.
+		$self->deactivating(1);
+
 		$self->sessionActive(0);
 		$self->_emit('stop');
 	}
@@ -654,6 +691,21 @@ sub _onPlaybackChanged {
 	my ($self, $msg) = @_;
 
 	my $status = $msg->{status} // '';
+
+	# 260827-jqa (Fix A -- deactivation guard): the daemon sends a bogus
+	# stopped->playing blip during transfer-away (device_changed
+	# is_active:false already emitted the real 'stop') -- suppress
+	# playing/stopped/paused status entirely while deactivating so it can
+	# never reach the resume or stop logic below with a corrupted
+	# startOffset. Re-activation (_onDeviceChanged is_active:true) clears
+	# this flag as its first action, so this guard cannot leak past a
+	# genuine transfer-back.
+	if ($self->deactivating && ($status eq 'playing' || $status eq 'stopped' || $status eq 'paused')) {
+		main::DEBUGLOG && $log->is_debug && $log->debug(
+			"SoloistWS: suppressing playback_changed '$status' during deactivation (" . ($self->mac // '?') . ")"
+		);
+		return;
+	}
 
 	if ($self->browseSession) {
 		# Task-1-DEFERRED default: a 'stopped' status with no seed sent means
