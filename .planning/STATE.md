@@ -5,11 +5,11 @@ milestone_name: Soloist Integration
 current_phase: 73
 current_phase_name: Soloist Connect Mode
 status: verifying
-stopped_at: Completed 73-06-PLAN.md
-last_updated: "2026-08-27T09:03:25.251Z"
-last_activity: 2026-08-26
-last_activity_desc: Phase 73 execution resumed (wave continue)
-state_head: 739f099c4d7651866a053c00333e1acf854a08c0
+stopped_at: Completed quick task 260827-of9 (Soloist Connect skip stream-reconnect fix; live-verified metadata fixed, audio-level ~8s gap deferred as follow-up)
+last_updated: "2026-08-27T15:54:39.961Z"
+last_activity: 2026-08-27
+last_activity_desc: Completed quick task 260827-jqa - Fix position-drift on Connect device transfer-away/back
+state_head: 6c40526340f0cbd1ef59d032f37223512a01bf87
 progress:
   total_phases: 14
   completed_phases: 2
@@ -278,6 +278,7 @@ Items carried forward from previous milestones:
 - ~~Forum #160 (CJS): "Default Adjustment for Remote Streams" stacks with SpotOn ReplayGain~~ FIXED in v2.3.12: trackGain() implemented (GH #108)
 - ~~Wait for urknall's response to auth architecture reply (#175)~~ RESOLVED: urknall #176 confirmed PKCE-first, provided edge cases and Keymaster audit guidance
 - Auth architecture research completed — details not in this repo.
+- Soloist skip: ~8s audio-reconnect gap after flush-disconnect (root cause unknown) -- see WINDOWS.md entry #5, .planning/quick/260827-of9-.../260827-of9-SUMMARY.md. Follow-up requested by user: build automated audio-level test rig for Connect edge cases instead of manual CDP+listening.
 
 ### Quick Tasks Completed
 
@@ -293,13 +294,15 @@ Items carried forward from previous milestones:
 | 260817-ana | Fix #149 + #150: Daemon resilience on AP drops (idle guard + key timeout) | 2026-08-17 | 4ba5247 | [260817-ana](./quick/260817-ana-daemon-resilience-ap-drops/) |
 | 260818-qaw | Fix #155: Auto-retry on 429 in Client.pm | 2026-08-18 | a3a972a | [260818-qaw](./quick/260818-qaw-fix-155-auto-retry-on-429-in-client-pm/) |
 | 260818-v1l | Fix #155 follow-up: 429 deferral + rate-limited UX + logging | 2026-08-18 | 60a5ffb | [260818-v1l](./quick/260818-v1l-fix-155-rate-limited-local-visibility/) |
+| 260827-jqa | Fix position drift on Connect device transfer-away/back (deactivating guard + re-sync seek) | 2026-08-27 | f0c9bf7 | [260827-jqa](./quick/260827-jqa-fix-position-drift-on-connect-device-tra/) |
+| 12 | Fix Soloist Connect skip ~30s delay (skipInitiated + playlist-play-on-skip + flush-disconnect); live-verified: LMS metadata switches in ~1.16s, but audio-level ~8s reconnect gap found and deferred | 2026-08-27 | 6c40526 | — |
 
 ## Session Continuity
 
 **Resume file:** None
 
-**Last session:** 2026-08-27T09:03:24.951Z
-**Stopped at:** Completed 73-06-PLAN.md
+**Last session:** 2026-08-27T15:54:38.955Z
+**Stopped at:** Completed quick task 260827-of9 (Soloist Connect skip stream-reconnect fix; live-verified metadata fixed, audio-level ~8s gap deferred as follow-up)
 
 **Completed this session (2026-08-24):**
 
