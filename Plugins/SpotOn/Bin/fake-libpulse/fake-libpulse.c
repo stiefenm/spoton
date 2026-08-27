@@ -741,20 +741,26 @@ static void _fake_libpulse_init(void) {
     signal(SIGPIPE, SIG_IGN);
     g_debug_trace = (getenv("SPOTON_FAKEPULSE_DEBUG") != NULL);
 
-    /* Guard against double-init: LD_PRELOAD + Soloist's own dlopen load
-     * separate .so objects with independent globals, so g_init_done alone
-     * cannot gate. Use an env var as cross-instance IPC within the same
-     * process — setenv is visible to both library images immediately. */
-    char mypid[32];
-    snprintf(mypid, sizeof(mypid), "%d", (int)getpid());
-    const char *already = getenv("__FAKEPULSE_INIT_PID");
-    if (already && strcmp(already, mypid) == 0) {
-        if (g_debug_trace) fprintf(stderr, "[fakepulse] constructor: skipped (already initialized in pid %s)\n", mypid);
-        return;
+    /* Guard: skip init in the crashpad-handler child process. Soloist
+     * forks a crashpad handler that also inherits LD_PRELOAD; if it runs
+     * our constructor, it starts a second HTTP server and overwrites the
+     * port file with the wrong port. */
+    {
+        FILE *f = fopen("/proc/self/cmdline", "r");
+        if (f) {
+            char buf[4096];
+            size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+            fclose(f);
+            buf[n] = '\0';
+            for (size_t i = 0; i < n; i++) if (buf[i] == '\0') buf[i] = ' ';
+            if (strstr(buf, "--type=crashpad")) {
+                if (g_debug_trace) fprintf(stderr, "[fakepulse] constructor: skipped (crashpad child)\n");
+                return;
+            }
+        }
     }
-    setenv("__FAKEPULSE_INIT_PID", mypid, 1);
     g_init_done = 1;
-    if (g_debug_trace) fprintf(stderr, "[fakepulse] constructor: loaded (pid %s)\n", mypid);
+    if (g_debug_trace) fprintf(stderr, "[fakepulse] constructor: loaded\n");
 
     const char *portFileEnv = getenv("SPOTON_SOLOIST_HTTP_PORT_FILE");
     if (portFileEnv && *portFileEnv) {
