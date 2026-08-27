@@ -538,6 +538,25 @@ for my $type (qw(context_changed options_changed queue_changed)) {
         "re-activation with sessionStarted=1 but no lastPositionMs emits resume at 0 (no seek, but still resumes)");
 }
 
+# --- Test 6 (260827-of9): skip-initiated track change sets skipInitiated ---
+{
+    my $ws = new_ws(lastTrackId => 'tid1', sessionPaused => 1, sessionStarted => 1);
+    my $got = run_fixtures($ws, '{"type":"track_changed","item":{"uri":"spotify:track:tid2"}}');
+    is_deeply($got, [ [ 'spottyconnect', 'change', 'tid2', 'tid1' ] ],
+        "skip-initiated track_changed (sessionPaused=1) still emits 'change' with prev id");
+    is($ws->skipInitiated, 1, "skip-initiated track_changed (sessionPaused was 1) sets skipInitiated");
+    is($ws->sessionPaused, 0, "skip-initiated track_changed still clears sessionPaused");
+}
+
+# --- Test 7 (260827-of9): gapless track change does NOT set skipInitiated ---
+{
+    my $ws = new_ws(lastTrackId => 'tid1', sessionPaused => 0, sessionStarted => 1);
+    my $got = run_fixtures($ws, '{"type":"track_changed","item":{"uri":"spotify:track:tid2"}}');
+    is_deeply($got, [ [ 'spottyconnect', 'change', 'tid2', 'tid1' ] ],
+        "gapless track_changed (sessionPaused=0) emits 'change' with prev id");
+    is($ws->skipInitiated, 0, "gapless track_changed (sessionPaused was 0) does NOT set skipInitiated");
+}
+
 # --- Test 5: normal pause->resume unaffected by deactivation guard ---
 {
     my $ws = new_ws(

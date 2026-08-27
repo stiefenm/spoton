@@ -325,6 +325,26 @@ static int g_http_mode = 0; /* 0 = off (Phase 71/72 behavior), 1 = on */
 static int g_http_listen_fd = -1;
 static pthread_t g_http_thread;
 
+/* Forward declaration: the real definition (with the TRACE-level doc
+ * comment explaining its 0/1/2 semantics) lives further down, right before
+ * _fake_libpulse_init -- but _http_thread_fn (defined below, ahead of that
+ * point in file order) needs it for the flush-disconnect debug line. */
+static int g_debug_trace;
+
+/* 260827-of9 (~30s Connect-skip audio delay): set by pa_stream_flush() when
+ * Soloist discards buffered audio on an app-side skip, consumed by
+ * _http_thread_fn's poll loop (never touched directly from pa_stream_flush's
+ * caller thread -- the HTTP thread already polls every 50ms, so reacting via
+ * this flag keeps a single writer/single reader without a lock, and bounds
+ * reaction latency to <50ms). Combined with the existing _ring_flush, this
+ * makes LMS's persistent /stream connection drop and reconnect fresh instead
+ * of continuing to serve the ring's (now-empty, but still open) connection --
+ * squeezelite would otherwise keep the stale connection open with nothing
+ * arriving until the next chunk, rather than reconnecting immediately.
+ * volatile: written by the pa_stream_flush() caller thread (Soloist's own
+ * worker thread), read by the separate HTTP server thread. */
+static volatile int g_flush_disconnect = 0;
+
 typedef struct {
     unsigned char  *buf;
     size_t          capacity;
@@ -597,6 +617,23 @@ static void *_http_thread_fn(void *arg) {
     pending.buf[0] = '\0';
 
     for (;;) {
+        /* 260827-of9: react to a pa_stream_flush()-triggered skip BEFORE
+         * poll() -- close the active client so LMS's persistent /stream
+         * connection drops and squeezelite reconnects fresh instead of
+         * waiting on a connection that will only ever serve the NEW track's
+         * bytes with no signal that anything changed. A freshly-accepted
+         * pending connection (not yet promoted to client_fd) is untouched --
+         * WR-11 takeover semantics still apply to it normally. */
+        if (g_flush_disconnect && client_fd >= 0) {
+            close(client_fd);
+            client_fd = -1;
+            pthread_mutex_lock(&g_ring.lock);
+            g_ring.client_connected = 0;
+            pthread_mutex_unlock(&g_ring.lock);
+            g_flush_disconnect = 0;
+            if (g_debug_trace) fprintf(stderr, "[fakepulse] flush-disconnect: closed active HTTP client\n");
+        }
+
         struct pollfd fds[2];
         fds[0].fd = g_http_listen_fd;
         fds[0].events = POLLIN;
@@ -969,6 +1006,7 @@ static void _log_symbol_surface(void) {
 __attribute__((constructor))
 static void _fake_libpulse_init(void) {
     signal(SIGPIPE, SIG_IGN);
+    g_flush_disconnect = 0;
 
     const char *traceEnv = getenv("SPOTON_FAKEPULSE_TRACE");
     if (traceEnv && *traceEnv) {
@@ -1581,6 +1619,11 @@ pa_operation *pa_stream_flush(pa_stream *s, pa_stream_success_cb_t cb, void *use
          * there -- keep that path's existing no-op behavior unchanged. */
         _ring_flush(&g_ring);
         _stream_refresh_timing(s, "flush");
+        /* 260827-of9: Soloist calls pa_stream_flush() on an app-side skip
+         * (confirmed via trace) -- signal the HTTP thread to drop the
+         * currently connected client so LMS reconnects fresh rather than
+         * continuing to hold a connection whose ring was just emptied. */
+        g_flush_disconnect = 1;
     }
     if (cb) {
         cb(s, 1, userdata);

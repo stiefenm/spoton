@@ -68,6 +68,7 @@ __PACKAGE__->mk_accessor( rw => qw(
 	sessionActive
 	sessionPaused
 	sessionStarted
+	skipInitiated
 	deactivating
 	browseSession
 	browseCurrentUri
@@ -115,6 +116,17 @@ __PACKAGE__->mk_accessor( weak => qw( daemon ) );
 #                        Connect path's own connectStartTime grace period.
 # sessionStarted:        true once _emitStart has fired; prevents redundant
 #                        'start' on device re-activation mid-session.
+# skipInitiated:         260827-of9 (~30s Connect-skip audio delay): true
+#                        when a track_changed arrives while sessionPaused was
+#                        already true -- i.e. the daemon had already reported
+#                        stopped/paused (a Spotify-app-initiated skip) BEFORE
+#                        the new track announced itself, as opposed to a
+#                        gapless transition (sessionPaused stays 0 throughout).
+#                        Connect.pm's `change` handler reads this flag to
+#                        decide whether to force a stream reconnect (playlist
+#                        play spoton://connect-<ts>) so squeezelite abandons
+#                        the stale buffered audio instead of draining 10-20s
+#                        of it. Consumed (reset to 0) by Connect.pm once read.
 # sessionPaused:         73-05 (D-06 gap 1, RESEARCH Pitfall 5): true while
 #                        the daemon believes playback is paused/stopped --
 #                        set by playback_changed('paused'/'stopped'), by a
@@ -161,6 +173,7 @@ sub new {
 	$self->sessionActive(0);
 	$self->sessionPaused(0);
 	$self->sessionStarted(0);
+	$self->skipInitiated(0);
 	$self->deactivating(0);
 	$self->browseSession(0);
 	$self->reconnectDelay(RECONNECT_DELAY_MIN);
@@ -617,6 +630,14 @@ sub _onTrackChanged {
 	return if defined $prevId && $newId eq $prevId;
 
 	$self->lastTrackId($newId);
+
+	# 260827-of9: if the daemon already believed playback was paused/stopped
+	# BEFORE this track_changed arrived, this is a Spotify-app-initiated skip
+	# (as opposed to a gapless transition, where sessionPaused stays 0 the
+	# whole time) -- flag it so Connect.pm's `change` handler can force a
+	# stream reconnect. MUST be read before the sessionPaused(0) reset below.
+	$self->skipInitiated(1) if $self->sessionPaused;
+
 	# A track change is not a paused state — clear so the next 'playing'
 	# event is not misread as a resume (which would fire get_state back
 	# at the daemon and corrupt Spotify's progress bar).
