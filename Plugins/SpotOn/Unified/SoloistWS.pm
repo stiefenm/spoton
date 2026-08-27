@@ -66,6 +66,7 @@ __PACKAGE__->mk_accessor( rw => qw(
 	lastVolume
 	lastCommand
 	sessionActive
+	sessionPaused
 	browseSession
 	browseCurrentUri
 	browseSeededUri
@@ -110,6 +111,18 @@ __PACKAGE__->mk_accessor( weak => qw( daemon ) );
 #                        this timestamp (short grace window) before
 #                        forwarding a pause to the daemon -- mirroring the
 #                        Connect path's own connectStartTime grace period.
+# sessionPaused:         73-05 (D-06 gap 1, RESEARCH Pitfall 5): true while
+#                        the daemon believes playback is paused/stopped --
+#                        set by playback_changed('paused'/'stopped'), by a
+#                        playback_state snapshot's status field, and by a
+#                        position_sync frame's speed:0. Gates 'resume'
+#                        emission to real Paused->Playing transitions only
+#                        (every 'playing' status used to emit 'resume'
+#                        unconditionally, including the buffering->playing
+#                        sequence after every track change) and freezes the
+#                        wallclock position extrapolation while paused (the
+#                        expected position IS the pause position -- it does
+#                        not advance just because time passes).
 # _sockOpen:             WR-01 -- true from the moment the TCP socket is
 #                        established until it is torn down, independent of
 #                        `connected` (which is now true only once the WS
@@ -134,6 +147,7 @@ sub new {
 	$self->_sockOpen(0);
 	$self->authState({});
 	$self->sessionActive(0);
+	$self->sessionPaused(0);
 	$self->browseSession(0);
 	$self->reconnectDelay(RECONNECT_DELAY_MIN);
 
@@ -676,15 +690,42 @@ sub _onPlaybackChanged {
 	}
 
 	if ($status eq 'playing') {
-		my $posSec = defined $self->lastPositionMs
-			? sprintf('%.3f', $self->lastPositionMs / 1000)
-			: '0.000';
-		$self->_emit('resume', $self->lastTrackId, $posSec);
+		# 73-05 (D-06 gap 1): resume must only be emitted for a REAL
+		# Paused->Playing transition -- every 'playing' status used to emit
+		# 'resume' unconditionally, including the buffering->playing
+		# sequence fired after every track change (live UAT log: resume with
+		# position=0.000 within ~60ms of every track_changed 'change'). The
+		# track_changed start/change flow owns the track-start transition.
+		if ($self->sessionPaused) {
+			my $posSec = defined $self->lastPositionMs
+				? sprintf('%.3f', $self->lastPositionMs / 1000)
+				: '0.000';
+			$self->_emit('resume', $self->lastTrackId, $posSec);
+
+			# The baseline value IS the pause position; the wallclock anchor
+			# must restart at resume so the next extrapolation does not
+			# count the paused interval as elapsed playback time.
+			$self->lastPositionTs(Time::HiRes::time());
+			$self->sessionPaused(0);
+
+			# Post-resume reconciliation: any residual drift is caught
+			# through the existing tolerance-gated seek path once the
+			# get_state reply (a playback_state snapshot) arrives.
+			$self->sendCommand('get_state');
+		}
 	}
 	elsif ($status eq 'paused' || $status eq 'stopped') {
 		# librespot collapses Paused+Stopped identically -- Connect.pm has
 		# no 'pause' verb (RESEARCH Pattern 3).
+		$self->sessionPaused(1);
 		$self->_emit('stop');
+	}
+	elsif ($status eq 'buffering') {
+		# Live-verified: the daemon sends 'buffering' between track
+		# transitions -- a recognized no-op, not an unrecognized status.
+		main::DEBUGLOG && $log->is_debug && $log->debug(
+			"SoloistWS: playback_changed 'buffering' (recognized no-op, " . ($self->mac // '?') . ")"
+		);
 	}
 	else {
 		main::DEBUGLOG && $log->is_debug && $log->debug(
@@ -707,10 +748,23 @@ sub _onPositionSync {
 
 	$self->_maybeSeedBrowseQueue($posMs) if $self->browseSession;
 
+	# 73-05 (D-06, Pitfall 5): speed 0 is the daemon's own signal that
+	# playback is currently paused -- update sessionPaused directly from
+	# this field so a position_sync frame alone (with no preceding
+	# playback_changed event) can freeze the extrapolation correctly.
+	if (defined $msg->{speed}) {
+		$self->sessionPaused($msg->{speed} ? 0 : 1);
+	}
+
 	my $now = Time::HiRes::time();
 
 	if (defined $self->lastPositionMs && defined $self->lastPositionTs) {
-		my $expectedMs = $self->lastPositionMs + (($now - $self->lastPositionTs) * 1000);
+		# Frozen baseline while paused: the expected position IS the last
+		# known position -- it must not advance with wallclock time just
+		# because the app hasn't moved (the elapsed paused interval is not
+		# elapsed PLAYBACK time).
+		my $elapsedMs  = $self->sessionPaused ? 0 : (($now - $self->lastPositionTs) * 1000);
+		my $expectedMs = $self->lastPositionMs + $elapsedMs;
 		my $deltaSec   = abs($posMs - $expectedMs) / 1000;
 		if ($deltaSec > SEEK_THRESHOLD) {
 			$self->_emit('seek', sprintf('%.3f', $posMs / 1000));
@@ -911,6 +965,20 @@ sub _onPlaybackState {
 	}
 	$self->lastTrackId($newId) if defined $newId;
 
+	# 73-05 (D-06, Pitfall 5): derive sessionPaused from this snapshot's own
+	# status field BEFORE the position reconciliation below, so the frozen-
+	# elapsed rule applies to the very snapshot that reports the pause.
+	# other/absent status leaves sessionPaused untouched (no signal either way).
+	my $snapshotStatus = $msg->{status};
+	if (defined $snapshotStatus) {
+		if ($snapshotStatus eq 'paused' || $snapshotStatus eq 'stopped') {
+			$self->sessionPaused(1);
+		}
+		elsif ($snapshotStatus eq 'playing') {
+			$self->sessionPaused(0);
+		}
+	}
+
 	my $posMs;
 	if (defined $msg->{position}) {
 		$posMs = ref($msg->{position}) eq 'HASH' ? $msg->{position}{position_ms} : $msg->{position};
@@ -918,7 +986,11 @@ sub _onPlaybackState {
 	if (defined $posMs) {
 		my $now = Time::HiRes::time();
 		if ($self->sessionActive && defined $self->lastPositionMs && defined $self->lastPositionTs) {
-			my $expectedMs = $self->lastPositionMs + (($now - $self->lastPositionTs) * 1000);
+			# Frozen baseline while paused -- see _onPositionSync for the
+			# same rule (the expected position IS the last known position
+			# while paused; it does not advance with wallclock time).
+			my $elapsedMs  = $self->sessionPaused ? 0 : (($now - $self->lastPositionTs) * 1000);
+			my $expectedMs = $self->lastPositionMs + $elapsedMs;
 			my $deltaSec   = abs($posMs - $expectedMs) / 1000;
 			if ($deltaSec > SEEK_THRESHOLD) {
 				$self->_emit('seek', sprintf('%.3f', $posMs / 1000));
