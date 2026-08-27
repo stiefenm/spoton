@@ -617,6 +617,10 @@ sub _onTrackChanged {
 	return if defined $prevId && $newId eq $prevId;
 
 	$self->lastTrackId($newId);
+	# A track change is not a paused state — clear so the next 'playing'
+	# event is not misread as a resume (which would fire get_state back
+	# at the daemon and corrupt Spotify's progress bar).
+	$self->sessionPaused(0);
 
 	if (!defined $prevId) {
 		$self->_emitStart($newId);

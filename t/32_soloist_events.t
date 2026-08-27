@@ -272,6 +272,15 @@ local $Slim::Utils::Prefs::FAKE_VALUES{enableSpotifyConnect} = 1;
         "track_changed (subsequent, prior track known) emits 'change' with prev id");
 }
 
+# --- track_changed clears sessionPaused (prevents spurious resume after skip) ---
+{
+    my $ws = new_ws(lastTrackId => 'tid1', sessionPaused => 1, sessionStarted => 1);
+    my $got = run_fixtures($ws, '{"type":"track_changed","item":{"uri":"spotify:track:tid2"}}');
+    is_deeply($got, [ [ 'spottyconnect', 'change', 'tid2', 'tid1' ] ],
+        "track_changed emits 'change' and clears sessionPaused");
+    is($ws->sessionPaused, 0, "sessionPaused cleared by track_changed — next 'playing' is not a spurious resume");
+}
+
 # --- track_changed: same track re-announced (newId==prevId) is a no-op ---
 {
     my $ws = new_ws(lastTrackId => 'tid1', sessionStarted => 1);
