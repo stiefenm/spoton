@@ -288,12 +288,35 @@ local $Slim::Utils::Prefs::FAKE_VALUES{enableSpotifyConnect} = 1;
         "playback_changed status=stopped emits 'stop'");
 }
 
-# --- playback_changed: playing (after pause) emits 'resume' with position ---
+# --- playback_changed: playing after a real pause (sessionPaused=1) emits
+# 'resume' with position -- 73-05 (D-06 gap 1): resume is now gated on a
+# real Paused->Playing transition, not emitted for every 'playing' status. ---
 {
-    my $ws = new_ws(lastTrackId => 'tid1', lastPositionMs => 42500);
+    my $ws = new_ws(lastTrackId => 'tid1', lastPositionMs => 42500, sessionPaused => 1);
     my $got = run_fixtures($ws, '{"type":"playback_changed","status":"playing"}');
     is_deeply($got, [ [ 'spottyconnect', 'resume', 'tid1', '42.500' ] ],
-        "playback_changed status=playing emits 'resume' with 3-decimal position");
+        "playback_changed status=playing after a real pause emits 'resume' with 3-decimal position");
+    is($ws->sessionPaused, 0, "resume clears sessionPaused");
+}
+
+# --- 73-05 (D-06 gap 1): playback_changed playing with NO preceding
+# paused/stopped status emits NO 'resume' -- the buffering->playing sequence
+# after every track change must stay silent (track_changed start/change
+# flow owns that transition; this used to spuriously fire resume at
+# position 0 within ~60ms of every track change per the live UAT log). ---
+{
+    my $ws = new_ws(lastTrackId => 'tid1', lastPositionMs => 0);
+    my $got = run_fixtures($ws, '{"type":"playback_changed","status":"playing"}');
+    is_deeply($got, [], "playback_changed status=playing with no preceding pause emits no resume");
+}
+
+# --- 73-05 (D-06): playback_changed 'buffering' is a recognized no-op --
+# not logged/treated as an unrecognized status, and never emits anything.
+# Live-verified: the daemon sends this status between track transitions. ---
+{
+    my $ws = new_ws();
+    my $got = run_fixtures($ws, '{"type":"playback_changed","status":"buffering"}');
+    is_deeply($got, [], "playback_changed status=buffering emits nothing (recognized no-op)");
 }
 
 # --- volume_changed: passthrough at both boundary values ---

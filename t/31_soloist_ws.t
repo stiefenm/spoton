@@ -1161,4 +1161,100 @@ sub new_ws {
         "sendCommand('set_volume') serializes volume as a bare number");
 }
 
+# ============================================================
+# Phase 73-05 Task 2 (D-06, RESEARCH Pitfall 5): pause-aware position
+# baseline + resume emission gating.
+# ============================================================
+
+# Sequence: baseline at 100000ms -> playback_changed('paused') -> a
+# playback_state snapshot arrives WHILE paused at the unchanged pause
+# position (emits no correction) -> playback_changed('playing') emits
+# 'resume' with the pause-position baseline AND sends get_state for
+# post-resume reconciliation (UAT gap 1: resume must not start at 0).
+{
+    require JSON::PP;
+    local $Slim::Utils::Prefs::FAKE_VALUES{enableSpotifyConnect} = 1;
+
+    my $ws         = new_ws();
+    my $fakeClient = Test::FakeWsClient->new;
+    $ws->_client($fakeClient);
+    $ws->connected(1);
+
+    $ws->sessionActive(1);
+    $ws->lastTrackId('trackpause');
+    $ws->lastPositionMs(100000);
+    $ws->lastPositionTs(Time::HiRes::time());
+
+    @Slim::Player::Client::EXECUTED = ();
+    $ws->_onMessage('{"type":"playback_changed","status":"paused"}');
+    is($ws->sessionPaused, 1, "playback_changed(paused) sets sessionPaused");
+
+    $fakeClient->{writes} = [];
+    @Slim::Player::Client::EXECUTED = ();
+    $ws->_onMessage('{"type":"playback_state","item":{"uri":"spotify:track:trackpause"},"position":{"position_ms":100000,"speed":0,"timestamp_ms":1},"is_active":true,"status":"paused"}');
+    is_deeply(\@Slim::Player::Client::EXECUTED, [],
+        "playback_state snapshot at the unchanged pause position emits no correction");
+
+    @Slim::Player::Client::EXECUTED = ();
+    $fakeClient->{writes} = [];
+    $ws->_onMessage('{"type":"playback_changed","status":"playing"}');
+
+    is_deeply(
+        \@Slim::Player::Client::EXECUTED,
+        [ [ 'spottyconnect', 'resume', 'trackpause', '100.000' ] ],
+        "playback_changed(playing) after a real pause emits resume at the pause-position baseline"
+    );
+    is($ws->sessionPaused, 0, "resume clears sessionPaused");
+
+    my @sentCommands = map { JSON::PP->new->decode($_)->{command} } @{ $fakeClient->{writes} };
+    ok((grep { $_ eq 'get_state' } @sentCommands),
+        "resume sends a get_state command for post-resume reconciliation");
+}
+
+# While paused, a playback_state snapshot at the unchanged pause position
+# arriving MORE than SEEK_THRESHOLD seconds after the pause emits NO 'seek'
+# -- the wallclock extrapolation must be frozen while paused (before this
+# fix, expectedMs would extrapolate forward across the paused interval and
+# wrongly treat the still-paused position as a >3s drift).
+{
+    local $Slim::Utils::Prefs::FAKE_VALUES{enableSpotifyConnect} = 1;
+    @Slim::Player::Client::EXECUTED = ();
+    my $ws = new_ws();
+    $ws->sessionActive(1);
+    $ws->lastTrackId('frozen');
+    $ws->lastPositionMs(50000);
+    $ws->lastPositionTs(Time::HiRes::time() - 10);    # 10s "ago" -- non-frozen extrapolation would expect ~60000ms
+
+    $ws->_onMessage('{"type":"playback_changed","status":"paused"}');
+
+    @Slim::Player::Client::EXECUTED = ();
+    $ws->_onMessage('{"type":"playback_state","item":{"uri":"spotify:track:frozen"},"position":{"position_ms":50000,"speed":0,"timestamp_ms":1},"is_active":true,"status":"paused"}');
+
+    is_deeply(\@Slim::Player::Client::EXECUTED, [],
+        "playback_state snapshot at the pause position after >SEEK_THRESHOLD elapsed emits no seek (frozen baseline while paused)");
+}
+
+# While paused, a position_sync carrying speed:0 (the daemon's own signal
+# that it's paused) and a position far from the baseline -- an app-side seek
+# performed while paused -- still emits 'seek' with the new position.
+# sessionPaused must be derivable from the position_sync frame's speed
+# field alone (no preceding playback_changed('paused') required).
+{
+    local $Slim::Utils::Prefs::FAKE_VALUES{enableSpotifyConnect} = 1;
+    @Slim::Player::Client::EXECUTED = ();
+    my $ws = new_ws();
+    $ws->sessionActive(1);
+    $ws->lastPositionMs(50000);
+    $ws->lastPositionTs(Time::HiRes::time() - 20);    # 20s "ago"
+
+    $ws->_onMessage('{"type":"position_sync","position_ms":80000,"speed":0}');
+
+    is($ws->sessionPaused, 1, "position_sync with speed=0 sets sessionPaused");
+    is_deeply(
+        \@Slim::Player::Client::EXECUTED,
+        [ [ 'spottyconnect', 'seek', '80.000', '' ] ],
+        "position_sync with speed=0 and a position far from baseline emits seek (app-side seek while paused)"
+    );
+}
+
 done_testing();
