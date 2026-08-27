@@ -5,16 +5,16 @@ milestone_name: Soloist Integration
 current_phase: 73
 current_phase_name: Soloist Connect Mode
 status: verifying
-stopped_at: Completed 73-04-PLAN.md (Soloist Connect Mode cleanup — launcher retirement, sync pinning, Settings i18n) — Phase 73 complete
-last_updated: "2026-08-26T18:03:21.593Z"
+stopped_at: Completed 73-06-PLAN.md
+last_updated: "2026-08-27T09:03:25.251Z"
 last_activity: 2026-08-26
 last_activity_desc: Phase 73 execution resumed (wave continue)
-state_head: 3ccf6db1e71b1ec251d9a10df271c595db3adc75
+state_head: 739f099c4d7651866a053c00333e1acf854a08c0
 progress:
   total_phases: 14
   completed_phases: 2
-  total_plans: 11
-  completed_plans: 11
+  total_plans: 13
+  completed_plans: 13
   percent: 14
 ---
 
@@ -106,6 +106,8 @@ Phase 75: [ ] Soloist UAT + Release (E2E, Platform Tests, v4.0.0)
 | Phase 73 P02 | ~10min | 3 tasks | 7 files |
 | Phase 73 P03 | ~35min | 3 tasks | 6 files |
 | Phase 73 P04 | ~40min | 3 tasks | 13 files |
+| Phase 73 P05 | 35min | 2 tasks | 3 files |
+| Phase 73 P06 | 20min | 2 tasks | 2 files |
 
 ## Deferred Items
 
@@ -266,6 +268,7 @@ Items carried forward from previous milestones:
 - [Phase 73]: [Phase 73][73-04] Settings.pm's isPaired()/launcherPath() calls fixed inline during Task 1 (Rule 3) to keep prove -l t/ green, not deferred to Task 3 which replaces them fully
 - [Phase 73]: [Phase 73][73-04] Sync-group pinning found no gap in DaemonManager.pm/SoloistDaemon.pm -- Pattern 7's librespot-to-soloist 1:1 transfer confirmed via tests against the real module, zero production code changed
 - [Phase 73]: [Phase 73][73-04] WS auth state shown via daemon-status color coding, not a 5th new i18n key; actual 11-language set verified as CS/DA/DE/EN/ES/FR/IT/NL/NO/PL/SV (PL not FI) against strings.txt before translating
+- [Phase 73]: SoloistWS.pm D-05/D-06 gap closure: utf8::encode bridge for octet-mode from_json, int() coercion for numeric sendCommand params, sessionPaused-gated resume emission with frozen extrapolation while paused
 
 ### Blockers/Concerns
 
@@ -295,8 +298,8 @@ Items carried forward from previous milestones:
 
 **Resume file:** None
 
-**Last session:** 2026-08-26T18:03:21.399Z
-**Stopped at:** Completed 73-04-PLAN.md (Soloist Connect Mode cleanup — launcher retirement, sync pinning, Settings i18n) — Phase 73 complete
+**Last session:** 2026-08-27T09:03:24.951Z
+**Stopped at:** Completed 73-06-PLAN.md
 
 **Completed this session (2026-08-24):**
 
