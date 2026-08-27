@@ -367,7 +367,8 @@ local $Slim::Utils::Prefs::FAKE_VALUES{enableSpotifyConnect} = 1;
 {
     my $ws = new_ws(lastTrackId => 'tid9', sessionStarted => 1);
     my $got = run_fixtures($ws, '{"type":"device_changed","is_active":true}');
-    is_deeply($got, [], "device_changed is_active=true for an already-started session emits nothing (no restart)");
+    is_deeply($got, [ [ 'spottyconnect', 'resume', '0.000', '' ] ],
+        "device_changed is_active=true for an already-started session emits resume (no restart)");
 }
 
 # --- device_changed: inactive -> 'stop' (transfer away from Soloist) ---
@@ -507,8 +508,8 @@ for my $type (qw(context_changed options_changed queue_changed)) {
         lastPositionMs => 40000,
     );
     my $got = run_fixtures($ws, '{"type":"device_changed","is_active":true}');
-    is_deeply($got, [ [ 'spottyconnect', 'seek', '40.000', '' ] ],
-        "re-activation with sessionStarted=1 and known lastPositionMs emits 'seek' with daemon position, no 'start'");
+    is_deeply($got, [ [ 'spottyconnect', 'seek', '40.000', '' ], [ 'spottyconnect', 'resume', '40.000', '' ] ],
+        "re-activation with sessionStarted=1 emits seek + resume with daemon position, no 'start'");
     is($ws->deactivating, 0, "deactivating is cleared by re-activation");
 }
 
@@ -524,8 +525,8 @@ for my $type (qw(context_changed options_changed queue_changed)) {
 {
     my $ws = new_ws(sessionStarted => 1, lastTrackId => 'tid1');
     my $got = run_fixtures($ws, '{"type":"device_changed","is_active":true}');
-    is_deeply($got, [],
-        "re-activation with sessionStarted=1 but no lastPositionMs emits nothing (sessionStarted blocks start, no position to seek to)");
+    is_deeply($got, [ [ 'spottyconnect', 'resume', '0.000', '' ] ],
+        "re-activation with sessionStarted=1 but no lastPositionMs emits resume at 0 (no seek, but still resumes)");
 }
 
 # --- Test 5: normal pause->resume unaffected by deactivation guard ---

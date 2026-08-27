@@ -548,19 +548,21 @@ sub _onDeviceChanged {
 		# _emitStart is idempotent (sessionStarted guard).
 		$self->_emitStart($self->lastTrackId) if defined $self->lastTrackId;
 
-		# 260827-jqa (Fix B -- position re-sync on re-activation): if
-		# sessionStarted was ALREADY true before the _emitStart call above
-		# (i.e. this is a re-activation, not the first start of a session)
-		# and the daemon's last known position is known, sync LMS to that
-		# position via seek. First activation is handled entirely by the
-		# normal start flow above and must not also emit a seek.
-		if ($wasAlreadyStarted && defined $self->lastPositionMs) {
-			my $posSec = sprintf('%.3f', $self->lastPositionMs / 1000);
-			main::INFOLOG && $log->is_info && $log->info(
-				"SoloistWS: re-activation position sync -- seeking to ${posSec}s ("
-				. ($self->mac // '?') . ")"
-			);
-			$self->_emit('seek', $posSec);
+		# Re-activation: sync position and resume playback.
+		if ($wasAlreadyStarted) {
+			if (defined $self->lastPositionMs) {
+				my $posSec = sprintf('%.3f', $self->lastPositionMs / 1000);
+				main::INFOLOG && $log->is_info && $log->info(
+					"SoloistWS: re-activation position sync -- seeking to ${posSec}s ("
+					. ($self->mac // '?') . ")"
+				);
+				$self->_emit('seek', $posSec);
+			}
+			# The deactivation guard suppressed playback events that arrived
+			# before this device_changed — emit resume so LMS unpauses.
+			$self->sessionPaused(0);
+			$self->_emit('resume', defined $self->lastPositionMs
+				? sprintf('%.3f', $self->lastPositionMs / 1000) : '0.000');
 		}
 	}
 	else {
