@@ -538,6 +538,11 @@ sub _onDeviceChanged {
 		# transfer-away must not leak into this new active period.
 		$self->deactivating(0);
 
+		# 260827-jqa (Fix B): capture BEFORE _emitStart, which sets this flag
+		# to 1 as a side effect -- reading it afterward would make the seek
+		# below fire on first activation too.
+		my $wasAlreadyStarted = $self->sessionStarted;
+
 		$self->sessionActive(1);
 		# Reconnect mid-session: track_changed may already have arrived.
 		# _emitStart is idempotent (sessionStarted guard).
@@ -549,7 +554,7 @@ sub _onDeviceChanged {
 		# and the daemon's last known position is known, sync LMS to that
 		# position via seek. First activation is handled entirely by the
 		# normal start flow above and must not also emit a seek.
-		if ($self->sessionStarted && defined $self->lastPositionMs) {
+		if ($wasAlreadyStarted && defined $self->lastPositionMs) {
 			my $posSec = sprintf('%.3f', $self->lastPositionMs / 1000);
 			main::INFOLOG && $log->is_info && $log->info(
 				"SoloistWS: re-activation position sync -- seeking to ${posSec}s ("

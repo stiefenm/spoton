@@ -474,4 +474,72 @@ for my $type (qw(context_changed options_changed queue_changed)) {
     is_deeply($got, [], "malformed JSON burst emits nothing");
 }
 
+# ============================================================
+# Transfer-away/back position drift regression (GH debug 260827)
+# ============================================================
+
+# --- Test 1: bogus blip suppression during transfer-away ---
+{
+    my $ws = new_ws(
+        sessionActive  => 1,
+        lastTrackId    => 'tid1',
+        lastPositionMs => 6111,
+        sessionPaused  => 0,
+        sessionStarted => 1,
+    );
+    my $got = run_fixtures(
+        $ws,
+        '{"type":"device_changed","is_active":false}',
+        '{"type":"playback_changed","status":"stopped"}',
+        '{"type":"playback_changed","status":"playing"}',
+    );
+    is_deeply($got, [ [ 'spottyconnect', 'stop', '', '' ] ],
+        "transfer-away: only the device_changed stop is emitted -- the stopped/playing blips produce nothing");
+    is($ws->deactivating, 1, "deactivating stays 1 after transfer-away with no re-activation");
+}
+
+# --- Test 2: re-activation position sync (re-activation with known position) ---
+{
+    my $ws = new_ws(
+        sessionActive  => 0,
+        sessionStarted => 1,
+        lastTrackId    => 'tid1',
+        lastPositionMs => 40000,
+    );
+    my $got = run_fixtures($ws, '{"type":"device_changed","is_active":true}');
+    is_deeply($got, [ [ 'spottyconnect', 'seek', '40.000', '' ] ],
+        "re-activation with sessionStarted=1 and known lastPositionMs emits 'seek' with daemon position, no 'start'");
+    is($ws->deactivating, 0, "deactivating is cleared by re-activation");
+}
+
+# --- Test 3: first activation does NOT emit seek ---
+{
+    my $ws = new_ws(lastTrackId => 'tid1', lastPositionMs => 5000);
+    my $got = run_fixtures($ws, '{"type":"device_changed","is_active":true}');
+    is_deeply($got, [ [ 'spottyconnect', 'start', 'tid1', '' ] ],
+        "first activation (sessionStarted=0) emits only 'start', no seek");
+}
+
+# --- Test 4: re-activation without position emits no seek ---
+{
+    my $ws = new_ws(sessionStarted => 1, lastTrackId => 'tid1');
+    my $got = run_fixtures($ws, '{"type":"device_changed","is_active":true}');
+    is_deeply($got, [],
+        "re-activation with sessionStarted=1 but no lastPositionMs emits nothing (sessionStarted blocks start, no position to seek to)");
+}
+
+# --- Test 5: normal pause->resume unaffected by deactivation guard ---
+{
+    my $ws = new_ws(
+        sessionActive  => 1,
+        sessionStarted => 1,
+        lastTrackId    => 'tid1',
+        lastPositionMs => 30000,
+        sessionPaused  => 1,
+    );
+    my $got = run_fixtures($ws, '{"type":"playback_changed","status":"playing"}');
+    is_deeply($got, [ [ 'spottyconnect', 'resume', 'tid1', '30.000' ] ],
+        "normal pause->resume cycle (deactivating=0) still emits 'resume' with position");
+}
+
 done_testing();
