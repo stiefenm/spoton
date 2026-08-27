@@ -22,7 +22,7 @@ SRC     := fake-libpulse.c
 all: $(TARGET)
 
 $(TARGET): $(SRC)
-	$(CC) $(CFLAGS) -shared -fPIC -o $(TARGET) $(SRC) -lpthread -lm $(LDFLAGS)
+	$(CC) $(CFLAGS) -shared -fPIC -Wl,-soname,libpulse.so.0 -o $(TARGET) $(SRC) -lpthread -lm $(LDFLAGS)
 
 # Phase 73 D-04: host-build smoke test for the HTTP streaming mode
 # (ring buffer, f32/s32->s16 conversion, drop-oldest, writable_size).
