@@ -1169,15 +1169,7 @@ int pa_stream_is_corked(pa_stream *s) {
 pa_operation *pa_stream_cork(pa_stream *s, int b, pa_stream_success_cb_t cb, void *userdata) {
     if (s) {
         s->corked = b ? 1 : 0;
-        if (b && g_http_mode) {
-            /* Soloist corks (b=1) before seek/skip but never calls
-             * pa_stream_flush explicitly. Auto-flush on cork so the
-             * ring doesn't drain 4s of stale audio before new content
-             * arrives after uncork. */
-            _ring_flush(&g_ring);
-            _stream_refresh_timing(s);
-            if (g_debug_trace) fprintf(stderr, "[fakepulse] pa_stream_cork(1): auto-flushed ring\n");
-        }
+        if (g_debug_trace) fprintf(stderr, "[fakepulse] pa_stream_cork(%d)\n", b);
     }
     if (cb) {
         cb(s, 1, userdata);
