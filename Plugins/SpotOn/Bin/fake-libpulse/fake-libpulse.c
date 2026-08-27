@@ -1499,6 +1499,17 @@ static int _test_read_bytes(int fd, unsigned char *out, size_t want, int timeout
     return 0;
 }
 
+/* Counts pa_stream_flush success-callback invocations for the flush
+ * test below -- reset is not needed since the flush test runs exactly
+ * once per test binary invocation. */
+static int _test_flush_cb_count = 0;
+static void _test_flush_cb(pa_stream *s, int success, void *userdata) {
+    (void)s;
+    (void)success;
+    (void)userdata;
+    _test_flush_cb_count++;
+}
+
 int main(void) {
     int failures = 0;
 
@@ -1572,6 +1583,84 @@ int main(void) {
         failures++;
     } else {
         printf("ok: f32->s16 conversion + clamping (header + body over real /stream)\n");
+    }
+
+    /* Flush test (Task 2, 73-06, D-04/UAT gap 3): pa_stream_flush must
+     * discard everything currently buffered in the ring and let a fresh
+     * write reach the client afterward, with the discarded bytes never
+     * appearing on the wire. Reuses the already-connected `client`
+     * socket from the conversion check above (past its HTTP header). */
+    {
+        /* Detach the ring from the drain loop (same direct-struct-access
+         * technique as the drop-oldest / writable_size tests below) so
+         * the second pattern accumulates in the ring instead of being
+         * drained straight out to `client` before we can observe/flush
+         * it -- the socket itself stays open and is read again below. */
+        pthread_mutex_lock(&g_ring.lock);
+        g_ring.head = g_ring.tail = g_ring.fill = 0;
+        g_ring.client_connected = 0;
+        pthread_mutex_unlock(&g_ring.lock);
+
+        size_t before = pa_stream_writable_size(s);
+
+        /* Second, recognizable pattern -- must be discarded by the
+         * flush below and never reach the client. */
+        float flushed_pattern[4] = { 0.25f, -0.25f, 0.75f, -0.75f };
+        pa_stream_write(s, flushed_pattern, sizeof(flushed_pattern), NULL, 0, 0);
+
+        size_t after_write = pa_stream_writable_size(s);
+
+        if (before != (size_t)RING_CAPACITY) {
+            fprintf(stderr, "FAIL: writable_size before flush-test write != capacity (before=%zu)\n", before);
+            failures++;
+        } else if (!(after_write < before)) {
+            fprintf(stderr, "FAIL: writable_size did not shrink before flush (before=%zu after=%zu)\n",
+                    before, after_write);
+            failures++;
+        }
+
+        pa_operation *flush_op = pa_stream_flush(s, _test_flush_cb, NULL);
+        if (flush_op) {
+            pa_operation_unref(flush_op);
+        }
+
+        size_t after_flush = pa_stream_writable_size(s);
+
+        if (after_flush != (size_t)RING_CAPACITY) {
+            fprintf(stderr, "FAIL: writable_size not back to full capacity after flush (after_flush=%zu, capacity=%d)\n",
+                    after_flush, RING_CAPACITY);
+            failures++;
+        }
+
+        if (_test_flush_cb_count != 1) {
+            fprintf(stderr, "FAIL: flush success callback fired %d time(s) (expected 1)\n", _test_flush_cb_count);
+            failures++;
+        }
+
+        /* Re-attach the client and confirm a third, fresh pattern is
+         * what actually arrives -- the flushed second pattern must
+         * never appear on the wire. */
+        pthread_mutex_lock(&g_ring.lock);
+        g_ring.client_connected = 1;
+        pthread_mutex_unlock(&g_ring.lock);
+
+        float fresh_pattern[4] = { -1.0f, 1.0f, 0.5f, -0.5f };
+        int16_t expected_fresh[4] = { -32767, 32767, 16384, -16384 };
+        pa_stream_write(s, fresh_pattern, sizeof(fresh_pattern), NULL, 0, 0);
+
+        unsigned char got_fresh[8];
+        if (_test_read_bytes(client, got_fresh, sizeof(got_fresh), 3000) != 0) {
+            fprintf(stderr, "FAIL: did not receive post-flush pattern over /stream\n");
+            failures++;
+        } else if (memcmp(got_fresh, expected_fresh, sizeof(expected_fresh)) != 0) {
+            int16_t gotVals[4];
+            memcpy(gotVals, got_fresh, sizeof(gotVals));
+            fprintf(stderr, "FAIL: post-flush bytes do not match the fresh pattern (flushed bytes leaked?): got %d %d %d %d\n",
+                    gotVals[0], gotVals[1], gotVals[2], gotVals[3]);
+            failures++;
+        } else {
+            printf("ok: pa_stream_flush discards buffered audio (writable_size restored, flushed pattern never served, callback fired once)\n");
+        }
     }
 
     close(client);
