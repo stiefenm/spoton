@@ -174,6 +174,26 @@ sub _soloistBrowseWs {
     return $ws;
 }
 
+# _soloistConnectWs($client)
+# 260827-of9 (~30s Connect-skip audio delay): returns the SoloistWS instance
+# for this client when its registered helper is a SoloistDaemon, else undef.
+# Unlike _soloistBrowseWs above, this does NOT require an active
+# browseSession -- the `change` handler needs to read/consume skipInitiated
+# during a Connect session, and a browse session and a Connect session are
+# mutually exclusive per player (D-08), so there is no risk of this reaching
+# into a browse-managed WS by mistake.
+sub _soloistConnectWs {
+    my ($client) = @_;
+    return unless $client;
+    $client = $client->master if $client->can('master');
+
+    require Plugins::SpotOn::Unified::DaemonManager;
+    my $helper = Plugins::SpotOn::Unified::DaemonManager->helperForClient($client->id);
+    return unless $helper && $helper->isa('Plugins::SpotOn::Unified::SoloistDaemon');
+
+    return $helper->_ws;
+}
+
 # _seekPositionFromRequest($client, $request)
 # Shared by the Connect and soloist-browse seek forwarders (GH #129
 # pattern): extracts the absolute target position (seconds) from a
@@ -1104,6 +1124,33 @@ sub _connectEvent {
         if ($newTrackId) {
             $client->pluginData(eventTrackUri => "spotify:track:$newTrackId");
             _fetchTrackMetadata($client, $newTrackId);
+        }
+
+        # 260827-of9: Soloist skip -- this handler otherwise never issues
+        # `playlist play` for a mid-session track change, so squeezelite
+        # keeps the persistent /stream connection open and must drain
+        # 10-20s of stale buffered audio before the new track is heard.
+        # Only fires for a REAL app-initiated skip (SoloistWS::skipInitiated,
+        # set when sessionPaused was already true before this track_changed
+        # arrived) -- a gapless transition leaves skipInitiated=0 and stays
+        # on the persistent stream untouched (T-quick-02).
+        my $soloistWs = _soloistConnectWs($client);
+        if ($soloistWs && $soloistWs->skipInitiated) {
+            $soloistWs->skipInitiated(0);    # consume the flag
+
+            my $ts      = int(Time::HiRes::time() * 1000);
+            my $playReq = Slim::Control::Request->new($client->id, [
+                'playlist', 'play',
+                sprintf("spoton://connect-%u", $ts)
+            ]);
+            $playReq->source(__PACKAGE__);
+            $playReq->execute();
+
+            $client->pluginData(connectStartTime => Time::HiRes::time());
+
+            main::INFOLOG && $log->is_info && $log->info(
+                "Soloist skip: forcing stream reconnect via playlist play for " . $client->id
+            );
         }
 
         $log->warn("[DIAG] [$diagTs] change: player=" . $client->id
