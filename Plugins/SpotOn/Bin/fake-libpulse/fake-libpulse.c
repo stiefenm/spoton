@@ -72,7 +72,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/syscall.h>
 #include <sys/time.h>
+#include <time.h>
 #include <unistd.h>
 
 /* ------------------------------------------------------------------ */
@@ -142,10 +144,28 @@ typedef struct pa_timing_info {
 /* Opaque real-API types this stub never dereferences (only ever
  * passed through as pointers) -- forward-declared, never defined. */
 typedef struct pa_channel_map pa_channel_map;
-typedef struct pa_buffer_attr pa_buffer_attr;
 typedef struct pa_mainloop_api pa_mainloop_api;
 typedef struct pa_spawn_api pa_spawn_api;
 typedef struct pa_sink_input_info pa_sink_input_info;
+
+/* [pulse/def.h] -- DIAG (fakepulse-timing-buffer): unlike the truly
+ * opaque types above, this one is now given its REAL, ABI-stable public
+ * layout (verbatim from upstream pulse/def.h) so this stub can read the
+ * values Soloist actually requests. Soloist constructs this on the stack
+ * (compiled against the real pulse headers, same rationale as
+ * pa_timing_info above) and passes it into pa_stream_connect_playback();
+ * this stub previously left it completely opaque/untraced. Read-only --
+ * this stub never writes through this pointer, only logs its fields at
+ * SPOTON_FAKEPULSE_TRACE>=2 (see pa_stream_connect_playback), so getting
+ * this layout wrong would show garbage in the trace but cannot corrupt
+ * anything or change playback behavior. */
+typedef struct pa_buffer_attr {
+    uint32_t maxlength;
+    uint32_t tlength;
+    uint32_t prebuf;
+    uint32_t minreq;
+    uint32_t fragsize;
+} pa_buffer_attr;
 
 /* Enums whose exact values Soloist never inspects through us (it
  * only ever passes them straight through as opaque ints). */
@@ -231,6 +251,9 @@ struct pa_stream {
     int                     corked;
     int64_t                 bytes_written;
     pa_timing_info          timing;
+    struct timeval          connect_time; /* set in pa_stream_connect_playback(),
+                                              used for timing.since_underrun (DIAG,
+                                              fakepulse-timing-buffer) */
 };
 
 struct pa_operation {
@@ -286,8 +309,11 @@ static int _pcm_output_fd(void) {
 /* zero-cost when unset -- the FD/path path above is used instead.     */
 /* ------------------------------------------------------------------ */
 
-/* ~4s of S16LE 44100 Hz stereo (44100 * 2ch * 2bytes = 176400 B/s). */
-#define RING_CAPACITY (352800 * 2)
+/* ~20s of S16LE 44100 Hz stereo (44100 * 2ch * 2bytes = 176400 B/s).
+ * Widened from ~4s (352800 * 2) to give Soloist's worker thread more
+ * room to write into before the drop-oldest path in _ring_push kicks
+ * in, now that pa_stream_write() never blocks (see _ring_push). */
+#define RING_CAPACITY (352800 * 10)
 
 /* Bounded read of the HTTP request head (GET line + headers); any GET
  * is answered -- path checking beyond the fixed /stream endpoint is
@@ -307,7 +333,6 @@ typedef struct {
     size_t          fill;   /* bytes currently held */
     int             client_connected;
     pthread_mutex_t lock;
-    pthread_cond_t  space_avail; /* signaled when bytes are popped */
     pthread_cond_t  data_avail;  /* signaled when bytes are pushed */
 } ring_buffer_t;
 
@@ -319,30 +344,29 @@ static void _ring_init(ring_buffer_t *r) {
     r->head = r->tail = r->fill = 0;
     r->client_connected = 0;
     pthread_mutex_init(&r->lock, NULL);
-    pthread_cond_init(&r->space_avail, NULL);
     pthread_cond_init(&r->data_avail, NULL);
 }
 
 /* Push already-converted S16LE bytes into the ring.
  *
- * Full ring + a client connected: block (cond_wait on space_avail) --
- * this IS the realtime pacing (RESEARCH "Don't Hand-Roll"): Soloist
- * writes as fast as pa_stream_write() accepts it; a bounded ring plus
- * the server thread's real-time drain rate throttles Soloist to
- * approximately real time, exactly like a real PulseAudio sink's
- * tlength buffer attribute.
+ * pa_stream_write() must NEVER block the caller (real PulseAudio never
+ * blocks pa_stream_write() -- see file header / RESEARCH "PulseAudio
+ * Research Summary"). Soloist's own worker thread does all pa_stream_write
+ * calls and only exits (triggering the uncork that enables correct
+ * position reporting) once every write call has returned -- a blocking
+ * write here would hold that thread hostage for the entire track duration.
  *
- * Full ring + no client connected: drop the oldest bytes instead of
- * blocking -- Soloist must never hang just because LMS isn't reading
- * (e.g. Connect session active but the LMS player is paused). */
+ * Full ring (client connected or not): always drop the oldest bytes and
+ * keep going. This is a deliberate divergence from real PA's backpressure
+ * (which throttles via writable_size/callback, never via a blocking
+ * write) -- dropping is the only way to guarantee non-blocking behavior
+ * without implementing full flow-control callbacks Soloist doesn't use
+ * for this decision. RING_CAPACITY (~20s) makes this a rare, not a
+ * routine, occurrence. */
 static void _ring_push(ring_buffer_t *r, const unsigned char *data, size_t n) {
     pthread_mutex_lock(&r->lock);
     while (n > 0) {
         if (r->fill == r->capacity) {
-            if (r->client_connected) {
-                pthread_cond_wait(&r->space_avail, &r->lock);
-                continue;
-            }
             size_t drop = n < r->fill ? n : r->fill;
             r->tail = (r->tail + drop) % r->capacity;
             r->fill -= drop;
@@ -400,7 +424,6 @@ static size_t _ring_pop_timed(ring_buffer_t *r, unsigned char *out, size_t maxle
 
         r->tail = (r->tail + chunk) % r->capacity;
         r->fill -= chunk;
-        pthread_cond_broadcast(&r->space_avail);
     }
 
     pthread_mutex_unlock(&r->lock);
@@ -412,23 +435,20 @@ static size_t _ring_pop_timed(ring_buffer_t *r, unsigned char *out, size_t maxle
  * Soloist calls pa_stream_flush() when it discards buffered audio on an
  * app-side skip/seek. Before this fix the stub only invoked the success
  * callback -- the ring itself was untouched, so up to RING_CAPACITY
- * (~4.0s) of stale prior-track PCM kept draining out to the player after
+ * (~20s) of stale prior-track PCM kept draining out to the player after
  * every skip, AND _stream_refresh_timing()'s read_index (write_index
  * minus ring fill) stayed inflated by that same stale fill, making
  * Soloist's cluster-reported position -- the Spotify app's progress bar
  * -- sit near zero for the first few seconds of the new track while the
  * old audio was still audible. Resetting tail=head and fill=0 here drops
  * the stale bytes instantly and lets read_index catch up to write_index
- * on the very next timing refresh. Broadcasting space_avail wakes any
- * pa_stream_write() blocked in _ring_push() waiting for room (the
- * client-connected backpressure path) so the producer can resume
- * immediately with fresh audio instead of waiting for the (now
- * nonexistent) backlog to drain. */
+ * on the very next timing refresh. (pa_stream_write()/_ring_push() never
+ * blocks waiting for room -- see _ring_push -- so there is no longer a
+ * producer to wake here.) */
 static void _ring_flush(ring_buffer_t *r) {
     pthread_mutex_lock(&r->lock);
     r->tail = r->head;
     r->fill = 0;
-    pthread_cond_broadcast(&r->space_avail);
     pthread_mutex_unlock(&r->lock);
 }
 
@@ -642,7 +662,6 @@ static void *_http_thread_fn(void *arg) {
                 client_fd = -1;
                 pthread_mutex_lock(&g_ring.lock);
                 g_ring.client_connected = 0;
-                pthread_cond_broadcast(&g_ring.space_avail);
                 pthread_mutex_unlock(&g_ring.lock);
             }
 
@@ -674,7 +693,6 @@ static void *_http_thread_fn(void *arg) {
                     client_fd = -1;
                     pthread_mutex_lock(&g_ring.lock);
                     g_ring.client_connected = 0;
-                    pthread_cond_broadcast(&g_ring.space_avail);
                     pthread_mutex_unlock(&g_ring.lock);
                 }
             }
@@ -758,13 +776,206 @@ static void _http_start_server(const char *portFilePath) {
  * setup completes, so SoloistDaemon.pm's async port-file poll
  * succeeds -- start the ring + server thread synchronously here,
  * before returning control to the dynamic loader. */
+/* g_debug_trace is a LEVEL, not a bool:
+ *   0 = off (default)
+ *   1 = legacy SPOTON_FAKEPULSE_DEBUG behavior (unchanged since Phase 73)
+ *       -- the handful of entry/exit points already instrumented below,
+ *       plus the edge-triggered TIMING trace in _stream_refresh_timing().
+ *       Low overhead, safe for routine operation.
+ *   2 = SPOTON_FAKEPULSE_TRACE=2 -- comprehensive (DIAG,
+ *       fakepulse-timing-buffer): every pa_* function call (name +
+ *       parameters), every pa_stream_writable_size() return value,
+ *       cork/uncork transitions with a wall-clock timestamp, every
+ *       timing-info refresh's actual read_index/write_index/playing, and
+ *       every state_cb/started_cb invocation with the state value being
+ *       reported. Intentionally high-overhead (matches Soloist's own
+ *       800-1300 calls/sec timing-poll rate while it's deciding
+ *       readiness) -- opt-in only, for short live-debugging bursts,
+ *       never the default.
+ *
+ * SPOTON_FAKEPULSE_TRACE=<N> sets the level explicitly (takes priority
+ * over SPOTON_FAKEPULSE_DEBUG). SPOTON_FAKEPULSE_DEBUG (legacy, still set
+ * unconditionally by SoloistDaemon.pm) maps to level 1 when TRACE is
+ * unset, so existing behavior/tooling is unaffected. */
 static int g_debug_trace = 0;
 static int g_init_done = 0;
+
+static void _trace_ts(char *buf, size_t buflen) {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    struct tm tmv;
+    localtime_r(&tv.tv_sec, &tmv);
+    snprintf(buf, buflen, "%02d:%02d:%02d.%03ld",
+             tmv.tm_hour, tmv.tm_min, tmv.tm_sec, (long)(tv.tv_usec / 1000));
+}
+
+/* DIAG (fakepulse-timing-buffer): every trace line carries the calling
+ * OS thread id (Linux TID, via the gettid() syscall -- not the pthread_t
+ * handle, which isn't directly comparable to what `strace -f`/`ps -T`
+ * report) so a live trace can be directly correlated against a
+ * per-thread strace capture: `grep 'tid=1234' <log>` tells you exactly
+ * which thread calls pa_stream_write/pa_stream_cork/etc., so
+ * `strace -f -p <soloist_pid> -e trace=... 2>&1 | grep '^1234 '`
+ * (or `strace -p 1234` directly) isolates that one thread instead of
+ * wading through the ~19 Chromium/V8-internal threads' futex/epoll
+ * churn (see Evidence in .planning/debug/fakepulse-timing-buffer.md --
+ * the untargeted `strace -f` capture from an earlier session was too
+ * noisy to isolate the relevant thread without this). */
+static long _gettid(void) {
+    return syscall(SYS_gettid);
+}
+
+#define TRACE2(fmt, ...) \
+    do { \
+        if (g_debug_trace >= 2) { \
+            char _ts[32]; \
+            _trace_ts(_ts, sizeof(_ts)); \
+            fprintf(stderr, "[fakepulse T2 %s tid=%ld] " fmt "\n", _ts, _gettid(), ##__VA_ARGS__); \
+        } \
+    } while (0)
+
+static const char *_context_state_name(pa_context_state_t s) {
+    switch (s) {
+        case PA_CONTEXT_UNCONNECTED:  return "UNCONNECTED";
+        case PA_CONTEXT_CONNECTING:   return "CONNECTING";
+        case PA_CONTEXT_AUTHORIZING:  return "AUTHORIZING";
+        case PA_CONTEXT_SETTING_NAME: return "SETTING_NAME";
+        case PA_CONTEXT_READY:        return "READY";
+        case PA_CONTEXT_FAILED:       return "FAILED";
+        case PA_CONTEXT_TERMINATED:   return "TERMINATED";
+        default: return "?";
+    }
+}
+
+static const char *_stream_state_name(pa_stream_state_t s) {
+    switch (s) {
+        case PA_STREAM_UNCONNECTED: return "UNCONNECTED";
+        case PA_STREAM_CREATING:    return "CREATING";
+        case PA_STREAM_READY:       return "READY";
+        case PA_STREAM_FAILED:      return "FAILED";
+        case PA_STREAM_TERMINATED:  return "TERMINATED";
+        default: return "?";
+    }
+}
+
+/* Symbols Soloist actually references, recovered 2026-08-27 (DIAG,
+ * fakepulse-timing-buffer) via
+ *   sudo strings <soloist binary> | grep -x 'pa_[a-z0-9_]*' | sort -u
+ * against the currently-pinned Soloist build (1.3.7.489, x86_64-linux).
+ * Soloist dlsym()s these BY STRING NAME -- it never appears as a normal
+ * ELF undefined-dynamic-symbol import, since libpulse is dlopen()ed, not
+ * link-time linked (`nm -D` on the Soloist binary shows zero pa_*
+ * entries at all; `strings` is the only way to recover this list,
+ * matching this file's header-comment original derivation method).
+ * Exactly 48 symbols, and this stub implements exactly these same 48 --
+ * confirmed by diffing against `nm -D libpulse.so.0`'s exported T symbols
+ * this session (see .planning/debug/fakepulse-timing-buffer.md
+ * Evidence). Hardcoded here (rather than re-deriving at runtime, which
+ * would need root to read the Soloist binary -- the daemon itself runs
+ * as squeezeboxserver and may not have +r on its own path in all
+ * deployments) so the diff can still be logged at every startup.
+ * Regenerate both this list and IMPLEMENTED_PA_SYMBOLS below together if
+ * either the pinned Soloist build or this file's implemented function
+ * set changes. */
+static const char *SOLOIST_REFERENCED_PA_SYMBOLS[] = {
+    "pa_context_connect", "pa_context_disconnect", "pa_context_errno",
+    "pa_context_get_sink_input_info", "pa_context_get_state", "pa_context_new",
+    "pa_context_set_sink_input_volume", "pa_context_set_state_callback",
+    "pa_context_set_subscribe_callback", "pa_context_subscribe", "pa_context_unref",
+    "pa_cvolume_avg", "pa_cvolume_set", "pa_gettimeofday", "pa_operation_get_state",
+    "pa_operation_unref", "pa_proplist_free", "pa_proplist_new", "pa_proplist_sets",
+    "pa_stream_connect_playback", "pa_stream_cork", "pa_stream_disconnect",
+    "pa_stream_flush", "pa_stream_get_index", "pa_stream_get_state",
+    "pa_stream_get_timing_info", "pa_stream_is_corked", "pa_stream_new",
+    "pa_stream_new_with_proplist", "pa_stream_set_started_callback",
+    "pa_stream_set_state_callback", "pa_stream_set_underflow_callback",
+    "pa_stream_unref", "pa_stream_update_timing_info", "pa_stream_writable_size",
+    "pa_stream_write", "pa_strerror", "pa_threaded_mainloop_free",
+    "pa_threaded_mainloop_get_api", "pa_threaded_mainloop_lock",
+    "pa_threaded_mainloop_new", "pa_threaded_mainloop_signal",
+    "pa_threaded_mainloop_start", "pa_threaded_mainloop_stop",
+    "pa_threaded_mainloop_unlock", "pa_threaded_mainloop_wait",
+    "pa_timeval_diff", "pa_usec_to_bytes",
+};
+#define SOLOIST_REFERENCED_PA_SYMBOLS_COUNT \
+    (sizeof(SOLOIST_REFERENCED_PA_SYMBOLS) / sizeof(SOLOIST_REFERENCED_PA_SYMBOLS[0]))
+
+/* This stub's implemented symbols -- kept as a second hardcoded list
+ * (rather than parsing our own .so's dynamic symbol table at runtime,
+ * which would need the same ELF-walking machinery `nm` uses) so the
+ * comparison is a trivial string diff over two small arrays. */
+static const char *IMPLEMENTED_PA_SYMBOLS[] = {
+    "pa_context_connect", "pa_context_disconnect", "pa_context_errno",
+    "pa_context_get_sink_input_info", "pa_context_get_state", "pa_context_new",
+    "pa_context_set_sink_input_volume", "pa_context_set_state_callback",
+    "pa_context_set_subscribe_callback", "pa_context_subscribe", "pa_context_unref",
+    "pa_cvolume_avg", "pa_cvolume_set", "pa_gettimeofday", "pa_operation_get_state",
+    "pa_operation_unref", "pa_proplist_free", "pa_proplist_new", "pa_proplist_sets",
+    "pa_stream_connect_playback", "pa_stream_cork", "pa_stream_disconnect",
+    "pa_stream_flush", "pa_stream_get_index", "pa_stream_get_state",
+    "pa_stream_get_timing_info", "pa_stream_is_corked", "pa_stream_new",
+    "pa_stream_new_with_proplist", "pa_stream_set_started_callback",
+    "pa_stream_set_state_callback", "pa_stream_set_underflow_callback",
+    "pa_stream_unref", "pa_stream_update_timing_info", "pa_stream_writable_size",
+    "pa_stream_write", "pa_strerror", "pa_threaded_mainloop_free",
+    "pa_threaded_mainloop_get_api", "pa_threaded_mainloop_lock",
+    "pa_threaded_mainloop_new", "pa_threaded_mainloop_signal",
+    "pa_threaded_mainloop_start", "pa_threaded_mainloop_stop",
+    "pa_threaded_mainloop_unlock", "pa_threaded_mainloop_wait",
+    "pa_timeval_diff", "pa_usec_to_bytes",
+};
+#define IMPLEMENTED_PA_SYMBOLS_COUNT \
+    (sizeof(IMPLEMENTED_PA_SYMBOLS) / sizeof(IMPLEMENTED_PA_SYMBOLS[0]))
+
+static int _symbol_in(const char *needle, const char **list, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        if (strcmp(needle, list[i]) == 0) return 1;
+    }
+    return 0;
+}
+
+/* DIAG (fakepulse-timing-buffer): "we can't intercept dlsym() failures
+ * from inside our own .so" -- but we CAN compare what Soloist is known
+ * to reference (recovered via `strings`, see above) against what this
+ * stub implements, and log the diff at startup. Logged once, at level>=2,
+ * from the constructor. */
+static void _log_symbol_surface(void) {
+    fprintf(stderr, "[fakepulse T2] symbol surface: %zu referenced by Soloist, %zu implemented by this stub\n",
+            SOLOIST_REFERENCED_PA_SYMBOLS_COUNT, IMPLEMENTED_PA_SYMBOLS_COUNT);
+    int missing = 0;
+    for (size_t i = 0; i < SOLOIST_REFERENCED_PA_SYMBOLS_COUNT; i++) {
+        if (!_symbol_in(SOLOIST_REFERENCED_PA_SYMBOLS[i], IMPLEMENTED_PA_SYMBOLS, IMPLEMENTED_PA_SYMBOLS_COUNT)) {
+            fprintf(stderr, "[fakepulse T2] MISSING: Soloist references %s but this stub does not implement it\n",
+                    SOLOIST_REFERENCED_PA_SYMBOLS[i]);
+            missing++;
+        }
+    }
+    int extra = 0;
+    for (size_t i = 0; i < IMPLEMENTED_PA_SYMBOLS_COUNT; i++) {
+        if (!_symbol_in(IMPLEMENTED_PA_SYMBOLS[i], SOLOIST_REFERENCED_PA_SYMBOLS, SOLOIST_REFERENCED_PA_SYMBOLS_COUNT)) {
+            fprintf(stderr, "[fakepulse T2] EXTRA: this stub implements %s but Soloist never references it\n",
+                    IMPLEMENTED_PA_SYMBOLS[i]);
+            extra++;
+        }
+    }
+    if (!missing && !extra) {
+        fprintf(stderr, "[fakepulse T2] symbol surface: exact match, 0 missing, 0 extra "
+                        "(re-verified 2026-08-27 against the pinned Soloist build -- rules out "
+                        "\"Soloist silently disables position reporting because a pa_* symbol "
+                        "failed to resolve\" as a cause of this bug)\n");
+    }
+}
 
 __attribute__((constructor))
 static void _fake_libpulse_init(void) {
     signal(SIGPIPE, SIG_IGN);
-    g_debug_trace = (getenv("SPOTON_FAKEPULSE_DEBUG") != NULL);
+
+    const char *traceEnv = getenv("SPOTON_FAKEPULSE_TRACE");
+    if (traceEnv && *traceEnv) {
+        g_debug_trace = atoi(traceEnv);
+    } else if (getenv("SPOTON_FAKEPULSE_DEBUG") != NULL) {
+        g_debug_trace = 1;
+    }
 
     /* Guard: skip init in the crashpad-handler child process. Soloist
      * forks a crashpad handler that also inherits LD_PRELOAD; if it runs
@@ -785,7 +996,8 @@ static void _fake_libpulse_init(void) {
         }
     }
     g_init_done = 1;
-    if (g_debug_trace) fprintf(stderr, "[fakepulse] constructor: loaded\n");
+    if (g_debug_trace) fprintf(stderr, "[fakepulse] constructor: loaded (trace level=%d)\n", g_debug_trace);
+    if (g_debug_trace >= 2) _log_symbol_surface();
 
     const char *portFileEnv = getenv("SPOTON_SOLOIST_HTTP_PORT_FILE");
     if (portFileEnv && *portFileEnv) {
@@ -805,7 +1017,9 @@ static void _context_set_state(pa_context *c, pa_context_state_t s) {
         return;
     }
     c->state = s;
+    TRACE2("_context_set_state(context=%p, state=%s) cb=%p", (void *)c, _context_state_name(s), (void *)c->state_cb);
     if (c->state_cb) {
+        TRACE2("invoking context state_cb(context=%p, state=%s)", (void *)c, _context_state_name(s));
         c->state_cb(c, c->state_userdata);
     }
     if (c->mainloop) {
@@ -818,7 +1032,9 @@ static void _stream_set_state(pa_stream *s, pa_stream_state_t st) {
         return;
     }
     s->state = st;
+    TRACE2("_stream_set_state(stream=%p, state=%s) cb=%p", (void *)s, _stream_state_name(st), (void *)s->state_cb);
     if (s->state_cb) {
+        TRACE2("invoking stream state_cb(stream=%p, state=%s)", (void *)s, _stream_state_name(st));
         s->state_cb(s, s->state_userdata);
     }
     if (s->context && s->context->mainloop) {
@@ -826,12 +1042,45 @@ static void _stream_set_state(pa_stream *s, pa_stream_state_t st) {
     }
 }
 
-static void _stream_refresh_timing(pa_stream *s) {
+/* DIAG (fakepulse-timing-buffer, still open -- see .planning/debug/
+ * fakepulse-timing-buffer.md): edge-triggered trace, NOT per-call. Live
+ * testing showed Soloist calls update_timing_info/get_timing_info at
+ * 800-1300 calls/sec while investigating readiness -- per-call fprintf at
+ * that rate is itself a confound (competes for g_ring.lock and CPU with
+ * Soloist's own audio thread). Logs only on a corked-state transition, plus
+ * at most 1 line/2s while corked, to show a stuck episode's progression
+ * without material overhead. Keep until the "stuck corked for up to
+ * several minutes after an external Connect transfer/skip command" root
+ * cause is resolved (confirmed NOT caused by since_underrun/sink_usec/
+ * configured_sink_usec always reading 0 -- see Eliminated in the debug
+ * file; still open). */
+static int g_timing_last_corked = -1;
+static struct timeval g_timing_last_logged;
+static int g_timing_last_logged_set = 0;
+
+/* Output side (ring) is always S16LE 44100 Hz stereo -- see RING_CAPACITY. */
+#define RING_BYTES_PER_SEC (44100 * 2 * 2)
+
+static void _stream_refresh_timing(pa_stream *s, const char *caller) {
     struct timeval now;
     gettimeofday(&now, NULL);
     memset(&s->timing, 0, sizeof(s->timing));
     s->timing.timestamp = now;
     s->timing.synchronized_clocks = 1;
+    /* EXPERIMENT, TESTED AND REVERTED (fakepulse-timing-buffer, 2026-08-27
+     * session): tried `s->timing.playing = 1;` unconditionally (theory:
+     * real PA's timing_info.playing reflects server-side sink activity,
+     * not the client's own cork flag, so mirroring corked back was a
+     * fidelity gap Soloist might gate on). Live-tested: a stuck episode
+     * with this forced still lasted 147.9s -- LONGER than this session's
+     * un-patched baseline (94.3s) -- REFUTING the hypothesis (see
+     * Eliminated in .planning/debug/fakepulse-timing-buffer.md). Reverted
+     * rather than kept-as-harmless-fidelity-improvement (unlike the
+     * since_underrun/sink_usec change) because forcing playing=1 during a
+     * GENUINE user-initiated pause (where corked=1 really does mean
+     * "nothing is being consumed") would misreport an actively-idle
+     * stream as playing -- a plausible new regression for zero measured
+     * benefit. */
     s->timing.playing = s->corked ? 0 : 1;
 
     if (g_http_mode) {
@@ -847,6 +1096,67 @@ static void _stream_refresh_timing(pa_stream *s) {
         int64_t fill_input = fill * input_bps / 2;
         s->timing.write_index = s->bytes_written;
         s->timing.read_index = s->bytes_written - fill_input;
+
+        /* since_underrun/sink_usec/configured_sink_usec were always left at
+         * 0 by the memset above (real PulseAudio never reports all three as
+         * permanently zero for an actively-writing stream). DIAG hypothesis
+         * (fakepulse-timing-buffer): a real client's readiness/position
+         * logic may treat since_underrun==0 as "just started or just
+         * underran, don't trust this yet" indefinitely when it in fact
+         * never changes. Populate all three plausibly: since_underrun grows
+         * from stream-connect (never underruns in this stub); sink_usec
+         * reflects the ring's actual current backlog (fill, in output-
+         * format time); configured_sink_usec reports the ring's total
+         * capacity as the configured target latency. Purely informational
+         * -- does not change what bytes flow through the ring. */
+        pa_usec_t since_connect = (pa_usec_t)((now.tv_sec - s->connect_time.tv_sec) * 1000000
+                                 + (now.tv_usec - s->connect_time.tv_usec));
+        s->timing.since_underrun = since_connect;
+        s->timing.sink_usec = (pa_usec_t)(((int64_t)fill * 1000000) / RING_BYTES_PER_SEC);
+        s->timing.configured_sink_usec = (pa_usec_t)(((int64_t)RING_CAPACITY * 1000000) / RING_BYTES_PER_SEC);
+
+        if (g_debug_trace >= 2) {
+            /* Comprehensive mode (SPOTON_FAKEPULSE_TRACE=2): every call,
+             * unconditionally, no throttling -- this is the exact field the
+             * user asked to see per-call ("pa_stream_get_timing_info /
+             * update_timing_info with the actual read_index/write_index/
+             * playing values returned"). Opt-in only; see g_debug_trace
+             * comment at the constructor for the overhead tradeoff. */
+            char _ts[32];
+            _trace_ts(_ts, sizeof(_ts));
+            fprintf(stderr,
+                "[fakepulse T2 %s] TIMING caller=%s stream=%p corked=%d playing=%d "
+                "bytes_written=%lld fill=%lld fill_input=%lld write_index=%lld "
+                "read_index=%lld since_underrun=%llu sink_usec=%llu configured_sink_usec=%llu\n",
+                _ts, caller, (void *)s, s->corked, s->timing.playing,
+                (long long)s->bytes_written, (long long)fill, (long long)fill_input,
+                (long long)s->timing.write_index, (long long)s->timing.read_index,
+                (unsigned long long)s->timing.since_underrun,
+                (unsigned long long)s->timing.sink_usec,
+                (unsigned long long)s->timing.configured_sink_usec);
+        } else if (g_debug_trace == 1) {
+            /* Legacy level-1 behavior: edge-triggered, NOT per-call (see
+             * comment above this function for the rationale). */
+            int corked_changed = (s->corked != g_timing_last_corked);
+            long since_last_ms = g_timing_last_logged_set
+                ? (now.tv_sec - g_timing_last_logged.tv_sec) * 1000
+                    + (now.tv_usec - g_timing_last_logged.tv_usec) / 1000
+                : 999999;
+            if (corked_changed || (s->corked && since_last_ms >= 2000)) {
+                fprintf(stderr,
+                    "[fakepulse] TIMING caller=%s stream=%p corked=%d playing=%d "
+                    "bytes_written=%lld fill=%lld fill_input=%lld write_index=%lld "
+                    "read_index=%lld since_underrun=%llu sink_usec=%llu\n",
+                    caller, (void *)s, s->corked, s->timing.playing,
+                    (long long)s->bytes_written, (long long)fill, (long long)fill_input,
+                    (long long)s->timing.write_index, (long long)s->timing.read_index,
+                    (unsigned long long)s->timing.since_underrun,
+                    (unsigned long long)s->timing.sink_usec);
+                g_timing_last_logged = now;
+                g_timing_last_logged_set = 1;
+                g_timing_last_corked = s->corked;
+            }
+        }
     } else {
         /* No real sink buffer to lag behind -- report the write index
          * as already fully drained (read == write) since bytes handed
@@ -880,10 +1190,12 @@ pa_threaded_mainloop *pa_threaded_mainloop_new(void) {
     pthread_mutex_init(&m->lock, &attr);
     pthread_mutexattr_destroy(&attr);
     pthread_cond_init(&m->cond, NULL);
+    TRACE2("pa_threaded_mainloop_new() -> %p", (void *)m);
     return m;
 }
 
 void pa_threaded_mainloop_free(pa_threaded_mainloop *m) {
+    TRACE2("pa_threaded_mainloop_free(mainloop=%p)", (void *)m);
     if (!m) {
         return;
     }
@@ -908,6 +1220,7 @@ static void *_mainloop_thread_fn(void *arg) {
 }
 
 int pa_threaded_mainloop_start(pa_threaded_mainloop *m) {
+    TRACE2("pa_threaded_mainloop_start(mainloop=%p)", (void *)m);
     if (!m) {
         return -1;
     }
@@ -921,6 +1234,7 @@ int pa_threaded_mainloop_start(pa_threaded_mainloop *m) {
 }
 
 void pa_threaded_mainloop_stop(pa_threaded_mainloop *m) {
+    TRACE2("pa_threaded_mainloop_stop(mainloop=%p)", (void *)m);
     if (!m || !m->started) {
         return;
     }
@@ -933,24 +1247,29 @@ void pa_threaded_mainloop_stop(pa_threaded_mainloop *m) {
 }
 
 void pa_threaded_mainloop_lock(pa_threaded_mainloop *m) {
+    TRACE2("pa_threaded_mainloop_lock(mainloop=%p)", (void *)m);
     if (m) {
         pthread_mutex_lock(&m->lock);
     }
 }
 
 void pa_threaded_mainloop_unlock(pa_threaded_mainloop *m) {
+    TRACE2("pa_threaded_mainloop_unlock(mainloop=%p)", (void *)m);
     if (m) {
         pthread_mutex_unlock(&m->lock);
     }
 }
 
 void pa_threaded_mainloop_wait(pa_threaded_mainloop *m) {
+    TRACE2("pa_threaded_mainloop_wait(mainloop=%p) -- blocking", (void *)m);
     if (m) {
         pthread_cond_wait(&m->cond, &m->lock);
     }
+    TRACE2("pa_threaded_mainloop_wait(mainloop=%p) -- woke up", (void *)m);
 }
 
 void pa_threaded_mainloop_signal(pa_threaded_mainloop *m, int wait_for_accept) {
+    TRACE2("pa_threaded_mainloop_signal(mainloop=%p, wait_for_accept=%d)", (void *)m, wait_for_accept);
     (void)wait_for_accept;
     if (m) {
         pthread_cond_broadcast(&m->cond);
@@ -963,6 +1282,7 @@ pa_mainloop_api *pa_threaded_mainloop_get_api(pa_threaded_mainloop *m) {
      * NULL-check in Soloist's code succeeds. Soloist never
      * dereferences this pointer itself; it only hands it back to
      * pa_context_new() below, which we do control. */
+    TRACE2("pa_threaded_mainloop_get_api(mainloop=%p) -> %p", (void *)m, (void *)m);
     return (pa_mainloop_api *)m;
 }
 
@@ -983,10 +1303,12 @@ pa_context *pa_context_new(pa_mainloop_api *mainloop, const char *name) {
 }
 
 void pa_context_unref(pa_context *c) {
+    TRACE2("pa_context_unref(context=%p)", (void *)c);
     free(c);
 }
 
 void pa_context_set_state_callback(pa_context *c, pa_context_notify_cb_t cb, void *userdata) {
+    TRACE2("pa_context_set_state_callback(context=%p, cb=%p)", (void *)c, (void *)cb);
     if (!c) {
         return;
     }
@@ -995,6 +1317,7 @@ void pa_context_set_state_callback(pa_context *c, pa_context_notify_cb_t cb, voi
 }
 
 void pa_context_set_subscribe_callback(pa_context *c, pa_context_subscribe_cb_t cb, void *userdata) {
+    TRACE2("pa_context_set_subscribe_callback(context=%p, cb=%p)", (void *)c, (void *)cb);
     if (!c) {
         return;
     }
@@ -1003,12 +1326,15 @@ void pa_context_set_subscribe_callback(pa_context *c, pa_context_subscribe_cb_t 
 }
 
 int pa_context_errno(const pa_context *c) {
+    TRACE2("pa_context_errno(context=%p) -> 0", (void *)c);
     (void)c;
     return 0; /* stub never fails */
 }
 
 pa_context_state_t pa_context_get_state(const pa_context *c) {
-    return c ? c->state : PA_CONTEXT_UNCONNECTED;
+    pa_context_state_t st = c ? c->state : PA_CONTEXT_UNCONNECTED;
+    TRACE2("pa_context_get_state(context=%p) -> %s", (const void *)c, _context_state_name(st));
+    return st;
 }
 
 int pa_context_connect(pa_context *c, const char *server, pa_context_flags_t flags, const pa_spawn_api *api) {
@@ -1024,6 +1350,7 @@ int pa_context_connect(pa_context *c, const char *server, pa_context_flags_t fla
 }
 
 void pa_context_disconnect(pa_context *c) {
+    TRACE2("pa_context_disconnect(context=%p)", (void *)c);
     _context_set_state(c, PA_CONTEXT_TERMINATED);
 }
 
@@ -1032,6 +1359,7 @@ void pa_context_disconnect(pa_context *c) {
 /* ==================================================================== */
 
 pa_operation *pa_context_subscribe(pa_context *c, pa_subscription_mask_t m, pa_context_success_cb_t cb, void *userdata) {
+    TRACE2("pa_context_subscribe(context=%p, mask=%d, cb=%p)", (void *)c, m, (void *)cb);
     (void)m;
     if (cb) {
         cb(c, 1, userdata);
@@ -1040,6 +1368,7 @@ pa_operation *pa_context_subscribe(pa_context *c, pa_subscription_mask_t m, pa_c
 }
 
 pa_operation *pa_context_get_sink_input_info(pa_context *c, uint32_t idx, pa_sink_input_info_cb_t cb, void *userdata) {
+    TRACE2("pa_context_get_sink_input_info(context=%p, idx=%u, cb=%p) -> eol immediately", (void *)c, idx, (void *)cb);
     (void)idx;
     if (cb) {
         /* No real sink-input list exists -- signal end-of-list
@@ -1051,6 +1380,7 @@ pa_operation *pa_context_get_sink_input_info(pa_context *c, uint32_t idx, pa_sin
 }
 
 pa_operation *pa_context_set_sink_input_volume(pa_context *c, uint32_t idx, const pa_cvolume *volume, pa_context_success_cb_t cb, void *userdata) {
+    TRACE2("pa_context_set_sink_input_volume(context=%p, idx=%u, volume=%p, cb=%p)", (void *)c, idx, (const void *)volume, (void *)cb);
     (void)idx;
     (void)volume;
     if (cb) {
@@ -1064,10 +1394,13 @@ pa_operation *pa_context_set_sink_input_volume(pa_context *c, uint32_t idx, cons
 /* ==================================================================== */
 
 pa_operation_state_t pa_operation_get_state(const pa_operation *o) {
-    return o ? o->state : PA_OPERATION_DONE;
+    pa_operation_state_t st = o ? o->state : PA_OPERATION_DONE;
+    TRACE2("pa_operation_get_state(op=%p) -> %d", (const void *)o, st);
+    return st;
 }
 
 void pa_operation_unref(pa_operation *o) {
+    TRACE2("pa_operation_unref(op=%p)", (void *)o);
     free(o);
 }
 
@@ -1086,16 +1419,26 @@ static pa_stream *_stream_new(pa_context *c, const pa_sample_spec *ss) {
         s->sample_spec = *ss;
     }
     s->index = next_stream_index++;
+    if (g_debug_trace) {
+        fprintf(stderr, "[fakepulse] _stream_new(stream=%p, index=%u, format=%d)\n",
+                (void *)s, s->index, ss ? ss->format : -1);
+    }
     return s;
 }
 
 pa_stream *pa_stream_new(pa_context *c, const char *name, const pa_sample_spec *ss, const pa_channel_map *map) {
+    TRACE2("pa_stream_new(context=%p, name=%s, format=%d, rate=%u, channels=%u)",
+           (void *)c, name ? name : "(null)",
+           ss ? ss->format : -1, ss ? ss->rate : 0, ss ? ss->channels : 0);
     (void)name;
     (void)map;
     return _stream_new(c, ss);
 }
 
 pa_stream *pa_stream_new_with_proplist(pa_context *c, const char *name, const pa_sample_spec *ss, const pa_channel_map *map, pa_proplist *p) {
+    TRACE2("pa_stream_new_with_proplist(context=%p, name=%s, format=%d, rate=%u, channels=%u, proplist=%p)",
+           (void *)c, name ? name : "(null)",
+           ss ? ss->format : -1, ss ? ss->rate : 0, ss ? ss->channels : 0, (void *)p);
     (void)name;
     (void)map;
     (void)p;
@@ -1103,14 +1446,18 @@ pa_stream *pa_stream_new_with_proplist(pa_context *c, const char *name, const pa
 }
 
 void pa_stream_unref(pa_stream *s) {
+    TRACE2("pa_stream_unref(stream=%p)", (void *)s);
     free(s);
 }
 
 pa_stream_state_t pa_stream_get_state(const pa_stream *s) {
-    return s ? s->state : PA_STREAM_UNCONNECTED;
+    pa_stream_state_t st = s ? s->state : PA_STREAM_UNCONNECTED;
+    TRACE2("pa_stream_get_state(stream=%p) -> %s", (const void *)s, _stream_state_name(st));
+    return st;
 }
 
 void pa_stream_set_state_callback(pa_stream *s, pa_stream_notify_cb_t cb, void *userdata) {
+    TRACE2("pa_stream_set_state_callback(stream=%p, cb=%p)", (void *)s, (void *)cb);
     if (!s) {
         return;
     }
@@ -1119,6 +1466,7 @@ void pa_stream_set_state_callback(pa_stream *s, pa_stream_notify_cb_t cb, void *
 }
 
 void pa_stream_set_started_callback(pa_stream *s, pa_stream_notify_cb_t cb, void *userdata) {
+    TRACE2("pa_stream_set_started_callback(stream=%p, cb=%p)", (void *)s, (void *)cb);
     if (!s) {
         return;
     }
@@ -1127,6 +1475,16 @@ void pa_stream_set_started_callback(pa_stream *s, pa_stream_notify_cb_t cb, void
 }
 
 void pa_stream_set_underflow_callback(pa_stream *s, pa_stream_notify_cb_t cb, void *userdata) {
+    /* DIAG (fakepulse-timing-buffer): this stub NEVER invokes underflow_cb
+     * anywhere -- it is stored here and then dead for the lifetime of the
+     * stream, because this stub never simulates a sink underrun (the ring
+     * either has data or doesn't; there is no "starved sink" condition
+     * distinct from "corked"/"not yet written to"). Flagged explicitly at
+     * registration time (once per stream) because a real client MAY use
+     * "have I ever seen an underflow_cb fire" as part of its own internal
+     * readiness/health bookkeeping -- if so, its total absence here is a
+     * candidate difference from real PulseAudio, worth ruling in/out. */
+    TRACE2("pa_stream_set_underflow_callback(stream=%p, cb=%p) -- NOTE: this stub never invokes underflow_cb (no underrun ever simulated)", (void *)s, (void *)cb);
     if (!s) {
         return;
     }
@@ -1136,7 +1494,18 @@ void pa_stream_set_underflow_callback(pa_stream *s, pa_stream_notify_cb_t cb, vo
 
 int pa_stream_connect_playback(pa_stream *s, const char *dev, const pa_buffer_attr *attr,
                                 pa_stream_flags_t flags, const pa_cvolume *volume, pa_stream *sync_stream) {
-    if (g_debug_trace) fprintf(stderr, "[fakepulse] pa_stream_connect_playback(dev=%s)\n", dev ? dev : "(null)");
+    if (g_debug_trace) fprintf(stderr, "[fakepulse] pa_stream_connect_playback(stream=%p, dev=%s)\n", (void *)s, dev ? dev : "(null)");
+    TRACE2("pa_stream_connect_playback(stream=%p, dev=%s, flags=%d, sync_stream=%p)",
+           (void *)s, dev ? dev : "(null)", flags, (void *)sync_stream);
+    if (attr) {
+        /* DIAG (fakepulse-timing-buffer): previously completely untraced.
+         * prebuf in particular is the real-PA "bytes to prebuffer before
+         * the SERVER auto-starts rendering" target -- if Soloist's own
+         * uncork decision is byte-count-gated against a value it itself
+         * chose here, this reveals the exact target. */
+        TRACE2("pa_stream_connect_playback: buffer_attr maxlength=%u tlength=%u prebuf=%u minreq=%u fragsize=%u",
+               attr->maxlength, attr->tlength, attr->prebuf, attr->minreq, attr->fragsize);
+    }
     (void)dev;
     (void)attr;
     (void)flags;
@@ -1150,14 +1519,21 @@ int pa_stream_connect_playback(pa_stream *s, const char *dev, const pa_buffer_at
     if (g_http_mode) {
         _ring_flush(&g_ring);
     }
+    gettimeofday(&s->connect_time, NULL);
     _stream_set_state(s, PA_STREAM_READY);
-    if (s->started_cb) {
-        s->started_cb(s, s->started_userdata);
-    }
+    /* started_cb now fires on the first pa_stream_write() call (see
+     * pa_stream_write), not here at connect time -- real PulseAudio's
+     * started_cb fires when the sink actually starts consuming data, not
+     * when the stream is merely connected (RESEARCH "PulseAudio Research
+     * Summary"). Firing it here was premature relative to real PA and
+     * (per the debug session) not what Soloist's worker-thread/uncork
+     * logic expects. */
     return 0;
 }
 
 int pa_stream_disconnect(pa_stream *s) {
+    if (g_debug_trace) fprintf(stderr, "[fakepulse] pa_stream_disconnect(stream=%p)\n", (void *)s);
+    TRACE2("pa_stream_disconnect(stream=%p)", (void *)s);
     if (!s) {
         return -1;
     }
@@ -1166,17 +1542,29 @@ int pa_stream_disconnect(pa_stream *s) {
 }
 
 uint32_t pa_stream_get_index(const pa_stream *s) {
-    return s ? s->index : 0;
+    uint32_t idx = s ? s->index : 0;
+    TRACE2("pa_stream_get_index(stream=%p) -> %u", (const void *)s, idx);
+    return idx;
 }
 
 int pa_stream_is_corked(pa_stream *s) {
-    return s ? s->corked : 0;
+    int corked = s ? s->corked : 0;
+    TRACE2("pa_stream_is_corked(stream=%p) -> %d", (void *)s, corked);
+    return corked;
 }
 
 pa_operation *pa_stream_cork(pa_stream *s, int b, pa_stream_success_cb_t cb, void *userdata) {
     if (s) {
+        int before = s->corked;
         s->corked = b ? 1 : 0;
-        if (g_debug_trace) fprintf(stderr, "[fakepulse] pa_stream_cork(%d)\n", b);
+        if (g_debug_trace) fprintf(stderr, "[fakepulse] pa_stream_cork(stream=%p, b=%d)\n", (void *)s, b);
+        /* Timestamped transition (DIAG, fakepulse-timing-buffer): the
+         * user's key open question is what condition Soloist waits on to
+         * uncork -- knowing the exact wall-clock moment of every cork(0)/
+         * cork(1) call, correlated against the TIMING trace above and an
+         * external strace capture, is the load-bearing data point here. */
+        TRACE2("pa_stream_cork(stream=%p, requested=%d) corked %d -> %d, cb=%p",
+               (void *)s, b, before, s->corked, (void *)cb);
     }
     if (cb) {
         cb(s, 1, userdata);
@@ -1185,12 +1573,14 @@ pa_operation *pa_stream_cork(pa_stream *s, int b, pa_stream_success_cb_t cb, voi
 }
 
 pa_operation *pa_stream_flush(pa_stream *s, pa_stream_success_cb_t cb, void *userdata) {
+    if (g_debug_trace) fprintf(stderr, "[fakepulse] pa_stream_flush(stream=%p)\n", (void *)s);
+    TRACE2("pa_stream_flush(stream=%p, cb=%p)", (void *)s, (void *)cb);
     if (s && g_http_mode) {
         /* HTTP mode only (D-04): the non-HTTP path forwards bytes to the
          * output FD synchronously, so there is nothing buffered to flush
          * there -- keep that path's existing no-op behavior unchanged. */
         _ring_flush(&g_ring);
-        _stream_refresh_timing(s);
+        _stream_refresh_timing(s, "flush");
     }
     if (cb) {
         cb(s, 1, userdata);
@@ -1199,8 +1589,9 @@ pa_operation *pa_stream_flush(pa_stream *s, pa_stream_success_cb_t cb, void *use
 }
 
 pa_operation *pa_stream_update_timing_info(pa_stream *s, pa_stream_success_cb_t cb, void *userdata) {
+    TRACE2("pa_stream_update_timing_info(stream=%p, cb=%p)", (void *)s, (void *)cb);
     if (s) {
-        _stream_refresh_timing(s);
+        _stream_refresh_timing(s, "update_timing_info");
     }
     if (cb) {
         cb(s, 1, userdata);
@@ -1209,10 +1600,11 @@ pa_operation *pa_stream_update_timing_info(pa_stream *s, pa_stream_success_cb_t 
 }
 
 const pa_timing_info *pa_stream_get_timing_info(pa_stream *s) {
+    TRACE2("pa_stream_get_timing_info(stream=%p)", (void *)s);
     if (!s) {
         return NULL;
     }
-    _stream_refresh_timing(s);
+    _stream_refresh_timing(s, "get_timing_info");
     return &s->timing;
 }
 
@@ -1220,15 +1612,24 @@ size_t pa_stream_writable_size(const pa_stream *s) {
     (void)s;
     if (g_http_mode) {
         /* Bounded pacing signal (D-04) -- free ring space, fixes the
-         * constant-65536 decode-ahead of RESEARCH Pitfall 5. */
+         * constant-65536 decode-ahead of RESEARCH Pitfall 5. DIAG
+         * (fakepulse-timing-buffer): this was completely UNTRACED before
+         * -- explicitly the top candidate for the uncork readiness gate
+         * per the user's hypothesis list, since a real client commonly
+         * treats "writable_size >= tlength" (or some fraction of it) as
+         * its own "ready to consider itself playing" signal. */
         pthread_mutex_lock(&g_ring.lock);
         size_t freeSpace = g_ring.capacity - g_ring.fill;
+        size_t fillNow = g_ring.fill;
         pthread_mutex_unlock(&g_ring.lock);
+        TRACE2("pa_stream_writable_size(stream=%p) -> %zu (ring fill=%zu / capacity=%d)",
+               (const void *)s, freeSpace, fillNow, RING_CAPACITY);
         return freeSpace;
     }
     /* Generous, constant "always ready" size -- this stub forwards
      * every write to the output FD synchronously, so Soloist never
      * needs to throttle against a real ring buffer. */
+    TRACE2("pa_stream_writable_size(stream=%p) -> 65536 (non-HTTP mode, constant)", (const void *)s);
     return 65536;
 }
 
@@ -1244,10 +1645,28 @@ int pa_stream_write(pa_stream *s, const void *data, size_t nbytes,
         _write_trace_count++;
         if (_write_trace_count == 5) fprintf(stderr, "[fakepulse] (suppressing further pa_stream_write traces)\n");
     }
+    /* Comprehensive mode: every call, unconditionally (no 5-call cap --
+     * that cap exists only for legacy level-1 log-size hygiene). Includes
+     * corked state at time of write -- directly answers "does Soloist
+     * keep writing audio while still reporting corked=1". */
+    TRACE2("pa_stream_write(stream=%p, nbytes=%zu, offset=%lld, seek=%d, free_cb=%p, corked=%d, bytes_written_before=%lld)",
+           (void *)s, nbytes, (long long)offset, seek, (void *)free_cb,
+           s ? s->corked : -1, s ? (long long)s->bytes_written : -1LL);
     (void)offset;
     (void)seek;
     if (!s || (!data && nbytes > 0)) {
         return -1;
+    }
+
+    /* started_cb fires on the first write, not at connect_playback time
+     * (see pa_stream_connect_playback) -- matches real PulseAudio, where
+     * started_cb fires when the sink actually starts consuming data.
+     * Fire-once: null the pointer immediately after invoking so later
+     * writes on this stream don't re-trigger it. */
+    if (s->started_cb) {
+        TRACE2("pa_stream_write: invoking started_cb(stream=%p) on first write", (void *)s);
+        s->started_cb(s, s->started_userdata);
+        s->started_cb = NULL;
     }
 
     if (data && nbytes > 0) {
@@ -1289,14 +1708,19 @@ int pa_stream_write(pa_stream *s, const void *data, size_t nbytes,
 /* ==================================================================== */
 
 pa_proplist *pa_proplist_new(void) {
-    return calloc(1, sizeof(struct pa_proplist));
+    pa_proplist *p = calloc(1, sizeof(struct pa_proplist));
+    TRACE2("pa_proplist_new() -> %p", (void *)p);
+    return p;
 }
 
 void pa_proplist_free(pa_proplist *p) {
+    TRACE2("pa_proplist_free(proplist=%p)", (void *)p);
     free(p);
 }
 
 int pa_proplist_sets(pa_proplist *p, const char *key, const char *value) {
+    TRACE2("pa_proplist_sets(proplist=%p, key=%s, value=%s)", (void *)p,
+           key ? key : "(null)", value ? value : "(null)");
     (void)p;
     (void)key;
     (void)value;
@@ -1309,6 +1733,7 @@ int pa_proplist_sets(pa_proplist *p, const char *key, const char *value) {
 
 pa_volume_t pa_cvolume_avg(const pa_cvolume *a) {
     if (!a || a->channels == 0) {
+        TRACE2("pa_cvolume_avg(cvolume=%p) -> 0 (null/no channels)", (const void *)a);
         return 0;
     }
     uint64_t sum = 0;
@@ -1316,10 +1741,13 @@ pa_volume_t pa_cvolume_avg(const pa_cvolume *a) {
     for (unsigned i = 0; i < n; i++) {
         sum += a->values[i];
     }
-    return (pa_volume_t)(sum / n);
+    pa_volume_t avg = (pa_volume_t)(sum / n);
+    TRACE2("pa_cvolume_avg(cvolume=%p, channels=%u) -> %u", (const void *)a, a->channels, avg);
+    return avg;
 }
 
 pa_cvolume *pa_cvolume_set(pa_cvolume *a, unsigned channels, pa_volume_t v) {
+    TRACE2("pa_cvolume_set(cvolume=%p, channels=%u, v=%u)", (void *)a, channels, v);
     if (!a) {
         return NULL;
     }
@@ -1339,6 +1767,8 @@ pa_cvolume *pa_cvolume_set(pa_cvolume *a, unsigned channels, pa_volume_t v) {
 
 struct timeval *pa_gettimeofday(struct timeval *tv) {
     gettimeofday(tv, NULL);
+    TRACE2("pa_gettimeofday(tv=%p) -> %ld.%06ld", (void *)tv,
+           tv ? (long)tv->tv_sec : -1L, tv ? (long)tv->tv_usec : -1L);
     return tv;
 }
 
@@ -1349,11 +1779,14 @@ pa_usec_t pa_timeval_diff(const struct timeval *a, const struct timeval *b) {
     int64_t secDiff = (int64_t)a->tv_sec - (int64_t)b->tv_sec;
     int64_t usecDiff = (int64_t)a->tv_usec - (int64_t)b->tv_usec;
     int64_t total = secDiff * 1000000 + usecDiff;
-    return total < 0 ? 0 : (pa_usec_t)total;
+    pa_usec_t result = total < 0 ? 0 : (pa_usec_t)total;
+    TRACE2("pa_timeval_diff(a=%p, b=%p) -> %llu usec", (const void *)a, (const void *)b, (unsigned long long)result);
+    return result;
 }
 
 size_t pa_usec_to_bytes(pa_usec_t t, const pa_sample_spec *spec) {
     if (!spec || spec->rate == 0) {
+        TRACE2("pa_usec_to_bytes(t=%llu, spec=%p) -> 0 (null spec or rate=0)", (unsigned long long)t, (const void *)spec);
         return 0;
     }
     /* Soloist's only output format is S32LE (4 bytes/sample, per
@@ -1361,7 +1794,9 @@ size_t pa_usec_to_bytes(pa_usec_t t, const pa_sample_spec *spec) {
      * since this stub only ever needs to support that one format. */
     size_t frameSize = (size_t)spec->channels * 4;
     long double bytes = ((long double)t * spec->rate / 1000000.0L) * frameSize;
-    return (size_t)bytes;
+    size_t result = (size_t)bytes;
+    TRACE2("pa_usec_to_bytes(t=%llu, rate=%u, channels=%u) -> %zu", (unsigned long long)t, spec->rate, spec->channels, result);
+    return result;
 }
 
 /* ==================================================================== */
@@ -1369,6 +1804,7 @@ size_t pa_usec_to_bytes(pa_usec_t t, const pa_sample_spec *spec) {
 /* ==================================================================== */
 
 const char *pa_strerror(int error) {
+    TRACE2("pa_strerror(error=%d)", error);
     (void)error;
     return "fake-libpulse: no error (stub, D-06)";
 }
