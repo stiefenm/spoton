@@ -407,6 +407,31 @@ static size_t _ring_pop_timed(ring_buffer_t *r, unsigned char *out, size_t maxle
     return chunk;
 }
 
+/* Discards all bytes currently buffered in the ring (D-04, UAT gap 3).
+ *
+ * Soloist calls pa_stream_flush() when it discards buffered audio on an
+ * app-side skip/seek. Before this fix the stub only invoked the success
+ * callback -- the ring itself was untouched, so up to RING_CAPACITY
+ * (~4.0s) of stale prior-track PCM kept draining out to the player after
+ * every skip, AND _stream_refresh_timing()'s read_index (write_index
+ * minus ring fill) stayed inflated by that same stale fill, making
+ * Soloist's cluster-reported position -- the Spotify app's progress bar
+ * -- sit near zero for the first few seconds of the new track while the
+ * old audio was still audible. Resetting tail=head and fill=0 here drops
+ * the stale bytes instantly and lets read_index catch up to write_index
+ * on the very next timing refresh. Broadcasting space_avail wakes any
+ * pa_stream_write() blocked in _ring_push() waiting for room (the
+ * client-connected backpressure path) so the producer can resume
+ * immediately with fresh audio instead of waiting for the (now
+ * nonexistent) backlog to drain. */
+static void _ring_flush(ring_buffer_t *r) {
+    pthread_mutex_lock(&r->lock);
+    r->tail = r->head;
+    r->fill = 0;
+    pthread_cond_broadcast(&r->space_avail);
+    pthread_mutex_unlock(&r->lock);
+}
+
 /* Converts already-decoded samples to S16LE per the stream's captured
  * sample_spec.format and pushes the result into the ring:
  *   FLOAT32LE -> s16 = (int16_t)lrintf(clamp(f, -1, 1) * 32767.0f)
@@ -1152,6 +1177,13 @@ pa_operation *pa_stream_cork(pa_stream *s, int b, pa_stream_success_cb_t cb, voi
 }
 
 pa_operation *pa_stream_flush(pa_stream *s, pa_stream_success_cb_t cb, void *userdata) {
+    if (s && g_http_mode) {
+        /* HTTP mode only (D-04): the non-HTTP path forwards bytes to the
+         * output FD synchronously, so there is nothing buffered to flush
+         * there -- keep that path's existing no-op behavior unchanged. */
+        _ring_flush(&g_ring);
+        _stream_refresh_timing(s);
+    }
     if (cb) {
         cb(s, 1, userdata);
     }
