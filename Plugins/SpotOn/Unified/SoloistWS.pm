@@ -307,6 +307,20 @@ sub sendCommand {
 		return 0;
 	}
 
+	# 73-05 (D-06): coerce known numeric params to fresh IVs before to_json.
+	# A scalar that has ever been used in string context (e.g. interpolated
+	# into a DIAG log line upstream) can be serialized as a quoted JSON
+	# string by a JSON encoder that prefers a cached PV over IOK -- the
+	# daemon rejects a quoted position_ms with "invalid JSON or missing
+	# required fields" (UAT gap 2, live-verified against the soloist WS
+	# port). Single choke point here covers Connect.pm's Connect-seek path
+	# AND _bufferedBrowseSeek's browse-seek path. Do NOT apply this to the
+	# `enabled` scalar-ref booleans (\1/\0) used elsewhere in this module --
+	# int() must only ever touch position_ms and volume.
+	for my $numericParam (qw(position_ms volume)) {
+		$params{$numericParam} = int($params{$numericParam}) if defined $params{$numericParam};
+	}
+
 	my $client = $self->_client;
 	unless ($client && $self->connected) {
 		main::DEBUGLOG && $log->is_debug && $log->debug(
@@ -366,6 +380,17 @@ sub sendShuffle {
 # runs inside the single LMS process. Dispatches on $msg->{type}.
 sub _onMessage {
 	my ($self, $json_text) = @_;
+
+	# 73-05 (D-05): the vendored Protocol::WebSocket::Frame::next dispatches
+	# Encode::decode('UTF-8', $bytes) -- a decoded CHARACTER string -- while
+	# from_json (JSON::XS::decode_json via VersionOneAndTwo) always expects
+	# UTF-8 OCTETS. Without this bridge, every frame containing non-ASCII
+	# metadata (i.e. every playback_state snapshot with a real track/artist
+	# name) fails decode as "malformed UTF-8 character in JSON string" and is
+	# silently dropped -- the root cause of UAT gap 1 (lastPositionMs never
+	# updates, so resume always starts at 0). utf8::encode/utf8::is_utf8 are
+	# Perl core (no new imports, Windows-safe).
+	utf8::encode($json_text) if utf8::is_utf8($json_text);
 
 	my $msg = eval { from_json($json_text) };
 	if ($@ || ref($msg) ne 'HASH') {
