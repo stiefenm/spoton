@@ -835,16 +835,18 @@ static void _stream_refresh_timing(pa_stream *s) {
     s->timing.playing = s->corked ? 0 : 1;
 
     if (g_http_mode) {
-        /* Position soloist reports tracks what has actually left
-         * toward the player (bounded ring depth), limiting
-         * position_sync drift (RESEARCH Pitfall 5) -- unlike the
-         * non-HTTP path, read_index lags write_index by the ring's
-         * current fill. */
+        /* Ring stores S16LE (2 bytes/sample); bytes_written counts
+         * input-format bytes. Scale fill back to input units so the
+         * subtraction is consistent — without this, read_index is
+         * too high and Soloist computes zero elapsed time. */
+        int input_bps = 4; /* FLOAT32LE / S32LE */
+        if (s->sample_spec.format == PA_SAMPLE_S16LE) input_bps = 2;
         pthread_mutex_lock(&g_ring.lock);
         int64_t fill = (int64_t)g_ring.fill;
         pthread_mutex_unlock(&g_ring.lock);
+        int64_t fill_input = fill * input_bps / 2;
         s->timing.write_index = s->bytes_written;
-        s->timing.read_index = s->bytes_written - fill;
+        s->timing.read_index = s->bytes_written - fill_input;
     } else {
         /* No real sink buffer to lag behind -- report the write index
          * as already fully drained (read == write) since bytes handed
