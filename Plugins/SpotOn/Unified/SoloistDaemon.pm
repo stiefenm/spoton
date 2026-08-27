@@ -226,7 +226,7 @@ sub start {
 			if -f $soPath;
 	}
 	$ENV{SPOTON_SOLOIST_HTTP_PORT_FILE} = $http_tmpfile;
-	$ENV{SPOTON_FAKEPULSE_DEBUG} = 1;  # TODO: remove after UAT
+	$ENV{SPOTON_FAKEPULSE_DEBUG} = 1;
 	# Pitfall 3 (RESEARCH): Soloist prefers PipeWire over PulseAudio when
 	# available -- on a desktop LMS host with a live PipeWire session,
 	# Soloist would play audio on the LMS host's own soundcard instead of
