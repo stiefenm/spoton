@@ -100,7 +100,11 @@ sub removeRead { push @REMOVE_READ, $_[0]; }
 1;
 END
 
-# CI has no XS JSON -- delegate to core JSON::PP.
+# CI has no XS JSON -- delegate to core JSON::PP. 73-05 (D-05): from_json uses
+# ->utf8(1) so the stub mirrors production octet semantics (JSON::XS's
+# decode_json ALWAYS expects UTF-8 octets and dies on a UTF8-flagged
+# character string containing non-ASCII text -- a plain ->decode would mask
+# that behavior and let a broken _onMessage pass this harness).
 write_stub($stub_dir, 'JSON::XS::VersionOneAndTwo', <<'END');
 package JSON::XS::VersionOneAndTwo;
 sub import {
@@ -113,7 +117,7 @@ sub import {
     };
     *{"${caller}::from_json"} = sub {
         require JSON::PP;
-        return JSON::PP->new->decode($_[0]);
+        return JSON::PP->new->utf8(1)->decode($_[0]);
     };
 }
 1;

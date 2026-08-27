@@ -100,7 +100,11 @@ sub removeRead { push @REMOVE_READ, $_[0]; }
 1;
 END
 
-# CI has no XS JSON -- delegate to core JSON::PP.
+# CI has no XS JSON -- delegate to core JSON::PP. 73-05 (D-05): from_json uses
+# ->utf8(1) so the stub mirrors production octet semantics (JSON::XS's
+# decode_json ALWAYS expects UTF-8 octets and dies on a UTF8-flagged
+# character string containing non-ASCII text -- a plain ->decode would mask
+# that behavior and let a broken _onMessage pass this harness).
 write_stub($stub_dir, 'JSON::XS::VersionOneAndTwo', <<'END');
 package JSON::XS::VersionOneAndTwo;
 sub import {
@@ -113,7 +117,7 @@ sub import {
     };
     *{"${caller}::from_json"} = sub {
         require JSON::PP;
-        return JSON::PP->new->decode($_[0]);
+        return JSON::PP->new->utf8(1)->decode($_[0]);
     };
 }
 1;
@@ -1076,6 +1080,85 @@ sub new_ws {
 
     is($ws->browseSeededUri, 'spotify:track:alreadyseeded', "position_sync does not re-seed once a seed is already recorded");
     is(scalar(@{ $fakeClient->{writes} }), 0, "no add_to_queue sent when already seeded");
+}
+
+# ============================================================
+# Phase 73-05 Task 1 (D-05/D-06): wire-format fixes -- inbound
+# character-string JSON, outbound numeric params.
+# ============================================================
+
+# _onMessage fed a UTF8-flagged CHARACTER string (as the vendored
+# Protocol::WebSocket::Frame::next returns -- Encode::decode('UTF-8', ...))
+# containing non-ASCII item metadata parses successfully and updates
+# lastPositionMs. Before the utf8::encode bridge, from_json (octet-mode,
+# mirrored by the stub's ->utf8(1)->decode above) dies on this input and the
+# frame is dropped -- exactly the malformed-JSON-drop bug that stalls
+# lastPositionMs at its pre-pause value (UAT gap 1).
+{
+    local $Slim::Utils::Prefs::FAKE_VALUES{enableSpotifyConnect} = 1;
+    my $ws = new_ws();
+
+    my $item_name = "Caf\x{e9}";
+    my $json_text = qq({"type":"playback_state","item":{"uri":"spotify:track:utf8test","name":"$item_name"},"position":{"position_ms":6112,"speed":1,"timestamp_ms":123},"is_active":true,"status":"playing"});
+    utf8::upgrade($json_text);    # force the utf8 flag ON, matching Frame::next's Encode::decode output
+    ok(utf8::is_utf8($json_text), "test setup: json_text has the utf8 flag set (character-string form)");
+
+    ok(eval { $ws->_onMessage($json_text); 1 },
+        "_onMessage on a UTF8-flagged character string does not die: " . ($@ || ''));
+    is($ws->lastPositionMs, 6112,
+        "_onMessage on character-string input with non-ASCII metadata updates lastPositionMs from position.position_ms");
+}
+
+# Regression: plain-octet input (no utf8 flag -- the pre-existing test
+# shape) still parses exactly as before the fix.
+{
+    my $ws = new_ws();
+    my $json_text = '{"type":"playback_state","item":{"uri":"spotify:track:octettest"},"position":{"position_ms":5000,"speed":1,"timestamp_ms":123},"is_active":true,"status":"playing"}';
+    ok(!utf8::is_utf8($json_text), "test setup: json_text has no utf8 flag (plain octet form)");
+
+    ok(eval { $ws->_onMessage($json_text); 1 },
+        "_onMessage on plain-octet input does not die: " . ($@ || ''));
+    is($ws->lastPositionMs, 5000,
+        "_onMessage on plain-octet input still updates lastPositionMs (no regression)");
+}
+
+# sendCommand(): a position_ms/volume value that arrives already stringified
+# (e.g. threaded through a DIAG log interpolation upstream, a pure PV scalar
+# with no IOK flag -- Devel::Peek-verified reproduction of the dualvar
+# quoting risk JSON encoders exhibit for previously-stringified scalars)
+# must still serialize as a bare JSON number, never a quoted string. The
+# daemon rejects a quoted position_ms with "invalid JSON or missing
+# required fields" (UAT gap 2).
+{
+    my $ws         = new_ws();
+    my $fakeClient = Test::FakeWsClient->new;
+    $ws->_client($fakeClient);
+    $ws->connected(1);
+
+    my $stringifiedPos = sprintf('%d', 145791.4);    # "145791" -- pure string, no IOK
+
+    $ws->sendCommand('seek', position_ms => $stringifiedPos);
+    my $sent = $fakeClient->{writes}[-1];
+    unlike($sent, qr/"position_ms":"145791"/,
+        "sendCommand('seek') does not quote a previously-stringified position_ms");
+    like($sent, qr/"position_ms":145791\b/,
+        "sendCommand('seek') serializes position_ms as a bare number");
+}
+
+{
+    my $ws         = new_ws();
+    my $fakeClient = Test::FakeWsClient->new;
+    $ws->_client($fakeClient);
+    $ws->connected(1);
+
+    my $stringifiedVol = sprintf('%d', 42);    # "42" -- pure string, no IOK
+
+    $ws->sendCommand('set_volume', volume => $stringifiedVol);
+    my $sent = $fakeClient->{writes}[-1];
+    unlike($sent, qr/"volume":"42"/,
+        "sendCommand('set_volume') does not quote a previously-stringified volume");
+    like($sent, qr/"volume":42\b/,
+        "sendCommand('set_volume') serializes volume as a bare number");
 }
 
 done_testing();
