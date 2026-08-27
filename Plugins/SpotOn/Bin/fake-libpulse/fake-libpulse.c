@@ -741,12 +741,20 @@ static void _fake_libpulse_init(void) {
     signal(SIGPIPE, SIG_IGN);
     g_debug_trace = (getenv("SPOTON_FAKEPULSE_DEBUG") != NULL);
 
-    if (g_init_done) {
-        if (g_debug_trace) fprintf(stderr, "[fakepulse] constructor: skipped (already initialized)\n");
+    /* Guard against double-init: LD_PRELOAD + Soloist's own dlopen load
+     * separate .so objects with independent globals, so g_init_done alone
+     * cannot gate. Use an env var as cross-instance IPC within the same
+     * process — setenv is visible to both library images immediately. */
+    char mypid[32];
+    snprintf(mypid, sizeof(mypid), "%d", (int)getpid());
+    const char *already = getenv("__FAKEPULSE_INIT_PID");
+    if (already && strcmp(already, mypid) == 0) {
+        if (g_debug_trace) fprintf(stderr, "[fakepulse] constructor: skipped (already initialized in pid %s)\n", mypid);
         return;
     }
+    setenv("__FAKEPULSE_INIT_PID", mypid, 1);
     g_init_done = 1;
-    if (g_debug_trace) fprintf(stderr, "[fakepulse] constructor: loaded\n");
+    if (g_debug_trace) fprintf(stderr, "[fakepulse] constructor: loaded (pid %s)\n", mypid);
 
     const char *portFileEnv = getenv("SPOTON_SOLOIST_HTTP_PORT_FILE");
     if (portFileEnv && *portFileEnv) {
