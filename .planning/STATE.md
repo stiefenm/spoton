@@ -5,16 +5,16 @@ milestone_name: Soloist Integration
 current_phase: 74
 current_phase_name: spoton-helper Binary
 status: executing
-stopped_at: Completed 74-01-PLAN.md
-last_updated: "2026-08-28T15:46:21.997Z"
+stopped_at: Completed 74-02-PLAN.md
+last_updated: "2026-08-28T16:03:45.676Z"
 last_activity: 2026-08-28
 last_activity_desc: Phase 74 execution started
-state_head: 04f01c4605305d893b75ca93ca01bef695feb586
+state_head: 814efed312f9a56a5cf0486990c9baef3b7113f9
 progress:
   total_phases: 14
   completed_phases: 2
   total_plans: 17
-  completed_plans: 14
+  completed_plans: 15
   percent: 14
 ---
 
@@ -35,7 +35,7 @@ See: .planning/PROJECT.md (updated 2026-06-30)
 ## Current Position
 
 Phase: 74 (spoton-helper Binary) — EXECUTING
-Plan: 2 of 4
+Plan: 3 of 4
 Status: Ready to execute
 Last activity: 2026-08-28 — Phase 74 execution started
 
@@ -111,6 +111,7 @@ Phase 77: [ ] Soloist UAT + Release (Final Proof: kein librespot nötig)
 | Phase 73 P05 | 35min | 2 tasks | 3 files |
 | Phase 73 P06 | 20min | 2 tasks | 2 files |
 | Phase 74 P01 | 20min | 3 tasks | 11 files |
+| Phase 74 P02 | 8min | 2 tasks | 3 files |
 
 ## Deferred Items
 
@@ -274,6 +275,8 @@ Items carried forward from previous milestones:
 - [Phase 73]: SoloistWS.pm D-05/D-06 gap closure: utf8::encode bridge for octet-mode from_json, int() coercion for numeric sendCommand params, sessionPaused-gated resume emission with frozen extrapolation while paused
 - [Phase 74]: spoton-helper Cross.toml scoped to exactly the 3 target arches (x86_64/aarch64/armv7 musl) the plan named, not the 6-target librespot-spoton superset
 - [Phase 74]: tests/fixture.rs uses a minimal hand-rolled Drop-based TempDir instead of an external tempdir crate, keeping spoton-helper's dependency surface at exactly clap/serde_json/sha2/anyhow/thiserror
+- [Phase 74]: Patch patterns: empty public stub table + private build-time injection from stiefenm/spoton-private (Task 1, option b) — no plaintext byte-patterns in public source
+- [Phase 74]: run_core testable-core / thin-wrapper split lets unit tests drive the full safety envelope with a TEST-ONLY pattern table while patch::run keeps its Plan-01 signature
 
 ### Blockers/Concerns
 
@@ -306,8 +309,8 @@ Items carried forward from previous milestones:
 
 **Resume file:** None
 
-**Last session:** 2026-08-28T15:46:21.711Z
-**Stopped at:** Completed 74-01-PLAN.md
+**Last session:** 2026-08-28T16:03:45.389Z
+**Stopped at:** Completed 74-02-PLAN.md
 
 **Completed this session (2026-08-24):**
 

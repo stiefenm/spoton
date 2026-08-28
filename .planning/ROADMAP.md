@@ -522,7 +522,7 @@ Ein-Host-Modell — spclient.spotify.com deckt ALLE Browse/Library-Features:
   Plans:
 
   - [x] 74-01-PLAN.md — Tracer: crate scaffold + clap dispatch + `check` D-08 JSON manifest end-to-end + synthetic fixture harness + 3-arch cross config (D-01/D-07/D-08)
-  - [ ] 74-02-PLAN.md — Patch engine: version-locked per-arch pattern table, fail-closed safety envelope (count-assert + stage/verify/atomic-rename), Lifetime + FLAC24 5/6 gates, compliance-boundary decision + `.sha256` baseline (D-03/D-04/D-05/D-06/D-07)
+  - [x] 74-02-PLAN.md — Patch engine: version-locked per-arch pattern table, fail-closed safety envelope (count-assert + stage/verify/atomic-rename), Lifetime + FLAC24 5/6 gates, compliance-boundary decision + `.sha256` baseline (D-03/D-04/D-05/D-06/D-07)
   - [ ] 74-03-PLAN.md — `protobuf` subcommand: collection/v2 stdin↔stdout decode/encode via pure-Rust codegen (no protoc), package-legitimacy gate, untrusted-input hardening (D-02)
   - [ ] 74-04-PLAN.md — CI `build-spoton-helper` job (3 musl targets, zip fold-in) + Soloist.pm auto-patch wiring (idempotent, fail-open) + t/33 test + CHANGELOG (D-03/D-09)
 
