@@ -5,16 +5,16 @@ milestone_name: Soloist Integration
 current_phase: 74
 current_phase_name: spoton-helper Binary
 status: executing
-stopped_at: Completed 74-02-PLAN.md
-last_updated: "2026-08-28T16:03:45.676Z"
+stopped_at: Completed 74-03-PLAN.md
+last_updated: "2026-08-28T16:43:46.970Z"
 last_activity: 2026-08-28
 last_activity_desc: Phase 74 execution started
-state_head: 814efed312f9a56a5cf0486990c9baef3b7113f9
+state_head: 2f6ec72011179788ce24022db72d1ac1660e1879
 progress:
   total_phases: 14
   completed_phases: 2
   total_plans: 17
-  completed_plans: 15
+  completed_plans: 16
   percent: 14
 ---
 
@@ -35,7 +35,7 @@ See: .planning/PROJECT.md (updated 2026-06-30)
 ## Current Position
 
 Phase: 74 (spoton-helper Binary) — EXECUTING
-Plan: 3 of 4
+Plan: 4 of 4
 Status: Ready to execute
 Last activity: 2026-08-28 — Phase 74 execution started
 
@@ -112,6 +112,7 @@ Phase 77: [ ] Soloist UAT + Release (Final Proof: kein librespot nötig)
 | Phase 73 P06 | 20min | 2 tasks | 2 files |
 | Phase 74 P01 | 20min | 3 tasks | 11 files |
 | Phase 74 P02 | 8min | 2 tasks | 3 files |
+| Phase 74 P03 | 25min | 2 tasks | 16 files |
 
 ## Deferred Items
 
@@ -277,6 +278,8 @@ Items carried forward from previous milestones:
 - [Phase 74]: tests/fixture.rs uses a minimal hand-rolled Drop-based TempDir instead of an external tempdir crate, keeping spoton-helper's dependency surface at exactly clap/serde_json/sha2/anyhow/thiserror
 - [Phase 74]: Patch patterns: empty public stub table + private build-time injection from stiefenm/spoton-private (Task 1, option b) — no plaintext byte-patterns in public source
 - [Phase 74]: run_core testable-core / thin-wrapper split lets unit tests drive the full safety envelope with a TEST-ONLY pattern table while patch::run keeps its Plan-01 signature
+- [Phase 74]: protobuf_cmd.rs: no new crate for JSON mapping — hand-rolled struct->serde_json::Value conversion instead of adding protobuf-json-mapping, to avoid a second package-manager install requiring its own supply-chain checkpoint
+- [Phase 74]: build.rs lists all 12 vendored proto files as .input()s, not just the 4 schema roots — protobuf-codegen .pure() emits super::<module> refs for imported types rather than inlining them
 
 ### Blockers/Concerns
 
@@ -309,8 +312,8 @@ Items carried forward from previous milestones:
 
 **Resume file:** None
 
-**Last session:** 2026-08-28T16:03:45.389Z
-**Stopped at:** Completed 74-02-PLAN.md
+**Last session:** 2026-08-28T16:43:46.689Z
+**Stopped at:** Completed 74-03-PLAN.md
 
 **Completed this session (2026-08-24):**
 
