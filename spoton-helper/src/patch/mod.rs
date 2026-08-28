@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use crate::arch;
 use patterns::{PatchSite, SiteKind};
@@ -135,6 +136,16 @@ fn run_core(
         return Ok(json!({ "status": "unsupported", "arch": detected_arch }));
     }
 
+    // Idempotency (D-03): a re-run against an already-patched binary would
+    // otherwise fail the exact-occurrence assertion below (the `search`
+    // bytes are gone, replaced by `replace`) and be reported as a
+    // count-mismatch error. Detect the already-patched case up front via
+    // the same read-only scan `check` uses, and treat it as a clean no-op.
+    let current_status = scan_status_for_sites(&bytes, sites);
+    if current_status.patched {
+        return Ok(json!({ "status": "already_patched" }));
+    }
+
     // 3. Exact-occurrence assertion -- every site, before any write.
     for site in sites {
         let count = count_occurrences(&bytes, site.search);
@@ -183,12 +194,41 @@ fn run_core(
         });
     }
 
+    // Integrity baseline (D-07): the post-patch SHA256, written as a
+    // sidecar next to the binary. `check --expect-sha` (Plan 01) compares
+    // against a hash the caller (Soloist.pm, Plan 04) reads from here.
+    let sha256 = sha256_hex(&patched_bytes);
+    let sidecar_path = sidecar_path_for(binary);
+    std::fs::write(&sidecar_path, format!("{sha256}\n")).with_context(|| {
+        format!(
+            "failed to write sha256 sidecar {}",
+            sidecar_path.display()
+        )
+    })?;
+
     Ok(json!({
         "status": "patched",
         "lifetime": staged_status.lifetime,
         "flac24_gates": staged_status.flac24_gates,
         "patched": staged_status.patched,
+        "sha256": sha256,
     }))
+}
+
+/// Compute the lowercase-hex SHA256 of `bytes`. Mirrors
+/// `check.rs::compute_sha256`.
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let digest = hasher.finalize();
+    digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// The integrity-baseline sidecar path for `binary`: `<binary>.sha256`.
+fn sidecar_path_for(binary: &Path) -> PathBuf {
+    let mut os = binary.as_os_str().to_owned();
+    os.push(".sha256");
+    PathBuf::from(os)
 }
 
 /// Count non-overlapping-window occurrences of `needle` in `bytes`. An
@@ -263,17 +303,21 @@ fn find_soloist_version(bytes: &[u8]) -> Option<String> {
     String::from_utf8(version_bytes).ok()
 }
 
+/// Shared fixture-building helpers for the `tests` and `idempotent`
+/// `#[cfg(test)]` modules below. Split out so the idempotency test can live
+/// in its own module (`patch::idempotent::...`) -- matching the plan's
+/// `cargo test patch::idempotent` verify filter -- while reusing the same
+/// TEST-ONLY pattern table and fixture writer.
 #[cfg(test)]
-mod tests {
+mod test_support {
     use super::*;
-    use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     // TEST-ONLY pattern table: synthetic search/replace markers, wholly
     // unrelated to the real (privately-injected) Lifetime/FLAC24 patterns.
     // Gate index 3 carries `skip: true`, mirroring the real D-06 Gate 4
     // exclusion (encoded as data, not a magic index).
-    static TEST_SITES: &[PatchSite] = &[
+    pub(super) static TEST_SITES: &[PatchSite] = &[
         PatchSite {
             name: "lifetime",
             kind: SiteKind::Lifetime,
@@ -332,16 +376,16 @@ mod tests {
         },
     ];
 
-    fn test_sites_for(_arch: &str) -> &'static [PatchSite] {
+    pub(super) fn test_sites_for(_arch: &str) -> &'static [PatchSite] {
         TEST_SITES
     }
 
-    const LOCKED_VERSION: &str = "1.3.7.489";
+    pub(super) const LOCKED_VERSION: &str = "1.3.7.489";
 
     /// Build a synthetic ELF fixture (aarch64, like tests/fixture.rs) with
     /// an embedded Soloist version marker and, optionally, one occurrence
     /// of every TEST_SITES search pattern.
-    fn write_fixture(dir: &Path, version: Option<&str>, include_sites: bool) -> PathBuf {
+    pub(super) fn write_fixture(dir: &Path, version: Option<&str>, include_sites: bool) -> PathBuf {
         let mut bytes = Vec::new();
         // e_ident: magic + 64-bit + little-endian + version 1 + padding.
         bytes.extend_from_slice(&[0x7f, b'E', b'L', b'F', 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
@@ -371,7 +415,7 @@ mod tests {
         path
     }
 
-    fn tempdir() -> PathBuf {
+    pub(super) fn tempdir() -> PathBuf {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
         let pid = std::process::id();
@@ -379,6 +423,12 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("create tempdir");
         dir
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::test_support::{tempdir, test_sites_for, write_fixture, LOCKED_VERSION, TEST_SITES};
 
     #[test]
     fn full_patch_applies_lifetime_and_five_gates() {
@@ -467,5 +517,48 @@ mod tests {
         assert!(status.lifetime);
         assert_eq!(status.flac24_gates, [true, true, true, false, true, true]);
         assert!(status.patched);
+    }
+}
+
+/// Idempotency: re-running `patch` against an already-patched binary must
+/// be a clean, non-destructive no-op (D-03). Kept as its own module (not
+/// nested under `tests`) so the fully-qualified test path is
+/// `patch::idempotent::...`, matching the plan's `cargo test
+/// patch::idempotent` verify filter.
+#[cfg(test)]
+mod idempotent {
+    use super::*;
+    use super::test_support::{test_sites_for, tempdir, write_fixture, LOCKED_VERSION};
+
+    #[test]
+    fn rerun_on_already_patched_binary() {
+        let dir = tempdir();
+        let fixture = write_fixture(&dir, Some(LOCKED_VERSION), true);
+
+        let first = run_core(LOCKED_VERSION, &fixture, test_sites_for).expect("first patch succeeds");
+        assert_eq!(first["status"], "patched");
+
+        let sidecar_path = sidecar_path_for(&fixture);
+        let sidecar_hash = std::fs::read_to_string(&sidecar_path).expect("sidecar exists");
+        let sidecar_hash = sidecar_hash.trim();
+        assert_eq!(sidecar_hash.len(), 64, "sidecar must contain a 64-char hex line");
+        assert!(
+            sidecar_hash.chars().all(|c| c.is_ascii_hexdigit()),
+            "sidecar must be hex: {sidecar_hash}"
+        );
+
+        let patched_bytes = std::fs::read(&fixture).unwrap();
+        assert_eq!(
+            sidecar_hash,
+            sha256_hex(&patched_bytes),
+            "sidecar hash must match the patched binary's SHA256"
+        );
+
+        // Re-run against the now-patched binary: idempotent no-op.
+        let second = run_core(LOCKED_VERSION, &fixture, test_sites_for).expect("re-run does not error");
+        assert_eq!(second["status"], "already_patched");
+
+        let after_bytes = std::fs::read(&fixture).unwrap();
+        assert_eq!(after_bytes, patched_bytes, "re-run must not modify an already-patched binary");
     }
 }
