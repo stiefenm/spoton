@@ -6,7 +6,7 @@
 //! `crate::patch::scan_status` -- Wave 2 fills patch scanning without this
 //! file changing (RESEARCH.md key_links).
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::path::Path;
@@ -41,6 +41,19 @@ pub fn run(binary: &Path, expect_sha: Option<String>) -> Result<()> {
 
     if let Some(expected) = expect_sha {
         let matches = expected.eq_ignore_ascii_case(&sha256);
+
+        // WR-06: a SHA mismatch is the one condition an integrity check
+        // most needs to surface via exit status. Returning an error here
+        // (rather than printing "sha_matches": false and exiting 0) routes
+        // through main.rs's existing error path -- a single JSON "error"
+        // line and a non-zero exit -- so a caller that only checks exit
+        // status (the natural shell idiom, and how Soloist.pm's
+        // _runHelperJson slurps + parses exactly one JSON object) still
+        // notices, instead of needing to parse and check `sha_matches`.
+        if !matches {
+            bail!("sha256 mismatch: expected {expected}, computed {sha256}");
+        }
+
         obj["sha_matches"] = json!(matches);
     }
 
