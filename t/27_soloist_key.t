@@ -138,6 +138,19 @@ sub get { }
 1;
 END
 
+# Phase 74: Soloist.pm now `use`s JSON::XS::VersionOneAndTwo (auto-patch
+# JSON parsing) -- stub it so `require Plugins::SpotOn::Soloist` still
+# loads in this sandbox (delegates to JSON::PP, mirrors t/07/t/09/etc.).
+write_stub($stub_dir, 'JSON::XS::VersionOneAndTwo', <<'END');
+package JSON::XS::VersionOneAndTwo;
+use parent 'Exporter';
+our @EXPORT = qw(from_json to_json);
+use JSON::PP ();
+sub from_json { JSON::PP::decode_json($_[0]) }
+sub to_json   { JSON::PP::encode_json($_[0]) }
+1;
+END
+
 # ============================================================
 # main:: constants
 # ============================================================

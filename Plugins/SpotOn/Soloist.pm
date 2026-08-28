@@ -28,6 +28,7 @@ use strict;
 use warnings;
 use File::Spec::Functions qw(catdir catfile);
 use File::Temp ();
+use JSON::XS::VersionOneAndTwo;
 
 use Slim::Utils::Log;
 use Slim::Utils::OSDetect;
@@ -309,6 +310,9 @@ sub _onSoloistDownloadDone {
         $binary = $canonical;
         main::INFOLOG && $log->is_info && $log->info(
             "Soloist: binary activated, version " . ($version || '?'));
+
+        # D-03: patch only an activated, version-matched binary.
+        _autoPatch($canonical);
     } else {
         $log->warn("Soloist: downloaded binary failed version check -- not activated (fail-closed)");
     }
@@ -335,6 +339,89 @@ sub _findExtractedBinary {
     }, $dir);
 
     return $found;
+}
+
+# ---------------------------------------------------------------------------
+# Auto-patch (Phase 74, D-03) -- runs spoton-helper exactly once after a
+# successful, version-matched download+activation. Idempotent (probes
+# `check` first, mirroring Helper.pm's --check JSON-consumption pattern) and
+# fail-open: any failure to complete the patch leaves Soloist running
+# unpatched with a warning, never blocking core playback (T-74-10). The raw
+# spak-key is never involved here and binary contents are never logged.
+# ---------------------------------------------------------------------------
+
+# _helperPath() -- basedir/Bin/<bindir>/spoton-helper, exactly the pattern
+# libPath() uses for the fake-libpulse dir (same @ARCH_MAP bindir value,
+# same runtime require to avoid the Plugin.pm <-> Soloist.pm compile-time
+# cycle -- WR-05). Returns undef when the arch is unknown or the helper
+# binary is absent/non-executable -- callers treat that as "nothing to do".
+sub _helperPath {
+    my $archInfo = _arch();
+    return undef unless $archInfo;
+
+    require Plugins::SpotOn::Plugin;
+    my $candidate = catfile(
+        Plugins::SpotOn::Plugin->_pluginDataFor('basedir'), 'Bin', $archInfo->{bindir}, 'spoton-helper'
+    );
+
+    return (-f $candidate && -x $candidate) ? $candidate : undef;
+}
+
+# _runHelperJson($helper, @args) -- array-form open('-|', ...), never an
+# interpolated shell string (T-74-09 -- the project's raw spak-key
+# discipline extends to any subprocess invocation, contrast
+# Helper.pm::helperCheck()'s pre-existing backtick debt, which this module
+# deliberately does not repeat). Returns the decoded JSON hashref on
+# success, or undef on any failure (missing binary, unparsable/empty
+# output, malformed JSON) -- never dies.
+sub _runHelperJson {
+    my ($helper, @args) = @_;
+
+    my $output = '';
+    my $ok = eval {
+        open(my $fh, '-|', $helper, @args) or die "open failed: $!\n";
+        local $/;
+        $output = <$fh> // '';
+        close($fh);
+        1;
+    };
+
+    unless ($ok) {
+        $log->warn("Soloist: spoton-helper invocation failed: $@");
+        return undef;
+    }
+
+    return undef unless length $output;
+
+    my $decoded = eval { from_json($output) };
+    return ($decoded && ref($decoded) eq 'HASH') ? $decoded : undef;
+}
+
+# _autoPatch($soloistPath) -- D-03: patch a freshly activated, version-
+# matched Soloist binary exactly once. Never dies; on any incomplete/failed
+# patch, Soloist keeps running unpatched with a warning (fail-open, T-74-10).
+# T-74-11: only ever called with an already version-matched, activated
+# binary path (see _onSoloistDownloadDone) -- the helper re-gates on version
+# internally as a second line of defense.
+sub _autoPatch {
+    my ($soloistPath) = @_;
+
+    my $helper = _helperPath() or return;    # no helper shipped for this arch -- nothing to do
+
+    # 1. Idempotency probe (D-03): skip if already patched.
+    my $status = _runHelperJson($helper, 'check', '--binary', $soloistPath);
+    return if $status && $status->{patched};
+
+    # 2. Patch (version-gated inside the helper too, T-74-11).
+    my $result = _runHelperJson($helper, 'patch',
+        '--version', SOLOIST_VERSION, '--binary', $soloistPath);
+
+    unless ($result && $result->{patched}) {
+        # Non-fatal: Soloist still runs unpatched (fail-open for core playback).
+        $log->warn("Soloist: auto-patch did not complete -- running unpatched");
+    }
+
+    return;
 }
 
 # ---------------------------------------------------------------------------
