@@ -177,7 +177,37 @@ fn run_core(
         replace_all(&mut patched_bytes, site.search, site.replace);
     }
 
-    // 5. Self-verify the staged bytes before they ever touch disk.
+    // 5. Re-assert each non-skip site individually (WR-03): the exact-
+    // occurrence assertion in step 3 was checked against the ORIGINAL
+    // `bytes`, but replacements are applied sequentially into the shared
+    // `patched_bytes` buffer -- if one site's `replace` introduced or
+    // destroyed another site's `search` pattern, the later replacement
+    // would have operated on a different reality than was asserted. Catch
+    // that here by requiring each non-skip site's `search` to now occur
+    // zero times and its `replace` to occur exactly `expect_count` times.
+    for site in sites {
+        if site.skip {
+            continue;
+        }
+        let remaining_search = count_occurrences(&patched_bytes, site.search);
+        if remaining_search != 0 {
+            bail!(
+                "post-apply re-validation failed for site {name:?}: {remaining} occurrence(s) of the search pattern remain -- refusing to write",
+                name = site.name,
+                remaining = remaining_search,
+            );
+        }
+        let replace_count = count_occurrences(&patched_bytes, site.replace);
+        if replace_count != site.expect_count {
+            bail!(
+                "post-apply re-validation failed for site {name:?}: expected {expected} occurrence(s) of the replacement, found {replace_count} -- refusing to write",
+                name = site.name,
+                expected = site.expect_count,
+            );
+        }
+    }
+
+    // 6. Self-verify the staged bytes before they ever touch disk.
     let staged_status = scan_status_for_sites(&patched_bytes, sites);
     if !staged_status.patched {
         bail!("post-patch self-verification failed: staged bytes do not report a patched state");
@@ -240,13 +270,29 @@ fn sidecar_path_for(binary: &Path) -> PathBuf {
     PathBuf::from(os)
 }
 
-/// Count non-overlapping-window occurrences of `needle` in `bytes`. An
-/// empty needle never "occurs" -- avoids a degenerate always-true count.
+/// Count non-overlapping occurrences of `needle` in `bytes`, advancing the
+/// scan position by `needle.len()` on every match. WR-03: this must use the
+/// same non-overlapping strategy `replace_all` uses below -- the previous
+/// implementation counted overlapping `.windows()` matches (despite this doc
+/// comment already claiming "non-overlapping"), so for a self-overlapping
+/// `search`/`replace` pattern the exact-occurrence gate could pass while
+/// `replace_all` actually rewrote a different number of sites. An empty
+/// needle never "occurs" -- avoids a degenerate always-true count.
 fn count_occurrences(bytes: &[u8], needle: &[u8]) -> usize {
     if needle.is_empty() || bytes.len() < needle.len() {
         return 0;
     }
-    bytes.windows(needle.len()).filter(|w| *w == needle).count()
+    let mut count = 0;
+    let mut i = 0;
+    while i + needle.len() <= bytes.len() {
+        if &bytes[i..i + needle.len()] == needle {
+            count += 1;
+            i += needle.len();
+        } else {
+            i += 1;
+        }
+    }
+    count
 }
 
 /// Replace every occurrence of `search` with `replace` in `bytes`,
