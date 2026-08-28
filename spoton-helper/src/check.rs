@@ -57,22 +57,35 @@ fn compute_sha256(bytes: &[u8]) -> String {
 
 /// Scan `bytes` for `soloist <dotted-version>` and return the dotted
 /// version string, or `None` if no such marker is present.
+///
+/// WR-01: a multi-MB binary can plausibly contain the marker bytes more
+/// than once (help/usage text, user-agent strings, symbol names) before
+/// the real version banner. Stopping at the first occurrence risks
+/// rejecting a valid version when an earlier false-positive marker isn't
+/// followed by a dotted number, so every marker position is tried in
+/// order until one yields a dotted-numeric version.
 fn find_soloist_version(bytes: &[u8]) -> Option<String> {
     let marker_len = VERSION_MARKER.len();
-    let pos = bytes
-        .windows(marker_len)
-        .position(|window| window == VERSION_MARKER)?;
+    let mut start = 0;
 
-    let rest = &bytes[pos + marker_len..];
-    let version_bytes: Vec<u8> = rest
-        .iter()
-        .copied()
-        .take_while(|&b| b.is_ascii_digit() || b == b'.')
-        .collect();
+    while start + marker_len <= bytes.len() {
+        let rel = bytes[start..]
+            .windows(marker_len)
+            .position(|window| window == VERSION_MARKER)?;
+        let after = start + rel + marker_len;
 
-    if version_bytes.is_empty() || !version_bytes.contains(&b'.') {
-        return None;
+        let version_bytes: Vec<u8> = bytes[after..]
+            .iter()
+            .copied()
+            .take_while(|&b| b.is_ascii_digit() || b == b'.')
+            .collect();
+
+        if !version_bytes.is_empty() && version_bytes.contains(&b'.') {
+            return String::from_utf8(version_bytes).ok();
+        }
+
+        start = after; // keep scanning past this false match
     }
 
-    String::from_utf8(version_bytes).ok()
+    None
 }
