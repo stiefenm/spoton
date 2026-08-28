@@ -4,12 +4,12 @@ milestone: v4.0
 milestone_name: Soloist Integration
 current_phase: 73
 current_phase_name: Soloist Connect Mode
-status: verifying
-stopped_at: Completed quick task 260827-of9 (Soloist Connect skip stream-reconnect fix; live-verified metadata fixed, audio-level ~8s gap deferred as follow-up)
-last_updated: "2026-08-27T15:54:39.961Z"
-last_activity: 2026-08-27
-last_activity_desc: Completed quick task 260827-jqa - Fix position-drift on Connect device transfer-away/back
-state_head: 6c40526340f0cbd1ef59d032f37223512a01bf87
+status: done
+stopped_at: Phase 74 context gathered
+last_updated: "2026-08-28T14:28:27.715Z"
+last_activity: 2026-08-28
+last_activity_desc: Spike 008 completed — KDF reversed, Block-Cipher identified, Credential inkompatibel, spclient-Browse als nächster Pfad
+state_head: 278c0f908812c0d843f4fea9787083cd356398d7
 progress:
   total_phases: 14
   completed_phases: 2
@@ -30,24 +30,26 @@ See: .planning/PROJECT.md (updated 2026-06-30)
 
 **Core Value:** Reliable Spotify playback and Connect integration on LMS — Browse, stream, and control via Spotify app, without 429 bursts, zombie daemons, or audio glitches.
 
-**Current Focus:** Phase 73 — Soloist Connect Mode
+**Current Focus:** Phase 73 done — Grundsatzfrage offen
 
 ## Current Position
 
-Phase: 73 (Soloist Connect Mode) — EXECUTING
-Plan: 4 of 4
-Status: Phase complete — ready for verification
-Last activity: 2026-08-26 — Completed 73-02 (control-command dispatch, reconnect resync, repeat/shuffle, build-expiry hardening)
+Phase: 73 (Soloist Connect Mode) — DONE
+Plan: 6 of 6 complete + 3 quick-fix sessions
+Status: Completed with Known Limitations (uncork delay ~108s, audio gap ~8s)
+Last activity: 2026-08-28 — Phase 73 abgeschlossen
 
 ## Progress Bar
 
 ```
-v4.0 Soloist Integration: [░░░░░░░░░░░░░░░░░░░░] 0/5 phases (71-75)
-Phase 71: [ ] Soloist Foundation (BYOK, Fake-libpulse, Helper Backend-Switch)
-Phase 72: [ ] Soloist Browse Playback (--single-track, Audio Pipeline)
-Phase 73: [ ] Soloist Connect Mode (WebSocket API, Transfer-Playback)
-Phase 74: [ ] Soloist Polish (Lifetime, 24-Bit, Quality, Per-Player Backend)
-Phase 75: [ ] Soloist UAT + Release (E2E, Platform Tests, v4.0.0)
+v4.0 Soloist Integration: [██████████░░░░░░░░░░░░░░░░░░] 3/7 phases (71-77)
+Phase 71: [x] Soloist Foundation (BYOK, Fake-libpulse, Helper Backend-Switch)
+Phase 72: [x] Soloist Browse Playback (--single-track, Audio Pipeline)
+Phase 73: [x] Soloist Connect Mode (WebSocket API, Transfer-Playback)
+Phase 74: [ ] spoton-helper Binary (Rust: token+daemon+patch+audio)
+Phase 75: [ ] API Unification (Drei-Host-Modell, SpClient.pm, HashSource)
+Phase 76: [ ] Soloist UX Polish (Quality, Per-Player, Pairing, Diagnostics)
+Phase 77: [ ] Soloist UAT + Release (Final Proof: kein librespot nötig)
 ```
 
 <details>
@@ -299,10 +301,10 @@ Items carried forward from previous milestones:
 
 ## Session Continuity
 
-**Resume file:** None
+**Resume file:** .planning/phases/74-spoton-helper-binary/74-CONTEXT.md
 
-**Last session:** 2026-08-27T15:54:38.955Z
-**Stopped at:** Completed quick task 260827-of9 (Soloist Connect skip stream-reconnect fix; live-verified metadata fixed, audio-level ~8s gap deferred as follow-up)
+**Last session:** 2026-08-28T14:28:27.424Z
+**Stopped at:** Phase 74 context gathered
 
 **Completed this session (2026-08-24):**
 
