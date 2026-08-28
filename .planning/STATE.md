@@ -5,11 +5,11 @@ milestone_name: Soloist Integration
 current_phase: 75
 current_phase_name: api unification (spclient modell)
 status: planning
-stopped_at: Phase 74 complete, ready to plan Phase 75
-last_updated: "2026-08-28T17:04:34.317Z"
+stopped_at: Phase 75 context gathered
+last_updated: "2026-08-28T21:39:09.344Z"
 last_activity: 2026-08-28
 last_activity_desc: Phase 74 complete, transitioned to Phase 75
-state_head: f76fbfe6434ca5b8664a97422422d0ac7d1b3425
+state_head: 3b745b1ab00e7c582e348d0a8260514c408fe43a
 progress:
   total_phases: 14
   completed_phases: 3
@@ -315,10 +315,10 @@ Items carried forward from previous milestones:
 
 ## Session Continuity
 
-**Resume file:** None
+**Resume file:** .planning/phases/75-api-unification-spclient-modell/75-CONTEXT.md
 
-**Last session:** 2026-08-28T16:51:40.326Z
-**Stopped at:** Phase 74 complete, ready to plan Phase 75
+**Last session:** 2026-08-28T21:39:08.970Z
+**Stopped at:** Phase 75 context gathered
 
 **Completed this session (2026-08-24):**
 
