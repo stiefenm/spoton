@@ -1,0 +1,22 @@
+# Cross.toml — cross-rs target configuration for spoton-helper
+#
+# Supported targets for LMS plugin deployment (Phase 74 — spoton-helper binary).
+# No image overrides are needed — the default cross-rs images for these musl
+# targets include musl-tools and work with static linking (this binary opens
+# no socket and has no TLS dependency at all).
+#
+# Build commands (run from spoton-helper/ directory):
+#   cross build --release --target x86_64-unknown-linux-musl
+#   cross build --release --target aarch64-unknown-linux-musl
+#   cross build --release --target armv7-unknown-linux-musleabihf
+#
+# Directory mapping (Rust triple -> Plugins/SpotOn/Bin/ subdirectory):
+#   x86_64-unknown-linux-musl      -> x86_64-linux/
+#   aarch64-unknown-linux-musl     -> aarch64-linux/
+#   armv7-unknown-linux-musleabihf -> armhf-linux/
+
+[target.x86_64-unknown-linux-musl]
+
+[target.aarch64-unknown-linux-musl]
+
+[target.armv7-unknown-linux-musleabihf]
