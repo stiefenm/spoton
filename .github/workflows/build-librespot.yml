@@ -319,6 +319,90 @@ jobs:
           path: Plugins/SpotOn/Bin/${{ matrix.bin_dir }}/libpulse.so.0
           retention-days: 30
 
+  # D-09/D-03 (Phase 74): built HERE (not a separate workflow) for the same
+  # CR-02 reason as build-fake-libpulse above -- the release job's
+  # actions/download-artifact@v4 only sees artifacts from THIS workflow's own
+  # run. Runs unconditionally on tag/workflow_dispatch, with no
+  # detect-changes gate: spoton-helper compiles in seconds and must never
+  # ship stale (RESEARCH.md Pitfall 3).
+  build-spoton-helper:
+    name: Build spoton-helper ${{ matrix.bin_dir }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            bin_dir: x86_64-linux
+          - target: aarch64-unknown-linux-musl
+            bin_dir: aarch64-linux
+          - target: armv7-unknown-linux-musleabihf
+            bin_dir: armhf-linux
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Inject private patch patterns (compliance boundary, no-op if unavailable)
+        if: ${{ secrets.SPOTON_PRIVATE_PATTERNS_REPO != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.SPOTON_PRIVATE_PATTERNS_TOKEN }}
+          PRIVATE_PATTERNS_REPO: ${{ secrets.SPOTON_PRIVATE_PATTERNS_REPO }}
+        run: |
+          # PRIVATE-INJECTION POINT (Plan 02 compliance-boundary decision,
+          # RESEARCH.md Open Question 1): when a private patterns source is
+          # reachable via these repo secrets, this step overwrites the public
+          # no-op stub table at spoton-helper/src/patch/patterns.rs (see the
+          # "PRIVATE-INJECTION POINT" comment in that file) with the
+          # validated per-arch Lifetime + FLAC24 tables BEFORE the cross
+          # build below. When the secrets are absent -- the normal case for
+          # this repo today, and for any fork/PR build -- the `if:` guard
+          # above skips this step entirely and the shipped binary keeps the
+          # empty public table, so `patch` safely reports status
+          # "unsupported" (D-06/T-74-SC fail-safe no-op).
+          gh api "repos/${PRIVATE_PATTERNS_REPO}/contents/patterns.rs" \
+            --jq '.content' | base64 -d > spoton-helper/src/patch/patterns.rs
+          echo "Private patch pattern table injected"
+
+      - name: Build binary
+        working-directory: spoton-helper
+        run: |
+          cross build --release --target ${{ matrix.target }}
+
+      - name: Prepare binary
+        run: |
+          DEST_DIR="Plugins/SpotOn/Bin/${{ matrix.bin_dir }}"
+          mkdir -p "$DEST_DIR"
+          cp "spoton-helper/target/${{ matrix.target }}/release/spoton-helper" "$DEST_DIR/spoton-helper"
+          chmod 755 "$DEST_DIR/spoton-helper"
+          rm -f "$DEST_DIR/.gitkeep"
+
+      - name: Verify binary
+        run: |
+          BINARY="Plugins/SpotOn/Bin/${{ matrix.bin_dir }}/spoton-helper"
+          echo "=== Binary info ==="
+          file "$BINARY"
+          echo "=== SHA256 checksum ==="
+          sha256sum "$BINARY"
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          # D-09/collision-safe: `helper-` prefix (NOT `spoton-helper-`) so
+          # the release job's `for dir in release-artifacts/spoton-*/`
+          # librespot fold-in loop never matches this artifact -- it would
+          # otherwise mis-copy spoton-helper into the librespot flatten step.
+          name: helper-${{ matrix.bin_dir }}
+          path: Plugins/SpotOn/Bin/${{ matrix.bin_dir }}/spoton-helper
+          retention-days: 30
+
   reuse-binaries:
     name: Reuse binaries from previous release
     runs-on: ubuntu-latest
@@ -408,7 +492,7 @@ jobs:
   release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
-    needs: [detect-changes, build, build-windows, lipo, reuse-binaries, build-fake-libpulse]
+    needs: [detect-changes, build, build-windows, lipo, reuse-binaries, build-fake-libpulse, build-spoton-helper]
     if: startsWith(github.ref, 'refs/tags/') && !cancelled() && !failure()
     permissions:
       contents: write
@@ -461,6 +545,19 @@ jobs:
             mkdir -p "$dest"
             cp "$dir/libpulse.so.0" "$dest/libpulse.so.0"
             chmod 755 "$dest/libpulse.so.0"
+          done
+
+          # D-09: fold in the spoton-helper binary built by the
+          # build-spoton-helper job (same workflow run, so
+          # actions/download-artifact@v4 above can see it). The `helper-*`
+          # artifact prefix is collision-safe -- it is never matched by the
+          # `release-artifacts/spoton-*/` librespot loop above.
+          for dir in release-artifacts/helper-*/; do
+            bin_dir=$(basename "$dir" | sed 's/^helper-//')
+            dest="Plugins/SpotOn/Bin/$bin_dir"
+            mkdir -p "$dest"
+            cp "$dir/spoton-helper" "$dest/spoton-helper"
+            chmod 755 "$dest/spoton-helper"
           done
 
           VERSION="${GITHUB_REF_NAME}"
