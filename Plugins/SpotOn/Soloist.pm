@@ -204,7 +204,15 @@ sub _versionCompare {
     my ($v1, $v2) = @_;
     my @a = split /\./, $v1;
     my @b = split /\./, $v2;
-    for my $i (0 .. $#b) {
+
+    # WR-04: iterate over the max length of both lists, not just @b
+    # (the expected version). Looping only over @b let a parsed version
+    # that is a strict superset with an equal prefix (e.g. reported
+    # "1.3.7.489.1" vs expected "1.3.7.489") compare equal -- weakening
+    # the D-05 fail-closed pin, since trailing components on either side
+    # must be significant.
+    my $n = $#a > $#b ? $#a : $#b;
+    for my $i (0 .. $n) {
         my $diff = ($a[$i] || 0) <=> ($b[$i] || 0);
         return $diff if $diff;
     }
