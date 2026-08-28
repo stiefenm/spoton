@@ -385,7 +385,7 @@ sub _autoPatch {
 | A1 | Canonical repo for `protobuf`/`protobuf-codegen` is `github.com/stepancheg/rust-protobuf` | Package Legitimacy | Low — download volume confirms legitimacy regardless; verify link at pin time |
 | A2 | FLAC24 gate byte-encodings differ by arch (x86_64 `cmp imm8`, arm64 `cmp wN,#imm`, arm32 `cmp rN,#imm`) and 5/6 are safely patchable, gate 4 crashes | Architecture Patterns / Pitfall 6 | Medium — sourced from spike RE (private, validated); wrong encoding → count-assert aborts (fail-closed), no corruption |
 | A3 | Lifetime patch is a single unique ASCII timestamp string in `.rodata` findable by substring search | Pattern 1 | Low — spike-validated ("25696 days"); if not unique, count-assert catches it |
-| A4 | `recently-played` and `rootlist` protobuf schemas can be sourced/derived for the `protobuf` subcommand | Open Questions | Medium — collection2v2.proto exists upstream; the other two need identification (spike S-09/S-10 left schema "TODO") |
+| A4 | `recently-played` and `rootlist` protobuf schemas can be sourced/derived for the `protobuf` subcommand | Open Questions | RESOLVED — all three located in librespot upstream `protocol/proto/` (recently_played[_backend].proto, rootlist_request.proto + import closure); vendored in Plan 03 |
 | A5 | ELF `e_machine` values 0x3E/0xB7/0x28 identify the three targets | Pattern 2 | Low — stable ELF spec constants |
 | A6 | Helper needs no network/credentials/daemon state | Runtime State Inventory | Low — follows directly from the three subcommands' scope |
 
@@ -398,10 +398,9 @@ sub _autoPatch {
    - What's unclear: whether the pattern *constants* should (a) live in the public `spoton-helper/src/patch/patterns.rs` as plaintext, or (b) be injected at build from a private source (module/crate/submodule/CI secret), leaving a public no-op stub whose absence makes `patch` a safe no-op.
    - Recommendation: **Option (b)** — mirror the existing compliance-boundary pattern. Public repo contains the *engine + stub patterns* (empty table → `patch` reports `unsupported`, exits cleanly). The release build (which has private access — e.g. self-hosted runner or private submodule with deploy key) injects the real table. This keeps the public source clean and consistent with established project practice. **This is a policy decision for the user — surface it in `/gsd-discuss-phase` or as a plan checkpoint; do not let the planner assume plaintext-in-public.** The CI implication (release build must run where private patterns are reachable) is the main cost and must be designed if (b) is chosen.
 
-2. **Exact protobuf schemas for `recently-played` and `rootlist`.**
+2. **Exact protobuf schemas for `recently-played` and `rootlist`. — RESOLVED (all three now vendored in Plan 03).**
    - What we know: `collection2v2.proto` exists in librespot upstream (verified reference in CONTEXT + spike 009). `recently-played` and `rootlist` are protobuf-only (spike S-09/S-10) with the schema marked "TODO: identify."
-   - What's unclear: the precise `.proto` for those two endpoints.
-   - Recommendation: scope the `protobuf` subcommand to **collection/v2 first** (schema in hand, highest Phase 75 value), and treat recently-played/rootlist as a follow-up within the subcommand once schemas are pinned (URI-regex extraction is the documented interim fallback, spike S-09). Don't block the phase on all three.
+   - RESOLUTION: all three schemas were located in librespot upstream `protocol/proto/` — `collection2v2.proto`, `recently_played.proto` + `recently_played_backend.proto` (backend `RecentlyPlayed` wrapper is the decode target), and `rootlist_request.proto` (`Response`) plus its transitive import closure. Per user ratification, D-02's full three-schema coverage lands in Phase 74 (Plan 03), not a follow-up. Rootlist is decode-only (no request message upstream); collection-v2 supports encode (PageRequest).
 
 3. **Where does the `check` integrity baseline SHA256 come from?**
    - What we know: D-07 wants SHA256 "against a stored hash." The patched binary's hash is deterministic only if the patch is deterministic (it is — fixed patterns).
