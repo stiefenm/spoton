@@ -26,6 +26,7 @@ package Plugins::SpotOn::Soloist;
 
 use strict;
 use warnings;
+use Cwd qw(realpath);
 use File::Spec::Functions qw(catdir catfile);
 use File::Temp ();
 use JSON::XS::VersionOneAndTwo;
@@ -285,7 +286,13 @@ sub _onSoloistDownloadDone {
     }
 
     # T-71-04: array-form system(), never an interpolated shell string.
-    my $rc = system('tar', 'xzf', $archivePath, '-C', $destDir);
+    # WR-05: strip ownership/permission bits from archive members -- GNU
+    # tar already refuses `..`-escaping/absolute members by default, but
+    # the plugin cannot assume GNU tar (busybox/BSD tar on some LMS hosts
+    # behave differently), so member-path containment is re-verified below
+    # rather than trusted to tar alone.
+    my $rc = system('tar', 'xzf', $archivePath, '-C', $destDir,
+        '--no-same-owner', '--no-same-permissions');
     unlink $archivePath;
 
     if ($rc != 0) {
@@ -298,6 +305,18 @@ sub _onSoloistDownloadDone {
     my $extracted = _findExtractedBinary($destDir);
     unless ($extracted) {
         $log->warn("Soloist: no '" . BINARY_NAME . "' binary found after extraction");
+        return;
+    }
+
+    # WR-05: reject a path-traversal/symlink escape -- resolve both the
+    # extracted binary and the cache dir and require containment. A
+    # malicious/compromised archive member (a symlink, or a `..`-relative
+    # path a non-GNU tar didn't strip) could otherwise resolve outside the
+    # trusted cache directory before it's chmod'd/activated.
+    my $resolvedDest = realpath($destDir);
+    my $resolvedExtracted = realpath($extracted);
+    unless ($resolvedDest && $resolvedExtracted && _pathIsWithin($resolvedExtracted, $resolvedDest)) {
+        $log->warn("Soloist: extracted binary path escapes cache dir -- refusing to activate");
         return;
     }
 
@@ -347,6 +366,19 @@ sub _findExtractedBinary {
     }, $dir);
 
     return $found;
+}
+
+# _pathIsWithin($path, $root) -- WR-05: true iff resolved $path is $root
+# itself or a descendant of it. Both arguments are expected to already be
+# realpath()-resolved (symlinks followed, no trailing slash ambiguity);
+# this is a pure string-containment check so it stays cheap and testable
+# without touching the filesystem again.
+sub _pathIsWithin {
+    my ($path, $root) = @_;
+    return 0 unless defined $path && defined $root && length $root;
+
+    my $rootWithSep = $root =~ m{/\z} ? $root : "$root/";
+    return $path eq $root || index($path, $rootWithSep) == 0;
 }
 
 # ---------------------------------------------------------------------------
