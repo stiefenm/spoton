@@ -351,22 +351,14 @@ jobs:
         run: cargo install cross --git https://github.com/cross-rs/cross
 
       - name: Inject private patch patterns (compliance boundary, no-op if unavailable)
-        if: ${{ secrets.SPOTON_PRIVATE_PATTERNS_REPO != '' }}
         env:
           GH_TOKEN: ${{ secrets.SPOTON_PRIVATE_PATTERNS_TOKEN }}
           PRIVATE_PATTERNS_REPO: ${{ secrets.SPOTON_PRIVATE_PATTERNS_REPO }}
         run: |
-          # PRIVATE-INJECTION POINT (Plan 02 compliance-boundary decision,
-          # RESEARCH.md Open Question 1): when a private patterns source is
-          # reachable via these repo secrets, this step overwrites the public
-          # no-op stub table at spoton-helper/src/patch/patterns.rs (see the
-          # "PRIVATE-INJECTION POINT" comment in that file) with the
-          # validated per-arch Lifetime + FLAC24 tables BEFORE the cross
-          # build below. When the secrets are absent -- the normal case for
-          # this repo today, and for any fork/PR build -- the `if:` guard
-          # above skips this step entirely and the shipped binary keeps the
-          # empty public table, so `patch` safely reports status
-          # "unsupported" (D-06/T-74-SC fail-safe no-op).
+          if [ -z "$PRIVATE_PATTERNS_REPO" ]; then
+            echo "No private patterns source configured — keeping public stub table"
+            exit 0
+          fi
           gh api "repos/${PRIVATE_PATTERNS_REPO}/contents/patterns.rs" \
             --jq '.content' | base64 -d > spoton-helper/src/patch/patterns.rs
           echo "Private patch pattern table injected"
