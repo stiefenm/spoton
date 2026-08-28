@@ -4,17 +4,17 @@ milestone: v4.0
 milestone_name: Soloist Integration
 current_phase: 74
 current_phase_name: spoton-helper Binary
-status: executing
-stopped_at: Completed 74-03-PLAN.md
-last_updated: "2026-08-28T16:43:46.970Z"
+status: verifying
+stopped_at: Completed 74-04-PLAN.md
+last_updated: "2026-08-28T16:51:40.602Z"
 last_activity: 2026-08-28
 last_activity_desc: Phase 74 execution started
-state_head: 2f6ec72011179788ce24022db72d1ac1660e1879
+state_head: 171e3296f803bc5447ea40b3337c5d6342cd385f
 progress:
   total_phases: 14
   completed_phases: 2
   total_plans: 17
-  completed_plans: 16
+  completed_plans: 17
   percent: 14
 ---
 
@@ -36,7 +36,7 @@ See: .planning/PROJECT.md (updated 2026-06-30)
 
 Phase: 74 (spoton-helper Binary) — EXECUTING
 Plan: 4 of 4
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-08-28 — Phase 74 execution started
 
 ## Progress Bar
@@ -113,6 +113,7 @@ Phase 77: [ ] Soloist UAT + Release (Final Proof: kein librespot nötig)
 | Phase 74 P01 | 20min | 3 tasks | 11 files |
 | Phase 74 P02 | 8min | 2 tasks | 3 files |
 | Phase 74 P03 | 25min | 2 tasks | 16 files |
+| Phase 74 P04 | 20min | 3 tasks | 7 files |
 
 ## Deferred Items
 
@@ -280,6 +281,10 @@ Items carried forward from previous milestones:
 - [Phase 74]: run_core testable-core / thin-wrapper split lets unit tests drive the full safety envelope with a TEST-ONLY pattern table while patch::run keeps its Plan-01 signature
 - [Phase 74]: protobuf_cmd.rs: no new crate for JSON mapping — hand-rolled struct->serde_json::Value conversion instead of adding protobuf-json-mapping, to avoid a second package-manager install requiring its own supply-chain checkpoint
 - [Phase 74]: build.rs lists all 12 vendored proto files as .input()s, not just the 4 schema roots — protobuf-codegen .pure() emits super::<module> refs for imported types rather than inlining them
+- [Phase 74]: Helper CI artifacts use helper-<arch> prefix (never spoton-helper-<arch>) to avoid colliding with librespot's spoton-* fold-in glob
+- [Phase 74]: build-spoton-helper runs unconditionally on tag/workflow_dispatch, no detect-changes gate (compiles in seconds, must never be stale)
+- [Phase 74]: Private pattern injection is a guarded CI step keyed on repo secrets that do not yet exist -- shipped binary presently always keeps the public empty patterns.rs table
+- [Phase 74]: _autoPatch in Soloist.pm is unconditionally fail-open: any incomplete/failed patch logs a warning and Soloist continues unpatched, never blocking playback
 
 ### Blockers/Concerns
 
@@ -312,8 +317,8 @@ Items carried forward from previous milestones:
 
 **Resume file:** None
 
-**Last session:** 2026-08-28T16:43:46.689Z
-**Stopped at:** Completed 74-03-PLAN.md
+**Last session:** 2026-08-28T16:51:40.326Z
+**Stopped at:** Completed 74-04-PLAN.md
 
 **Completed this session (2026-08-24):**
 
