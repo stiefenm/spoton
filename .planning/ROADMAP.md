@@ -303,7 +303,7 @@
 | 71. Soloist Foundation | v4.0 | 4/4 | Complete | 2026-08-26 |
 | 72. Soloist Browse Playback | v4.0 | 3/3 | Complete | 2026-08-26 |
 | 73. Soloist Connect Mode | v4.0 | 6/6 | Complete | 2026-08-27 |
-| 74. spoton-helper Binary | v4.0 | 0/? | Not started | — |
+| 74. spoton-helper Binary | v4.0 | 0/? | In Progress|  |
 | 75. API Unification | v4.0 | 0/? | Not started | — |
 | 76. Soloist UX Polish | v4.0 | 0/? | Not started | — |
 | 77. Soloist UAT + Release | v4.0 | 0/? | Not started | — |
@@ -480,6 +480,7 @@ Items discovered during development — not assigned to a milestone.
 **Architecture (Spike 008+009, 2026-08-28):**
 
 Ein-Host-Modell — spclient.spotify.com deckt ALLE Browse/Library-Features:
+
 - **spclient.spotify.com**: Metadata (JSON), Search, Liked Songs, Saved Albums, Followed Artists, Recently Played, Playlists
 - **Auth**: ZeroConf-Credentials → login5 (librespot CID, kein HashCash, kein client-token) → Bearer Token
 - **api-partner.spotify.com**: NICHT nötig (CID-geblockt für librespot, aber alle Features auf spclient verfügbar)
@@ -511,6 +512,7 @@ Ein-Host-Modell — spclient.spotify.com deckt ALLE Browse/Library-Features:
   - [x] 73-06-PLAN.md — Gap Closure: fake-libpulse pa_stream_flush als echter Ring-Flush + Host-Test (UAT Gap 3, D-04)
 - [ ] **Phase 74: spoton-helper Binary** — Eigenständiges Rust-Binary, fokussiert auf die von Phase 73 NICHT abgedeckten Aufgaben: `patch` (Lifetime-Timestamp + FLAC24-Enum als Pattern-Scanner) und `check` (Binary-Validierung/Capability-Manifest). CI-Build für x86_64, arm64, arm32 via cross-rs. Kein HashCash-Solver nötig (login5 mit librespot-CID ist challenge-frei). Kein `token`-Modus nötig — login5-Minting läuft in Perl (siehe Phase 75).
   **Bereits erledigt in Phase 73 (NICHT mehr Teil von 74):**
+
   - ~~`daemon` (Soloist-Lifecycle, ersetzt Shell-Launcher)~~ → umgesetzt als Perl-Modul `Unified/SoloistDaemon.pm` + `DaemonManager` (per-Player-Lifecycle, WS-Control + HTTP-Audio Ports, Crash-Backoff). Der Shell-Launcher-Wrapper aus Phase 72 wurde in 73-04 bereits entfernt.
   - ~~`audio` (fake-libpulse Rust-Port oder .so Companion)~~ → läuft als C-`libpulse.so.0` mit In-Process-HTTP-Server (f32→S16LE Ring, `GET /stream`), CI-cross-kompiliert für 3 Architekturen (Phase 71 Build-Pipeline, Phase 73 HTTP-Modus). Ein Rust-Port ist optional und aktuell nicht geplant.
   **Note:** Patches als Pattern-Scanner, nicht statische Offsets — Instruction Encoding unterscheidet sich zwischen Architekturen. FLAC24 nur TEILWEISE validiert (Spike: 5/6 Enum-Gates patchbar, Gate 4 crasht; zusätzlich Server-seitige Quality-Zuweisung ungeklärt — A/B-Test zeigte identische CDN-Größen; siehe v4.0 Spike Results "24-Bit FLAC Patch").
@@ -519,7 +521,7 @@ Ein-Host-Modell — spclient.spotify.com deckt ALLE Browse/Library-Features:
 
   Plans:
 
-  - [ ] 74-01-PLAN.md — Tracer: crate scaffold + clap dispatch + `check` D-08 JSON manifest end-to-end + synthetic fixture harness + 3-arch cross config (D-01/D-07/D-08)
+  - [x] 74-01-PLAN.md — Tracer: crate scaffold + clap dispatch + `check` D-08 JSON manifest end-to-end + synthetic fixture harness + 3-arch cross config (D-01/D-07/D-08)
   - [ ] 74-02-PLAN.md — Patch engine: version-locked per-arch pattern table, fail-closed safety envelope (count-assert + stage/verify/atomic-rename), Lifetime + FLAC24 5/6 gates, compliance-boundary decision + `.sha256` baseline (D-03/D-04/D-05/D-06/D-07)
   - [ ] 74-03-PLAN.md — `protobuf` subcommand: collection/v2 stdin↔stdout decode/encode via pure-Rust codegen (no protoc), package-legitimacy gate, untrusted-input hardening (D-02)
   - [ ] 74-04-PLAN.md — CI `build-spoton-helper` job (3 musl targets, zip fold-in) + Soloist.pm auto-patch wiring (idempotent, fail-open) + t/33 test + CHANGELOG (D-03/D-09)

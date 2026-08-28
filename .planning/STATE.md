@@ -4,17 +4,17 @@ milestone: v4.0
 milestone_name: Soloist Integration
 current_phase: 74
 current_phase_name: spoton-helper Binary
-status: done
-stopped_at: Phase 74 context gathered
-last_updated: "2026-08-28T15:16:09.894Z"
+status: executing
+stopped_at: Completed 74-01-PLAN.md
+last_updated: "2026-08-28T15:46:21.997Z"
 last_activity: 2026-08-28
-last_activity_desc: Spike 008 completed — KDF reversed, Block-Cipher identified, Credential inkompatibel, spclient-Browse als nächster Pfad
-state_head: 4223a2d2e03a4206f598da5c3bb76eee19fc534c
+last_activity_desc: Phase 74 execution started
+state_head: 04f01c4605305d893b75ca93ca01bef695feb586
 progress:
   total_phases: 14
   completed_phases: 2
   total_plans: 17
-  completed_plans: 13
+  completed_plans: 14
   percent: 14
 ---
 
@@ -30,14 +30,14 @@ See: .planning/PROJECT.md (updated 2026-06-30)
 
 **Core Value:** Reliable Spotify playback and Connect integration on LMS — Browse, stream, and control via Spotify app, without 429 bursts, zombie daemons, or audio glitches.
 
-**Current Focus:** Phase 73 done — Grundsatzfrage offen
+**Current Focus:** Phase 74 — spoton-helper Binary
 
 ## Current Position
 
-Phase: 74 (spoton-helper Binary) — READY TO EXECUTE
-Plan: 6 of 6 complete + 3 quick-fix sessions
-Status: Completed with Known Limitations (uncork delay ~108s, audio gap ~8s)
-Last activity: 2026-08-28 — Phase 73 abgeschlossen
+Phase: 74 (spoton-helper Binary) — EXECUTING
+Plan: 2 of 4
+Status: Ready to execute
+Last activity: 2026-08-28 — Phase 74 execution started
 
 ## Progress Bar
 
@@ -110,6 +110,7 @@ Phase 77: [ ] Soloist UAT + Release (Final Proof: kein librespot nötig)
 | Phase 73 P04 | ~40min | 3 tasks | 13 files |
 | Phase 73 P05 | 35min | 2 tasks | 3 files |
 | Phase 73 P06 | 20min | 2 tasks | 2 files |
+| Phase 74 P01 | 20min | 3 tasks | 11 files |
 
 ## Deferred Items
 
@@ -271,6 +272,8 @@ Items carried forward from previous milestones:
 - [Phase 73]: [Phase 73][73-04] Sync-group pinning found no gap in DaemonManager.pm/SoloistDaemon.pm -- Pattern 7's librespot-to-soloist 1:1 transfer confirmed via tests against the real module, zero production code changed
 - [Phase 73]: [Phase 73][73-04] WS auth state shown via daemon-status color coding, not a 5th new i18n key; actual 11-language set verified as CS/DA/DE/EN/ES/FR/IT/NL/NO/PL/SV (PL not FI) against strings.txt before translating
 - [Phase 73]: SoloistWS.pm D-05/D-06 gap closure: utf8::encode bridge for octet-mode from_json, int() coercion for numeric sendCommand params, sessionPaused-gated resume emission with frozen extrapolation while paused
+- [Phase 74]: spoton-helper Cross.toml scoped to exactly the 3 target arches (x86_64/aarch64/armv7 musl) the plan named, not the 6-target librespot-spoton superset
+- [Phase 74]: tests/fixture.rs uses a minimal hand-rolled Drop-based TempDir instead of an external tempdir crate, keeping spoton-helper's dependency surface at exactly clap/serde_json/sha2/anyhow/thiserror
 
 ### Blockers/Concerns
 
@@ -301,10 +304,10 @@ Items carried forward from previous milestones:
 
 ## Session Continuity
 
-**Resume file:** .planning/phases/74-spoton-helper-binary/74-CONTEXT.md
+**Resume file:** None
 
-**Last session:** 2026-08-28T14:28:27.424Z
-**Stopped at:** Phase 74 context gathered
+**Last session:** 2026-08-28T15:46:21.711Z
+**Stopped at:** Completed 74-01-PLAN.md
 
 **Completed this session (2026-08-24):**
 
