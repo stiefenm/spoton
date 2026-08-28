@@ -1,0 +1,22 @@
+[package]
+name = "spoton-helper"
+version = "0.1.0"
+edition = "2021"
+authors = ["SpotOn Contributors"]
+description = "SpotOn Soloist helper: binary patcher, integrity check, schema converter"
+license = "MIT"
+
+[[bin]]
+name = "spoton-helper"
+path = "src/main.rs"
+
+[dependencies]
+clap       = { version = "4", features = ["derive"] }
+serde_json = "1"
+sha2       = "0.10"
+anyhow     = "1"
+thiserror  = "2"
+
+# Defensive: a wrapping bug in offset math must abort, never corrupt a binary.
+[profile.release]
+overflow-checks = true
