@@ -2,18 +2,18 @@
 gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: Soloist Integration
-current_phase: 73
-current_phase_name: Soloist Connect Mode
+current_phase: 74
+current_phase_name: spoton-helper Binary
 status: done
 stopped_at: Phase 74 context gathered
-last_updated: "2026-08-28T14:28:27.715Z"
+last_updated: "2026-08-28T15:16:09.894Z"
 last_activity: 2026-08-28
 last_activity_desc: Spike 008 completed — KDF reversed, Block-Cipher identified, Credential inkompatibel, spclient-Browse als nächster Pfad
-state_head: 278c0f908812c0d843f4fea9787083cd356398d7
+state_head: 4223a2d2e03a4206f598da5c3bb76eee19fc534c
 progress:
   total_phases: 14
   completed_phases: 2
-  total_plans: 13
+  total_plans: 17
   completed_plans: 13
   percent: 14
 ---
@@ -34,7 +34,7 @@ See: .planning/PROJECT.md (updated 2026-06-30)
 
 ## Current Position
 
-Phase: 73 (Soloist Connect Mode) — DONE
+Phase: 74 (spoton-helper Binary) — READY TO EXECUTE
 Plan: 6 of 6 complete + 3 quick-fix sessions
 Status: Completed with Known Limitations (uncork delay ~108s, audio gap ~8s)
 Last activity: 2026-08-28 — Phase 73 abgeschlossen
