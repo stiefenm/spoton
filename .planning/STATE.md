@@ -2,20 +2,20 @@
 gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: Soloist Integration
-current_phase: 74
-current_phase_name: spoton-helper Binary
-status: verifying
-stopped_at: Completed 74-04-PLAN.md
-last_updated: "2026-08-28T16:51:40.602Z"
+current_phase: 75
+current_phase_name: api unification (spclient modell)
+status: planning
+stopped_at: Phase 74 complete, ready to plan Phase 75
+last_updated: "2026-08-28T17:04:34.317Z"
 last_activity: 2026-08-28
-last_activity_desc: Phase 74 execution started
-state_head: 171e3296f803bc5447ea40b3337c5d6342cd385f
+last_activity_desc: Phase 74 complete, transitioned to Phase 75
+state_head: f76fbfe6434ca5b8664a97422422d0ac7d1b3425
 progress:
   total_phases: 14
-  completed_phases: 2
+  completed_phases: 3
   total_plans: 17
   completed_plans: 17
-  percent: 14
+  percent: 21
 ---
 
 # Project State: SpotOn
@@ -34,10 +34,10 @@ See: .planning/PROJECT.md (updated 2026-06-30)
 
 ## Current Position
 
-Phase: 74 (spoton-helper Binary) — EXECUTING
-Plan: 4 of 4
-Status: Phase complete — ready for verification
-Last activity: 2026-08-28 — Phase 74 execution started
+Phase: 75 — api unification (spclient modell)
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-08-28 — Phase 74 complete, transitioned to Phase 75
 
 ## Progress Bar
 
@@ -318,7 +318,7 @@ Items carried forward from previous milestones:
 **Resume file:** None
 
 **Last session:** 2026-08-28T16:51:40.326Z
-**Stopped at:** Completed 74-04-PLAN.md
+**Stopped at:** Phase 74 complete, ready to plan Phase 75
 
 **Completed this session (2026-08-24):**
 
