@@ -58,10 +58,19 @@ fn scan_status_for_sites(bytes: &[u8], sites: &[PatchSite]) -> PatchStatus {
     let mut flac24_gates = [false; 6];
 
     for site in sites {
-        // A site is "applied" when its replacement bytes are present. Skip
-        // sites (Gate 4) are never written by `run`, so this same rule
-        // naturally keeps them reporting false -- no special case needed.
-        let present = count_occurrences(bytes, site.replace) > 0;
+        // WR-02: a site is "applied" only when its replacement bytes are
+        // present AND its search bytes are gone. Presence-of-replacement
+        // alone is ambiguous -- if a short/common `replace` pattern
+        // coincidentally already occurs in an unpatched binary, that gate
+        // would be misreported as applied even though `search` (the
+        // pre-patch bytes) is still there. Requiring absence of `search`
+        // as well makes an unpatched binary unambiguous: real Soloist
+        // binaries always carry `search` until this engine rewrites it.
+        // Skip sites (Gate 4) are never written by `run`, so `search`
+        // never disappears there and this rule naturally keeps them
+        // reporting false -- no special case needed.
+        let present =
+            count_occurrences(bytes, site.replace) > 0 && count_occurrences(bytes, site.search) == 0;
         match site.kind {
             SiteKind::Lifetime => lifetime = present,
             SiteKind::Flac24Gate(i) if i < flac24_gates.len() => flac24_gates[i] = present,
