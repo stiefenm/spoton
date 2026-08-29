@@ -4,17 +4,17 @@ milestone: v4.0
 milestone_name: Soloist Integration
 current_phase: 75
 current_phase_name: API Unification (spclient-Modell)
-status: executing
-stopped_at: Completed 75-05-PLAN.md
-last_updated: "2026-08-29T09:02:12.450Z"
+status: verifying
+stopped_at: Completed 75-06-PLAN.md
+last_updated: "2026-08-29T09:22:17.365Z"
 last_activity: 2026-08-29
 last_activity_desc: Phase 75 execution started
-state_head: f7aca28d4e24f81663f8aab13693c43e96fb869d
+state_head: eca3b4c62d394c13b6e6c8776a20415ce7620161
 progress:
   total_phases: 14
   completed_phases: 3
   total_plans: 23
-  completed_plans: 22
+  completed_plans: 23
   percent: 21
 ---
 
@@ -36,7 +36,7 @@ See: .planning/PROJECT.md (updated 2026-06-30)
 
 Phase: 75 (API Unification (spclient-Modell)) — EXECUTING
 Plan: 6 of 6
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-08-29 — Phase 75 execution started
 
 ## Progress Bar
@@ -119,6 +119,7 @@ Phase 77: [ ] Soloist UAT + Release (Final Proof: kein librespot nötig)
 | Phase 75 P03 | 10min | 2 tasks | 6 files |
 | Phase 75 P04 | ~35min | 3 tasks | 2 files |
 | Phase 75-api-unification-spclient-modell P05 | 12min | 2 tasks | 2 files |
+| Phase 75 P06 | ~15min | 3 tasks | 10 files |
 
 ## Deferred Items
 
@@ -307,6 +308,9 @@ Items carried forward from previous milestones:
 - [Phase 75]: [Phase 75][75-05] PlaylistMetadata.link takes precedence over row_id for rootlist URI derivation, with row_id as a dual-purpose fallback (already-full URI, or bare id to derive one from) -- the proto documents row_id only as string with no format guarantee across decorate-param variants
 - [Phase 75]: [Phase 75][75-05] ROOTLIST_MAX_DEPTH=10 bounds _flattenRootlistFolder recursion (T-75-16/V5), proven against a synthetic 20-level-deep nested-folder fixture
 - [Phase 75]: [Phase 75][75-05] _playlistEnvelope caches the FULL playlist/v2 response (not per-page) at 300s, matching 75-04's full-fetch-then-slice convention rather than a new caching shape
+- [Phase 75]: [Phase 75][75-06] getLimit passthrough reads through to Client.pm's probe-detected limits -- ALL getLimit call sites switch to SpClient, which transparently delegates (probe cleanup deferred to Phase 76/77)
+- [Phase 75]: [Phase 75][75-06] Connect.pm's D-08 split is call-level not file-level -- only _fetchTrackMetadata's getTrack call switches; the four player-control calls stay on Client.pm
+- [Phase 75]: [Phase 75][75-06] Smoke script routes the Bearer token through a curl -K config file (not -H argv) in addition to the plan's stdin body passthrough, closing an argv/ps exposure gap for the token
 
 ### Blockers/Concerns
 
@@ -339,8 +343,8 @@ Items carried forward from previous milestones:
 
 **Resume file:** None
 
-**Last session:** 2026-08-29T09:02:02.224Z
-**Stopped at:** Completed 75-05-PLAN.md
+**Last session:** 2026-08-29T09:22:16.983Z
+**Stopped at:** Completed 75-06-PLAN.md
 
 **Completed this session (2026-08-24):**
 
