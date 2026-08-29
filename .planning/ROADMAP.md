@@ -535,7 +535,7 @@ Ein-Host-Modell — spclient.spotify.com deckt ALLE Browse/Library-Features:
   Plans:
 
   - [x] 75-01-PLAN.md — Tracer: ProtobufLite + Login5 + SpClient-Skelett, getTrack end-to-end über Router/Fallback (D-01/D-03/D-04/D-06/D-07/D-09)
-  - [ ] 75-02-PLAN.md — Metadata-Familie: Album/Artist/Show/Episode + Search-Router (context-resolve Track-Search, Web-API-Fallback für Multi-Type, S-04/S-05)
+  - [x] 75-02-PLAN.md — Metadata-Familie: Album/Artist/Show/Episode + Search-Router (context-resolve Track-Search, Web-API-Fallback für Multi-Type, S-04/S-05)
   - [ ] 75-03-PLAN.md — D-02 Rückbau: protobuf-Subcommand, build.rs-Codegen + 2 Crates aus spoton-helper entfernt; .proto-Dateien bleiben als Schema-Doku
   - [ ] 75-04-PLAN.md — Collection-Familie: collection/v2 Sets (S-06/S-07), Liked Songs via context-resolve (kein Paging), Recently Played (Protobuf S-09)
   - [ ] 75-05-PLAN.md — Playlist-Familie: Rootlist (Protobuf S-10, Folder-Flattening) + playlist/v2 Items mit Slice-Enrichment

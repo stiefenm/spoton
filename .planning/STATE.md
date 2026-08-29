@@ -5,16 +5,16 @@ milestone_name: Soloist Integration
 current_phase: 75
 current_phase_name: API Unification (spclient-Modell)
 status: executing
-stopped_at: Completed 75-01-PLAN.md
-last_updated: "2026-08-29T08:03:59.623Z"
+stopped_at: Completed 75-02-PLAN.md
+last_updated: "2026-08-29T08:24:13.209Z"
 last_activity: 2026-08-29
 last_activity_desc: Phase 75 execution started
-state_head: 64696516c3ae5220207e526e5446e8e9f1a03a31
+state_head: a3556b23416065882158aa4029293ffd7a3d3f41
 progress:
   total_phases: 14
   completed_phases: 3
   total_plans: 23
-  completed_plans: 18
+  completed_plans: 19
   percent: 21
 ---
 
@@ -35,7 +35,7 @@ See: .planning/PROJECT.md (updated 2026-06-30)
 ## Current Position
 
 Phase: 75 (API Unification (spclient-Modell)) — EXECUTING
-Plan: 2 of 6
+Plan: 3 of 6
 Status: Ready to execute
 Last activity: 2026-08-29 — Phase 75 execution started
 
@@ -115,6 +115,7 @@ Phase 77: [ ] Soloist UAT + Release (Final Proof: kein librespot nötig)
 | Phase 74 P03 | 25min | 2 tasks | 16 files |
 | Phase 74 P04 | 20min | 3 tasks | 7 files |
 | Phase 75 P01 | 20min | 3 tasks | 7 files |
+| Phase 75 P02 | ~30min | 3 tasks | 2 files |
 
 ## Deferred Items
 
@@ -289,6 +290,10 @@ Items carried forward from previous milestones:
 - [Phase 75]: [Phase 75][75-01] parse_fields collects every field occurrence into an arrayref (never overwrite) -- fixes RESEARCH.md's last-item-wins sample so collection/v2 repeated items decode completely
 - [Phase 75]: [Phase 75][75-01] SpClient.pm runtime-require's Login5/Credentials/Client (never compile-time use) -- extends D-03's no-compile-time-coupling guarantee to all three collaborators, not just Client.pm
 - [Phase 75]: [Phase 75][75-01] D-07a single 401 remint-retry implemented exactly as user-approved: one retry with a fresh token, second 401 falls back to Client.pm immediately
+- [Phase 75]: [Phase 75][75-02] _spFacade's normalize callback receives (rawResult, $cb) rather than returning a value -- lets the same D-06/D-07 helper serve sync normalizers (getAlbum/getArtist/getShow/getEpisode) and async ones that fan out enrichment (getAlbumTracks/getShowEpisodes)
+- [Phase 75]: [Phase 75][75-02] getAlbum's tracks.items always empty (S-04) -- getAlbumTracks owns all per-track enrichment via metadata/4/track
+- [Phase 75]: [Phase 75][75-02] search() context-resolve routing checks the hardcoded 20-result ceiling before any HTTP call, then re-checks against the actual returned URI count -- avoids wasted calls for offsets that can never be satisfied
+- [Phase 75]: [Phase 75][75-02] getShow/getShowEpisodes/getEpisode mirror the verified album/track pattern for the spike-unverified metadata/4/show and metadata/4/episode paths -- D-07's 4xx/5xx fallback is the accepted mitigation, live verification deferred to mandatory phase UAT
 
 ### Blockers/Concerns
 
@@ -321,8 +326,8 @@ Items carried forward from previous milestones:
 
 **Resume file:** None
 
-**Last session:** 2026-08-29T08:03:59.212Z
-**Stopped at:** Completed 75-01-PLAN.md
+**Last session:** 2026-08-29T08:24:12.841Z
+**Stopped at:** Completed 75-02-PLAN.md
 
 **Completed this session (2026-08-24):**
 
