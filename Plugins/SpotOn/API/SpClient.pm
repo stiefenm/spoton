@@ -1499,7 +1499,8 @@ sub getSavedAlbums {
             return;
         }
 
-        my ($slice, $total) = $class->_sliceAsPage($list, $offset, $limit);
+        my @albumsOnly = grep { ($_->{uri} // '') =~ /^spotify:album:/ } @$list;
+        my ($slice, $total) = $class->_sliceAsPage(\@albumsOnly, $offset, $limit);
 
         $class->_enrichCollectionSlice($accountId, $slice, 'album', '_normalizeAlbum', 'album', sub {
             my ($items) = @_;
@@ -1554,6 +1555,8 @@ sub getFollowedArtists {
         }
 
         $list ||= [];
+        my @artistsOnly = grep { ($_->{uri} // '') =~ /^spotify:artist:/ } @$list;
+        $list = \@artistsOnly;
         my $startIdx = 0;
         if (defined $params->{after} && length $params->{after}) {
             my $afterUri = 'spotify:artist:' . $params->{after};
@@ -1636,7 +1639,8 @@ sub getSavedShows {
             return;
         }
 
-        my ($slice, $total) = $class->_sliceAsPage($list, $offset, $limit);
+        my @showsOnly = grep { ($_->{uri} // '') =~ /^spotify:show:/ } @$list;
+        my ($slice, $total) = $class->_sliceAsPage(\@showsOnly, $offset, $limit);
 
         unless (@$slice) {
             $cb->({ items => [], total => $total, offset => $offset, limit => $limit });
