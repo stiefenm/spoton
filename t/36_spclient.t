@@ -316,7 +316,21 @@ our @getSavedTracks_calls     = ();
 our @getRecentlyPlayed_calls  = ();
 our @getUserPlaylists_calls   = ();
 our @getPlaylistItems_calls   = ();
+our @getLimit_calls                  = ();
+our @getMe_calls                     = ();
+our @getTopTracks_calls               = ();
+our @getPersonalMixes_calls           = ();
+our @saveTracks_calls                 = ();
+our @removeTracks_calls               = ();
+our @checkTracks_calls                 = ();
+our @saveShows_calls                   = ();
+our @removeShows_calls                 = ();
+our @checkShows_calls                  = ();
+our @addToPlaylist_calls               = ();
+our @getWebPlayerPlaylistItems_calls   = ();
+our @pathfinderHome_calls              = ();
 our $mock_result = { id => 'mockclienttrackid0000' };
+our $mock_limit  = 42;
 
 sub getTrack {
     my ($class, $accountId, $trackId, $cb) = @_;
@@ -398,6 +412,71 @@ sub getPlaylistItems {
     push @getPlaylistItems_calls, { accountId => $accountId, playlistId => $playlistId, params => $params };
     $cb->($mock_result, undef);
 }
+sub getLimit {
+    my ($class, $endpointClass) = @_;
+    push @getLimit_calls, { endpointClass => $endpointClass };
+    return $mock_limit;
+}
+sub getMe {
+    my ($class, $accountId, $cb) = @_;
+    push @getMe_calls, { accountId => $accountId };
+    $cb->($mock_result, undef);
+}
+sub getTopTracks {
+    my ($class, $accountId, $params, $cb) = @_;
+    push @getTopTracks_calls, { accountId => $accountId, params => $params };
+    $cb->($mock_result, undef);
+}
+sub getPersonalMixes {
+    my ($class, $accountId, $params, $cb) = @_;
+    push @getPersonalMixes_calls, { accountId => $accountId, params => $params };
+    $cb->($mock_result, undef);
+}
+sub saveTracks {
+    my ($class, $accountId, $uris, $cb) = @_;
+    push @saveTracks_calls, { accountId => $accountId, uris => $uris };
+    $cb->($mock_result, undef);
+}
+sub removeTracks {
+    my ($class, $accountId, $uris, $cb) = @_;
+    push @removeTracks_calls, { accountId => $accountId, uris => $uris };
+    $cb->($mock_result, undef);
+}
+sub checkTracks {
+    my ($class, $accountId, $uris, $cb) = @_;
+    push @checkTracks_calls, { accountId => $accountId, uris => $uris };
+    $cb->($mock_result, undef);
+}
+sub saveShows {
+    my ($class, $accountId, $uris, $cb) = @_;
+    push @saveShows_calls, { accountId => $accountId, uris => $uris };
+    $cb->($mock_result, undef);
+}
+sub removeShows {
+    my ($class, $accountId, $uris, $cb) = @_;
+    push @removeShows_calls, { accountId => $accountId, uris => $uris };
+    $cb->($mock_result, undef);
+}
+sub checkShows {
+    my ($class, $accountId, $uris, $cb) = @_;
+    push @checkShows_calls, { accountId => $accountId, uris => $uris };
+    $cb->($mock_result, undef);
+}
+sub addToPlaylist {
+    my ($class, $accountId, $playlistId, $uris, $cb) = @_;
+    push @addToPlaylist_calls, { accountId => $accountId, playlistId => $playlistId, uris => $uris };
+    $cb->($mock_result, undef);
+}
+sub getWebPlayerPlaylistItems {
+    my ($class, $accountId, $playlistId, $params, $cb) = @_;
+    push @getWebPlayerPlaylistItems_calls, { accountId => $accountId, playlistId => $playlistId, params => $params };
+    $cb->($mock_result, undef);
+}
+sub pathfinderHome {
+    my ($class, $accountId, $params, $cb) = @_;
+    push @pathfinderHome_calls, { accountId => $accountId, params => $params };
+    $cb->($mock_result, undef);
+}
 sub reset_calls {
     @getTrack_calls        = ();
     @getAlbum_calls        = ();
@@ -415,6 +494,19 @@ sub reset_calls {
     @getRecentlyPlayed_calls  = ();
     @getUserPlaylists_calls   = ();
     @getPlaylistItems_calls   = ();
+    @getLimit_calls                = ();
+    @getMe_calls                   = ();
+    @getTopTracks_calls            = ();
+    @getPersonalMixes_calls        = ();
+    @saveTracks_calls              = ();
+    @removeTracks_calls            = ();
+    @checkTracks_calls             = ();
+    @saveShows_calls               = ();
+    @removeShows_calls             = ();
+    @checkShows_calls              = ();
+    @addToPlaylist_calls           = ();
+    @getWebPlayerPlaylistItems_calls = ();
+    @pathfinderHome_calls            = ();
 }
 1;
 END
@@ -1689,6 +1781,92 @@ sub playlist_envelope_fixture {
     is(scalar(@Plugins::SpotOn::API::Client::getPlaylistItems_calls), 1, 'getPlaylistItems D-07: falls back to Client.pm on a playlist/v2 500');
 
     $Slim::Networking::SimpleAsyncHTTP::auto_mode = 'success';
+}
+
+# ============================================================
+# Passthrough delegation matrix (Phase 75 Plan 06, Task 1)
+# ============================================================
+# Every Web-API-only method must forward to Client.pm with the exact
+# argument list, unchanged. reset_all() also clears the Client stub's new
+# call-recording arrays (verified via the reset_calls() extension above).
+{
+    reset_all();
+
+    my $cb = sub { };
+
+    $SP->getLimit('search');
+    is(scalar(@Plugins::SpotOn::API::Client::getLimit_calls), 1, 'getLimit: delegates to Client.pm exactly once');
+    is($Plugins::SpotOn::API::Client::getLimit_calls[0]{endpointClass}, 'search', 'getLimit: forwards endpointClass unchanged');
+    is($SP->getLimit('search'), $Plugins::SpotOn::API::Client::mock_limit, 'getLimit: returns Client.pm\'s synchronous return value unchanged');
+
+    $SP->getMe('acctPT1', $cb);
+    is(scalar(@Plugins::SpotOn::API::Client::getMe_calls), 1, 'getMe: delegates to Client.pm exactly once');
+    is($Plugins::SpotOn::API::Client::getMe_calls[0]{accountId}, 'acctPT1', 'getMe: forwards accountId unchanged');
+
+    my $topParams = { time_range => 'short_term', limit => 5 };
+    $SP->getTopTracks('acctPT2', $topParams, $cb);
+    is(scalar(@Plugins::SpotOn::API::Client::getTopTracks_calls), 1, 'getTopTracks: delegates to Client.pm exactly once');
+    is_deeply($Plugins::SpotOn::API::Client::getTopTracks_calls[0]{params}, $topParams, 'getTopTracks: forwards the params hashref unchanged');
+
+    my $mixParams = { limit => 10, offset => 5 };
+    $SP->getPersonalMixes('acctPT3', $mixParams, $cb);
+    is(scalar(@Plugins::SpotOn::API::Client::getPersonalMixes_calls), 1, 'getPersonalMixes: delegates to Client.pm exactly once');
+    is_deeply($Plugins::SpotOn::API::Client::getPersonalMixes_calls[0]{params}, $mixParams, 'getPersonalMixes: forwards the params hashref unchanged');
+
+    my $trackUris = ['spotify:track:AAAAAAAAAAAAAAAAAAAAAA'];
+    $SP->saveTracks('acctPT4', $trackUris, $cb);
+    is(scalar(@Plugins::SpotOn::API::Client::saveTracks_calls), 1, 'saveTracks: delegates to Client.pm exactly once');
+    is_deeply($Plugins::SpotOn::API::Client::saveTracks_calls[0]{uris}, $trackUris, 'saveTracks: forwards the uris arrayref unchanged');
+
+    $SP->removeTracks('acctPT5', $trackUris, $cb);
+    is(scalar(@Plugins::SpotOn::API::Client::removeTracks_calls), 1, 'removeTracks: delegates to Client.pm exactly once');
+    is_deeply($Plugins::SpotOn::API::Client::removeTracks_calls[0]{uris}, $trackUris, 'removeTracks: forwards the uris arrayref unchanged');
+
+    $SP->checkTracks('acctPT6', $trackUris, $cb);
+    is(scalar(@Plugins::SpotOn::API::Client::checkTracks_calls), 1, 'checkTracks: delegates to Client.pm exactly once');
+    is_deeply($Plugins::SpotOn::API::Client::checkTracks_calls[0]{uris}, $trackUris, 'checkTracks: forwards the uris arrayref unchanged');
+
+    my $showUris = ['spotify:show:BBBBBBBBBBBBBBBBBBBBBB'];
+    $SP->saveShows('acctPT7', $showUris, $cb);
+    is(scalar(@Plugins::SpotOn::API::Client::saveShows_calls), 1, 'saveShows: delegates to Client.pm exactly once');
+    is_deeply($Plugins::SpotOn::API::Client::saveShows_calls[0]{uris}, $showUris, 'saveShows: forwards the uris arrayref unchanged');
+
+    $SP->removeShows('acctPT8', $showUris, $cb);
+    is(scalar(@Plugins::SpotOn::API::Client::removeShows_calls), 1, 'removeShows: delegates to Client.pm exactly once');
+    is_deeply($Plugins::SpotOn::API::Client::removeShows_calls[0]{uris}, $showUris, 'removeShows: forwards the uris arrayref unchanged');
+
+    $SP->checkShows('acctPT9', $showUris, $cb);
+    is(scalar(@Plugins::SpotOn::API::Client::checkShows_calls), 1, 'checkShows: delegates to Client.pm exactly once');
+    is_deeply($Plugins::SpotOn::API::Client::checkShows_calls[0]{uris}, $showUris, 'checkShows: forwards the uris arrayref unchanged');
+
+    $SP->addToPlaylist('acctPT10', 'testplaylistidPT10000', $trackUris, $cb);
+    is(scalar(@Plugins::SpotOn::API::Client::addToPlaylist_calls), 1, 'addToPlaylist: delegates to Client.pm exactly once');
+    is($Plugins::SpotOn::API::Client::addToPlaylist_calls[0]{playlistId}, 'testplaylistidPT10000', 'addToPlaylist: forwards playlistId unchanged');
+    is_deeply($Plugins::SpotOn::API::Client::addToPlaylist_calls[0]{uris}, $trackUris, 'addToPlaylist: forwards the uris arrayref unchanged');
+
+    my $wpParams = { offset => 0, limit => 100 };
+    $SP->getWebPlayerPlaylistItems('acctPT11', 'testplaylistidPT11000', $wpParams, $cb);
+    is(scalar(@Plugins::SpotOn::API::Client::getWebPlayerPlaylistItems_calls), 1, 'getWebPlayerPlaylistItems: delegates to Client.pm exactly once');
+    is($Plugins::SpotOn::API::Client::getWebPlayerPlaylistItems_calls[0]{playlistId}, 'testplaylistidPT11000', 'getWebPlayerPlaylistItems: forwards playlistId unchanged');
+    is_deeply($Plugins::SpotOn::API::Client::getWebPlayerPlaylistItems_calls[0]{params}, $wpParams, 'getWebPlayerPlaylistItems: forwards the params hashref unchanged');
+
+    my $pfParams = { _locale => 'en' };
+    $SP->pathfinderHome('acctPT12', $pfParams, $cb);
+    is(scalar(@Plugins::SpotOn::API::Client::pathfinderHome_calls), 1, 'pathfinderHome: delegates to Client.pm exactly once');
+    is_deeply($Plugins::SpotOn::API::Client::pathfinderHome_calls[0]{params}, $pfParams, 'pathfinderHome: forwards the params hashref unchanged');
+}
+
+# Dynamic method-name dispatch (mirrors Plugin.pm's _doLibraryAction pattern,
+# which calls Plugins::SpotOn::API::SpClient->$apiMethod(...) with a method
+# name resolved at runtime from %_LIBRARY_API_METHODS).
+{
+    reset_all();
+    my $cb = sub { };
+    my $m = 'saveTracks';
+    my $uris = ['spotify:track:CCCCCCCCCCCCCCCCCCCCCC'];
+    $SP->$m('acctPTdyn', $uris, $cb);
+    is(scalar(@Plugins::SpotOn::API::Client::saveTracks_calls), 1, 'Dynamic dispatch: $SP->$m(...) with $m="saveTracks" reaches the passthrough delegation');
+    is_deeply($Plugins::SpotOn::API::Client::saveTracks_calls[0]{uris}, $uris, 'Dynamic dispatch: forwards arguments unchanged through the dynamic call path');
 }
 
 done_testing();

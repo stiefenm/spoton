@@ -2134,4 +2134,112 @@ sub getPlaylistItems {
     });
 }
 
+# ============================================================
+# Web-API-only passthrough delegations (Phase 75 Plan 06, Task 1)
+# ============================================================
+# These 13 methods have NO spclient equivalent that this plan's callers can
+# rely on, so SpClient forwards them to Client.pm unchanged -- each is a
+# one-line runtime-require + delegate, preserving the exact class-method
+# calling convention and full argument list (including hashref opts). This
+# makes SpClient a COMPLETE drop-in for every non-player Client.pm method
+# the four browse consumers (Plugin.pm/ProtocolHandler.pm/Connect.pm/
+# DontStopTheMusic.pm) use, so plan 75-06 Task 2's caller switch is a
+# mechanical rename -- "Caller muessen idealerweise nur den Import aendern"
+# (75-CONTEXT).
+#
+# Rationale per method:
+#   - saveTracks/removeTracks/checkTracks/saveShows/removeShows/checkShows/
+#     addToPlaylist: library WRITE/contains operations stay on the Web API
+#     because collection/v2's write surface is untested and explicitly
+#     deferred (75-CONTEXT Deferred Ideas) -- spclient READS are unified,
+#     writes are not, in this phase.
+#   - getTopTracks/getPersonalMixes/pathfinderHome/getWebPlayerPlaylistItems:
+#     no spclient equivalent exists in the verified Spike-009 endpoint
+#     catalog -- these stay Web-API/Web-Player-token-backed exactly as
+#     Client.pm already implements them.
+#   - getMe: a plain /me profile fetch has no spclient equivalent either;
+#     delegated unchanged.
+#   - getLimit: probe-detected endpoint limits are Client.pm-owned state
+#     (%_detectedLimits/%_blockedEndpoints); probe-machinery cleanup is
+#     deferred to Phase 76/77, so SpClient reads through rather than
+#     duplicating the probe cache.
+
+sub getLimit {
+    my $class = shift;
+    require Plugins::SpotOn::API::Client;
+    return Plugins::SpotOn::API::Client->getLimit(@_);
+}
+
+sub getMe {
+    my $class = shift;
+    require Plugins::SpotOn::API::Client;
+    return Plugins::SpotOn::API::Client->getMe(@_);
+}
+
+sub getTopTracks {
+    my $class = shift;
+    require Plugins::SpotOn::API::Client;
+    return Plugins::SpotOn::API::Client->getTopTracks(@_);
+}
+
+sub getPersonalMixes {
+    my $class = shift;
+    require Plugins::SpotOn::API::Client;
+    return Plugins::SpotOn::API::Client->getPersonalMixes(@_);
+}
+
+sub saveTracks {
+    my $class = shift;
+    require Plugins::SpotOn::API::Client;
+    return Plugins::SpotOn::API::Client->saveTracks(@_);
+}
+
+sub removeTracks {
+    my $class = shift;
+    require Plugins::SpotOn::API::Client;
+    return Plugins::SpotOn::API::Client->removeTracks(@_);
+}
+
+sub checkTracks {
+    my $class = shift;
+    require Plugins::SpotOn::API::Client;
+    return Plugins::SpotOn::API::Client->checkTracks(@_);
+}
+
+sub saveShows {
+    my $class = shift;
+    require Plugins::SpotOn::API::Client;
+    return Plugins::SpotOn::API::Client->saveShows(@_);
+}
+
+sub removeShows {
+    my $class = shift;
+    require Plugins::SpotOn::API::Client;
+    return Plugins::SpotOn::API::Client->removeShows(@_);
+}
+
+sub checkShows {
+    my $class = shift;
+    require Plugins::SpotOn::API::Client;
+    return Plugins::SpotOn::API::Client->checkShows(@_);
+}
+
+sub addToPlaylist {
+    my $class = shift;
+    require Plugins::SpotOn::API::Client;
+    return Plugins::SpotOn::API::Client->addToPlaylist(@_);
+}
+
+sub getWebPlayerPlaylistItems {
+    my $class = shift;
+    require Plugins::SpotOn::API::Client;
+    return Plugins::SpotOn::API::Client->getWebPlayerPlaylistItems(@_);
+}
+
+sub pathfinderHome {
+    my $class = shift;
+    require Plugins::SpotOn::API::Client;
+    return Plugins::SpotOn::API::Client->pathfinderHome(@_);
+}
+
 1;
