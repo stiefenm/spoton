@@ -788,11 +788,25 @@ sub getAlbumTracks {
         return;
     }
 
+    # WR-01: named so the normalize closure below can reuse the SAME
+    # fallback on an empty/malformed spclient success body (routes through
+    # the identical Client.pm delegation every other spclient error already
+    # uses, instead of dying inside the SimpleAsyncHTTP success callback).
+    my $fallback = sub {
+        my ($fcb) = @_;
+        require Plugins::SpotOn::API::Client;
+        Plugins::SpotOn::API::Client->getAlbumTracks($accountId, $albumId, $params, $fcb);
+    };
+
     $class->_spFacade(
         "metadata/4/album/$hexId",
         { _accountId => $accountId, _accept => 'application/json' },
         sub {
             my ($meta, $fcb) = @_;
+            unless ($meta && ref($meta) eq 'HASH') {
+                $fallback->($fcb);
+                return;
+            }
 
             my @gids;
             for my $disc (@{ $meta->{disc} || [] }) {
@@ -812,11 +826,7 @@ sub getAlbumTracks {
                 $fcb->({ items => $tracks, total => $total, offset => $offset, limit => $limit });
             });
         },
-        sub {
-            my ($fcb) = @_;
-            require Plugins::SpotOn::API::Client;
-            Plugins::SpotOn::API::Client->getAlbumTracks($accountId, $albumId, $params, $fcb);
-        },
+        $fallback,
         $cb,
     );
 }
@@ -924,11 +934,22 @@ sub getArtistAlbums {
         return;
     }
 
+    # WR-01: see getAlbumTracks for the named-fallback-reuse rationale.
+    my $fallback = sub {
+        my ($fcb) = @_;
+        require Plugins::SpotOn::API::Client;
+        Plugins::SpotOn::API::Client->getArtistAlbums($accountId, $artistId, $params, $fcb);
+    };
+
     $class->_spFacade(
         "metadata/4/artist/$hexId",
         { _accountId => $accountId, _accept => 'application/json' },
         sub {
             my ($meta, $fcb) = @_;
+            unless ($meta && ref($meta) eq 'HASH') {
+                $fallback->($fcb);
+                return;
+            }
 
             my @albums;
             for my $groupKey (qw(album_group single_group compilation_group)) {
@@ -947,11 +968,7 @@ sub getArtistAlbums {
 
             $fcb->({ items => \@slice, total => $total, offset => $offset, limit => $limit });
         },
-        sub {
-            my ($fcb) = @_;
-            require Plugins::SpotOn::API::Client;
-            Plugins::SpotOn::API::Client->getArtistAlbums($accountId, $artistId, $params, $fcb);
-        },
+        $fallback,
         $cb,
     );
 }
@@ -1042,11 +1059,22 @@ sub getShowEpisodes {
         return;
     }
 
+    # WR-01: see getAlbumTracks for the named-fallback-reuse rationale.
+    my $fallback = sub {
+        my ($fcb) = @_;
+        require Plugins::SpotOn::API::Client;
+        Plugins::SpotOn::API::Client->getShowEpisodes($accountId, $showId, $params, $fcb);
+    };
+
     $class->_spFacade(
         "metadata/4/show/$hexId",
         { _accountId => $accountId, _accept => 'application/json' },
         sub {
             my ($meta, $fcb) = @_;
+            unless ($meta && ref($meta) eq 'HASH') {
+                $fallback->($fcb);
+                return;
+            }
 
             my @gids = map { $_->{gid} } grep { $_->{gid} } @{ $meta->{episode} || [] };
 
@@ -1061,11 +1089,7 @@ sub getShowEpisodes {
                 $fcb->({ items => $episodes, total => $total, offset => $offset, limit => $limit });
             });
         },
-        sub {
-            my ($fcb) = @_;
-            require Plugins::SpotOn::API::Client;
-            Plugins::SpotOn::API::Client->getShowEpisodes($accountId, $showId, $params, $fcb);
-        },
+        $fallback,
         $cb,
     );
 }
@@ -2108,6 +2132,18 @@ sub getPlaylistItems {
         main::INFOLOG && $log->info('SpClient: no login5-capable credentials, delegating getPlaylistItems to Client.pm (D-06)');
         require Plugins::SpotOn::API::Client;
         Plugins::SpotOn::API::Client->getPlaylistItems($accountId, $playlistId, $params, $cb);
+        return;
+    }
+
+    # WR-04: unlike track/album/artist/show/episode ids (converted via
+    # idToHex), playlist ids are used directly as base62 in the spclient URL
+    # path -- validate charset/length BEFORE _playlistEnvelope ever splices
+    # $playlistId into the request path or the cache key, so a malformed or
+    # user-influenced value (LMS favorites URLs, CLI playlist args, OPML
+    # passthrough params) can never redirect the request or pollute the
+    # cache-key namespace.
+    unless (defined $playlistId && $playlistId =~ /^[0-9A-Za-z]{22}$/) {
+        $cb->(undef, { error => 'invalid_id' });
         return;
     }
 

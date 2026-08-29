@@ -881,6 +881,25 @@ sub context_resolve_fixture {
         'D-09: repeated getAlbumTracks for the same album+slice issues zero additional HTTP requests (response cache hits)');
 }
 
+# WR-01 (gap closure 75-07 Task 2): an empty-body 200 response leaves $meta
+# undef -- the normalize closure must delegate to Client.pm exactly once
+# instead of dying inside the async HTTP success callback (no die, no hang,
+# no double-callback).
+{
+    reset_all();
+    $Slim::Networking::SimpleAsyncHTTP::auto_response_content = '';
+
+    my $cbCalls = 0;
+    my ($result, $err);
+    $SP->getAlbumTracks('acct17', '4iV5W9uYEdYUVa79Axb7Rh', {}, sub { $cbCalls++; ($result, $err) = @_ });
+
+    is($cbCalls, 1, 'WR-01 getAlbumTracks: cb fires exactly once on an empty-body 200 (no double-callback)');
+    is(scalar(@Plugins::SpotOn::API::Client::getAlbumTracks_calls), 1,
+        'WR-01 getAlbumTracks: empty-body $meta delegates to Client.pm exactly once, no die');
+
+    $Slim::Networking::SimpleAsyncHTTP::auto_response_content = '{}';
+}
+
 # getArtist: normalized shape incl. portrait_group images, empty genres.
 {
     reset_all();
@@ -925,6 +944,23 @@ sub context_resolve_fixture {
 
     my @metaReqs = grep { $_->{url} =~ m{/metadata/4/} } Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests();
     is(scalar(@metaReqs), 1, 'getArtistAlbums: exactly one metadata call total -- no per-album enrichment calls');
+}
+
+# WR-01 (gap closure 75-07 Task 2): empty-body 200 -> Client.pm delegation,
+# no die, no hang, cb fires exactly once.
+{
+    reset_all();
+    $Slim::Networking::SimpleAsyncHTTP::auto_response_content = '';
+
+    my $cbCalls = 0;
+    my ($result, $err);
+    $SP->getArtistAlbums('acct18', '4iV5W9uYEdYUVa79Axb7Rh', {}, sub { $cbCalls++; ($result, $err) = @_ });
+
+    is($cbCalls, 1, 'WR-01 getArtistAlbums: cb fires exactly once on an empty-body 200 (no double-callback)');
+    is(scalar(@Plugins::SpotOn::API::Client::getArtistAlbums_calls), 1,
+        'WR-01 getArtistAlbums: empty-body $meta delegates to Client.pm exactly once, no die');
+
+    $Slim::Networking::SimpleAsyncHTTP::auto_response_content = '{}';
 }
 
 # ============================================================
@@ -977,6 +1013,23 @@ sub context_resolve_fixture {
     is($result->{items}[0]{name}, 'Test Episode', 'getShowEpisodes: enriched episode carries name');
     is($result->{items}[0]{duration_ms}, 1800000, 'getShowEpisodes: normalized episode contains duration_ms');
     is($result->{items}[0]{release_date}, '2021-03-10', 'getShowEpisodes: normalized episode contains release_date');
+}
+
+# WR-01 (gap closure 75-07 Task 2): empty-body 200 -> Client.pm delegation,
+# no die, no hang, cb fires exactly once.
+{
+    reset_all();
+    $Slim::Networking::SimpleAsyncHTTP::auto_response_content = '';
+
+    my $cbCalls = 0;
+    my ($result, $err);
+    $SP->getShowEpisodes('acct24', '4iV5W9uYEdYUVa79Axb7Rh', {}, sub { $cbCalls++; ($result, $err) = @_ });
+
+    is($cbCalls, 1, 'WR-01 getShowEpisodes: cb fires exactly once on an empty-body 200 (no double-callback)');
+    is(scalar(@Plugins::SpotOn::API::Client::getShowEpisodes_calls), 1,
+        'WR-01 getShowEpisodes: empty-body $meta delegates to Client.pm exactly once, no die');
+
+    $Slim::Networking::SimpleAsyncHTTP::auto_response_content = '{}';
 }
 
 # getEpisode: single-object fetch.
@@ -1817,6 +1870,38 @@ sub playlist_mixed_envelope_fixture {
     is(scalar(@Plugins::SpotOn::API::Client::getPlaylistItems_calls), 1, 'getPlaylistItems D-07: falls back to Client.pm on a playlist/v2 500');
 
     $Slim::Networking::SimpleAsyncHTTP::auto_mode = 'success';
+}
+
+# WR-04 (gap closure 75-07 Task 2): a malformed playlistId (containing '/')
+# is rejected with { error => 'invalid_id' } BEFORE any spclient HTTP request
+# or Client.pm delegation -- distinct from the D-06/D-07 delegation paths,
+# which stay unaffected (tested above with valid 22-char fixture ids).
+{
+    reset_all();
+
+    my ($result, $err);
+    $SP->getPlaylistItems('acct99a', 'not/a/valid/playlist/id', {}, sub { ($result, $err) = @_ });
+
+    is(scalar(Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests()), 0,
+        'WR-04: malformed playlistId (contains /) -- zero spclient HTTP requests');
+    is(scalar(@Plugins::SpotOn::API::Client::getPlaylistItems_calls), 0,
+        'WR-04: malformed playlistId (contains /) -- zero Client.pm delegations (hard validation error, not D-06/D-07)');
+    is($err->{error}, 'invalid_id', 'WR-04: malformed playlistId (contains /) returns { error => invalid_id }');
+}
+
+# WR-04: a too-short playlistId (10 chars, valid charset) is also rejected
+# the same way.
+{
+    reset_all();
+
+    my ($result, $err);
+    $SP->getPlaylistItems('acct99b', 'shortid123', {}, sub { ($result, $err) = @_ });
+
+    is(scalar(Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests()), 0,
+        'WR-04: too-short playlistId -- zero spclient HTTP requests');
+    is(scalar(@Plugins::SpotOn::API::Client::getPlaylistItems_calls), 0,
+        'WR-04: too-short playlistId -- zero Client.pm delegations');
+    is($err->{error}, 'invalid_id', 'WR-04: too-short playlistId returns { error => invalid_id }');
 }
 
 # ============================================================
