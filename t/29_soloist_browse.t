@@ -184,10 +184,17 @@ END
 # 73-03 Task 3: controllable DaemonManager stub. $HELPER is undef (no
 # daemon) by default; test cases assign a Test::FakeSoloistDaemon instance
 # to simulate an alive daemon with a known stream port.
+# 76-04 Task 2: $RESOLVED stubs resolveSoloistFormat (default 'pcm' so the
+# pre-76-04 direct-stream assertions keep passing unchanged); $PASSTHROUGH
+# stubs the librespot boolean for formatOverride coverage.
 write_stub($stub_dir, 'Plugins::SpotOn::Unified::DaemonManager', <<'END');
 package Plugins::SpotOn::Unified::DaemonManager;
 our $HELPER;
-sub helperForClient { return $HELPER; }
+our $RESOLVED    = 'pcm';
+our $PASSTHROUGH = 0;
+sub helperForClient             { return $HELPER; }
+sub resolveSoloistFormat        { return $RESOLVED; }
+sub resolvePassthroughForClient { return $PASSTHROUGH; }
 1;
 END
 
@@ -389,6 +396,119 @@ my $pkg = 'Plugins::SpotOn::ProtocolHandler';
         "getFormatForURL(track) eq 'soc' when backend is unset (default librespot)");
 
     ok($pkg->canSeek(MockClient->new), "canSeek() truthy when backend is unset (default librespot)");
+}
+
+# ============================================================
+# 76-04 Task 2 (D-06/D-07): resolver-gated canDirectStream + formatOverride
+# smp routing. The DaemonManager stub's $RESOLVED controls the resolver.
+# ============================================================
+{
+    package MockTrack;
+    sub new { return bless { url => $_[1] }, $_[0]; }
+    sub url { return $_[0]->{url}; }
+}
+{
+    package MockSong;
+    sub new    { my ($class, %args) = @_; return bless { %args }, $class; }
+    sub master { return $_[0]->{master}; }
+    sub track  { return $_[0]->{track}; }
+}
+
+# --- soloist browse: resolved pcm -> direct URL, resolved flac/mp3 -> 0 ---
+{
+    reset_backend('soloist');
+    $Plugins::SpotOn::Unified::DaemonManager::HELPER =
+        Plugins::SpotOn::Unified::SoloistDaemon->new(alive => 1, port => 39755);
+    my $client = MockClient->new(synced => 0);
+
+    local $Plugins::SpotOn::Unified::DaemonManager::RESOLVED = 'pcm';
+    like($pkg->canDirectStream($client, 'spoton://track:abc123'),
+        qr{^http://127\.0\.0\.1:39755/stream$},
+        "soloist browse: resolved 'pcm' keeps the direct /stream URL (D-06)");
+
+    $Plugins::SpotOn::Unified::DaemonManager::RESOLVED = 'flac';
+    is($pkg->canDirectStream($client, 'spoton://track:abc123'), 0,
+        "soloist browse: resolved 'flac' returns 0 (LMS opens the stream and runs the soc transcode rule)");
+
+    $Plugins::SpotOn::Unified::DaemonManager::RESOLVED = 'mp3';
+    is($pkg->canDirectStream($client, 'spoton://track:abc123'), 0,
+        "soloist browse: resolved 'mp3' returns 0 (forces the smp transcode pipeline)");
+}
+
+# --- soloist connect: same gating on the unified connect block ---
+{
+    reset_backend('soloist');
+    $Plugins::SpotOn::Unified::DaemonManager::HELPER =
+        Plugins::SpotOn::Unified::SoloistDaemon->new(alive => 1, port => 39755);
+    my $client = MockClient->new(synced => 0);
+
+    local $Plugins::SpotOn::Unified::DaemonManager::RESOLVED = 'pcm';
+    like($pkg->canDirectStream($client, 'spoton://connect-1234567890'),
+        qr{^http://127\.0\.0\.1:39755/stream$},
+        "soloist connect: resolved 'pcm' keeps the direct /stream URL (D-06)");
+
+    $Plugins::SpotOn::Unified::DaemonManager::RESOLVED = 'flac';
+    is($pkg->canDirectStream($client, 'spoton://connect-1234567890'), 0,
+        "soloist connect: resolved 'flac' returns 0 (forces the LMS-side transcode pipeline)");
+}
+
+# --- librespot connect: explicit pref check unchanged (D-14 regression pin) ---
+{
+    reset_backend('librespot');
+    $Plugins::SpotOn::Unified::DaemonManager::HELPER =
+        Plugins::SpotOn::Unified::SoloistDaemon->new(alive => 1, port => 39755);
+    my $client = MockClient->new(synced => 0);
+
+    local $Slim::Utils::Prefs::FAKE{streamFormat} = 'mp3';
+    is($pkg->canDirectStream($client, 'spoton://connect-1234567890'), 0,
+        "librespot connect: explicit streamFormat=mp3 still forces transcoding (unchanged, D-14)");
+
+    $Slim::Utils::Prefs::FAKE{streamFormat} = 'auto';
+    like($pkg->canDirectStream($client, 'spoton://connect-1234567890'),
+        qr{^http://127\.0\.0\.1:39755/stream$},
+        "librespot connect: streamFormat=auto keeps the direct /stream URL (unchanged, D-14)");
+}
+
+# --- formatOverride: smp routing (D-07) ---
+{
+    my $client = MockClient->new(synced => 0);
+    my $song = MockSong->new(
+        master => $client,
+        track  => MockTrack->new('spoton://track:abc123'),
+    );
+
+    reset_backend('soloist');
+    local $Plugins::SpotOn::Unified::DaemonManager::RESOLVED = 'mp3';
+    is($pkg->formatOverride($song), 'smp',
+        "formatOverride: soloist resolved 'mp3' -> 'smp' (single-rule forcing type, D-07)");
+
+    $Plugins::SpotOn::Unified::DaemonManager::RESOLVED = 'flac';
+    is($pkg->formatOverride($song), 'soc',
+        "formatOverride: soloist resolved 'flac' -> 'soc' (auto FLAC selection stays with TranscodingHelper, D-05)");
+
+    $Plugins::SpotOn::Unified::DaemonManager::RESOLVED = 'pcm';
+    is($pkg->formatOverride($song), 'soc',
+        "formatOverride: soloist resolved 'pcm' -> 'soc'");
+
+    # librespot: explicit mp3 pref routes to 'smp' too; auto stays 'soc';
+    # passthrough stays 'son' (untouched by the smp branch).
+    reset_backend('librespot');
+    my $connectSong = MockSong->new(
+        master => $client,
+        track  => MockTrack->new('spoton://connect-1234567890'),
+    );
+    local $Slim::Utils::Prefs::FAKE{streamFormat} = 'mp3';
+    local $Plugins::SpotOn::Unified::DaemonManager::PASSTHROUGH = 0;
+    is($pkg->formatOverride($connectSong), 'smp',
+        "formatOverride: librespot explicit streamFormat=mp3 -> 'smp' (D-07)");
+
+    $Slim::Utils::Prefs::FAKE{streamFormat} = 'auto';
+    is($pkg->formatOverride($connectSong), 'soc',
+        "formatOverride: librespot streamFormat=auto without passthrough -> 'soc' (unchanged)");
+
+    $Plugins::SpotOn::Unified::DaemonManager::PASSTHROUGH = 1;
+    is($pkg->formatOverride($connectSong), 'son',
+        "formatOverride: librespot passthrough -> 'son' (unchanged, D-14)");
 }
 
 done_testing();

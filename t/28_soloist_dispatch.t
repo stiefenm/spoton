@@ -460,11 +460,12 @@ require Time::HiRes;    # real core module (t/31's own precedent) -- needed
     sub new {
         my ($class, %args) = @_;
         return bless {
-            id     => $args{id},
-            name   => $args{name} // 'Player',
-            synced => $args{synced} // 0,
-            master => $args{master},
-            model  => $args{model} // 'squeezebox',
+            id      => $args{id},
+            name    => $args{name} // 'Player',
+            synced  => $args{synced} // 0,
+            master  => $args{master},
+            model   => $args{model} // 'squeezebox',
+            formats => $args{formats} // [],   # 76-04: per-instance for resolveSoloistFormat tests
         }, $class;
     }
     sub id          { return $_[0]->{id}; }
@@ -476,7 +477,7 @@ require Time::HiRes;    # real core module (t/31's own precedent) -- needed
     sub isPlaying   { return 0; }
     sub playingSong { return undef; }
     sub connected   { return 1; }
-    sub formats     { return (); }
+    sub formats     { return @{ $_[0]->{formats} || [] }; }
 }
 
 {
@@ -490,8 +491,9 @@ require Time::HiRes;    # real core module (t/31's own precedent) -- needed
 {
     package Slim::Player::Sync;
     our %SLAVE_OF = ();    # slaveId => masterId
+    our @SLAVES   = ();    # 76-04: controllable member list for slaves()
     sub isSlave { return exists $SLAVE_OF{ $_[0]->id } ? 1 : 0; }
-    sub slaves  { return (); }    # not exercised by this 2-player scenario
+    sub slaves  { return @SLAVES; }    # default empty (matches the pre-76-04 stub)
 }
 
 {
@@ -630,6 +632,107 @@ $Slim::Player::Sync::SLAVE_OF{ $slave->id } = $master->id;
     is_deeply(\@STOPFORSYNC_CALLS, [ $master->id ],
         "sync-change handler calls stopForSync() on a SoloistDaemon whose name no longer matches "
         . "deviceNameForClient (idle) -- GH #143 mechanism unmodified for soloist");
+}
+
+# ============================================================
+# 76-04 Task 1 (D-06): resolveSoloistFormat() -- per-client resolution +
+# sync-group flc aggregation. Pref reads go through the shared FAKE_VALUES
+# hash (the Prefs stub's client() returns the same backing store), so the
+# per-case streamFormat value is set via local -- inside a sync group the
+# resolver reads the MASTER's pref only, so a single shared value is exact.
+# Sync members are injected via @Slim::Player::Sync::SLAVES.
+# ============================================================
+{
+    my $dm = 'Plugins::SpotOn::Unified::DaemonManager';
+
+    # undef client -> safe 'pcm' default
+    is($dm->resolveSoloistFormat(undef), 'pcm',
+        "resolveSoloistFormat(undef client) -> 'pcm' (safe default)");
+
+    # --- explicit formats win, no capability check (D-06) ---
+    {
+        local $Slim::Utils::Prefs::FAKE_VALUES{streamFormat} = 'flac';
+        local @Slim::Player::Sync::SLAVES = ();
+        my $c = Test::SyncClient->new(id => 'fmt:01', formats => ['pcm']);  # NOT flc-capable
+        is($dm->resolveSoloistFormat($c), 'flac',
+            "explicit streamFormat=flac -> 'flac' (explicit wins, no capability check)");
+    }
+    {
+        local $Slim::Utils::Prefs::FAKE_VALUES{streamFormat} = 'pcm';
+        local @Slim::Player::Sync::SLAVES = ();
+        my $c = Test::SyncClient->new(id => 'fmt:02', formats => ['flc', 'pcm']);
+        is($dm->resolveSoloistFormat($c), 'pcm',
+            "explicit streamFormat=pcm -> 'pcm' even on an flc-capable player");
+    }
+    {
+        local $Slim::Utils::Prefs::FAKE_VALUES{streamFormat} = 'mp3';
+        local @Slim::Player::Sync::SLAVES = ();
+        my $c = Test::SyncClient->new(id => 'fmt:03', formats => ['flc', 'pcm', 'mp3']);
+        is($dm->resolveSoloistFormat($c), 'mp3',
+            "explicit streamFormat=mp3 -> 'mp3' even on an flc-capable player");
+    }
+
+    # --- 'ogg' maps to auto (OGG is librespot-exclusive, D-07) ---
+    {
+        local $Slim::Utils::Prefs::FAKE_VALUES{streamFormat} = 'ogg';
+        local @Slim::Player::Sync::SLAVES = ();
+        my $c = Test::SyncClient->new(id => 'fmt:04', formats => ['ogg', 'flc', 'pcm']);
+        is($dm->resolveSoloistFormat($c), 'flac',
+            "streamFormat=ogg maps to auto under soloist -> 'flac' on an flc-capable player (D-07)");
+    }
+
+    # --- auto: capability-based, same idiom as the librespot ogg probe ---
+    {
+        local $Slim::Utils::Prefs::FAKE_VALUES{streamFormat} = 'auto';
+        local @Slim::Player::Sync::SLAVES = ();
+        my $c = Test::SyncClient->new(id => 'fmt:05', formats => ['ogg', 'flc', 'aif', 'pcm', 'mp3']);
+        is($dm->resolveSoloistFormat($c), 'flac',
+            "auto + flc announced in formats() -> 'flac' (D-06 capability-based)");
+    }
+    {
+        local $Slim::Utils::Prefs::FAKE_VALUES{streamFormat} = 'auto';
+        local @Slim::Player::Sync::SLAVES = ();
+        my $c = Test::SyncClient->new(id => 'fmt:06', formats => ['pcm', 'mp3']);
+        is($dm->resolveSoloistFormat($c), 'pcm',
+            "auto without flc in formats() -> 'pcm'");
+    }
+    {
+        local $Slim::Utils::Prefs::FAKE_VALUES{streamFormat} = undef;
+        local @Slim::Player::Sync::SLAVES = ();
+        my $c = Test::SyncClient->new(id => 'fmt:07', formats => ['flc', 'pcm']);
+        is($dm->resolveSoloistFormat($c), 'flac',
+            "unset streamFormat pref behaves like auto -> 'flac' on an flc-capable player");
+    }
+
+    # --- sync-group aggregation (D-06 mirror of the OGG aggregation) ---
+    {
+        local $Slim::Utils::Prefs::FAKE_VALUES{streamFormat} = 'auto';
+        my $m = Test::SyncClient->new(id => 'sync:11', synced => 1, formats => ['flc', 'pcm']);
+        $m->{master} = $m;    # LMS semantics: master() on the master returns itself
+        my $s = Test::SyncClient->new(id => 'sync:12', synced => 1, master => $m, formats => ['pcm']);
+        local @Slim::Player::Sync::SLAVES = ($s);
+        is($dm->resolveSoloistFormat($m), 'pcm',
+            "sync group: master resolves flac but one slave lacks flc -> whole group 'pcm' (D-06 downgrade)");
+    }
+    {
+        local $Slim::Utils::Prefs::FAKE_VALUES{streamFormat} = 'auto';
+        my $m = Test::SyncClient->new(id => 'sync:21', synced => 1, formats => ['flc', 'pcm']);
+        $m->{master} = $m;
+        my $s = Test::SyncClient->new(id => 'sync:22', synced => 1, master => $m, formats => ['flc', 'pcm']);
+        local @Slim::Player::Sync::SLAVES = ($s);
+        is($dm->resolveSoloistFormat($m), 'flac',
+            "sync group: ALL members flc-capable -> 'flac'");
+    }
+    {
+        # unsynced player never consults slaves -- a non-flc player in the
+        # stub slave list must NOT downgrade a standalone player.
+        local $Slim::Utils::Prefs::FAKE_VALUES{streamFormat} = 'auto';
+        my $c      = Test::SyncClient->new(id => 'solo:31', synced => 0, formats => ['flc', 'pcm']);
+        my $nonflc = Test::SyncClient->new(id => 'solo:32', formats => ['pcm']);
+        local @Slim::Player::Sync::SLAVES = ($nonflc);    # would downgrade IF consulted
+        is($dm->resolveSoloistFormat($c), 'flac',
+            "unsynced player never consults slaves (stays 'flac' despite a non-flc entry in the slave stub)");
+    }
 }
 
 done_testing();

@@ -13,7 +13,7 @@ my $conf_file   = "$project_dir/Plugins/SpotOn/custom-types.conf";
 ok(-f $conf_file, "custom-types.conf exists at $conf_file");
 
 SKIP: {
-    skip "custom-types.conf not found", 4 unless -f $conf_file;
+    skip "custom-types.conf not found", 7 unless -f $conf_file;
 
     open(my $fh, '<', $conf_file) or die "Cannot open $conf_file: $!";
     my $content = do { local $/; <$fh> };
@@ -42,6 +42,22 @@ SKIP: {
     my ($sol_line) = grep { /^sol\s+/ } split(/\n/, $content);
 
     ok(!defined $sol_line, "sol format line is gone from custom-types.conf (D-03 retirement)");
+
+    # Phase 76 D-07 (76-04): dedicated MP3 forcing type -- registered so
+    # formatOverride's 'smp' result maps to a real content type whose only
+    # convert rule is the [lame] MP3 transcode.
+    my ($smp_line) = grep { /^smp\s+/ } split(/\n/, $content);
+
+    ok(defined $smp_line, "smp format line exists in custom-types.conf (D-07 MP3 forcing type)");
+
+    SKIP: {
+        skip "smp format line not found", 2 unless defined $smp_line;
+
+        my @fields = split(/\s+/, $smp_line);
+
+        is($fields[2], 'audio/mpeg', "smp MIME-Type is audio/mpeg (MP3 target semantics)");
+        is($fields[3], 'audio', "smp Server-File-Type is audio");
+    }
 }
 
 done_testing();

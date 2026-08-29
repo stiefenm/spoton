@@ -13,7 +13,7 @@ my $conf_file   = "$project_dir/Plugins/SpotOn/custom-convert.conf";
 ok(-f $conf_file, "custom-convert.conf exists at $conf_file");
 
 SKIP: {
-    skip "custom-convert.conf not found", 10 unless -f $conf_file;
+    skip "custom-convert.conf not found", 13 unless -f $conf_file;
 
     open(my $fh, '<', $conf_file) or die "Cannot open $conf_file: $!";
     my $content = do { local $/; <$fh> };
@@ -57,6 +57,29 @@ SKIP: {
     $stripped =~ s{\[sox\]}{}g;
     ok($stripped !~ m{\bsox\b}i,
        "sox appears only as the [sox] tool token, never as a raw path or bare word");
+
+    # Phase 76 D-07 (76-04): the dedicated MP3 forcing rule -- smp has
+    # exactly ONE rule so TranscodingHelper profile matching can only land
+    # on MP3 (explicit per-player streamFormat=mp3). The command must start
+    # with the bundled-tool-style [lame] token (LMS disables the rule when
+    # the system lame package is absent -- no smp pcm fallback by design).
+    # <!-- planner-discipline-allow: lame -->
+    ok($content =~ m{^smp mp3 \* \*\n(?:\t#[^\n]*\n)*\t\[lame\] }m,
+       "smp mp3 rule present and its command starts with the [lame] tool token (D-07)");
+
+    # $SAMPLESIZE$ drives BOTH transcode rules (soc-flc from 76-01 + smp-mp3)
+    # so soloist S32 and librespot S16 input decode correctly through the
+    # same rule text.
+    my $samplesize_count = () = $content =~ m{\$SAMPLESIZE\$}g;
+    cmp_ok($samplesize_count, '>=', 2,
+       "\$SAMPLESIZE\$ appears in at least 2 rules (soc-flc + smp-mp3)");
+
+    # Mirror of the sox pin: after stripping literal [lame] tokens, no bare
+    # `lame` word remains -- lame appears ONLY as the bracketed tool token.
+    my $stripped_lame = $content;
+    $stripped_lame =~ s{\[lame\]}{}g;
+    ok($stripped_lame !~ m{\blame\b}i,
+       "lame appears only as the [lame] tool token, never as a raw path or bare word");
 
     # Phase 76 D-05: seek templating DID return with the soc-flc
     # T-capability line -- but in the sanctioned capability-flag form
