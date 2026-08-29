@@ -30,6 +30,17 @@ use constant VOLUME_GRACE_PERIOD => 3;
 # Seconds; suppress spurious stop events during session setup (mid-playback transfer)
 use constant CONNECT_START_GRACE => 12;
 
+# Seconds; Phase 76 (ROADMAP: auto-play after LMS restart) — a freshly
+# (re)spawned daemon re-announces an existing dormant Spirc session as
+# track_changed/start with NO user action (live-captured sequence, 76-05
+# SUMMARY: daemon spawn +0.43s -> 'start' -> unconditional playlist play ->
+# the real paused state arrives as 'stop' +45ms later and is swallowed by
+# CONNECT_START_GRACE). A genuine app-initiated transfer cannot arrive this
+# close to the daemon's own spawn: the device only becomes transferable
+# after the daemon has connected to Spotify, and a human still has to tap
+# it. All captured re-announcements arrived at daemon uptime < 1s.
+use constant RESTART_START_GRACE => 5;
+
 # Seconds; CR-02 — suppress the un-sourced pause/stop notification LMS fires
 # internally during a soloist-browse advance/start (mirrors CONNECT_START_GRACE
 # for the Connect path).
@@ -1050,6 +1061,42 @@ sub _connectEvent {
     # -----------------------------------------------------------------
     if ($cmd eq 'start') {
         my $trackId = $request->getParam('_p2');
+
+        # ROADMAP Phase 76 (auto-play after LMS restart): provenance gate.
+        # A 'start' arriving within RESTART_START_GRACE of the daemon's own
+        # (re)spawn while the LMS player is idle is a re-announcement of a
+        # restored/dormant session — NOT a fresh user transfer (see constant
+        # comment for the captured event sequence). Suppress the playlist
+        # play (no self-starting audio), but keep the session visible and
+        # manually resumable: metadata is still fetched, the ownership claim
+        # ($_activeConnectPlayer / pendingConnect, set above) stays, and a
+        # later play tap in the Spotify app arrives as 'resume' whose
+        # not-on-Connect-stream branch re-enters via playlist play normally.
+        # The isPlaying exception preserves daemon-crash recovery: if the
+        # player was already audibly playing when the daemon respawned,
+        # resuming the stream is not a "self-start".
+        # (Unrelated to pref_enableAutoplay — that is DSTM autoplay.)
+        require Plugins::SpotOn::Unified::DaemonManager;
+        my $daemonUptime = Plugins::SpotOn::Unified::DaemonManager->uptime($client->id) || 0;
+        if (!$client->isPlaying && $daemonUptime > 0 && $daemonUptime < RESTART_START_GRACE) {
+            main::INFOLOG && $log->is_info && $log->info(sprintf(
+                "Suppressing Connect autoplay for %s: start event %.2fs after daemon spawn "
+                . "with idle player — restored session, not a user transfer (Phase 76 restart gate)",
+                $client->id, $daemonUptime
+            ));
+
+            if ($trackId) {
+                $client->pluginData(eventTrackUri => "spotify:track:$trackId");
+                _fetchTrackMetadata($client, $trackId);
+            }
+
+            $log->warn("[DIAG] [$diagTs] start_suppressed: player=" . $client->id
+                . " track=" . ($trackId || 'none')
+                . " daemonUptime=" . sprintf('%.2f', $daemonUptime)
+            ) if $diagMode;
+
+            return;
+        }
 
         # Clear echo suppression — new track start is authoritative
         $client->pluginData(connectPauseTs => 0);
