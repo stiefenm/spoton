@@ -500,6 +500,17 @@ sub _onNewSong {
                 "New song without Connect URL — clearing active Connect state for " . $client->id
             );
             $_activeConnectPlayer = undef;
+
+            # GH #151: session over because the user started other playback —
+            # discard the saved power state WITHOUT powering off (the player
+            # is obviously in use).
+            if (defined $client->pluginData('connectPrevPower')) {
+                main::INFOLOG && $log->is_info && $log->info(
+                    "Discarding saved pre-Connect power state for " . $client->id
+                    . " — user started other playback (GH #151)"
+                );
+                $client->pluginData(connectPrevPower => undef);
+            }
         }
     }
 }
@@ -967,6 +978,18 @@ sub _connectEvent {
                 "Resume while not on Connect stream — re-entering Connect via playlist play"
             );
 
+            # GH #151: this re-entry powers the player on (playlist play
+            # below) — save the pre-Connect power state if no session save
+            # exists yet (e.g. a restart-suppressed session resuming here;
+            # first save wins, same rule as the start handler).
+            if (!defined $client->pluginData('connectPrevPower')) {
+                $client->pluginData(connectPrevPower => ($client->power ? 1 : 0));
+                main::INFOLOG && $log->is_info && $log->info(
+                    "Saved pre-Connect power state for " . $client->id . ": "
+                    . ($client->pluginData('connectPrevPower') ? 'on' : 'off') . " (GH #151)"
+                );
+            }
+
             # Suppress transitional pause/stop events (same as 'start' handler):
             # newTrack prevents _onPause from forwarding the LMS stop-before-play
             # sequence to the binary, which would immediately re-pause Spotify.
@@ -1096,6 +1119,20 @@ sub _connectEvent {
             ) if $diagMode;
 
             return;
+        }
+
+        # GH #151: save the pre-Connect power state ONCE per session, BEFORE
+        # the playlist play below powers the player on. First save wins:
+        # repeated start events within one session (transfer away/back,
+        # Spirc reconnect) must not overwrite the saved value with the
+        # now-on state. Cleared at a real session end (stop 'inactive'
+        # marker) or when the user starts other playback (_onNewSong).
+        if (!defined $client->pluginData('connectPrevPower')) {
+            $client->pluginData(connectPrevPower => ($client->power ? 1 : 0));
+            main::INFOLOG && $log->is_info && $log->info(
+                "Saved pre-Connect power state for " . $client->id . ": "
+                . ($client->pluginData('connectPrevPower') ? 'on' : 'off') . " (GH #151)"
+            );
         }
 
         # Clear echo suppression — new track start is authoritative
@@ -1247,6 +1284,34 @@ sub _connectEvent {
     # Stop: forward pause to LMS player (source-marked to prevent echo)
     # -----------------------------------------------------------------
     if ($cmd eq 'stop') {
+        # GH #151: SESSION-END path — the daemon marks the stop 'inactive'
+        # when this device stopped being the active Connect target (device
+        # deselected / transfer-away / disconnect). This is an authoritative
+        # daemon-side state change, not a transitional stop, so it is
+        # handled BEFORE the newTrack/grace suppressions below. Pause the
+        # stream (mirrors the plain-stop behavior), then restore the saved
+        # pre-Connect power state. The generic un-marked stop (app pause)
+        # never restores power.
+        if (($request->getParam('_p2') || '') eq 'inactive') {
+            if ($client->isPlaying && __PACKAGE__->isSpotifyConnect($client)) {
+                main::INFOLOG && $log->is_info && $log->info(
+                    "Connect session ended (device inactive) — pausing " . $client->id
+                );
+                $client->pluginData(connectPauseTs => Time::HiRes::time());
+                my $pauseReq = Slim::Control::Request->new($client->id, ['pause', 1]);
+                $pauseReq->source(__PACKAGE__);
+                $pauseReq->execute();
+            }
+
+            _restorePowerAfterConnect($client);
+
+            $log->warn("[DIAG] [$diagTs] stop: player=" . $client->id
+                . " sessionEnd=1"
+                . " elapsed=" . sprintf('%.3f', Time::HiRes::time() - $diagTs)
+            ) if $diagMode;
+
+            return;
+        }
         # Grace period: ignore spurious stop events during Connect session setup.
         # The binary fires Stopped between TrackChanged and Playing — this must not
         # pause the LMS player. Time-based check only (isPlaying is already true by
@@ -1323,6 +1388,53 @@ sub _connectEvent {
     }
 
     main::INFOLOG && $log->is_info && $log->info("Unhandled spottyconnect command: $cmd");
+}
+
+# _restorePowerAfterConnect($client)
+# GH #151: restore the pre-Connect power state at Connect session end
+# (ShairTunes prior art). Only powers OFF (never on): a player that was
+# already on before the session simply stays on. Guards:
+#   - no-op unless a power state was saved for this session
+#   - the saved flag is ALWAYS cleared, even on the skip paths, so a stale
+#     value can never leak into a later session (first-save-wins contract)
+#   - skip the power-off if the player is meanwhile playing something that
+#     is not the Connect stream (user started local playback during/after
+#     the session — powering off would kill their music)
+# Sync groups: _connectEvent normalizes to the master client (the daemon
+# lives on the master), so save/restore applies to the player that received
+# the event — each member with its own session is handled individually.
+sub _restorePowerAfterConnect {
+    my ($client) = @_;
+
+    my $prev = $client->pluginData('connectPrevPower');
+    return unless defined $prev;
+
+    # Always clear first — no path below may leave a stale saved state.
+    $client->pluginData(connectPrevPower => undef);
+
+    if ($prev) {
+        main::DEBUGLOG && $log->is_debug && $log->debug(
+            "Session end: player " . $client->id . " was on before Connect — leaving on (GH #151)"
+        );
+        return;
+    }
+
+    my $song = $client->playingSong();
+    my $url  = $song ? ($song->track->url || $song->streamUrl || '') : '';
+    if ($client->isPlaying && $url !~ m{spoton://connect-}) {
+        main::INFOLOG && $log->is_info && $log->info(
+            "Session end: " . $client->id . " is playing something else — skipping power-off (GH #151)"
+        );
+        return;
+    }
+
+    main::INFOLOG && $log->is_info && $log->info(
+        "Session end: restoring pre-Connect power state (off) for " . $client->id . " (GH #151)"
+    );
+
+    my $powerReq = Slim::Control::Request->new($client->id, ['power', 0]);
+    $powerReq->source(__PACKAGE__);
+    $powerReq->execute();
 }
 
 # _fetchTrackMetadata($client, $trackId)

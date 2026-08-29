@@ -380,12 +380,20 @@ local $Slim::Utils::Prefs::FAKE_VALUES{enableSpotifyConnect} = 1;
         "device_changed is_active=true for an already-started session emits resume (no restart)");
 }
 
-# --- device_changed: inactive -> 'stop' (transfer away from Soloist) ---
+# --- device_changed: inactive -> session-end-marked 'stop' (transfer away, GH #151) ---
 {
     my $ws = new_ws(sessionActive => 1);
     my $got = run_fixtures($ws, '{"type":"device_changed","is_active":false}');
+    is_deeply($got, [ [ 'spottyconnect', 'stop', 'inactive', '' ] ],
+        "device_changed is_active=false emits 'stop' with the 'inactive' session-end marker (GH #151)");
+}
+
+# --- playback_changed paused: plain 'stop' WITHOUT the session-end marker (GH #151) ---
+{
+    my $ws = new_ws(sessionActive => 1, sessionStarted => 1, lastTrackId => 'tid1');
+    my $got = run_fixtures($ws, '{"type":"playback_changed","status":"paused"}');
     is_deeply($got, [ [ 'spottyconnect', 'stop', '', '' ] ],
-        "device_changed is_active=false emits 'stop'");
+        "playback_changed paused emits a plain 'stop' — no 'inactive' marker (pause is not session end)");
 }
 
 # --- auth_state: no player-state emission ---
@@ -503,8 +511,8 @@ for my $type (qw(context_changed options_changed queue_changed)) {
         '{"type":"playback_changed","status":"stopped"}',
         '{"type":"playback_changed","status":"playing"}',
     );
-    is_deeply($got, [ [ 'spottyconnect', 'stop', '', '' ] ],
-        "transfer-away: only the device_changed stop is emitted -- the stopped/playing blips produce nothing");
+    is_deeply($got, [ [ 'spottyconnect', 'stop', 'inactive', '' ] ],
+        "transfer-away: only the device_changed session-end stop is emitted -- the stopped/playing blips produce nothing");
     is($ws->deactivating, 1, "deactivating stays 1 after transfer-away with no re-activation");
 }
 
