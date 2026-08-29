@@ -1063,4 +1063,92 @@ sub _normalizeEpisode {
     };
 }
 
+# ============================================================
+# search router (D-06/D-07, S-05)
+# ============================================================
+
+# search($class, $accountId, $params, $cb)
+# Client-identical signature/contract. Routing:
+#   - type eq 'track' AND login5-capable account: context-resolve/v1
+#     (20 track URIs, no offset support) -> lazy _enrichTracks on the
+#     requested slice -> Web-API tracks.items shape.
+#   - offset >= 20 (context-resolve's hard ceiling) OR offset beyond the
+#     actual returned URI count: delegate to Client.pm (S-05 -- Web API
+#     supports deeper offset paging, context-resolve does not; this is how
+#     DSTM's/JiveLite's paging loop keeps working past the first 20).
+#   - any other type value, OR a PKCE-only account: delegate to Client.pm
+#     unchanged (S-05: context-resolve has no multi-type search).
+#   - D-07: any context-resolve error -> Client.pm delegation.
+sub search {
+    my ($class, $accountId, $params, $cb) = @_;
+    $params ||= {};
+    my $type = $params->{type} // '';
+
+    my $fallbackToClient = sub {
+        require Plugins::SpotOn::API::Client;
+        Plugins::SpotOn::API::Client->search($accountId, $params, $cb);
+    };
+
+    unless ($type eq 'track' && $class->_hasLogin5Creds($accountId)) {
+        main::INFOLOG && $log->info('SpClient: search delegating to Client.pm (multi-type or PKCE-only, S-05/D-06)');
+        $fallbackToClient->();
+        return;
+    }
+
+    my $query  = $params->{q}      // '';
+    my $offset = $params->{offset} // 0;
+    my $limit  = $params->{limit}  // 10;
+
+    # context-resolve returns at most 20 results (S-05) -- an offset at or
+    # beyond that hard ceiling can never be satisfied here, so skip straight
+    # to Client.pm without a wasted spclient call.
+    if ($offset >= 20) {
+        main::INFOLOG && $log->info('SpClient: search offset >= context-resolve ceiling, delegating to Client.pm (S-05)');
+        $fallbackToClient->();
+        return;
+    }
+
+    my $path = 'context-resolve/v1/spotify:search:' . uri_escape_utf8($query);
+
+    $class->_request('get', $path, {
+        _accountId => $accountId,
+        _accept    => 'application/json',
+    }, sub {
+        my ($result, $err) = @_;
+
+        if ($err) {
+            if ($class->_isFallbackError($err)) {
+                main::INFOLOG && $log->info('SpClient: search context-resolve error, falling back to Client.pm (D-07): '
+                    . ($err->{error} // '?'));
+                $fallbackToClient->();
+                return;
+            }
+            $cb->(undef, $err);
+            return;
+        }
+
+        my @uris;
+        if ($result && ref($result) eq 'HASH' && ref($result->{pages}) eq 'ARRAY') {
+            my $page = $result->{pages}[0] || {};
+            @uris = map { $_->{uri} } grep { ref($_) eq 'HASH' && $_->{uri} } @{ $page->{tracks} || [] };
+        }
+
+        if ($offset >= scalar(@uris)) {
+            main::INFOLOG && $log->info('SpClient: search offset beyond context-resolve result count, delegating to Client.pm (S-05)');
+            $fallbackToClient->();
+            return;
+        }
+
+        my @trackIds = map { /^spotify:track:(.+)$/ ? $1 : () } @uris;
+        my $end = $offset + $limit - 1;
+        $end = $#trackIds if $end > $#trackIds;
+        my @sliceIds = @trackIds[$offset .. $end];
+
+        $class->_enrichTracks($accountId, \@sliceIds, sub {
+            my ($tracks) = @_;
+            $cb->({ tracks => { items => $tracks, total => scalar(@trackIds), limit => $limit, offset => $offset } });
+        });
+    });
+}
+
 1;

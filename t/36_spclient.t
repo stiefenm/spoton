@@ -816,4 +816,70 @@ sub context_resolve_fixture {
     is($result->{release_date}, '2021-03-10', 'getEpisode: release_date mapped');
 }
 
+# ============================================================
+# Task 3: Search router -- context-resolve for track search, Client.pm for
+# multi-type / deep-offset (S-05)
+# ============================================================
+
+# (a) type=track, offset=0 -> context-resolve, lazy enrichment, Web-API tracks.items shape.
+{
+    reset_all();
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/context-resolve/}, context_resolve_fixture());
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/metadata/4/track/}, to_json_fixture());
+
+    my ($result, $err);
+    $SP->search('acct30', { q => 'radiohead', type => 'track', offset => 0, limit => 5 }, sub { ($result, $err) = @_ });
+
+    my @ctxReqs = grep { $_->{url} =~ m{/context-resolve/} } Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests();
+    is(scalar(@ctxReqs), 1, 'search track offset0: exactly one context-resolve request issued');
+    unlike($ctxReqs[0]->{url}, qr/offset=/, 'search track offset0: context-resolve request never sends an offset query param');
+
+    my @trackReqs = grep { $_->{url} =~ m{/metadata/4/track/} } Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests();
+    is(scalar(@trackReqs), 5, 'search track offset0: enrichment for min(limit,20)=5 ids');
+
+    ok($result, 'search track offset0: result returned');
+    is($result->{tracks}{total}, 20, 'search track offset0: total reflects the full 20-uri context-resolve window');
+    is(scalar(@{ $result->{tracks}{items} }), 5, 'search track offset0: tracks.items sliced to limit');
+    is(scalar(@Plugins::SpotOn::API::Client::search_calls), 0, 'search track offset0: Client.pm NOT delegated to');
+}
+
+# (b) type=album -> Client.pm delegation, zero spclient HTTP (S-05: no multi-type search).
+{
+    reset_all();
+
+    my ($result, $err);
+    $SP->search('acct31', { q => 'radiohead', type => 'album' }, sub { ($result, $err) = @_ });
+
+    is(scalar(Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests()), 0, 'search type=album: zero spclient HTTP calls');
+    is(scalar(@Plugins::SpotOn::API::Client::search_calls), 1, 'search type=album: delegates to Client.pm exactly once (S-05)');
+}
+
+# (c) type=track, offset=20 -> Client.pm delegation, zero spclient HTTP (offset at the ceiling).
+{
+    reset_all();
+
+    my ($result, $err);
+    $SP->search('acct32', { q => 'radiohead', type => 'track', offset => 20, limit => 10 }, sub { ($result, $err) = @_ });
+
+    is(scalar(Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests()), 0,
+        'search track offset20: zero spclient HTTP -- offset at the context-resolve ceiling short-circuits before any request');
+    is(scalar(@Plugins::SpotOn::API::Client::search_calls), 1,
+        'search track offset20: delegates to Client.pm exactly once (S-05 deep-offset paging)');
+}
+
+# (d) context-resolve 500 -> Client.pm delegation (D-07).
+{
+    reset_all();
+    $Slim::Networking::SimpleAsyncHTTP::auto_mode = 'error_500';
+
+    my ($result, $err);
+    $SP->search('acct33', { q => 'radiohead', type => 'track', offset => 0, limit => 10 }, sub { ($result, $err) = @_ });
+
+    my @nonApresolve = Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests();
+    is(scalar(@nonApresolve), 1, 'search context-resolve 500: exactly one spclient attempt');
+    is(scalar(@Plugins::SpotOn::API::Client::search_calls), 1, 'search context-resolve 500: falls back to Client.pm exactly once (D-07)');
+
+    $Slim::Networking::SimpleAsyncHTTP::auto_mode = 'success';
+}
+
 done_testing();
