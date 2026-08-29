@@ -1330,6 +1330,22 @@ sub playerVolume {
     }, $cb);
 }
 
+# getQueue($class, $accountId, $cb)
+# Fetches the user's playback queue (GET /me/player/queue) -- GH #135 "Up Next".
+# Live player state: never cached (_noCache => 1; _cacheTTL is 0 for me/player/*
+# anyway). ON-DEMAND ONLY -- callers must never poll this endpoint: the Web API
+# rate pool is shared app-wide over a rolling 30s window (CLAUDE.md P-01), so
+# the only sanctioned trigger is a user-initiated menu open.
+# $cb->($result) with { currently_playing, queue } on success;
+# $cb->(undef, $errHash) on failure (established Client.pm error convention).
+sub getQueue {
+    my ($class, $accountId, $cb) = @_;
+    $class->_request('get', 'me/player/queue', {
+        _accountId => $accountId,
+        _noCache   => 1,
+    }, $cb);
+}
+
 # playerSeek($class, $accountId, $positionMs, $cb)
 # Seeks to position in current track (PUT /me/player/seek?position_ms=N).
 sub playerSeek {
