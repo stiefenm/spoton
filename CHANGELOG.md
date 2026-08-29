@@ -6,7 +6,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
-- **`spoton-helper` binary for Soloist** — a new bundled Rust helper (`Bin/<arch>/spoton-helper`, x86_64/arm64/arm32, CI cross-built alongside the Soloist backend) with three subcommands: `patch` applies the Lifetime-timestamp and FLAC24-quality-enum patches to the pinned Soloist build (version-locked, fail-closed on any mismatch), `check` reports a patch/integrity/architecture manifest, and `protobuf` converts collection/recently-played/rootlist data between protobuf and JSON for future use. After a fresh Soloist download, SpotOn now runs the patch step automatically and exactly once — patching failures never block playback; Soloist simply runs unpatched with a log warning.
+- **Browse/Search/Library unified onto spclient.spotify.com via login5** — stored-credential accounts (ZeroConf/Keymaster/Soloist pairing) now serve Browse, Search, and Library reads through Spotify's internal spclient API instead of the public Web API, with automatic fallback to the Web API for PKCE-only accounts and any spclient-side failure. Search now returns up to 20 track results (double the Web API's Dev-Mode cap of 10), previously-removed `popularity`/`label` metadata fields are restored, and Liked Songs load without Web-API paging. Library writes (save/remove tracks/shows, add-to-playlist) and player control continue to use the Web API unchanged. A standalone `tools/spclient-smoke.pl` script is available for manual verification of the login5 + spclient chain without a running LMS instance.
+- **`spoton-helper` binary for Soloist** — a new bundled Rust helper (`Bin/<arch>/spoton-helper`, x86_64/arm64/arm32, CI cross-built alongside the Soloist backend) with two subcommands: `patch` applies the Lifetime-timestamp and FLAC24-quality-enum patches to the pinned Soloist build (version-locked, fail-closed on any mismatch), and `check` reports a patch/integrity/architecture manifest. After a fresh Soloist download, SpotOn now runs the patch step automatically and exactly once — patching failures never block playback; Soloist simply runs unpatched with a log warning.
 - **Persistent Soloist daemon per player** — Spotify Connect for the Soloist backend now runs through a long-lived per-player daemon instead of spawning a process per track, closing the two-process data-dir lock hazard of the previous per-track model. Browse playback and Connect both stream through the same daemon's HTTP endpoint.
 - **App-tap pairing replaces SSH `--pair`** — enable the Soloist backend and wait for the daemon to start, then select the player once in the Spotify app's device picker. No command line or SSH access needed; pairing is per player.
 - **Seek restored for Soloist Browse playback** — the persistent daemon model lifts the hard seek-disable the previous per-track transcoder path required.
@@ -14,6 +15,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Removed
 - **`sox` dependency and the per-track Soloist launcher** — the per-track `sol` convert-conf rule/content-type and the generated per-track wrapper script are fully retired now that Soloist runs exclusively as the persistent daemon above.
+- **`spoton-helper protobuf` subcommand** — superseded by the pure-Perl `ProtobufLite.pm` decoder used directly by the new spclient unification above; no external process is needed to decode collection/recently-played/rootlist data anymore.
 
 ## [3.5.8] - 2026-08-22
 
