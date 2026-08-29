@@ -1382,6 +1382,115 @@ sub encode_page_response {
 }
 
 # ============================================================
+# WR-02/WR-03 gap closure (Phase 75 Plan 07, Task 3)
+# ============================================================
+
+# WR-03: a next_page_token that always echoes the SAME non-empty value
+# regardless of the request's own token -> the fetch loop terminates at or
+# before COLLECTION_MAX_PAGES (100) page requests (completes without
+# hanging) and still delivers the accumulated items via the normal success
+# path, not an error.
+{
+    reset_all();
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/collection/v2/paging}, sub {
+        my ($body) = @_;
+        my $fields = Plugins::SpotOn::API::ProtobufLite::parse_fields($body);
+        my $token  = Plugins::SpotOn::API::ProtobufLite::field_first($fields, 3);
+        if (!defined $token || $token eq '') {
+            return encode_page_response(
+                items           => [ { uri => 'spotify:album:' . b62id(1), added_at => 10 } ],
+                next_page_token => 'sametoken',
+            );
+        }
+        # Every subsequent request, regardless of the token it just sent,
+        # gets the SAME 'sametoken' echoed back -- a malformed/adversarial
+        # server response WR-03 must guard against.
+        return encode_page_response(
+            items           => [ { uri => 'spotify:album:' . b62id(2), added_at => 11 } ],
+            next_page_token => 'sametoken',
+        );
+    });
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/metadata/4/album/}, album_fixture());
+
+    my ($result, $err);
+    $SP->getSavedAlbums('acct103', {}, sub { ($result, $err) = @_ });
+
+    my @collReqs = grep { $_->{url} =~ m{/collection/v2/paging} } Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests();
+    ok(scalar(@collReqs) <= 100, 'WR-03: repeated-token loop terminates at or before COLLECTION_MAX_PAGES (100) page requests');
+    ok(!$err, 'WR-03: repeated-token loop delivers via the normal success path, not an error');
+    ok($result, 'WR-03: repeated-token loop still returns accumulated data');
+}
+
+# WR-02: getSavedShows honors _noCache -- two sequential calls with
+# _noCache=>1 issue TWO separate collection/v2 POSTs (cache bypassed on
+# demand, matching Plugin.pm:2088's call shape); a THIRD call immediately
+# after WITHOUT _noCache issues zero additional POSTs (the bypass didn't
+# disable the cache).
+{
+    reset_all();
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/collection/v2/paging}, encode_page_response(
+        items => [ { uri => 'spotify:show:' . b62id(1), added_at => 5 } ],
+    ));
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/metadata/4/show/}, show_fixture());
+
+    my $noop = sub { };
+    $SP->getSavedShows('acct104', { _noCache => 1 }, $noop);
+    my $count1 = scalar(grep { $_->{url} =~ m{/collection/v2/paging} } Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests());
+
+    $SP->getSavedShows('acct104', { _noCache => 1 }, $noop);
+    my $count2 = scalar(grep { $_->{url} =~ m{/collection/v2/paging} } Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests());
+
+    $SP->getSavedShows('acct104', {}, $noop);
+    my $count3 = scalar(grep { $_->{url} =~ m{/collection/v2/paging} } Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests());
+
+    is($count1, 1, 'WR-02 _noCache: first _noCache=>1 call issues one collection/v2 POST');
+    is($count2, 2, 'WR-02 _noCache: second _noCache=>1 call issues a SECOND collection/v2 POST (cache bypassed on demand)');
+    is($count3, 2, 'WR-02 _noCache: third call WITHOUT _noCache issues zero additional POSTs (the bypass did not disable the cache)');
+}
+
+# WR-02: getSavedShows (cache populated) -> saveShows(...) -> getSavedShows
+# again (no _noCache) -> issues a FRESH collection/v2 POST (write
+# invalidated the cache), not a cache hit.
+{
+    reset_all();
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/collection/v2/paging}, encode_page_response(
+        items => [ { uri => 'spotify:show:' . b62id(1), added_at => 5 } ],
+    ));
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/metadata/4/show/}, show_fixture());
+
+    my $noop = sub { };
+    $SP->getSavedShows('acct105', {}, $noop);
+    my $countBefore = scalar(grep { $_->{url} =~ m{/collection/v2/paging} } Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests());
+
+    $SP->saveShows('acct105', [ 'spotify:show:' . b62id(2) ], $noop);
+
+    $SP->getSavedShows('acct105', {}, $noop);
+    my $countAfter = scalar(grep { $_->{url} =~ m{/collection/v2/paging} } Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests());
+
+    is($countBefore, 1, 'WR-02 write-invalidation: first getSavedShows call issues one collection/v2 POST');
+    is($countAfter, 2, 'WR-02 write-invalidation: getSavedShows after saveShows issues a FRESH collection/v2 POST (cache invalidated by the write)');
+}
+
+# WR-02: saveTracks/removeTracks invalidate the Liked Songs cache key
+# directly (raw cache check, not a fetch round-trip).
+{
+    reset_all();
+    my $rawCache = Slim::Utils::Cache->new();
+    $rawCache->set('spoton_spclient_liked_acct106', [ 'spotify:track:' . b62id(1) ], 60);
+    ok($rawCache->get('spoton_spclient_liked_acct106'), 'WR-02 saveTracks: Liked Songs cache populated before the write');
+
+    my $noop = sub { };
+    $SP->saveTracks('acct106', [ 'spotify:track:' . b62id(2) ], $noop);
+    ok(!$rawCache->get('spoton_spclient_liked_acct106'), 'WR-02 saveTracks: Liked Songs cache key removed after saveTracks');
+
+    $rawCache->set('spoton_spclient_liked_acct106', [ 'spotify:track:' . b62id(1) ], 60);
+    ok($rawCache->get('spoton_spclient_liked_acct106'), 'WR-02 removeTracks: Liked Songs cache re-populated before the write');
+
+    $SP->removeTracks('acct106', [ 'spotify:track:' . b62id(2) ], $noop);
+    ok(!$rawCache->get('spoton_spclient_liked_acct106'), 'WR-02 removeTracks: Liked Songs cache key removed after removeTracks');
+}
+
+# ============================================================
 # Phase 75 Plan 04 fixtures -- context-resolve (liked songs), recently-played
 # (protobuf), Task 3
 # ============================================================

@@ -55,6 +55,7 @@ use constant BASE62_CHARSET          => '0123456789abcdefghijklmnopqrstuvwxyzABC
 use constant COLLECTION_V2_CONTENT_TYPE => 'application/vnd.collection-v2.spotify.proto';
 use constant COLLECTION_PAGE_LIMIT      => 200;
 use constant COLLECTION_LIST_TTL        => 60;   # CLAUDE.md: library-item lists = 60s
+use constant COLLECTION_MAX_PAGES       => 100;  # WR-03: 100 * 200 = 20k items, generous headroom
 
 # context-resolve (Liked Songs) + recently-played (S-09, Phase 75 Plan 04 Task 3)
 use constant LIKED_SONGS_LIST_TTL   => 60;   # same tier -- Liked Songs is a library list
@@ -1309,7 +1310,7 @@ sub _collectionPage {
     });
 }
 
-# _collectionAll($class, $accountId, $set, $cb)
+# _collectionAll($class, $accountId, $set, $cb, $noCache)
 # Paginates _collectionPage until next_page_token is empty, accumulating
 # every page's items. The FULL accumulated list is cached 60s per
 # account+set (T-75-15: accountId in the cache key prevents cross-account
@@ -1318,19 +1319,46 @@ sub _collectionPage {
 # cb->(\@items, undef) on success, cb->(undef, $err) on the first page-fetch
 # failure (T-75-12: a malformed/erroring page routes through D-07 at the
 # facade level, never a crash here).
+#
+# $noCache (WR-02, optional 5th arg): when true, skips ONLY the initial
+# cache read -- the fresh result is still written to the 60s cache
+# afterward, refreshing it for other callers. This is a bypass-on-demand,
+# not a cache-disable, matching Plugin.pm:2088's getSavedShows({ _noCache =>
+# 1 }) call, which expects fresh data without permanently disabling the
+# list cache for everyone else.
+#
+# WR-03: bounded by two independent guards so a malformed/adversarial
+# spclient response can never loop forever -- (1) a hard page cap
+# (COLLECTION_MAX_PAGES), which aborts as a fallback-classified error since
+# real accumulated data cannot be trusted complete; (2) a repeated-
+# page-token guard, which treats the server echoing back the SAME token it
+# was just given as a normal end-of-list (real data already accumulated is
+# not discarded as an error).
 sub _collectionAll {
-    my ($class, $accountId, $set, $cb) = @_;
+    my ($class, $accountId, $set, $cb, $noCache) = @_;
 
     my $cacheKey = "spoton_spclient_coll_${accountId}_${set}";
-    if (my $cached = $cache->get($cacheKey)) {
-        $cb->($cached, undef);
-        return;
+    unless ($noCache) {
+        if (my $cached = $cache->get($cacheKey)) {
+            $cb->($cached, undef);
+            return;
+        }
     }
 
     my @accumulated;
+    my $pages = 0;
     my $fetchPage;
     $fetchPage = sub {
         my ($pageToken) = @_;
+
+        if (++$pages > COLLECTION_MAX_PAGES) {
+            undef $fetchPage;
+            $log->error('SpClient: _collectionAll aborted after ' . COLLECTION_MAX_PAGES
+                . " pages for set=$set (WR-03 page cap -- malformed/adversarial next_page_token?)");
+            $cb->(undef, { error => 'parse_error' });
+            return;
+        }
+
         $class->_collectionPage($accountId, $set, $pageToken, COLLECTION_PAGE_LIMIT, sub {
             my ($items, $nextPageToken, $err) = @_;
 
@@ -1341,6 +1369,19 @@ sub _collectionAll {
             }
 
             push @accumulated, @{ $items || [] };
+
+            my $isRepeatedToken = defined($nextPageToken) && length($nextPageToken)
+                && defined($pageToken) && length($pageToken)
+                && $nextPageToken eq $pageToken;
+
+            if ($isRepeatedToken) {
+                $log->warn("SpClient: _collectionAll saw a repeated next_page_token for set=$set"
+                    . ' -- treating as end-of-list (WR-03)');
+                undef $fetchPage;
+                $cache->set($cacheKey, \@accumulated, COLLECTION_LIST_TTL);
+                $cb->(\@accumulated, undef);
+                return;
+            }
 
             if (defined $nextPageToken && length $nextPageToken) {
                 $fetchPage->($nextPageToken);
@@ -1576,6 +1617,9 @@ sub getSavedShows {
         return;
     }
 
+    # WR-02: honor $params->{_noCache} (Plugin.pm:2088's call shape) --
+    # bypasses (without disabling) the 60s collection/v2 list cache on
+    # demand.
     $class->_collectionAll($accountId, SET_MAP->{shows}, sub {
         my ($list, $err) = @_;
 
@@ -1639,7 +1683,7 @@ sub getSavedShows {
             my ($result, $err) = @_;
             $afterProbe->($result, $err);
         });
-    });
+    }, $params->{_noCache});
 }
 
 # ============================================================
@@ -2247,12 +2291,20 @@ sub getPersonalMixes {
 
 sub saveTracks {
     my $class = shift;
+    # WR-02: invalidate the Liked Songs list cache so it's visible on the
+    # very next getSavedTracks fetch, instead of staying stale for up to
+    # 60s. Peeks $_[0] as the accountId without consuming @_ -- Client.pm
+    # still gets the full original argument list.
+    my $accountId = $_[0];
+    $cache->remove("spoton_spclient_liked_${accountId}") if defined $accountId;
     require Plugins::SpotOn::API::Client;
     return Plugins::SpotOn::API::Client->saveTracks(@_);
 }
 
 sub removeTracks {
     my $class = shift;
+    my $accountId = $_[0];
+    $cache->remove("spoton_spclient_liked_${accountId}") if defined $accountId;
     require Plugins::SpotOn::API::Client;
     return Plugins::SpotOn::API::Client->removeTracks(@_);
 }
@@ -2265,12 +2317,19 @@ sub checkTracks {
 
 sub saveShows {
     my $class = shift;
+    # WR-02: invalidate the Saved Shows collection/v2 list cache so it's
+    # visible on the very next getSavedShows fetch (matches the same
+    # visible-on-next-fetch guarantee as the Liked Songs invalidation above).
+    my $accountId = $_[0];
+    $cache->remove("spoton_spclient_coll_${accountId}_" . SET_MAP->{shows}) if defined $accountId;
     require Plugins::SpotOn::API::Client;
     return Plugins::SpotOn::API::Client->saveShows(@_);
 }
 
 sub removeShows {
     my $class = shift;
+    my $accountId = $_[0];
+    $cache->remove("spoton_spclient_coll_${accountId}_" . SET_MAP->{shows}) if defined $accountId;
     require Plugins::SpotOn::API::Client;
     return Plugins::SpotOn::API::Client->removeShows(@_);
 }
