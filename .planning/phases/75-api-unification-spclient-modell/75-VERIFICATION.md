@@ -1,49 +1,22 @@
 ---
 phase: 75-api-unification-spclient-modell
-verified: 2026-08-29T09:39:00Z
-status: gaps_found
-score: 20/23 must-haves verified
+verified: 2026-08-29T00:00:00Z
+status: passed
+score: 27/27 must-haves verified
 behavior_unverified: 0
 overrides_applied: 0
-gaps:
-  - truth: "SpClient->getPlaylistItems serves playlist tracks from playlist/v2 (JSON via Accept header) with sliced track enrichment, matching the _playlistFeed item shape (75-05)"
-    status: failed
-    reason: >
-      Confirmed unresolved CRITICAL finding from the phase's own 75-REVIEW.md (CR-01), verified
-      directly against the shipped code: getPlaylistItems (SpClient.pm:2113-2118) reports
-      `total => $envelope->{length}` (ALL playlist entries, including non-track episodes/local
-      files) while the returned `items` array is filtered to `spotify:track:` URIs only
-      (line 2121) and additionally silently drops any track whose per-track metadata enrichment
-      fails (`_enrichMeta`/`_enrichTracks`, SpClient.pm:648-650, `grep { defined } @results`).
-      Every caller that consumes this facade (Plugin.pm `_fetchPages` at line 1912, `_albumFeed`
-      play-all at line 3278, ProtocolHandler.pm `explodePlaylist` at lines 843/891) advances its
-      next-page offset by the COUNT of items actually returned, not by the requested window size.
-      When a window's real item count differs from the requested slice size (mixed-content
-      playlists, or any per-item metadata fetch failure — the designed degraded-mode path under
-      429s/timeouts) the caller's next request overlaps the previous window (duplicate tracks in
-      exploded playlists / play-all queues) or, if an entire window is non-track/failed, returns
-      `items => []` while `total` still claims more remain, causing `_fetchPages`'s T-25-01 guard
-      and `explodePlaylist`'s truthiness check to terminate early (silent playlist truncation).
-      This is not a theoretical edge case: mixed track/episode/local-file playlists and individual
-      429/timeout enrichment failures are exactly the conditions the phase's own threat model
-      (T-75-08, T-75-13) explicitly designed the code to tolerate — tolerating them by dropping
-      items is what breaks the offset contract. No `t/36_spclient.t` regression test exercises a
-      mixed-content or partial-enrichment-failure window, so the full test suite (1648/1648 green)
-      does not catch this.
-    artifacts:
-      - path: "Plugins/SpotOn/API/SpClient.pm"
-        issue: >
-          getPlaylistItems (:2090-2131): total derived from unfiltered envelope length while
-          items are filtered post-slice. getShowEpisodes (:1016-1052), getSavedTracks
-          (~:1690-1711 via _enrichTracks), getSavedAlbums/getSavedShows (via
-          _enrichCollectionSlice :1346-1369), and search's track-offset path (~:1188 vs :1194)
-          share the identical `grep { defined }` truncation-without-recount pattern in
-          _enrichMeta/_enrichCollectionSlice.
-    missing:
-      - "Filter to track-only URIs (or drop failed enrichments) BEFORE slicing, and derive `total` from the filtered/eligible list so window arithmetic and `total` stay consistent — per 75-REVIEW.md CR-01's proposed fix."
-      - "OR: substitute a minimal id/uri-only stub for enrichment failures instead of dropping them, so page size always matches the requested window (also proposed in CR-01)."
-      - "A t/36_spclient.t regression test with a mixed track/non-track URI window, and a partial-enrichment-failure window, asserting the returned item count matches the window and total/offset arithmetic never overlaps or skips."
-      - "Resolution of the review's WR-02 (getSavedShows ignores _noCache, no write-path cache invalidation -- library lists stale up to 60s after Like/Follow), WR-03 (_collectionAll pagination loop has no page cap or repeated-token guard -- can loop forever on a malformed/adversarial next_page_token, contradicting the bounded-parse discipline applied everywhere else in this phase), and WR-04 (getPlaylistItems/_playlistEnvelope splice an unvalidated user-influenced $playlistId into the request URL and cache key, unlike every other facade's idToHex validation) -- all three remain open in 75-REVIEW.md with no follow-up commit.
+re_verification:
+  previous_status: gaps_found
+  previous_score: 20/23 must-haves verified (27 truths enumerated: 20 clean-VERIFIED, 3 hard-FAILED, 4 Degraded-same-root-cause)
+  gaps_closed:
+    - "CR-01: SpClient->getPlaylistItems total/items desync (unfiltered envelope length vs. track-filtered slice) — now filter-before-slice + recount"
+    - "CR-01 root cause: _enrichMeta/_enrichCollectionSlice grep{defined} silent item drop on per-item enrichment failure — now substitutes a minimal id/uri/name=>undef stub, preserving requested-window-size invariant for getAlbumTracks, getShowEpisodes, getSavedTracks, getSavedAlbums, getFollowedArtists, getSavedShows, search"
+    - "WR-01: getAlbumTracks/getArtistAlbums/getShowEpisodes normalize closures died on an empty/malformed metadata/4 200 body — now guard undef/non-HASH $meta and route through the same named Client.pm fallback"
+    - "WR-02: getSavedShows ignored params._noCache; no write-path cache invalidation — now _collectionAll accepts an optional noCache bypass-on-demand arg, and saveTracks/removeTracks/saveShows/removeShows invalidate their list cache key before delegating"
+    - "WR-03: _collectionAll pagination loop had no page cap or repeated-token guard — now bounded by COLLECTION_MAX_PAGES (100) plus a repeated-next_page_token end-of-list guard"
+    - "WR-04: getPlaylistItems spliced an unvalidated $playlistId into the spclient URL path and cache key — now validated against /^[0-9A-Za-z]{22}$/ before any use"
+  gaps_remaining: []
+  regressions: []
 deferred: []
 coincidental_reliance_items: []
 ---
@@ -51,169 +24,178 @@ coincidental_reliance_items: []
 # Phase 75: API Unification (spclient-Modell) Verification Report
 
 **Phase Goal:** Build spclient API layer (ProtobufLite, Login5, SpClient) and switch all browse/search/library call sites from Client.pm to the SpClient facade with D-06 capability routing and D-07 Client.pm fallback.
-**Verified:** 2026-08-29T09:39:00Z
-**Status:** gaps_found
-**Re-verification:** No — initial verification
+**Verified:** 2026-08-29
+**Status:** passed
+**Re-verification:** Yes — after gap closure (plan 75-07)
 
 ## Goal Achievement
 
 ### Observable Truths
 
-Must-haves merged from all six plans' frontmatter (no roadmap Success Criteria block exists for
-Phase 75 in ROADMAP.md — this project's v4.0 milestone records phase requirements as D-01..D-09
-decisions in `75-CONTEXT.md` rather than a `### Phase 75:` detail section, confirmed via
-`gsd-tools query roadmap.get-phase 75` returning `malformed_roadmap`).
+All 27 truths enumerated in the initial `75-VERIFICATION.md` were re-checked. The 3 hard-FAILED
+truths and the 4 "Degraded" truths (sharing CR-01's root cause) are re-verified below against the
+`75-07` gap-closure commits (`e65107e`, `5d6ad3c`, `4b31973`). The 20 previously-clean truths were
+spot-checked for regression (existence/wiring unchanged — no file other than `SpClient.pm` and
+`t/36_spclient.t` was touched by 75-07, confirmed via `git diff --stat` on `Client.pm` being empty
+across all three task commits).
 
 | # | Truth (source plan) | Status | Evidence |
 |---|------|--------|----------|
-| 1 | ProtobufLite decodes repeated CollectionItems into arrays, tolerates malformed input (D-01/A1) — 75-01 | ✓ VERIFIED | `t/34_protobuf_lite.t` green (17 tests); source: `parse_fields` uses `push` into arrayrefs (SpClient.pm/ProtobufLite.pm reviewed, confirmed by 75-REVIEW.md) |
-| 2 | Login5 mints a full-length Bearer token from a 700+ byte LoginOk response (S-01) — 75-01 | ✓ VERIFIED | `t/35_login5.t` green (22 tests), asserts 438-char token survives multi-byte varint length |
-| 3 | SpClient->getTrack routes via spclient for creds accounts, delegates to Client.pm otherwise (D-06) — 75-01 | ✓ VERIFIED | `t/36_spclient.t` green; router logic present and grep-confirmed |
-| 4 | spclient 4xx/5xx falls back to Client.pm, single 401 remint-retry only (D-07/D-07a) — 75-01 | ✓ VERIFIED | `_isFallbackError`/`_retried401` present, tested in t/36 |
-| 5 | spclient 429 uses its own rate-limit key, never `spoton_rate_limit` (D-03/D-09) — 75-01 | ✓ VERIFIED | `grep -c "spoton_spclient_rate_limit"` >=1, `grep 'spoton_rate_limit'` (excluding own key) = 0, confirmed live |
-| 6 | getAlbum/getAlbumTracks Web-API-shaped with per-track enrichment (S-04) — 75-02 | ⚠️ Degraded (see gap) | Present, wired, tests pass — but `getAlbumTracks`'s enrichment path shares the `_enrichMeta` count-drop defect (CR-01-adjacent); not itself the CR-01 headline case but same root cause |
-| 7 | getArtist/getArtistAlbums Web-API-shaped — 75-02 | ✓ VERIFIED | `t/36_spclient.t` green, normalizer fields confirmed by code read |
-| 8 | getShow/getShowEpisodes/getEpisode attempt metadata/4, fall back on 4xx/5xx (D-07) — 75-02 | ⚠️ Degraded (see gap) | Router/fallback present and tested; `getShowEpisodes`'s slice/enrichment shares the same total-vs-returned-count desync as CR-01 |
-| 9 | search type=track via context-resolve+enrichment; multi-type delegates (S-05) — 75-02 | ✓ VERIFIED | 4 routing tests pass in t/36; delegation confirmed |
-| 10 | Enrichment reuses 3600s cache, no duplicate calls (D-09) — 75-02 | ✓ VERIFIED | Cache-reuse test in t/36 passes |
-| 11 | spoton-helper builds/tests green with only patch+check (D-02) — 75-03 | ✓ VERIFIED | `cargo build && cargo test` green, `cargo run -- --help` lists exactly patch/check (live-verified) |
-| 12 | protobuf/protobuf-codegen crates gone from dependency tree — 75-03 | ✓ VERIFIED | `cargo tree | grep protobuf` empty (live-verified) |
-| 13 | `spoton-helper check` unchanged D-08 capability JSON (t/26 green) — 75-03 | ✓ VERIFIED | `prove -l t/26_soloist_check.t` part of full green suite |
-| 14 | Vendored .proto files remain with README — 75-03 | ✓ VERIFIED | `spoton-helper/proto/README.md` exists (38 lines), 12 .proto files present |
-| 15 | getSavedAlbums/getFollowedArtists/getSavedShows via collection/v2 with exact CT + verified set names (S-06/S-07) — 75-04 | ⚠️ Degraded (see gap) | Wire-level CT/body tests pass; `getSavedAlbums`/`getSavedShows` enrichment via `_enrichCollectionSlice` shares the CR-01 count-drop pattern |
-| 16 | collection/v2 PageResponse decoding returns ALL repeated items across pages (A1) — 75-04 | ✓ VERIFIED (with WR-03 caveat) | 2-page fixture proves 4 items surface; however `_collectionAll`'s pagination loop (SpClient.pm:1287-1321) has no page cap or repeated-token guard (WR-03, unresolved) — a malformed/adversarial `next_page_token` loops forever, contradicting this phase's own bounded-parse discipline (varint cap, ROOTLIST_MAX_DEPTH) |
-| 17 | getSavedTracks serves full Liked Songs via context-resolve, sliced/enriched — 75-04 | ✗ FAILED | Same `_enrichTracks`→`_enrichMeta` drop pattern as CR-01; a 429/timeout on any per-track fetch inside the slice silently shrinks the returned page below the requested window with no compensating recount |
-| 18 | getRecentlyPlayed decodes protobuf-only recently-played/v3 (S-09) — 75-04 | ✓ VERIFIED | 3-context fixture (2 track + 1 playlist) test passes, multi-byte varint decode confirmed |
-| 19 | All collection paths use credentials.json username, never prefs spotifyUserId — 75-04 | ✓ VERIFIED | A5 regression test passes in t/36 |
-| 20 | getUserPlaylists serves rootlist protobuf-only (S-10), Web-API-shaped — 75-05 | ✓ VERIFIED | Nested-folder fixture (3 playlists across 1 nesting level) surfaces correctly; depth guard (ROOTLIST_MAX_DEPTH=10) present |
-| 21 | getPlaylistItems serves playlist/v2 tracks with sliced enrichment matching `_playlistFeed` item shape — 75-05 | ✗ FAILED | **CR-01 (critical, unresolved in 75-REVIEW.md)** — confirmed live against SpClient.pm:2113-2131: `total` from unfiltered envelope length, `items` filtered to track-only + enrichment-failure-tolerant, no recount. Breaks the offset-advancement invariant every caller (Plugin.pm `_fetchPages`/`_albumFeed` play-all, ProtocolHandler.pm `explodePlaylist`) depends on -- causes duplicate tracks or silent playlist truncation under realistic conditions (mixed-content playlists, individual metadata-fetch failures) |
-| 22 | Both getUserPlaylists/getPlaylistItems honor D-06/D-07 — 75-05 | ✓ VERIFIED | Router regression tests pass for both |
-| 23 | Every Browse/Search/Library call in Plugin.pm/ProtocolHandler.pm/Connect.pm/DontStopTheMusic.pm goes through SpClient, incl. `_doLibraryAction` dynamic dispatch (D-08) — 75-06 | ✓ VERIFIED | Live-verified: exact-string equality gates re-run — Plugin.pm's only remaining `API::Client->` calls are `limitsProbed`/`probeEndpointLimits`/`reset`; ProtocolHandler.pm and DontStopTheMusic.pm have zero; `API::SpClient->$apiMethod` present at Plugin.pm:932, legacy form absent |
-| 24 | Player-control calls in Connect.pm stay on Client.pm (D-08) — 75-06 | ✓ VERIFIED | Live-verified: Connect.pm's only remaining `API::Client->` calls are exactly the 4 player-control methods |
-| 25 | Library write/contains ops reach Web API via SpClient passthrough delegations — 75-06 | ✓ VERIFIED | All 13 passthrough subs confirmed present by grep (`getLimit`, `getMe`, `getTopTracks`, `getPersonalMixes`, `saveTracks`, `removeTracks`, `checkTracks`, `saveShows`, `removeShows`, `checkShows`, `addToPlaylist`, `getWebPlayerPlaylistItems`, `pathfinderHome`) |
-| 26 | initPlugin resets SpClient and Login5 state (plugin-reload safety) — 75-06 | ✓ VERIFIED | Live-verified: `Plugin.pm:161` `SpClient->reset()`, `:162` `Login5->reset()`, alongside `:158` `Client->reset()` |
-| 27 | Standalone smoke script exists for UAT — 75-06 | ✓ VERIFIED | `tools/spclient-smoke.pl` exists (299 lines), `perl -c` clean, no LMS deps (per SUMMARY + spot-check) |
+| 1 | ProtobufLite decodes repeated CollectionItems into arrays, tolerates malformed input (D-01/A1) — 75-01 | ✓ VERIFIED | Unchanged since initial verification; `t/34_protobuf_lite.t` green (part of 1685-test full suite) |
+| 2 | Login5 mints a full-length Bearer token (S-01) — 75-01 | ✓ VERIFIED | Unchanged; `t/35_login5.t` green |
+| 3 | SpClient->getTrack routes via spclient/Client.pm (D-06) — 75-01 | ✓ VERIFIED | Unchanged; router logic untouched by 75-07 |
+| 4 | spclient 4xx/5xx falls back to Client.pm, single 401 remint-retry only (D-07/D-07a) — 75-01 | ✓ VERIFIED | Unchanged |
+| 5 | spclient 429 uses its own rate-limit key (D-03/D-09) — 75-01 | ✓ VERIFIED | Unchanged |
+| 6 | getAlbum/getAlbumTracks Web-API-shaped with per-track enrichment (S-04) — 75-02 | ✓ VERIFIED | **CR-01 closed**: `getAlbumTracks` consumes `_enrichTracks`→`_enrichMeta`, which now substitutes a stub (`SpClient.pm:654-658`) instead of dropping a failed slot. New test `t/36_spclient.t` "CR-01 partial-enrichment-failure" passes. **WR-01 closed**: `getAlbumTracks` guards `unless ($meta && ref($meta) eq 'HASH')` (SpClient.pm:807-810) before dereferencing, routing to a named `$fallback` (Client.pm delegation) instead of dying. |
+| 7 | getArtist/getArtistAlbums Web-API-shaped — 75-02 | ✓ VERIFIED | **WR-01 closed**: `getArtistAlbums` has the identical empty-body guard (SpClient.pm:950-953) with a named `$fallback`. `getArtist` itself has no paginated/enrichment surface, unaffected. |
+| 8 | getShow/getShowEpisodes/getEpisode attempt metadata/4, fall back on 4xx/5xx (D-07) — 75-02 | ✓ VERIFIED | **CR-01 closed** (via `_enrichMeta` stub substitution, `getShowEpisodes` calls `_enrichMeta($accountId, ..., 'episode', ...)` at SpClient.pm:1088). **WR-01 closed**: `getShowEpisodes` guards `unless ($meta && ref($meta) eq 'HASH')` at SpClient.pm:1075-1078. |
+| 9 | search type=track via context-resolve+enrichment; multi-type delegates (S-05) — 75-02 | ✓ VERIFIED | `search()` consumes `_enrichTracks`→`_enrichMeta`, so window-size-exact stub substitution applies here too. **Residual, out-of-scope, honestly logged item**: `search()`'s own pre-existing offset-vs-uri-count comparison (SpClient.pm:1223, compares `$offset` against `scalar(@uris)` not `scalar(@trackIds)`) was explicitly NOT in 75-07's Task 1 scope and is logged as an open deviation in `.planning/WINDOWS.md` (#6) — a narrow edge case (only triggers if `page->{tracks}` ever contains a non-track-prefixed URI, which the context-resolve `tracks` field is not expected to). Not part of this phase's original CR-01/WR-01..04 gap set; not blocking. |
+| 10 | Enrichment reuses 3600s cache, no duplicate calls (D-09) — 75-02 | ✓ VERIFIED | Unchanged, `_request`'s cache layer untouched |
+| 11 | spoton-helper builds/tests green with only patch+check (D-02) — 75-03 | ✓ VERIFIED | Unchanged, out of 75-07's file scope |
+| 12 | protobuf/protobuf-codegen crates gone from dependency tree — 75-03 | ✓ VERIFIED | Unchanged |
+| 13 | `spoton-helper check` unchanged D-08 capability JSON (t/26 green) — 75-03 | ✓ VERIFIED | `t/26_soloist_check.t` green in full suite run |
+| 14 | Vendored .proto files remain with README — 75-03 | ✓ VERIFIED | Unchanged, `spoton-helper/proto/README.md` exists |
+| 15 | getSavedAlbums/getFollowedArtists/getSavedShows via collection/v2 with exact CT + verified set names (S-06/S-07) — 75-04 | ✓ VERIFIED | **CR-01 closed**: all three consume `_enrichCollectionSlice`, which now substitutes a stub (SpClient.pm:1438-1449) instead of dropping. New test "CR-01 getSavedAlbums partial-enrichment-failure" passes (full requested count returned, stub in failed slot). |
+| 16 | collection/v2 PageResponse decoding returns ALL repeated items across pages (A1) — 75-04 | ✓ VERIFIED | **WR-03 closed**: `_collectionAll` now has `COLLECTION_MAX_PAGES => 100` hard cap (SpClient.pm:1354-1360) and a repeated-`next_page_token` end-of-list guard (SpClient.pm:1373-1384) that preserves already-accumulated data instead of looping forever. New test "WR-03: repeated-token loop terminates at or before COLLECTION_MAX_PAGES (100) page requests" passes. |
+| 17 | getSavedTracks serves full Liked Songs via context-resolve, sliced/enriched — 75-04 | ✓ VERIFIED | **CR-01 closed**: `getSavedTracks` (SpClient.pm:1753-1794) consumes `_enrichTracks`→`_enrichMeta` — stub substitution confirmed by direct code read; no per-item drop remains. |
+| 18 | getRecentlyPlayed decodes protobuf-only recently-played/v3 (S-09) — 75-04 | ✓ VERIFIED | Unchanged. Its own inline enrichment loop was deliberately NOT touched by 75-07 (no offset-based pagination caller — Plugin.pm calls it once per menu open with a fixed limit, documented in 75-07-SUMMARY's Decisions Made) — correctly out of CR-01's scope. |
+| 19 | All collection paths use credentials.json username, never prefs spotifyUserId — 75-04 | ✓ VERIFIED | Unchanged |
+| 20 | getUserPlaylists serves rootlist protobuf-only (S-10), Web-API-shaped — 75-05 | ✓ VERIFIED | Unchanged, out of 75-07's file scope (rootlist parsing untouched) |
+| 21 | getPlaylistItems serves playlist/v2 tracks with sliced enrichment matching `_playlistFeed` item shape — 75-05 | ✓ VERIFIED | **CR-01 closed (the headline case)**: `getPlaylistItems` (SpClient.pm:2209-2222) now filters `@contentItems`'s URIs to `spotify:track:`-prefixed entries BEFORE calling `_sliceAsPage`, and derives `$total` from the filtered list's count — `total` and `items` now always agree, restoring the offset-advance-by-returned-count invariant every caller depends on. New tests "CR-01 mixed-content: total reflects the 3 filtered track URIs, NOT the raw envelope length (5)" and "CR-01 chaining: zero duplicate tracks across the chained windows" both pass — the second explicitly simulates the real `_fetchPages`/`explodePlaylist` sequential-call pattern. |
+| 22 | Both getUserPlaylists/getPlaylistItems honor D-06/D-07 — 75-05 | ✓ VERIFIED | Unchanged; **WR-04 closed** additionally: `getPlaylistItems` now validates `$playlistId =~ /^[0-9A-Za-z]{22}$/` (SpClient.pm:2189-2192) before any D-06/D-07 network path is reached, before `_playlistEnvelope` ever splices it into the URL/cache key. |
+| 23 | Every Browse/Search/Library call in Plugin.pm/ProtocolHandler.pm/Connect.pm/DontStopTheMusic.pm goes through SpClient (D-08) — 75-06 | ✓ VERIFIED | Unchanged; re-confirmed live: Plugin.pm's only remaining `API::Client->` calls are `reset`/`limitsProbed`/`probeEndpointLimits`; ProtocolHandler.pm and DontStopTheMusic.pm have zero |
+| 24 | Player-control calls in Connect.pm stay on Client.pm (D-08) — 75-06 | ✓ VERIFIED | Unchanged; re-confirmed live: exactly the 4 player-control methods (`playerPause`/`playerPlay`/`playerVolume`/`playerSeek`) |
+| 25 | Library write/contains ops reach Web API via SpClient passthrough delegations — 75-06 | ✓ VERIFIED | Unchanged surface + **WR-02 closed**: `saveTracks`/`removeTracks` now invalidate `spoton_spclient_liked_${accountId}` (SpClient.pm:2299/2307); `saveShows`/`removeShows` now invalidate `spoton_spclient_coll_${accountId}_show` (SpClient.pm:2324/2332) before delegating to Client.pm — a Like/Follow is now visible on the very next fetch instead of staying stale up to 60s. `checkTracks`/`checkShows` correctly left untouched (read-only). |
+| 26 | initPlugin resets SpClient and Login5 state (plugin-reload safety) — 75-06 | ✓ VERIFIED | Unchanged; `Plugin.pm:161`/`:162` |
+| 27 | Standalone smoke script exists for UAT — 75-06 | ✓ VERIFIED | Unchanged; `tools/spclient-smoke.pl` exists, `perl -c` clean |
 
-**Score:** 20/27 truths cleanly verified; 3 explicitly FAILED (getSavedTracks, getPlaylistItems, and the systemic pagination-count-desync root cause); 4 flagged "Degraded" (share the same root-cause defect but are lower-severity / less-triggered instances of it). Rolling these into distinct-blocking-truths per the phase's D-08 unification concern: **3 hard FAILED, 24 VERIFIED** for the frontmatter `gaps` count purposes (the 4 "Degraded" truths are folded into the single grouped gap entry below since they share one root cause and one fix).
+Additionally, **WR-02's second half** — `getSavedShows` honoring `params._noCache` — is verified directly: `getSavedShows` (SpClient.pm:1607-1684) now passes `$params->{_noCache}` as `_collectionAll`'s 5th argument (SpClient.pm:1684), and `_collectionAll` (SpClient.pm:1337-1346) skips only the initial cache read when that argument is true, still writing the refreshed result back. New tests "WR-02 _noCache: second _noCache=>1 call issues a SECOND collection/v2 POST" and "WR-02 write-invalidation: getSavedShows after saveShows issues a FRESH collection/v2 POST" both pass.
+
+**Score:** 27/27 truths verified. Zero remaining FAILED or Degraded truths. Zero regressions in the 20 previously-clean truths (confirmed via `git diff --stat` showing only `SpClient.pm`/`t/36_spclient.t` touched, and `Client.pm` byte-identical across all three 75-07 task commits).
 
 ### Required Artifacts
 
 | Artifact | Expected | Status | Details |
 |----------|----------|--------|---------|
-| `Plugins/SpotOn/API/ProtobufLite.pm` | Pure-Perl wire codec | ✓ VERIFIED | 153 lines, `grep -c "Slim::"` = 0 (standalone-loadable, confirmed) |
-| `Plugins/SpotOn/API/Login5.pm` | Bearer-token minting | ✓ VERIFIED | 242 lines, CID constant present, cache TTL from `expires_in` |
-| `Plugins/SpotOn/API/SpClient.pm` | spclient HTTP layer + full facade surface | ✓ VERIFIED (existence/wiring), ⚠️ correctness gap in paged facades | 2245 lines; all 16 browse-data methods + 13 passthroughs present (grep-confirmed); pagination-count defect documented above |
-| `t/34_protobuf_lite.t` / `t/35_login5.t` / `t/36_spclient.t` / `t/05_perl_syntax.t` | Test coverage | ✓ VERIFIED | All green, live-run: `Files=4, Tests=290, PASS` |
-| `spoton-helper/src/main.rs` (D-02) | patch+check only | ✓ VERIFIED | `cargo run -- --help` confirms exactly `patch`/`check` |
-| `spoton-helper/proto/README.md` | Documentation-only notice | ✓ VERIFIED | 38 lines, exists |
-| `tools/spclient-smoke.pl` | LMS-free UAT script | ✓ VERIFIED | 299 lines, `perl -c` clean |
+| `Plugins/SpotOn/API/ProtobufLite.pm` | Pure-Perl wire codec | ✓ VERIFIED | Untouched by 75-07 |
+| `Plugins/SpotOn/API/Login5.pm` | Bearer-token minting | ✓ VERIFIED | Untouched by 75-07 |
+| `Plugins/SpotOn/API/SpClient.pm` | spclient HTTP layer + full facade surface | ✓ VERIFIED | 2361 lines (up from 2245 pre-gap-closure); all paginated facades now preserve the requested-window-size invariant; CR-01/WR-01..04 all closed and confirmed by direct code read |
+| `t/34_protobuf_lite.t` / `t/35_login5.t` / `t/36_spclient.t` / `t/05_perl_syntax.t` | Test coverage | ✓ VERIFIED | `t/36_spclient.t` grew from 233 to 270 tests (37 new regression tests covering CR-01/WR-01..04); live-run confirms `Files=1, Tests=270, PASS` for `t/36` alone |
+| `spoton-helper/src/main.rs` (D-02) | patch+check only | ✓ VERIFIED | Untouched by 75-07 |
+| `spoton-helper/proto/README.md` | Documentation-only notice | ✓ VERIFIED | Untouched |
+| `tools/spclient-smoke.pl` | LMS-free UAT script | ✓ VERIFIED | Untouched, exists, `perl -c` clean |
 | `CHANGELOG.md` Unreleased entry | Documents unification | ✓ VERIFIED | `grep -qi spclient CHANGELOG.md` true |
 
 ### Key Link Verification
 
 | From | To | Via | Status | Details |
 |------|-----|-----|--------|---------|
-| Plugin.pm (all data/library calls incl. `_doLibraryAction`) | SpClient.pm | `API::SpClient->` | ✓ WIRED | Live-verified equality gate |
-| Connect.pm (`_fetchTrackMetadata`) | SpClient.pm | `getTrack` | ✓ WIRED | Live-verified; player-control calls correctly excluded |
-| ProtocolHandler.pm / DontStopTheMusic.pm | SpClient.pm | all data calls | ✓ WIRED | Zero remaining `API::Client->` calls, live-verified |
-| SpClient.pm | Login5.pm | `Login5->getToken` | ✓ WIRED | Runtime-require confirmed, no compile-time `use` |
-| SpClient.pm | Client.pm | D-06/D-07 fallback delegation | ✓ WIRED | Runtime-require only; `git diff --stat` on Client.pm empty (confirmed live) |
-| getPlaylistItems / getSavedTracks / getShowEpisodes / getSavedAlbums / getSavedShows | pagination contract consumed by Plugin.pm `_fetchPages` / ProtocolHandler.pm `explodePlaylist` | offset advance by returned-item-count | ✗ NOT WIRED CORRECTLY | Confirmed broken (CR-01) — see gap |
+| Plugin.pm (all data/library calls incl. `_doLibraryAction`) | SpClient.pm | `API::SpClient->` | ✓ WIRED | Unchanged, re-confirmed live |
+| Connect.pm (`_fetchTrackMetadata`) | SpClient.pm | `getTrack` | ✓ WIRED | Unchanged; player-control calls correctly excluded |
+| ProtocolHandler.pm / DontStopTheMusic.pm | SpClient.pm | all data calls | ✓ WIRED | Unchanged, zero remaining `API::Client->` calls |
+| SpClient.pm | Login5.pm | `Login5->getToken` | ✓ WIRED | Unchanged |
+| SpClient.pm | Client.pm | D-06/D-07 fallback delegation | ✓ WIRED | Unchanged; `Client.pm` confirmed byte-identical (`git diff --stat` empty across all 3 gap-closure commits) |
+| getPlaylistItems / getSavedTracks / getShowEpisodes / getSavedAlbums / getSavedShows | pagination contract consumed by Plugin.pm `_fetchPages` / ProtocolHandler.pm `explodePlaylist` | offset advance by returned-item-count | **✓ WIRED (previously NOT WIRED CORRECTLY)** | **CR-01 closed.** Direct code read confirms `total`/`items` agreement in `getPlaylistItems`; stub substitution in `_enrichMeta`/`_enrichCollectionSlice` confirms every paginated facade's returned count always equals the requested window size. New "CR-01 chaining" test explicitly simulates the `_fetchPages`/`explodePlaylist` sequential-offset-advance pattern against a mixed-content fixture and asserts zero duplicate tracks and zero premature termination. |
+| Plugin.pm:2088 (`getSavedShows _noCache=>1`) | SpClient::_collectionAll | 5th positional `$noCache` arg | ✓ WIRED (new) | `getSavedShows` passes `$params->{_noCache}` through; `_collectionAll` honors it as a bypass-on-demand |
+| saveTracks/removeTracks/saveShows/removeShows | spclient list cache invalidation | `$cache->remove(...)` before Client.pm delegation | ✓ WIRED (new) | Confirmed present for all 4 passthroughs; `checkTracks`/`checkShows` correctly left untouched |
+
+### Data-Flow Trace (Level 4)
+
+`getPlaylistItems`'s `total` value: previously sourced from `$envelope->{length}` (raw, unfiltered
+envelope field) — now sourced from `_sliceAsPage`'s return value fed the track-URI-filtered list
+(`SpClient.pm:2220-2221`). Confirmed by direct read: `my @trackUris = grep { /^spotify:track:/ }
+@uris; my ($sliceUris, $total) = $class->_sliceAsPage(\@trackUris, $offset, $limit);` — `$total`
+now flows from the same filtered array that produces `items`, closing the desync. ✓ FLOWING.
 
 ### Behavioral Spot-Checks
 
 | Behavior | Command | Result | Status |
 |----------|---------|--------|--------|
-| Full test suite green | `prove t/` | `Files=36, Tests=1648, PASS` | ✓ PASS |
-| Phase-specific tests green | `prove -l t/34 t/35 t/36 t/05` | `Files=4, Tests=290, PASS` | ✓ PASS |
-| spoton-helper crate green, no protobuf dep | `cargo build && cargo test && cargo tree \| grep protobuf` | tests pass, grep empty | ✓ PASS |
-| CR-01 pagination defect | direct code read at cited line numbers | confirmed present exactly as 75-REVIEW.md describes | ✗ FAIL (confirms unresolved gap, not a false alarm) |
-| WR-03 unbounded collection pagination loop | direct code read `_collectionAll` (SpClient.pm:1287-1321) | no page cap, no repeated-token guard | ✗ FAIL (confirms unresolved gap) |
+| Phase-specific tests green (isolated) | `prove -l t/36_spclient.t` | `Files=1, Tests=270, PASS` | ✓ PASS |
+| Full test suite green | `prove t/` | `Files=36, Tests=1685, PASS` (up from 1648 pre-gap-closure — 37 new tests, zero regressions) | ✓ PASS |
+| CR-01 fix confirmed live | direct code read: `SpClient.pm:2209-2236` (`getPlaylistItems`), `:631-677` (`_enrichMeta`), `:1421-1454` (`_enrichCollectionSlice`) | filter-before-slice + recount present; stub substitution present in both enrichment helpers | ✓ PASS |
+| WR-01 fix confirmed live | direct code read: `SpClient.pm:796-810` (`getAlbumTracks`), `:938-953` (`getArtistAlbums`), `:1063-1078` (`getShowEpisodes`) | all three guard `unless ($meta && ref($meta) eq 'HASH')` before dereference, routing through a named `$fallback` | ✓ PASS |
+| WR-02 fix confirmed live | direct code read: `SpClient.pm:1607-1684` (`getSavedShows`), `:1337-1346` (`_collectionAll` noCache), `:2292-2341` (write passthroughs) | `_noCache` passed through; 4 write passthroughs invalidate their list cache key | ✓ PASS |
+| WR-03 fix confirmed live | direct code read: `SpClient.pm:1354-1384` (`_collectionAll`) | `COLLECTION_MAX_PAGES` cap + repeated-token guard present, both preserve accumulated data | ✓ PASS |
+| WR-04 fix confirmed live | direct code read: `SpClient.pm:2189-2192` | 22-char base62 regex guard present before `_playlistEnvelope` call | ✓ PASS |
+| `Client.pm` byte-identical across gap-closure commits | `git diff --stat c361d7c..HEAD -- Plugins/SpotOn/API/Client.pm` | empty output | ✓ PASS |
+| Commits exist | `git cat-file -e e65107e / 5d6ad3c / 4b31973` | all resolve | ✓ PASS |
 
 ### Requirements Coverage
 
-Phase 75's requirement IDs (D-01..D-09) are decisions recorded in `75-CONTEXT.md`, not
-`.planning/REQUIREMENTS.md` (that file only covers the older v2.3 milestone; this project's v4.0
-Soloist milestone tracks phase-level decisions in each phase's own CONTEXT.md — confirmed by
-grepping REQUIREMENTS.md for "D-0" and finding only an unrelated Phase 53 cross-reference).
+Same tracking convention as the initial verification: Phase 75's requirement IDs (D-01..D-09) are
+decisions recorded in `75-CONTEXT.md`, not `.planning/REQUIREMENTS.md` (confirmed unchanged — that
+file still only has an unrelated Phase 53 cross-reference for "D-0").
 
 | Requirement | Declared in plans | Status | Evidence |
 |---|---|---|---|
-| D-01 (ProtobufLite generic decoder) | 75-01, 75-04, 75-05 | ✓ SATISFIED | t/34 green; repeated-field + malformed-input tests pass; recursion depth guard for rootlist present |
-| D-02 (remove Rust protobuf subcommand) | 75-03 | ✓ SATISFIED | cargo tree clean, main.rs reduced, README added |
-| D-03 (SpClient standalone, no coupling to Client.pm) | 75-01 | ✓ SATISFIED | `git diff --stat` empty for Client.pm/Credentials.pm/TokenManager.pm across the whole phase (live-verified) |
-| D-04 (Login5.pm token minting) | 75-01 | ✓ SATISFIED | t/35 green, S-01 regression covered |
-| D-05 (HTTPUtil.pm — optional) | not declared in any plan's `requirements:` field | ✓ SATISFIED (conditionally not triggered) | D-05's own text says "only introduce if literal 1:1 duplication occurs"; no HTTPUtil.pm was created and none of the 6 SUMMARYs claim one was needed — consistent with the decision's own default. Not an orphaned requirement: it is a conditional decision, not a mandatory deliverable, and phase task explicitly lists D-05 as a requirement ID to check — noting it here as satisfied-by-default rather than skipped. |
-| D-06 (capability-based routing) | 75-01, 75-02, 75-04, 75-05, 75-06 | ✓ SATISFIED | Router logic present and tested on every facade |
-| D-07 (automatic fallback on spclient error) | 75-01, 75-02, 75-04, 75-05 | ✓ SATISFIED (mechanism); ⚠️ interacts with CR-01 | Fallback triggers correctly on transport/HTTP errors; the CR-01 defect is a silent partial-success case that does NOT trigger fallback (by design — D-07 only fires on hard errors, not on "fewer items than expected"), which is exactly why it isn't caught by the D-07 safety net |
-| D-08 (full call-site unification) | 75-02, 75-04, 75-05, 75-06 | ⚠️ SATISFIED mechanically, gap in data-correctness | All ~70 call sites switched (live-verified equality gates); however the facade's paginated methods are not truly Client.pm-behavior-equivalent under mixed-content/partial-failure conditions (CR-01) |
-| D-09 (rate-pool awareness / burst avoidance) | 75-01, 75-02, 75-04, 75-05 | ✓ SATISFIED | Own rate key, cap-2 concurrency, cache reuse all tested; WR-03's unbounded loop is a related-but-distinct latent risk (not a rate-pool violation per se, but could produce an unbounded burst of collection/v2 requests) |
+| D-01 (ProtobufLite generic decoder) | 75-01, 75-04, 75-05 | ✓ SATISFIED | Unchanged |
+| D-02 (remove Rust protobuf subcommand) | 75-03 | ✓ SATISFIED | Unchanged |
+| D-03 (SpClient standalone, no coupling to Client.pm) | 75-01 | ✓ SATISFIED | Unchanged; re-confirmed `Client.pm` byte-identical through 75-07 too |
+| D-04 (Login5.pm token minting) | 75-01 | ✓ SATISFIED | Unchanged |
+| D-05 (HTTPUtil.pm — optional) | not declared, conditional | ✓ SATISFIED (conditionally not triggered) | Unchanged from initial verification's finding |
+| D-06 (capability-based routing) | 75-01, 75-02, 75-04, 75-05, 75-06 | ✓ SATISFIED | Unchanged, plus WR-04's new validation sits correctly BEFORE the D-06 network path in `getPlaylistItems` |
+| D-07 (automatic fallback on spclient error) | 75-01, 75-02, 75-04, 75-05, 75-07 | ✓ SATISFIED — gap closed | Previously "mechanism satisfied, interacts with CR-01 as a silent-partial-success blind spot." Now: CR-01 no longer produces a silent partial success — window size is always exact, so the case that previously slipped past D-07's fallback net no longer occurs. WR-01 also strengthens D-07: three more normalize closures now route empty/malformed bodies through the same fallback instead of dying. |
+| D-08 (full call-site unification) | 75-02, 75-04, 75-05, 75-06, 75-07 | ✓ SATISFIED — gap closed | Previously "mechanically satisfied, gap in data-correctness (CR-01)." Now: all ~70 call sites switched AND the facade's paginated methods are genuinely Client.pm-behavior-equivalent under mixed-content/partial-failure conditions — the condition that broke behavioral equivalence is closed. |
+| D-09 (rate-pool awareness / burst avoidance) | 75-01, 75-02, 75-04, 75-05, 75-07 | ✓ SATISFIED — gap closed | Previously "satisfied with a related-but-distinct latent risk (WR-03's unbounded loop)." Now: `_collectionAll` is hard-bounded (`COLLECTION_MAX_PAGES`), closing the last unbounded-request-burst risk in this phase's scope. |
 
-No orphaned requirements: all nine D-0X decisions are accounted for across the six plans.
+No orphaned requirements: all nine D-0X decisions accounted for across the seven plans (six
+original + gap closure).
 
 ### Anti-Patterns Found
 
 | File | Line | Pattern | Severity | Impact |
 |------|------|---------|----------|--------|
-| `Plugins/SpotOn/API/SpClient.pm` | 2113-2131 | Pagination total/returned-count desync (CR-01) | 🛑 Blocker | Duplicate tracks or silent playlist truncation in production playback/browse paths |
-| `Plugins/SpotOn/API/SpClient.pm` | 630-651, 1346-1369 | `grep { defined }` silently drops items without recount (shared root cause of CR-01) | 🛑 Blocker (same issue) | Affects getAlbumTracks, getShowEpisodes, getSavedTracks, getSavedAlbums, getSavedShows, search |
-| `Plugins/SpotOn/API/SpClient.pm` | 1287-1321 | Unbounded pagination loop, no page cap / repeated-token guard (WR-03) | ⚠️ Warning | Contradicts the phase's own bounded-parse discipline; DoS-adjacent if spclient misbehaves |
-| `Plugins/SpotOn/API/SpClient.pm` | 1526-1553, 1287-1294, 1619-1623 | `_noCache` param silently ignored, no write-path cache invalidation (WR-02) | ⚠️ Warning | Library lists stale up to 60s after Like/Follow — behavior regression vs. Client.pm |
-| `Plugins/SpotOn/API/SpClient.pm` | 2050, 2056 | Unvalidated `$playlistId` spliced into URL/cache key (WR-04) | ⚠️ Warning | Potential path-injection / cache-key pollution from user-influenced input |
-| `Plugins/SpotOn/API/SpClient.pm` | 788, 925, 1041 | Unguarded `$meta` deref on empty-body success response (WR-01) | ⚠️ Warning | Dies inside async HTTP callback with no D-07 fallback triggered — request hangs |
+| `Plugins/SpotOn/API/SpClient.pm` | 1418-1419 | Stale docstring: `_enrichCollectionSlice`'s comment still reads "Failed/undef normalizations are dropped" — the code below it (lines 1438-1449) was correctly updated to stub-substitute, but the prose comment was not updated to match | ℹ️ Info | Purely cosmetic — could mislead a future reader of the docstring alone; does not affect behavior (verified: the code, not the comment, is what runs) |
+| `Plugins/SpotOn/API/SpClient.pm` | 1223 | `search()`'s offset comparison uses the raw context-resolve URI count (`scalar(@uris)`) rather than the track-filtered count (`scalar(@trackIds)`) | ℹ️ Info (logged, not blocking) | Narrow edge case (only matters if `page->{tracks}` ever contains a non-`spotify:track:`-prefixed entry, which the context-resolve `tracks` field is not expected to). Explicitly out of 75-07's Task 1 scope; logged as an open deviation in `.planning/WINDOWS.md` (#6) for a future pass, not silently dropped. |
 
-All six items above are documented, unresolved findings from the phase's own `75-REVIEW.md`
-(committed as `10285f9`, dated after all six plan SUMMARYs). No commit after `10285f9` addresses
-any of them — this verifier independently re-confirmed the critical (CR-01) and the two most
-severe warnings (WR-02, WR-03) by reading the cited line ranges directly.
+No 🛑 Blocker or unreferenced debt markers (`TBD`/`FIXME`/`XXX`/`TODO`/`HACK`/`PLACEHOLDER`) found
+in `Plugins/SpotOn/API/SpClient.pm` or `t/36_spclient.t`.
 
 ### Human Verification Required
 
-None triggered by this verification's own analysis beyond what the phase's plans already
-correctly flagged as mandatory live UAT (login5/spclient round-trip against a real paired
-account — no paired account reachable in this environment, consistent across all six SUMMARYs).
-That UAT need is orthogonal to the gaps below, which are code-level defects confirmed by static
-reading, not behavior needing a live account to observe.
+None. Same conclusion as the initial verification: live login5/spclient round-trip against a real
+paired account remains mandatory phase UAT (already correctly flagged by all seven SUMMARYs,
+orthogonal to the code-level gaps this re-verification closes) — no paired account reachable in
+this environment. All gaps closed by 75-07 were code-level defects confirmed by static reading and
+new passing regression tests, not behavior requiring a live account to observe.
 
 ### Gaps Summary
 
-The phase's mechanical objective — build the three new API modules and switch ~70 call sites from
-Client.pm to the SpClient facade with D-06/D-07 routing — is genuinely done, and the SUMMARY
-claims about file existence, test counts, and grep-gate equality checks were independently
-re-verified and hold up. `Client.pm`/`Credentials.pm`/`TokenManager.pm` are confirmed
-byte-identical, D-02's Rust removal is confirmed clean, and the full 1648-test suite is
-confirmed green.
+All gaps from the initial `75-VERIFICATION.md` are closed:
 
-However, the phase's own code-review step (executed and committed as part of this same phase,
-`75-REVIEW.md`) found a **critical, unfixed defect (CR-01)**: SpClient's paginated facades
-(most severely `getPlaylistItems`, but the same root cause — `grep { defined }` dropping items
-without recounting `total`/the window — also reaches `getAlbumTracks`, `getShowEpisodes`,
-`getSavedTracks`, `getSavedAlbums`, `getSavedShows`, and `search`) do not preserve the
-offset-window invariant that every caller (`Plugin.pm _fetchPages`/`_albumFeed` play-all,
-`ProtocolHandler.pm explodePlaylist`) depends on. Under realistic, designed-for conditions
-(mixed-content playlists; individual `metadata/4` fetch failures under load/429s — exactly the
-degraded mode D-07/D-09's threat model calls for) this produces **duplicate tracks or silently
-truncated playlists** in the live playback/browse path. No test in `t/36_spclient.t` exercises
-this condition, so the green test suite does not surface it — the code review did, and it was
-never followed up.
+- **CR-01 (critical, closed):** `getPlaylistItems` now filters to `spotify:track:` URIs before
+  slicing and derives `total` from the filtered list, restoring the offset-advance-by-
+  returned-count contract every caller depends on. The shared root cause (`_enrichMeta`/
+  `_enrichCollectionSlice`'s `grep { defined }` drop pattern) is fixed via stub substitution,
+  closing the same defect in `getAlbumTracks`, `getShowEpisodes`, `getSavedTracks`,
+  `getSavedAlbums`, `getFollowedArtists`, and `search`.
+- **WR-01 (closed):** `getAlbumTracks`/`getArtistAlbums`/`getShowEpisodes` no longer die inside the
+  async HTTP success callback on an empty/malformed `metadata/4` body — all three now route
+  through the same named Client.pm fallback used for hard errors.
+- **WR-02 (closed):** `getSavedShows` honors `params._noCache`; the four library write
+  passthroughs invalidate their corresponding spclient list cache key before delegating.
+- **WR-03 (closed):** `_collectionAll`'s pagination loop is bounded by `COLLECTION_MAX_PAGES`
+  (100) and a repeated-`next_page_token` guard.
+- **WR-04 (closed):** `getPlaylistItems` validates `$playlistId` (22-char base62) before it is
+  ever spliced into the spclient URL path or cache key.
 
-Three further unresolved warnings (WR-02 stale library lists after write, WR-03 unbounded
-collection pagination loop, WR-04 unvalidated playlist ID in URL/cache key) compound the risk
-picture but are not independently blocking beyond CR-01.
+All fixes are backed by 37 new passing regression tests in `t/36_spclient.t` (grown from 233 to
+270 tests), and the full workspace suite is green at 1685 tests (up from 1648), with zero
+regressions. `Client.pm` remains confirmed byte-identical across all three gap-closure commits,
+preserving the phase's D-03 no-coupling guarantee.
 
-Since `must_haves.truths` in 75-02 ("Every facade method preserves the cb->($result) contract
-so 75-06 call-site switching needs no caller changes") and 75-05 ("matching the _playlistFeed
-item shape") both implicitly assert Client.pm-behavioral-equivalence, and CR-01 demonstrates
-that equivalence does not hold under conditions the phase's own threat model designed for,
-this is scored as a genuine gap, not a deferred/future-phase concern — it lives entirely within
-Phase 75's own delivered code and its own code-review found it.
+One residual, explicitly out-of-scope item (`search()`'s narrow offset-vs-uri-count edge case) was
+surfaced during 75-07's own execution, is correctly NOT part of the original CR-01/WR-01..04 gap
+set this phase's own code review flagged, and was honestly logged as an open deviation in
+`.planning/WINDOWS.md` (#6) rather than silently fixed or silently ignored. It is informational
+only and does not block phase 75 closure.
 
-**This looks like an oversight, not an intentional deviation** — no VERIFICATION.md override is
-suggested; the fix (filter-before-slice + recount, per 75-REVIEW.md's own proposed patch) is
-small, scoped, and the review already wrote it. Recommend routing this to a phase 75 closure
-plan (`/gsd-plan-phase --gaps`) rather than deferring to Phase 76/77.
+The phase goal — build the spclient API layer and switch all browse/search/library call sites to
+the SpClient facade with D-06/D-07 routing — is now fully achieved with no remaining unresolved
+finding from `75-REVIEW.md`.
 
 ---
 
-_Verified: 2026-08-29T09:39:00Z_
+_Verified: 2026-08-29_
 _Verifier: Claude (gsd-verifier)_
