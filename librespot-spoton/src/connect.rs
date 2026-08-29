@@ -33,6 +33,48 @@ use librespot_playback::player::PlayerEvent;
 use librespot_playback::{NUM_CHANNELS, SAMPLE_RATE};
 
 // -------------------------------------------------------------------------
+// Position anchor — GH #128 relay-start resync
+// -------------------------------------------------------------------------
+
+/// Last known playback position, captured from position-carrying PlayerEvents
+/// (Playing/Paused/Seeked/PositionCorrection). Cleared on TrackChanged/Stopped
+/// so a stale anchor from the previous track can never be replayed onto a new
+/// one.
+///
+/// GH #128: during a mid-song Connect handoff there is a real multi-second gap
+/// between the `transfer` command (whose Playing event carries the
+/// transfer-time position) and the /stream relay actually serving audio. The
+/// relay-start hook extrapolates this anchor to "now" and pushes a fresh seek
+/// notification, so the first position LMS trusts corresponds to when audio
+/// actually flows — not the stale transfer-time position.
+#[derive(Debug, Clone, Copy)]
+pub struct PositionAnchor {
+    pub position_ms: u32,
+    pub at: Instant,
+    pub playing: bool,
+}
+
+/// Pure extrapolation for the GH #128 relay-start resync.
+///
+/// Returns the anchor position extrapolated to `now` when the anchor says
+/// playback is running; `None` when there is no anchor, playback is paused
+/// (the resume path syncs position itself, CON-13), or the extrapolated
+/// position is <= 1s (mirrors the needs_position_sync `secs > 1.0` guard —
+/// fresh track starts need no resync and must not jitter the progress bar).
+pub fn relay_resync_position_ms(anchor: &Option<PositionAnchor>, now: Instant) -> Option<u64> {
+    let a = anchor.as_ref()?;
+    if !a.playing {
+        return None;
+    }
+    let elapsed_ms = now.saturating_duration_since(a.at).as_millis() as u64;
+    let extrapolated = u64::from(a.position_ms) + elapsed_ms;
+    if extrapolated <= 1000 {
+        return None;
+    }
+    Some(extrapolated)
+}
+
+// -------------------------------------------------------------------------
 // LMS struct — JSON-RPC notifier
 // -------------------------------------------------------------------------
 
@@ -62,6 +104,9 @@ pub struct LMS {
     /// Set to true when Paused/Stopped fires after grace-timer check passes (real pause/stop).
     /// Cleared atomically by the Playing handler to detect resume-after-pause (D-01).
     pub was_paused: Arc<AtomicBool>,
+    /// GH #128: last known playback position for the relay-start resync.
+    /// Updated by handle_player_event; consumed by resync_position_at_relay_start.
+    pub position_anchor: Arc<std::sync::Mutex<Option<PositionAnchor>>>,
 }
 
 impl LMS {
@@ -81,6 +126,7 @@ impl LMS {
             needs_position_sync: Arc::new(AtomicBool::new(false)),
             last_session_start: Arc::new(std::sync::Mutex::new(None)),
             was_paused: Arc::new(AtomicBool::new(false)),
+            position_anchor: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -105,6 +151,7 @@ impl Clone for LMS {
             needs_position_sync: Arc::clone(&self.needs_position_sync),
             last_session_start: Arc::clone(&self.last_session_start),
             was_paused: Arc::clone(&self.was_paused),
+            position_anchor: Arc::clone(&self.position_anchor),
         }
     }
 }
@@ -114,6 +161,56 @@ impl Clone for LMS {
 // -------------------------------------------------------------------------
 
 impl LMS {
+    /// GH #128: replace the position anchor with a fresh (position, now, playing) triple.
+    fn set_anchor(&self, position_ms: u32, playing: bool) {
+        let mut a = self.position_anchor.lock().unwrap_or_else(|e| e.into_inner());
+        *a = Some(PositionAnchor { position_ms, at: Instant::now(), playing });
+    }
+
+    /// GH #128: update the anchor position, preserving the playing flag
+    /// (Seeked/PositionCorrection carry a position but not a play state).
+    /// With no prior anchor the state defaults to paused — no extrapolated
+    /// resync until a Playing event confirms playback for the current track.
+    fn update_anchor_position(&self, position_ms: u32) {
+        let mut a = self.position_anchor.lock().unwrap_or_else(|e| e.into_inner());
+        let playing = a.map(|x| x.playing).unwrap_or(false);
+        *a = Some(PositionAnchor { position_ms, at: Instant::now(), playing });
+    }
+
+    /// GH #128: drop the anchor (TrackChanged/Stopped) — a stale anchor from
+    /// the previous track must never be replayed onto a new one.
+    fn clear_anchor(&self) {
+        let mut a = self.position_anchor.lock().unwrap_or_else(|e| e.into_inner());
+        *a = None;
+    }
+
+    /// GH #128: called by the /stream relay the moment it actually starts
+    /// serving audio. Pushes the SAME position-carrying notification the
+    /// needs_position_sync mechanism uses ("seek", seconds) — but anchored to
+    /// relay start instead of the transfer-time Playing event, so the LMS
+    /// progress bar no longer lags by the buffer-fill gap after a mid-song
+    /// Connect handoff.
+    pub async fn resync_position_at_relay_start(&self) {
+        if !self.is_configured() {
+            return;
+        }
+        let pos_ms = {
+            let anchor = self.position_anchor.lock().unwrap_or_else(|e| e.into_inner());
+            relay_resync_position_ms(&anchor, Instant::now())
+        };
+        if let Some(ms) = pos_ms {
+            let secs = ms as f64 / 1000.0;
+            log::info!(
+                "[spoton] /stream relay start — resyncing LMS position to {secs:.3}s (GH #128)"
+            );
+            self.notify("seek", &format!("{secs:.3}"), "").await;
+        } else {
+            log::debug!(
+                "[spoton] /stream relay start — no position resync (no anchor / paused / <=1s, GH #128)"
+            );
+        }
+    }
+
     /// Consume one PlayerEvent and emit zero-or-one spottyconnect JSON-RPC dispatches.
     ///
     /// `current_track` is the dispatch loop's cursor: base62 id of the last-seen
@@ -139,6 +236,8 @@ impl LMS {
             PlayerEvent::Playing { track_id, position_ms, .. } => {
                 let new_id = track_id.to_id();
                 log::debug!("[spoton] Playing: track_id={new_id}, position_ms={position_ms}");
+                // GH #128: Playing is the authoritative "position + running" signal.
+                self.set_anchor(*position_ms, true);
                 match current_track.as_deref() {
                     Some(prev) if prev == new_id.as_str() => {
                         // D-01: Check was_paused first — if set, this Playing is a resume.
@@ -180,8 +279,10 @@ impl LMS {
 
             // Paused: D-03 grace-timer suppresses spurious Paused within 2s of session start.
             // Stopped is NEVER suppressed — it is the authoritative end-of-track signal (CR-01 fix).
-            PlayerEvent::Paused { .. } => {
+            PlayerEvent::Paused { position_ms, .. } => {
                 log::debug!("[spoton] Paused: current_track={:?}", current_track.as_deref());
+                // GH #128: paused — keep the position but stop extrapolating.
+                self.set_anchor(*position_ms, false);
                 let grace = std::time::Duration::from_secs(2);
                 if let Ok(start) = self.last_session_start.lock() {
                     if let Some(t) = *start {
@@ -198,6 +299,8 @@ impl LMS {
             }
             PlayerEvent::Stopped { .. } => {
                 log::debug!("[spoton] Stopped: current_track={:?}", current_track.as_deref());
+                // GH #128: playback ended — no position to resync to.
+                self.clear_anchor();
                 if current_track.is_some() {
                     self.notify("stop", "", "").await;
                     // Reset cursor so that the next SessionConnected + TrackChanged(same_id)
@@ -225,6 +328,8 @@ impl LMS {
             // Also fire the flush watch-channel so the relay drains pre-seek PCM bytes.
             PlayerEvent::Seeked { position_ms, .. } => {
                 log::debug!("[spoton] Seeked: position_ms={position_ms}");
+                // GH #128: position moved; play state unchanged by a seek.
+                self.update_anchor_position(*position_ms);
                 if current_track.is_some() {
                     let secs = f64::from(*position_ms) / 1000.0;
                     self.notify("seek", &format!("{secs:.3}"), "").await;
@@ -247,6 +352,11 @@ impl LMS {
             PlayerEvent::TrackChanged { audio_item } => {
                 let new_id = audio_item.track_id.to_id();
                 log::debug!("[spoton] TrackChanged: track_id={new_id}");
+                // GH #128: new (or re-announced) track — the old anchor no
+                // longer describes this track's position. Cleared until the
+                // next position-carrying event; a relay start in between
+                // performs no resync (better none than a wrong one).
+                self.clear_anchor();
                 match current_track.as_deref() {
                     Some(prev) if prev == new_id.as_str() => {
                         self.was_paused.store(false, Ordering::Release);
@@ -270,6 +380,12 @@ impl LMS {
                         self.notify("start", &new_id, "").await;
                     }
                 }
+            }
+
+            // GH #128: no LMS notification, but the corrected position feeds
+            // the relay-start resync anchor.
+            PlayerEvent::PositionCorrection { position_ms, .. } => {
+                self.update_anchor_position(*position_ms);
             }
 
             // All other events: no LMS equivalent.
@@ -573,6 +689,61 @@ impl Sink for HttpStreamSink {
         }
 
         Ok(())
+    }
+}
+
+// -------------------------------------------------------------------------
+// Relay-start position resync unit tests (GH #128)
+// -------------------------------------------------------------------------
+
+#[cfg(test)]
+mod relay_resync_tests {
+    use super::*;
+
+    fn anchor(position_ms: u32, age: Duration, playing: bool) -> Option<PositionAnchor> {
+        Some(PositionAnchor {
+            position_ms,
+            at: Instant::now() - age,
+            playing,
+        })
+    }
+
+    /// GH #128 core: a playing anchor is extrapolated by the elapsed wall
+    /// clock — the handoff gap between the transfer-time Playing event and
+    /// the relay actually serving audio.
+    #[test]
+    fn playing_anchor_extrapolates_by_elapsed() {
+        let now = Instant::now();
+        let a = anchor(60_000, Duration::from_secs(5), true);
+        let got = relay_resync_position_ms(&a, now).expect("playing anchor must resync");
+        // 60s anchor + ~5s gap; allow small scheduling slack.
+        assert!(
+            (64_900..=65_200).contains(&got),
+            "expected ~65000 ms, got {got}"
+        );
+    }
+
+    /// Paused anchors never extrapolate — the resume path (CON-13) owns
+    /// position sync for paused sessions.
+    #[test]
+    fn paused_anchor_is_skipped() {
+        let a = anchor(60_000, Duration::from_secs(5), false);
+        assert_eq!(relay_resync_position_ms(&a, Instant::now()), None);
+    }
+
+    /// No anchor (fresh TrackChanged, no Playing yet) — no resync. Better
+    /// none than replaying the previous track's position onto a new one.
+    #[test]
+    fn missing_anchor_is_skipped() {
+        assert_eq!(relay_resync_position_ms(&None, Instant::now()), None);
+    }
+
+    /// Positions <= 1s are suppressed (mirrors the needs_position_sync
+    /// `secs > 1.0` guard) — fresh track starts must not jitter the bar.
+    #[test]
+    fn near_zero_position_is_skipped() {
+        let a = anchor(200, Duration::from_millis(300), true);
+        assert_eq!(relay_resync_position_ms(&a, Instant::now()), None);
     }
 }
 

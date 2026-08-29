@@ -160,6 +160,23 @@ sub start {
 		    || $prefs->get('disableDiscovery');
 		push @helperArgs, '--disable-discovery' if $disableDiscovery;
 
+		# GH #131: sync groups need excess delivery bandwidth. LMS drift
+		# correction (_CheckSync skipAhead) discards audio, and _Rebuffer's
+		# hardcoded 5s threshold (Slim::Player::Player::rebuffer) cannot fill
+		# faster than 1x real-time from the CON-14 rate-limited /stream with
+		# the default 2000 ms headroom — result: 1s-play/10-20s-pause stutter
+		# cycles on mixed sync groups. 5000 ms (low end of the issue's
+		# 5000-10000 range) satisfies the rebuffer threshold while keeping
+		# Spotify-app transport latency acceptable. Trade-off: pause/skip from
+		# the Spotify app takes up to ~5s longer to be audible on the group.
+		# Spawn-time limitation: a player that joins a sync group AFTER the
+		# daemon spawned keeps the 2000 ms default until the next daemon
+		# restart — deliberately NOT restart-on-sync-change, per the Phase 63
+		# GH #143 decision (sync-membership changes must not bounce daemons).
+		if ($client->isSynced() && $client->model ne 'group') {
+			push @helperArgs, '--buffer-latency-ms', 5000;
+		}
+
 		# GH #144: the binary now uses a PassthroughMixer that tracks
 		# volume for the Spotify slider / VolumeChanged events but never
 		# attenuates decoded samples -- LMS/squeezelite is the single
