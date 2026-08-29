@@ -3,7 +3,7 @@ name = "spoton-helper"
 version = "0.1.0"
 edition = "2021"
 authors = ["SpotOn Contributors"]
-description = "SpotOn Soloist helper: binary patcher, integrity check, schema converter"
+description = "SpotOn Soloist helper: binary patcher and integrity checker"
 license = "MIT"
 
 [[bin]]
@@ -16,10 +16,6 @@ serde_json = "1"
 sha2       = "0.10"
 anyhow     = "1"
 thiserror  = "2"
-protobuf   = "3.7"
-
-[build-dependencies]
-protobuf-codegen = "3.7"
 
 # Defensive: a wrapping bug in offset math must abort, never corrupt a binary.
 [profile.release]

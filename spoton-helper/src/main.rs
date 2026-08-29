@@ -1,14 +1,18 @@
-//! spoton-helper — Soloist binary patcher, integrity checker, and protobuf
-//! converter for the SpotOn LMS plugin.
+//! spoton-helper — Soloist binary patcher and integrity checker for the
+//! SpotOn LMS plugin.
 //!
 //! This binary opens no socket, holds no credentials, and touches only the
 //! files given to it on the command line. See Cargo.toml for the deliberately
 //! minimal dependency set.
+//!
+//! Protobuf decoding lives entirely in Perl now (Plugins::SpotOn::API::ProtobufLite,
+//! Phase 75 D-01/D-02) — this crate no longer carries a protobuf subcommand,
+//! codegen build script, or the protobuf/protobuf-codegen crates. The
+//! vendored .proto files under proto/ remain as schema documentation only.
 
 mod arch;
 mod check;
 mod patch;
-mod protobuf_cmd;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -37,13 +41,6 @@ enum Cmd {
         #[arg(long)]
         expect_sha: Option<String>,
     },
-    /// Convert protobuf <-> JSON over stdin/stdout.
-    Protobuf {
-        #[arg(long)]
-        schema: String,
-        #[arg(long, default_value = "decode")]
-        mode: String,
-    },
 }
 
 fn main() -> ExitCode {
@@ -52,7 +49,6 @@ fn main() -> ExitCode {
     let result = match cli.cmd {
         Cmd::Check { binary, expect_sha } => check::run(&binary, expect_sha),
         Cmd::Patch { version, binary } => patch::run(&version, &binary),
-        Cmd::Protobuf { schema, mode } => protobuf_cmd::run(&schema, &mode),
     };
 
     if let Err(err) = result {
