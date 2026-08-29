@@ -598,7 +598,11 @@ sub _onDeviceChanged {
 		$self->deactivating(1);
 
 		$self->sessionActive(0);
-		$self->_emit('stop');
+		# GH #151: mark this stop as the SESSION-END signal (device deselected
+		# in the Spotify app / transfer-away / disconnect) -- distinct from the
+		# plain pause 'stop' emitted by _onPlaybackChanged. Connect.pm's stop
+		# handler uses the 'inactive' marker to run the power-state restore.
+		$self->_emit('stop', 'inactive');
 	}
 }
 

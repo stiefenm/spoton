@@ -30,6 +30,17 @@ use constant VOLUME_GRACE_PERIOD => 3;
 # Seconds; suppress spurious stop events during session setup (mid-playback transfer)
 use constant CONNECT_START_GRACE => 12;
 
+# Seconds; Phase 76 (ROADMAP: auto-play after LMS restart) — a freshly
+# (re)spawned daemon re-announces an existing dormant Spirc session as
+# track_changed/start with NO user action (live-captured sequence, 76-05
+# SUMMARY: daemon spawn +0.43s -> 'start' -> unconditional playlist play ->
+# the real paused state arrives as 'stop' +45ms later and is swallowed by
+# CONNECT_START_GRACE). A genuine app-initiated transfer cannot arrive this
+# close to the daemon's own spawn: the device only becomes transferable
+# after the daemon has connected to Spotify, and a human still has to tap
+# it. All captured re-announcements arrived at daemon uptime < 1s.
+use constant RESTART_START_GRACE => 5;
+
 # Seconds; CR-02 — suppress the un-sourced pause/stop notification LMS fires
 # internally during a soloist-browse advance/start (mirrors CONNECT_START_GRACE
 # for the Connect path).
@@ -489,6 +500,17 @@ sub _onNewSong {
                 "New song without Connect URL — clearing active Connect state for " . $client->id
             );
             $_activeConnectPlayer = undef;
+
+            # GH #151: session over because the user started other playback —
+            # discard the saved power state WITHOUT powering off (the player
+            # is obviously in use).
+            if (defined $client->pluginData('connectPrevPower')) {
+                main::INFOLOG && $log->is_info && $log->info(
+                    "Discarding saved pre-Connect power state for " . $client->id
+                    . " — user started other playback (GH #151)"
+                );
+                $client->pluginData(connectPrevPower => undef);
+            }
         }
     }
 }
@@ -620,6 +642,10 @@ sub _onPause {
         main::INFOLOG && $log->is_info && $log->info(
             "Got unpause event - forwarding to Connect binary via HTTP /control/play (D-14)"
         );
+        # GH #158: LMS-side unpause resumes the Spotify session — clear the
+        # remembered pause state immediately (the daemon's own resume/playing
+        # echo would clear it too, but not before the next change could race).
+        $client->pluginData(connectSessionPaused => 0);
         _sendControlCommand($client, '/control/play', undef);
     } else {
         main::INFOLOG && $log->is_info && $log->info(
@@ -956,10 +982,23 @@ sub _connectEvent {
                 "Resume while not on Connect stream — re-entering Connect via playlist play"
             );
 
+            # GH #151: this re-entry powers the player on (playlist play
+            # below) — save the pre-Connect power state if no session save
+            # exists yet (e.g. a restart-suppressed session resuming here;
+            # first save wins, same rule as the start handler).
+            if (!defined $client->pluginData('connectPrevPower')) {
+                $client->pluginData(connectPrevPower => ($client->power ? 1 : 0));
+                main::INFOLOG && $log->is_info && $log->info(
+                    "Saved pre-Connect power state for " . $client->id . ": "
+                    . ($client->pluginData('connectPrevPower') ? 'on' : 'off') . " (GH #151)"
+                );
+            }
+
             # Suppress transitional pause/stop events (same as 'start' handler):
             # newTrack prevents _onPause from forwarding the LMS stop-before-play
             # sequence to the binary, which would immediately re-pause Spotify.
             $client->pluginData(connectPauseTs => 0);
+            $client->pluginData(connectSessionPaused => 0);   # GH #158: resuming
             $client->pluginData(newTrack => 1);
             _armNewTrackFallback($client);   # H7
             $client->pluginData(connectStartTime => Time::HiRes::time());
@@ -1005,6 +1044,7 @@ sub _connectEvent {
         # Unpause squeezelite — CRITICAL: use ['pause', 0] NOT ['play'].
         # ['play'] would open a new HTTP stream connection and break the
         # continuous PCM stream (Pitfall 1). Source-mark for T-05-13 loop prevention.
+        $client->pluginData(connectSessionPaused => 0);   # GH #158: session resumed
         $client->pluginData(connectPauseTs => Time::HiRes::time());
         my $unPauseReq = Slim::Control::Request->new($client->id, ['pause', 0]);
         $unPauseReq->source(__PACKAGE__);
@@ -1051,8 +1091,60 @@ sub _connectEvent {
     if ($cmd eq 'start') {
         my $trackId = $request->getParam('_p2');
 
+        # ROADMAP Phase 76 (auto-play after LMS restart): provenance gate.
+        # A 'start' arriving within RESTART_START_GRACE of the daemon's own
+        # (re)spawn while the LMS player is idle is a re-announcement of a
+        # restored/dormant session — NOT a fresh user transfer (see constant
+        # comment for the captured event sequence). Suppress the playlist
+        # play (no self-starting audio), but keep the session visible and
+        # manually resumable: metadata is still fetched, the ownership claim
+        # ($_activeConnectPlayer / pendingConnect, set above) stays, and a
+        # later play tap in the Spotify app arrives as 'resume' whose
+        # not-on-Connect-stream branch re-enters via playlist play normally.
+        # The isPlaying exception preserves daemon-crash recovery: if the
+        # player was already audibly playing when the daemon respawned,
+        # resuming the stream is not a "self-start".
+        # (Unrelated to pref_enableAutoplay — that is DSTM autoplay.)
+        require Plugins::SpotOn::Unified::DaemonManager;
+        my $daemonUptime = Plugins::SpotOn::Unified::DaemonManager->uptime($client->id) || 0;
+        if (!$client->isPlaying && $daemonUptime > 0 && $daemonUptime < RESTART_START_GRACE) {
+            main::INFOLOG && $log->is_info && $log->info(sprintf(
+                "Suppressing Connect autoplay for %s: start event %.2fs after daemon spawn "
+                . "with idle player — restored session, not a user transfer (Phase 76 restart gate)",
+                $client->id, $daemonUptime
+            ));
+
+            if ($trackId) {
+                $client->pluginData(eventTrackUri => "spotify:track:$trackId");
+                _fetchTrackMetadata($client, $trackId);
+            }
+
+            $log->warn("[DIAG] [$diagTs] start_suppressed: player=" . $client->id
+                . " track=" . ($trackId || 'none')
+                . " daemonUptime=" . sprintf('%.2f', $daemonUptime)
+            ) if $diagMode;
+
+            return;
+        }
+
+        # GH #151: save the pre-Connect power state ONCE per session, BEFORE
+        # the playlist play below powers the player on. First save wins:
+        # repeated start events within one session (transfer away/back,
+        # Spirc reconnect) must not overwrite the saved value with the
+        # now-on state. Cleared at a real session end (stop 'inactive'
+        # marker) or when the user starts other playback (_onNewSong).
+        if (!defined $client->pluginData('connectPrevPower')) {
+            $client->pluginData(connectPrevPower => ($client->power ? 1 : 0));
+            main::INFOLOG && $log->is_info && $log->info(
+                "Saved pre-Connect power state for " . $client->id . ": "
+                . ($client->pluginData('connectPrevPower') ? 'on' : 'off') . " (GH #151)"
+            );
+        }
+
         # Clear echo suppression — new track start is authoritative
         $client->pluginData(connectPauseTs => 0);
+        # GH #158: a fresh session start supersedes any remembered pause state
+        $client->pluginData(connectSessionPaused => 0);
 
         # D-08 mutual exclusion: stop any Browse playback on this player
         my $song = $client->playingSong();
@@ -1146,7 +1238,15 @@ sub _connectEvent {
         # Ensure player is playing — stop→change from skip leaves squeezelite paused.
         # (isSpotifyConnect re-check kept although the H6 top guard makes it
         # near-redundant: pendingConnect-only entry must not force playback.)
-        if (!$client->isPlaying && __PACKAGE__->isSpotifyConnect($client)) {
+        # GH #158: NEVER force-unpause while the Spotify session itself is
+        # paused (connectSessionPaused, tracked from stop/resume events). A
+        # skip while user-paused delivers a 'change' with Spotify STILL
+        # paused — the old unconditional unpause here made LMS stream
+        # against a paused (data-less) source, which on sync groups spirals
+        # into a rebuffer/restart loop ("song starts over and over"). The
+        # later user play arrives as 'resume' and unpauses normally.
+        if (!$client->isPlaying && __PACKAGE__->isSpotifyConnect($client)
+            && !$client->pluginData('connectSessionPaused')) {
             $client->pluginData(connectPauseTs => Time::HiRes::time());
             my $playReq = Slim::Control::Request->new($client->id, ['pause', 0]);
             $playReq->source(__PACKAGE__);
@@ -1170,6 +1270,9 @@ sub _connectEvent {
         my $soloistWs = _soloistConnectWs($client);
         if ($soloistWs && $soloistWs->skipInitiated) {
             $soloistWs->skipInitiated(0);    # consume the flag
+            # GH #158: the forced reconnect below starts playback — any
+            # remembered session-pause state is superseded.
+            $client->pluginData(connectSessionPaused => 0);
 
             my $ts      = int(Time::HiRes::time() * 1000);
             my $playReq = Slim::Control::Request->new($client->id, [
@@ -1200,6 +1303,37 @@ sub _connectEvent {
     # Stop: forward pause to LMS player (source-marked to prevent echo)
     # -----------------------------------------------------------------
     if ($cmd eq 'stop') {
+        # GH #151: SESSION-END path — the daemon marks the stop 'inactive'
+        # when this device stopped being the active Connect target (device
+        # deselected / transfer-away / disconnect). This is an authoritative
+        # daemon-side state change, not a transitional stop, so it is
+        # handled BEFORE the newTrack/grace suppressions below. Pause the
+        # stream (mirrors the plain-stop behavior), then restore the saved
+        # pre-Connect power state. The generic un-marked stop (app pause)
+        # never restores power.
+        if (($request->getParam('_p2') || '') eq 'inactive') {
+            if ($client->isPlaying && __PACKAGE__->isSpotifyConnect($client)) {
+                main::INFOLOG && $log->is_info && $log->info(
+                    "Connect session ended (device inactive) — pausing " . $client->id
+                );
+                $client->pluginData(connectPauseTs => Time::HiRes::time());
+                my $pauseReq = Slim::Control::Request->new($client->id, ['pause', 1]);
+                $pauseReq->source(__PACKAGE__);
+                $pauseReq->execute();
+            }
+
+            # GH #158: session over — drop the remembered pause state
+            $client->pluginData(connectSessionPaused => 0);
+
+            _restorePowerAfterConnect($client);
+
+            $log->warn("[DIAG] [$diagTs] stop: player=" . $client->id
+                . " sessionEnd=1"
+                . " elapsed=" . sprintf('%.3f', Time::HiRes::time() - $diagTs)
+            ) if $diagMode;
+
+            return;
+        }
         # Grace period: ignore spurious stop events during Connect session setup.
         # The binary fires Stopped between TrackChanged and Playing — this must not
         # pause the LMS player. Time-based check only (isPlaying is already true by
@@ -1217,6 +1351,13 @@ sub _connectEvent {
             ) if $diagMode;
 
             return;
+        }
+
+        # GH #158: a genuine (post-grace) stop means the Spotify session is
+        # paused — remember it so the 'change' handler does not force-unpause
+        # a skip-while-paused sequence. Cleared on start/resume/unpause.
+        if (__PACKAGE__->isSpotifyConnect($client)) {
+            $client->pluginData(connectSessionPaused => 1);
         }
 
         if ($client->isPlaying && __PACKAGE__->isSpotifyConnect($client)) {
@@ -1276,6 +1417,53 @@ sub _connectEvent {
     }
 
     main::INFOLOG && $log->is_info && $log->info("Unhandled spottyconnect command: $cmd");
+}
+
+# _restorePowerAfterConnect($client)
+# GH #151: restore the pre-Connect power state at Connect session end
+# (ShairTunes prior art). Only powers OFF (never on): a player that was
+# already on before the session simply stays on. Guards:
+#   - no-op unless a power state was saved for this session
+#   - the saved flag is ALWAYS cleared, even on the skip paths, so a stale
+#     value can never leak into a later session (first-save-wins contract)
+#   - skip the power-off if the player is meanwhile playing something that
+#     is not the Connect stream (user started local playback during/after
+#     the session — powering off would kill their music)
+# Sync groups: _connectEvent normalizes to the master client (the daemon
+# lives on the master), so save/restore applies to the player that received
+# the event — each member with its own session is handled individually.
+sub _restorePowerAfterConnect {
+    my ($client) = @_;
+
+    my $prev = $client->pluginData('connectPrevPower');
+    return unless defined $prev;
+
+    # Always clear first — no path below may leave a stale saved state.
+    $client->pluginData(connectPrevPower => undef);
+
+    if ($prev) {
+        main::DEBUGLOG && $log->is_debug && $log->debug(
+            "Session end: player " . $client->id . " was on before Connect — leaving on (GH #151)"
+        );
+        return;
+    }
+
+    my $song = $client->playingSong();
+    my $url  = $song ? ($song->track->url || $song->streamUrl || '') : '';
+    if ($client->isPlaying && $url !~ m{spoton://connect-}) {
+        main::INFOLOG && $log->is_info && $log->info(
+            "Session end: " . $client->id . " is playing something else — skipping power-off (GH #151)"
+        );
+        return;
+    }
+
+    main::INFOLOG && $log->is_info && $log->info(
+        "Session end: restoring pre-Connect power state (off) for " . $client->id . " (GH #151)"
+    );
+
+    my $powerReq = Slim::Control::Request->new($client->id, ['power', 0]);
+    $powerReq->source(__PACKAGE__);
+    $powerReq->execute();
 }
 
 # _fetchTrackMetadata($client, $trackId)

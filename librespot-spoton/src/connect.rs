@@ -388,6 +388,20 @@ impl LMS {
                 self.update_anchor_position(*position_ms);
             }
 
+            // GH #151: SessionDisconnected — this device stopped being the
+            // active Connect target (deselected in the app, transfer-away,
+            // explicit disconnect). Emit a session-end-marked stop so
+            // Connect.pm can restore the pre-Connect power state. The plain
+            // "stop" (Paused/Stopped) never carries the marker — it means
+            // pause, not session end. Parity with SoloistWS's
+            // device_changed(is_active:false) 'inactive' emission.
+            PlayerEvent::SessionDisconnected { .. } => {
+                log::debug!("[spoton] SessionDisconnected: current_track={:?}", current_track.as_deref());
+                if current_track.is_some() {
+                    self.notify("stop", "inactive", "").await;
+                }
+            }
+
             // All other events: no LMS equivalent.
             _ => {}
         }
