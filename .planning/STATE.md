@@ -5,16 +5,16 @@ milestone_name: Soloist Integration
 current_phase: 75
 current_phase_name: API Unification (spclient-Modell)
 status: verifying
-stopped_at: Completed 75-06-PLAN.md
-last_updated: "2026-08-29T09:22:17.365Z"
+stopped_at: Completed 75-07-PLAN.md (gap closure — CR-01, WR-01..WR-04 all closed)
+last_updated: "2026-08-29T15:08:11.766Z"
 last_activity: 2026-08-29
 last_activity_desc: Phase 75 execution started
-state_head: eca3b4c62d394c13b6e6c8776a20415ce7620161
+state_head: 4b3197379896b054d93704fd2676992e171a8c1b
 progress:
   total_phases: 14
   completed_phases: 3
-  total_plans: 23
-  completed_plans: 23
+  total_plans: 24
+  completed_plans: 24
   percent: 21
 ---
 
@@ -120,6 +120,7 @@ Phase 77: [ ] Soloist UAT + Release (Final Proof: kein librespot nötig)
 | Phase 75 P04 | ~35min | 3 tasks | 2 files |
 | Phase 75-api-unification-spclient-modell P05 | 12min | 2 tasks | 2 files |
 | Phase 75 P06 | ~15min | 3 tasks | 10 files |
+| Phase 75 P07 | 35min | 3 tasks | 2 files |
 
 ## Deferred Items
 
@@ -311,6 +312,9 @@ Items carried forward from previous milestones:
 - [Phase 75]: [Phase 75][75-06] getLimit passthrough reads through to Client.pm's probe-detected limits -- ALL getLimit call sites switch to SpClient, which transparently delegates (probe cleanup deferred to Phase 76/77)
 - [Phase 75]: [Phase 75][75-06] Connect.pm's D-08 split is call-level not file-level -- only _fetchTrackMetadata's getTrack call switches; the four player-control calls stay on Client.pm
 - [Phase 75]: [Phase 75][75-06] Smoke script routes the Bearer token through a curl -K config file (not -H argv) in addition to the plan's stdin body passthrough, closing an argv/ps exposure gap for the token
+- [Phase 75]: [Phase 75][75-07] getRecentlyPlayed's inline enrichment loop deliberately untouched -- no offset-based pagination caller, out of CR-01 scope
+- [Phase 75]: [Phase 75][75-07] search()'s pre-existing offset-guard scope issue left unfixed (not in Task 1's action list) -- logged to WINDOWS.md #6 rather than silently fixed or dropped
+- [Phase 75]: [Phase 75][75-07] _collectionAll's _noCache is bypass-on-demand (skip read, still refresh cache), never a cache-disable -- matches Plugin.pm:2088's call shape
 
 ### Blockers/Concerns
 
@@ -343,8 +347,8 @@ Items carried forward from previous milestones:
 
 **Resume file:** None
 
-**Last session:** 2026-08-29T09:22:16.983Z
-**Stopped at:** Completed 75-06-PLAN.md
+**Last session:** 2026-08-29T15:08:11.324Z
+**Stopped at:** Completed 75-07-PLAN.md (gap closure — CR-01, WR-01..WR-04 all closed)
 
 **Completed this session (2026-08-24):**
 
