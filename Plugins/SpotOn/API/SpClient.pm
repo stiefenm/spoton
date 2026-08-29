@@ -34,6 +34,7 @@ use Slim::Utils::Log;
 use Slim::Utils::Prefs;
 use Slim::Utils::Timers;
 use Time::HiRes;
+use URI::Escape qw(uri_escape_utf8);
 
 # ------------------------------------------------------------
 # Constants
@@ -504,6 +505,393 @@ sub _normalizeTrack {
             images => \@images,
         },
     };
+}
+
+# ============================================================
+# Shared helpers (Phase 75 Plan 02)
+# ============================================================
+
+# _imagesFromGroup($class, $group)
+# Maps a spclient cover_group/portrait_group {image:[{file_id,width,height}]}
+# structure to Web-API-shaped image objects. Missing/malformed groups yield
+# an empty arrayref -- Pitfall 6: never dies on absent/unexpected JSON keys.
+sub _imagesFromGroup {
+    my ($class, $group) = @_;
+    my @images;
+    for my $img (@{ ($group && ref($group) eq 'HASH') ? ($group->{image} || []) : [] }) {
+        push @images, {
+            url    => 'https://i.scdn.co/image/' . ($img->{file_id} // ''),
+            width  => $img->{width},
+            height => $img->{height},
+        };
+    }
+    return \@images;
+}
+
+# _formatDate($class, $date)
+# Maps spclient's {year,month,day} date struct to a Web-API "YYYY-MM-DD"
+# string. Missing month/day (partial-precision releases) default to 01.
+# No year at all -> undef (callers already guard optional release_date/
+# release_year fields).
+sub _formatDate {
+    my ($class, $date) = @_;
+    return undef unless $date && ref($date) eq 'HASH' && $date->{year};
+    return sprintf('%04d-%02d-%02d', $date->{year}, $date->{month} || 1, $date->{day} || 1);
+}
+
+# _spFacade($class, $path, $params, $normalize, $fallback, $cb)
+# Shared D-07 request/normalize/fallback pattern reused by every metadata/4
+# facade method below (album/artist/show/episode/search). Issues the
+# spclient request; on success, hands the raw result to $normalize->($result,
+# $cb) (which itself calls $cb -- may be sync or async, e.g. getAlbumTracks'
+# enrichment pass); on a fallback-classified error (D-07), invokes
+# $fallback->($cb) (delegates to the Client.pm method of the same name); on
+# a non-fallback error, delivers the error as-is.
+sub _spFacade {
+    my ($class, $path, $params, $normalize, $fallback, $cb) = @_;
+
+    $class->_request('get', $path, $params, sub {
+        my ($result, $err) = @_;
+
+        if ($err) {
+            if ($class->_isFallbackError($err)) {
+                main::INFOLOG && $log->info("SpClient: error for $path, falling back to Client.pm (D-07): "
+                    . ($err->{error} // '?'));
+                $fallback->($cb);
+                return;
+            }
+            $cb->(undef, $err);
+            return;
+        }
+
+        $normalize->($result, $cb);
+    });
+}
+
+# _enrichMeta($class, $accountId, \@ids, $metaType, $normalizeMethod, $cb)
+# Generic fan-out enrichment: resolves N base62 ids to normalized objects via
+# GET metadata/4/$metaType/{hex} per id, THROUGH _request (so the cap-2
+# concurrency gate and the 3600s response cache apply -- D-09: bursts are
+# serialized, repeats are cache hits). Preserves input order internally,
+# tolerates individual failures by substituting undef, and filters undefs
+# from the final result before calling back once with the arrayref.
+sub _enrichMeta {
+    my ($class, $accountId, $ids, $metaType, $normalizeMethod, $cb) = @_;
+    $ids ||= [];
+
+    unless (@$ids) {
+        $cb->([]);
+        return;
+    }
+
+    my @results   = (undef) x scalar(@$ids);
+    my $remaining = scalar @$ids;
+
+    for my $i (0 .. $#$ids) {
+        my $hexId = $class->idToHex($ids->[$i]);
+
+        my $finish = sub {
+            my ($val) = @_;
+            $results[$i] = $val;
+            if (--$remaining == 0) {
+                $cb->([ grep { defined } @results ]);
+            }
+        };
+
+        unless ($hexId) {
+            $finish->(undef);
+            next;
+        }
+
+        $class->_request('get', "metadata/4/$metaType/$hexId", {
+            _accountId => $accountId,
+            _accept    => 'application/json',
+        }, sub {
+            my ($result, $err) = @_;
+            $finish->($err ? undef : $class->$normalizeMethod($result));
+        });
+    }
+}
+
+# _enrichTracks($class, $accountId, \@trackIds, $cb)
+# Track-specific wrapper around _enrichMeta -- the reusable enrichment
+# helper for search (this plan) and collection/playlist plans (75-04/75-05).
+sub _enrichTracks {
+    my ($class, $accountId, $trackIds, $cb) = @_;
+    $class->_enrichMeta($accountId, $trackIds, 'track', '_normalizeTrack', $cb);
+}
+
+# ============================================================
+# getAlbum / getAlbumTracks facades (D-06/D-07, S-04)
+# ============================================================
+
+# getAlbum($class, $accountId, $albumId, $cb)
+# Same cb contract as Client.pm::getAlbum. No login5-capable creds -> Client
+# delegation (D-06). Track names are NOT available in metadata/4/album
+# (S-04) -- tracks.items is intentionally left empty; getAlbumTracks owns
+# per-track enrichment.
+sub getAlbum {
+    my ($class, $accountId, $albumId, $cb) = @_;
+
+    unless ($class->_hasLogin5Creds($accountId)) {
+        main::INFOLOG && $log->info('SpClient: no login5-capable credentials, delegating getAlbum to Client.pm (D-06)');
+        require Plugins::SpotOn::API::Client;
+        Plugins::SpotOn::API::Client->getAlbum($accountId, $albumId, $cb);
+        return;
+    }
+
+    my $hexId = $class->idToHex($albumId);
+    unless ($hexId) {
+        $cb->(undef, { error => 'invalid_id' });
+        return;
+    }
+
+    $class->_spFacade(
+        "metadata/4/album/$hexId",
+        { _accountId => $accountId, _accept => 'application/json' },
+        sub {
+            my ($meta, $fcb) = @_;
+            $fcb->($class->_normalizeAlbum($meta));
+        },
+        sub {
+            my ($fcb) = @_;
+            require Plugins::SpotOn::API::Client;
+            Plugins::SpotOn::API::Client->getAlbum($accountId, $albumId, $fcb);
+        },
+        $cb,
+    );
+}
+
+# _normalizeAlbum($class, $meta)
+# Maps spclient metadata/4/album JSON to the Web-API album shape. label and
+# popularity are Dev-Mode-removed fields spclient still delivers (value-add).
+# tracks.items is always empty (S-04) -- see getAlbumTracks.
+sub _normalizeAlbum {
+    my ($class, $meta) = @_;
+    return undef unless $meta && ref($meta) eq 'HASH';
+
+    my $id = $meta->{gid} ? $class->hexToId($meta->{gid}) : undef;
+
+    my @artists;
+    for my $a (@{ $meta->{artist} || [] }) {
+        my $artistId = $a->{gid} ? $class->hexToId($a->{gid}) : undef;
+        push @artists, {
+            id   => $artistId,
+            uri  => $artistId ? "spotify:artist:$artistId" : undef,
+            name => $a->{name},
+        };
+    }
+
+    my $totalTracks = 0;
+    for my $disc (@{ $meta->{disc} || [] }) {
+        $totalTracks += scalar(@{ $disc->{track} || [] });
+    }
+
+    return {
+        id           => $id,
+        uri          => $id ? "spotify:album:$id" : undef,
+        name         => $meta->{name},
+        artists      => \@artists,
+        release_date => $class->_formatDate($meta->{date}),
+        label        => $meta->{label},
+        popularity   => $meta->{popularity},
+        images       => $class->_imagesFromGroup($meta->{cover_group}),
+        total_tracks => $totalTracks,
+        tracks       => { items => [], total => $totalTracks },
+    };
+}
+
+# getAlbumTracks($class, $accountId, $albumId, $params, $cb)
+# Flattens metadata/4/album's disc[].track[] gids (disc/track order), slices
+# per $params->{offset}/{limit} (defaults 0/50, matching Client.pm), and
+# enriches ONLY the requested slice via _enrichTracks (lazy, D-09) -- a
+# first-page call against a larger album issues exactly limit-many
+# metadata/4/track requests, not one per album track.
+sub getAlbumTracks {
+    my ($class, $accountId, $albumId, $params, $cb) = @_;
+    $params ||= {};
+    my $offset = $params->{offset} // 0;
+    my $limit  = $params->{limit}  // 50;
+
+    unless ($class->_hasLogin5Creds($accountId)) {
+        main::INFOLOG && $log->info('SpClient: no login5-capable credentials, delegating getAlbumTracks to Client.pm (D-06)');
+        require Plugins::SpotOn::API::Client;
+        Plugins::SpotOn::API::Client->getAlbumTracks($accountId, $albumId, $params, $cb);
+        return;
+    }
+
+    my $hexId = $class->idToHex($albumId);
+    unless ($hexId) {
+        $cb->(undef, { error => 'invalid_id' });
+        return;
+    }
+
+    $class->_spFacade(
+        "metadata/4/album/$hexId",
+        { _accountId => $accountId, _accept => 'application/json' },
+        sub {
+            my ($meta, $fcb) = @_;
+
+            my @gids;
+            for my $disc (@{ $meta->{disc} || [] }) {
+                for my $track (@{ $disc->{track} || [] }) {
+                    push @gids, $track->{gid} if $track->{gid};
+                }
+            }
+
+            my $total = scalar @gids;
+            my $end   = $offset + $limit - 1;
+            $end = $total - 1 if $end > $total - 1;
+            my @sliceGids = ($offset < $total && $offset <= $end) ? @gids[$offset .. $end] : ();
+            my @sliceIds  = map { $class->hexToId($_) } @sliceGids;
+
+            $class->_enrichTracks($accountId, \@sliceIds, sub {
+                my ($tracks) = @_;
+                $fcb->({ items => $tracks, total => $total, offset => $offset, limit => $limit });
+            });
+        },
+        sub {
+            my ($fcb) = @_;
+            require Plugins::SpotOn::API::Client;
+            Plugins::SpotOn::API::Client->getAlbumTracks($accountId, $albumId, $params, $fcb);
+        },
+        $cb,
+    );
+}
+
+# ============================================================
+# getArtist / getArtistAlbums facades (D-06/D-07)
+# ============================================================
+
+# getArtist($class, $accountId, $artistId, $cb)
+# Same cb contract as Client.pm::getArtist.
+sub getArtist {
+    my ($class, $accountId, $artistId, $cb) = @_;
+
+    unless ($class->_hasLogin5Creds($accountId)) {
+        main::INFOLOG && $log->info('SpClient: no login5-capable credentials, delegating getArtist to Client.pm (D-06)');
+        require Plugins::SpotOn::API::Client;
+        Plugins::SpotOn::API::Client->getArtist($accountId, $artistId, $cb);
+        return;
+    }
+
+    my $hexId = $class->idToHex($artistId);
+    unless ($hexId) {
+        $cb->(undef, { error => 'invalid_id' });
+        return;
+    }
+
+    $class->_spFacade(
+        "metadata/4/artist/$hexId",
+        { _accountId => $accountId, _accept => 'application/json' },
+        sub {
+            my ($meta, $fcb) = @_;
+            $fcb->($class->_normalizeArtist($meta));
+        },
+        sub {
+            my ($fcb) = @_;
+            require Plugins::SpotOn::API::Client;
+            Plugins::SpotOn::API::Client->getArtist($accountId, $artistId, $fcb);
+        },
+        $cb,
+    );
+}
+
+# _normalizeArtist($class, $meta)
+# Maps spclient metadata/4/artist JSON to the Web-API artist shape. Images
+# come from portrait_group (falls back to no images if absent). genres is
+# always [] -- spclient artist metadata carries no genre taxonomy.
+sub _normalizeArtist {
+    my ($class, $meta) = @_;
+    return undef unless $meta && ref($meta) eq 'HASH';
+
+    my $id = $meta->{gid} ? $class->hexToId($meta->{gid}) : undef;
+
+    return {
+        id         => $id,
+        uri        => $id ? "spotify:artist:$id" : undef,
+        name       => $meta->{name},
+        popularity => $meta->{popularity},
+        images     => $class->_imagesFromGroup($meta->{portrait_group}),
+        genres     => [],
+    };
+}
+
+# _normalizeAlbumStub($class, $meta)
+# Minimal Web-API album stub {id, uri, name, images} from an album entry
+# embedded inside an artist's album_group/single_group/compilation_group --
+# these entries only carry gid+name (+ optionally cover_group), so no
+# additional metadata call is issued per album (matches what _albumItem in
+# Plugin.pm actually renders: name+id, with images optional-safe).
+sub _normalizeAlbumStub {
+    my ($class, $meta) = @_;
+    return undef unless $meta && ref($meta) eq 'HASH';
+
+    my $id = $meta->{gid} ? $class->hexToId($meta->{gid}) : undef;
+
+    return {
+        id     => $id,
+        uri    => $id ? "spotify:album:$id" : undef,
+        name   => $meta->{name},
+        images => $class->_imagesFromGroup($meta->{cover_group}),
+    };
+}
+
+# getArtistAlbums($class, $accountId, $artistId, $params, $cb)
+# Flattens artist metadata's album_group/single_group/compilation_group
+# arrays (each group entry wraps an album[] array) into a single Web-API
+# album-stub list, sliced per $params->{offset}/{limit}. No per-album
+# metadata calls -- embedded gid+name is all Plugin.pm's _albumItem/
+# _artistAlbumsFeed consume.
+sub getArtistAlbums {
+    my ($class, $accountId, $artistId, $params, $cb) = @_;
+    $params ||= {};
+    my $offset = $params->{offset} // 0;
+    my $limit  = $params->{limit}  // 20;
+
+    unless ($class->_hasLogin5Creds($accountId)) {
+        main::INFOLOG && $log->info('SpClient: no login5-capable credentials, delegating getArtistAlbums to Client.pm (D-06)');
+        require Plugins::SpotOn::API::Client;
+        Plugins::SpotOn::API::Client->getArtistAlbums($accountId, $artistId, $params, $cb);
+        return;
+    }
+
+    my $hexId = $class->idToHex($artistId);
+    unless ($hexId) {
+        $cb->(undef, { error => 'invalid_id' });
+        return;
+    }
+
+    $class->_spFacade(
+        "metadata/4/artist/$hexId",
+        { _accountId => $accountId, _accept => 'application/json' },
+        sub {
+            my ($meta, $fcb) = @_;
+
+            my @albums;
+            for my $groupKey (qw(album_group single_group compilation_group)) {
+                for my $group (@{ $meta->{$groupKey} || [] }) {
+                    for my $album (@{ $group->{album} || [] }) {
+                        my $norm = $class->_normalizeAlbumStub($album);
+                        push @albums, $norm if $norm;
+                    }
+                }
+            }
+
+            my $total = scalar @albums;
+            my $end   = $offset + $limit - 1;
+            $end = $total - 1 if $end > $total - 1;
+            my @slice = ($offset < $total && $offset <= $end) ? @albums[$offset .. $end] : ();
+
+            $fcb->({ items => \@slice, total => $total, offset => $offset, limit => $limit });
+        },
+        sub {
+            my ($fcb) = @_;
+            require Plugins::SpotOn::API::Client;
+            Plugins::SpotOn::API::Client->getArtistAlbums($accountId, $artistId, $params, $fcb);
+        },
+        $cb,
+    );
 }
 
 1;

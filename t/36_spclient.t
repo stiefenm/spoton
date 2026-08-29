@@ -141,9 +141,15 @@ write_stub($stub_dir, 'Slim::Networking::SimpleAsyncHTTP', <<'END');
 package Slim::Networking::SimpleAsyncHTTP;
 
 our @requests = ();
-our $auto_mode = 'success';   # success | error_429 | error_401 | error_500
+our $auto_mode = 'success';   # success | error_429 | error_401 | error_404 | error_500
 our $auto_response_content = '{}';
 our $last_response_headers = {};
+our @response_rules = ();     # [ qr/.../, $content ] -- first match wins, most-recently-pushed first
+
+sub set_response_for {
+    my ($pattern, $content) = @_;
+    unshift @response_rules, [ $pattern, $content ];
+}
 
 sub new {
     my ($class, $success_cb, $error_cb, $opts) = @_;
@@ -176,7 +182,14 @@ sub _dispatch {
     }
 
     if ($auto_mode eq 'success') {
-        my $resp = bless { _content => $auto_response_content, _code => 200 },
+        my $content = $auto_response_content;
+        for my $rule (@response_rules) {
+            if ($url =~ $rule->[0]) {
+                $content = $rule->[1];
+                last;
+            }
+        }
+        my $resp = bless { _content => $content, _code => 200 },
             'Slim::Networking::SimpleAsyncHTTP::Response';
         $self->{success_cb}->($resp);
     }
@@ -190,6 +203,11 @@ sub _dispatch {
             'Slim::Networking::SimpleAsyncHTTP::MockResponse';
         $self->{error_cb}->($self, '401 unauthorized', $resp);
     }
+    elsif ($auto_mode eq 'error_404') {
+        my $resp = bless { _code => 404, _headers => {} },
+            'Slim::Networking::SimpleAsyncHTTP::MockResponse';
+        $self->{error_cb}->($self, '404 not found', $resp);
+    }
     elsif ($auto_mode eq 'error_500') {
         my $resp = bless { _code => 500, _headers => {} },
             'Slim::Networking::SimpleAsyncHTTP::MockResponse';
@@ -202,6 +220,7 @@ sub reset_requests {
     $auto_mode = 'success';
     $auto_response_content = '{}';
     $last_response_headers = {};
+    @response_rules = ();
 }
 
 sub non_apresolve_requests {
@@ -245,14 +264,73 @@ END
 # ============================================================
 write_stub($stub_dir, 'Plugins::SpotOn::API::Client', <<'END');
 package Plugins::SpotOn::API::Client;
-our @getTrack_calls = ();
+our @getTrack_calls        = ();
+our @getAlbum_calls        = ();
+our @getAlbumTracks_calls  = ();
+our @getArtist_calls       = ();
+our @getArtistAlbums_calls = ();
+our @getShow_calls         = ();
+our @getShowEpisodes_calls = ();
+our @getEpisode_calls      = ();
+our @search_calls          = ();
 our $mock_result = { id => 'mockclienttrackid0000' };
+
 sub getTrack {
     my ($class, $accountId, $trackId, $cb) = @_;
     push @getTrack_calls, { accountId => $accountId, trackId => $trackId };
     $cb->($mock_result, undef);
 }
-sub reset_calls { @getTrack_calls = () }
+sub getAlbum {
+    my ($class, $accountId, $albumId, $cb) = @_;
+    push @getAlbum_calls, { accountId => $accountId, albumId => $albumId };
+    $cb->($mock_result, undef);
+}
+sub getAlbumTracks {
+    my ($class, $accountId, $albumId, $params, $cb) = @_;
+    push @getAlbumTracks_calls, { accountId => $accountId, albumId => $albumId, params => $params };
+    $cb->($mock_result, undef);
+}
+sub getArtist {
+    my ($class, $accountId, $artistId, $cb) = @_;
+    push @getArtist_calls, { accountId => $accountId, artistId => $artistId };
+    $cb->($mock_result, undef);
+}
+sub getArtistAlbums {
+    my ($class, $accountId, $artistId, $params, $cb) = @_;
+    push @getArtistAlbums_calls, { accountId => $accountId, artistId => $artistId, params => $params };
+    $cb->($mock_result, undef);
+}
+sub getShow {
+    my ($class, $accountId, $showId, $cb) = @_;
+    push @getShow_calls, { accountId => $accountId, showId => $showId };
+    $cb->($mock_result, undef);
+}
+sub getShowEpisodes {
+    my ($class, $accountId, $showId, $params, $cb) = @_;
+    push @getShowEpisodes_calls, { accountId => $accountId, showId => $showId, params => $params };
+    $cb->($mock_result, undef);
+}
+sub getEpisode {
+    my ($class, $accountId, $episodeId, $cb) = @_;
+    push @getEpisode_calls, { accountId => $accountId, episodeId => $episodeId };
+    $cb->($mock_result, undef);
+}
+sub search {
+    my ($class, $accountId, $params, $cb) = @_;
+    push @search_calls, { accountId => $accountId, params => $params };
+    $cb->($mock_result, undef);
+}
+sub reset_calls {
+    @getTrack_calls        = ();
+    @getAlbum_calls        = ();
+    @getAlbumTracks_calls  = ();
+    @getArtist_calls       = ();
+    @getArtistAlbums_calls = ();
+    @getShow_calls         = ();
+    @getShowEpisodes_calls = ();
+    @getEpisode_calls      = ();
+    @search_calls          = ();
+}
 1;
 END
 
@@ -475,6 +553,201 @@ sub to_json_fixture {
     is(scalar(@Plugins::SpotOn::API::Client::getTrack_calls), 1, '401: falls back to Client.pm after the second 401');
 
     $Slim::Networking::SimpleAsyncHTTP::auto_mode = 'success';
+}
+
+# ============================================================
+# Phase 75 Plan 02 fixtures -- album/artist/show/episode/context-resolve
+# ============================================================
+sub hexid { sprintf('%032d', $_[0]) }   # 32 decimal-digit chars == valid hex
+sub b62id { sprintf('%022d', $_[0]) }   # 22 decimal-digit chars == valid base62
+
+sub album_fixture {
+    return JSON::XS::VersionOneAndTwo::to_json({
+        gid        => hexid(100),
+        name       => 'Test Album',
+        artist     => [ { gid => hexid(101), name => 'Test Artist' } ],
+        label      => 'Test Label',
+        popularity => 55,
+        date       => { year => 2020, month => 5, day => 15 },
+        cover_group => {
+            image => [ { file_id => 'albumcoverfileidxxxxxxxxxxxxxxxxxxxxxx', width => 300, height => 300 } ],
+        },
+        disc => [
+            { number => 1, track => [ { gid => hexid(1) }, { gid => hexid(2) } ] },
+            { number => 2, track => [ { gid => hexid(3) } ] },
+        ],
+    });
+}
+
+sub artist_fixture {
+    return JSON::XS::VersionOneAndTwo::to_json({
+        gid        => hexid(200),
+        name       => 'Test Artist Name',
+        popularity => 77,
+        portrait_group => {
+            image => [ { file_id => 'artistportraitfileidxxxxxxxxxxxxxxxxxx', width => 640, height => 640 } ],
+        },
+        album_group       => [ { album => [ { gid => hexid(10), name => 'Album One' } ] } ],
+        single_group      => [ { album => [ { gid => hexid(11), name => 'Single One' } ] } ],
+        compilation_group => [],
+    });
+}
+
+sub show_fixture {
+    return JSON::XS::VersionOneAndTwo::to_json({
+        gid         => hexid(300),
+        name        => 'Test Show',
+        description => 'A test show',
+        publisher   => 'Test Publisher',
+        cover_image => {
+            image => [ { file_id => 'showcoverfileidxxxxxxxxxxxxxxxxxxxxxxx', width => 300, height => 300 } ],
+        },
+        episode => [ { gid => hexid(20) }, { gid => hexid(21) } ],
+    });
+}
+
+sub episode_fixture {
+    return JSON::XS::VersionOneAndTwo::to_json({
+        gid      => hexid(20),
+        name     => 'Test Episode',
+        duration => 1800000,
+        explicit => 0,
+        date     => { year => 2021, month => 3, day => 10 },
+        cover_group => {
+            image => [ { file_id => 'episodecoverfileidxxxxxxxxxxxxxxxxxxxx', width => 300, height => 300 } ],
+        },
+    });
+}
+
+sub context_resolve_fixture {
+    my @tracks = map { { uri => 'spotify:track:' . b62id($_) } } (1 .. 20);
+    return JSON::XS::VersionOneAndTwo::to_json({
+        pages => [ { tracks => \@tracks } ],
+        uri   => 'spotify:search:radiohead',
+        url   => 'context://spotify:search:radiohead',
+    });
+}
+
+# ============================================================
+# Task 1: Album + artist endpoints with track-name enrichment (S-04)
+# ============================================================
+
+# getAlbum: normalized shape incl. label/popularity (Dev-Mode value-add) and
+# empty tracks.items (S-04 -- names live in getAlbumTracks, not here).
+{
+    reset_all();
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/metadata/4/album/}, album_fixture());
+
+    my ($result, $err);
+    $SP->getAlbum('acct10', '4iV5W9uYEdYUVa79Axb7Rh', sub { ($result, $err) = @_ });
+
+    ok($result, 'getAlbum: result returned');
+    is($result->{name}, 'Test Album', 'getAlbum: name mapped');
+    is($result->{label}, 'Test Label', 'getAlbum: label present (Dev-Mode value-add)');
+    is($result->{popularity}, 55, 'getAlbum: popularity present (Dev-Mode value-add)');
+    is($result->{release_date}, '2020-05-15', 'getAlbum: release_date formatted YYYY-MM-DD');
+    is($result->{artists}[0]{name}, 'Test Artist', 'getAlbum: artist name mapped');
+    is($result->{total_tracks}, 3, 'getAlbum: total_tracks flattened from disc/track counts');
+    is(scalar(@{ $result->{tracks}{items} }), 0, 'getAlbum: tracks.items intentionally empty (S-04)');
+    like($result->{images}[0]{url}, qr{^https://i\.scdn\.co/image/albumcoverfileid}, 'getAlbum: cover_group image mapped');
+    is(scalar(@Plugins::SpotOn::API::Client::getAlbum_calls), 0, 'getAlbum: Client.pm NOT delegated to on success');
+}
+
+# getAlbum D-07 fallback (proves _spFacade's shared error path -- other new
+# methods below reuse this exact helper without a duplicate 500 test each).
+{
+    reset_all();
+    $Slim::Networking::SimpleAsyncHTTP::auto_mode = 'error_500';
+
+    my ($result, $err);
+    $SP->getAlbum('acct15', '4iV5W9uYEdYUVa79Axb7Rh', sub { ($result, $err) = @_ });
+
+    is(scalar(@Plugins::SpotOn::API::Client::getAlbum_calls), 1,
+        'getAlbum D-07: falls back to Client.pm on a spclient 500 (shared _spFacade helper)');
+
+    $Slim::Networking::SimpleAsyncHTTP::auto_mode = 'success';
+}
+
+# getAlbumTracks: lazy slice -- exactly limit-many (2 of 3) enrichment calls.
+{
+    reset_all();
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/metadata/4/album/}, album_fixture());
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/metadata/4/track/}, to_json_fixture());
+
+    my ($result, $err);
+    $SP->getAlbumTracks('acct11', '4iV5W9uYEdYUVa79Axb7Rh', { offset => 0, limit => 2 }, sub { ($result, $err) = @_ });
+
+    ok($result, 'getAlbumTracks: result returned');
+    is($result->{total}, 3, 'getAlbumTracks: total reflects the full flattened disc/track count (3), not the slice');
+    is(scalar(@{ $result->{items} }), 2, 'getAlbumTracks: only the requested slice (2) is returned');
+
+    my @trackReqs = grep { $_->{url} =~ m{/metadata/4/track/} } Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests();
+    is(scalar(@trackReqs), 2, 'getAlbumTracks: exactly limit-many (2) metadata/4/track enrichment requests -- lazy slice, not all 3');
+    is($result->{items}[0]{name}, 'Test Track', 'getAlbumTracks: enriched item carries the Web-API track shape');
+}
+
+# getAlbumTracks: D-09 cache reuse -- a second identical call issues zero
+# additional HTTP requests (album metadata + per-track enrichment all cache hits).
+{
+    reset_all();
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/metadata/4/album/}, album_fixture());
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/metadata/4/track/}, to_json_fixture());
+
+    my $noop = sub { };
+    $SP->getAlbumTracks('acct12', '4iV5W9uYEdYUVa79Axb7Rh', { offset => 0, limit => 2 }, $noop);
+    my $firstCount = scalar(Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests());
+
+    $SP->getAlbumTracks('acct12', '4iV5W9uYEdYUVa79Axb7Rh', { offset => 0, limit => 2 }, $noop);
+    my $secondCount = scalar(Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests());
+
+    is($secondCount, $firstCount,
+        'D-09: repeated getAlbumTracks for the same album+slice issues zero additional HTTP requests (response cache hits)');
+}
+
+# getArtist: normalized shape incl. portrait_group images, empty genres.
+{
+    reset_all();
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/metadata/4/artist/}, artist_fixture());
+
+    my ($result, $err);
+    $SP->getArtist('acct13', '4iV5W9uYEdYUVa79Axb7Rh', sub { ($result, $err) = @_ });
+
+    ok($result, 'getArtist: result returned');
+    is($result->{name}, 'Test Artist Name', 'getArtist: name mapped');
+    is($result->{popularity}, 77, 'getArtist: popularity mapped');
+    like($result->{images}[0]{url}, qr{^https://i\.scdn\.co/image/artistportraitfileid}, 'getArtist: portrait_group image mapped');
+    is_deeply($result->{genres}, [], 'getArtist: genres always empty array');
+}
+
+# getArtist D-06: no login5-capable creds -> immediate Client.pm delegation, zero HTTP.
+{
+    reset_all();
+    $Plugins::SpotOn::API::Credentials::mock_creds = undef;
+
+    my ($result, $err);
+    $SP->getArtist('acct16', '4iV5W9uYEdYUVa79Axb7Rh', sub { ($result, $err) = @_ });
+
+    is(scalar(Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests()), 0, 'getArtist D-06: zero spclient HTTP when creds absent');
+    is(scalar(@Plugins::SpotOn::API::Client::getArtist_calls), 1, 'getArtist D-06: delegates to Client.pm exactly once when creds absent');
+
+    $Plugins::SpotOn::API::Credentials::mock_creds = { username => 'testuser', auth_data => 'ZGF0YQ==' };
+}
+
+# getArtistAlbums: album_group + single_group flattening, no per-album metadata calls.
+{
+    reset_all();
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/metadata/4/artist/}, artist_fixture());
+
+    my ($result, $err);
+    $SP->getArtistAlbums('acct14', '4iV5W9uYEdYUVa79Axb7Rh', {}, sub { ($result, $err) = @_ });
+
+    ok($result, 'getArtistAlbums: result returned');
+    is($result->{total}, 2, 'getArtistAlbums: album_group + single_group flattened to 2 total');
+    is($result->{items}[0]{name}, 'Album One', 'getArtistAlbums: album_group entry name preserved');
+    is($result->{items}[1]{name}, 'Single One', 'getArtistAlbums: single_group entry name preserved');
+
+    my @metaReqs = grep { $_->{url} =~ m{/metadata/4/} } Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests();
+    is(scalar(@metaReqs), 1, 'getArtistAlbums: exactly one metadata call total -- no per-album enrichment calls');
 }
 
 done_testing();
