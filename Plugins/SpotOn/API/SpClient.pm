@@ -894,4 +894,173 @@ sub getArtistAlbums {
     );
 }
 
+# ============================================================
+# getShow / getShowEpisodes / getEpisode facades (D-06/D-07)
+# NOTE: metadata/4/show and metadata/4/episode were NOT exercised in Spike
+# 009 (S-04..S-11 cover track/album/artist/context-resolve/collection/
+# recently-played/playlists only) -- shapes below are the best-effort mirror
+# of the verified album/track pattern (show ~ album, episode ~ track,
+# getShowEpisodes ~ getAlbumTracks). D-07 means ANY 4xx/5xx degrades
+# invisibly to Client.pm; live verification is mandatory phase UAT.
+# ============================================================
+
+# getShow($class, $accountId, $showId, $cb)
+sub getShow {
+    my ($class, $accountId, $showId, $cb) = @_;
+
+    unless ($class->_hasLogin5Creds($accountId)) {
+        main::INFOLOG && $log->info('SpClient: no login5-capable credentials, delegating getShow to Client.pm (D-06)');
+        require Plugins::SpotOn::API::Client;
+        Plugins::SpotOn::API::Client->getShow($accountId, $showId, $cb);
+        return;
+    }
+
+    my $hexId = $class->idToHex($showId);
+    unless ($hexId) {
+        $cb->(undef, { error => 'invalid_id' });
+        return;
+    }
+
+    $class->_spFacade(
+        "metadata/4/show/$hexId",
+        { _accountId => $accountId, _accept => 'application/json' },
+        sub {
+            my ($meta, $fcb) = @_;
+            $fcb->($class->_normalizeShow($meta));
+        },
+        sub {
+            my ($fcb) = @_;
+            require Plugins::SpotOn::API::Client;
+            Plugins::SpotOn::API::Client->getShow($accountId, $showId, $fcb);
+        },
+        $cb,
+    );
+}
+
+# _normalizeShow($class, $meta)
+# publisher is best-effort (spike-unverified field name) -- callers already
+# guard optional fields (Plugin.pm's _showItem defaults publisher to '').
+sub _normalizeShow {
+    my ($class, $meta) = @_;
+    return undef unless $meta && ref($meta) eq 'HASH';
+
+    my $id = $meta->{gid} ? $class->hexToId($meta->{gid}) : undef;
+
+    return {
+        id             => $id,
+        uri            => $id ? "spotify:show:$id" : undef,
+        name           => $meta->{name},
+        description    => $meta->{description},
+        publisher      => $meta->{publisher},
+        images         => $class->_imagesFromGroup($meta->{cover_image} || $meta->{cover_group}),
+        total_episodes => scalar(@{ $meta->{episode} || [] }),
+    };
+}
+
+# getShowEpisodes($class, $accountId, $showId, $params, $cb)
+# Mirrors getAlbumTracks: flattens the show metadata's embedded episode gid
+# list, slices per offset/limit, enriches ONLY the slice via
+# metadata/4/episode/{hex} (lazy, D-09).
+sub getShowEpisodes {
+    my ($class, $accountId, $showId, $params, $cb) = @_;
+    $params ||= {};
+    my $offset = $params->{offset} // 0;
+    my $limit  = $params->{limit}  // 50;
+
+    unless ($class->_hasLogin5Creds($accountId)) {
+        main::INFOLOG && $log->info('SpClient: no login5-capable credentials, delegating getShowEpisodes to Client.pm (D-06)');
+        require Plugins::SpotOn::API::Client;
+        Plugins::SpotOn::API::Client->getShowEpisodes($accountId, $showId, $params, $cb);
+        return;
+    }
+
+    my $hexId = $class->idToHex($showId);
+    unless ($hexId) {
+        $cb->(undef, { error => 'invalid_id' });
+        return;
+    }
+
+    $class->_spFacade(
+        "metadata/4/show/$hexId",
+        { _accountId => $accountId, _accept => 'application/json' },
+        sub {
+            my ($meta, $fcb) = @_;
+
+            my @gids = map { $_->{gid} } grep { $_->{gid} } @{ $meta->{episode} || [] };
+
+            my $total = scalar @gids;
+            my $end   = $offset + $limit - 1;
+            $end = $total - 1 if $end > $total - 1;
+            my @sliceGids = ($offset < $total && $offset <= $end) ? @gids[$offset .. $end] : ();
+            my @sliceIds  = map { $class->hexToId($_) } @sliceGids;
+
+            $class->_enrichMeta($accountId, \@sliceIds, 'episode', '_normalizeEpisode', sub {
+                my ($episodes) = @_;
+                $fcb->({ items => $episodes, total => $total, offset => $offset, limit => $limit });
+            });
+        },
+        sub {
+            my ($fcb) = @_;
+            require Plugins::SpotOn::API::Client;
+            Plugins::SpotOn::API::Client->getShowEpisodes($accountId, $showId, $params, $fcb);
+        },
+        $cb,
+    );
+}
+
+# getEpisode($class, $accountId, $episodeId, $cb)
+sub getEpisode {
+    my ($class, $accountId, $episodeId, $cb) = @_;
+
+    unless ($class->_hasLogin5Creds($accountId)) {
+        main::INFOLOG && $log->info('SpClient: no login5-capable credentials, delegating getEpisode to Client.pm (D-06)');
+        require Plugins::SpotOn::API::Client;
+        Plugins::SpotOn::API::Client->getEpisode($accountId, $episodeId, $cb);
+        return;
+    }
+
+    my $hexId = $class->idToHex($episodeId);
+    unless ($hexId) {
+        $cb->(undef, { error => 'invalid_id' });
+        return;
+    }
+
+    $class->_spFacade(
+        "metadata/4/episode/$hexId",
+        { _accountId => $accountId, _accept => 'application/json' },
+        sub {
+            my ($meta, $fcb) = @_;
+            $fcb->($class->_normalizeEpisode($meta));
+        },
+        sub {
+            my ($fcb) = @_;
+            require Plugins::SpotOn::API::Client;
+            Plugins::SpotOn::API::Client->getEpisode($accountId, $episodeId, $fcb);
+        },
+        $cb,
+    );
+}
+
+# _normalizeEpisode($class, $meta)
+# Mirrors _normalizeTrack's shape (duration_ms, explicit, images) plus
+# release_date. resume_point/show are not present in spclient episode
+# metadata -- normalized to undef (callers already guard these as optional,
+# per _episodeInfoFeed/_episodeItem's existing undef-tolerant handling).
+sub _normalizeEpisode {
+    my ($class, $meta) = @_;
+    return undef unless $meta && ref($meta) eq 'HASH';
+
+    my $id = $meta->{gid} ? $class->hexToId($meta->{gid}) : undef;
+
+    return {
+        id           => $id,
+        uri          => $id ? "spotify:episode:$id" : undef,
+        name         => $meta->{name},
+        duration_ms  => $meta->{duration},
+        explicit     => $meta->{explicit} ? 1 : 0,
+        release_date => $class->_formatDate($meta->{date}),
+        images       => $class->_imagesFromGroup($meta->{cover_group}),
+    };
+}
+
 1;

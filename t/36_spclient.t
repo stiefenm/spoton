@@ -750,4 +750,70 @@ sub context_resolve_fixture {
     is(scalar(@metaReqs), 1, 'getArtistAlbums: exactly one metadata call total -- no per-album enrichment calls');
 }
 
+# ============================================================
+# Task 2: Show + episode endpoints with D-07 safety net
+# ============================================================
+
+# getShow: normalized shape.
+{
+    reset_all();
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/metadata/4/show/}, show_fixture());
+
+    my ($result, $err);
+    $SP->getShow('acct20', '4iV5W9uYEdYUVa79Axb7Rh', sub { ($result, $err) = @_ });
+
+    ok($result, 'getShow: result returned');
+    is($result->{name}, 'Test Show', 'getShow: name mapped');
+    is($result->{publisher}, 'Test Publisher', 'getShow: publisher mapped');
+    is($result->{total_episodes}, 2, 'getShow: total_episodes counted from embedded episode gid list');
+    like($result->{images}[0]{url}, qr{^https://i\.scdn\.co/image/showcoverfileid}, 'getShow: cover_image mapped');
+}
+
+# getShow: forced 404 (spike-unverified endpoint) -> exactly one spclient
+# attempt then Client.pm delegation (explicit D-07 safety-net test).
+{
+    reset_all();
+    $Slim::Networking::SimpleAsyncHTTP::auto_mode = 'error_404';
+
+    my ($result, $err);
+    $SP->getShow('acct21', '4iV5W9uYEdYUVa79Axb7Rh', sub { ($result, $err) = @_ });
+
+    my @nonApresolve = Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests();
+    is(scalar(@nonApresolve), 1, 'getShow 404: exactly one spclient attempt (spike-unverified endpoint, D-07 safety net)');
+    is(scalar(@Plugins::SpotOn::API::Client::getShow_calls), 1, 'getShow 404: falls back to Client.pm exactly once');
+
+    $Slim::Networking::SimpleAsyncHTTP::auto_mode = 'success';
+}
+
+# getShowEpisodes: slice + per-episode enrichment.
+{
+    reset_all();
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/metadata/4/show/}, show_fixture());
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/metadata/4/episode/}, episode_fixture());
+
+    my ($result, $err);
+    $SP->getShowEpisodes('acct22', '4iV5W9uYEdYUVa79Axb7Rh', { offset => 0, limit => 50 }, sub { ($result, $err) = @_ });
+
+    ok($result, 'getShowEpisodes: result returned');
+    is($result->{total}, 2, 'getShowEpisodes: total reflects embedded episode gid count');
+    is(scalar(@{ $result->{items} }), 2, 'getShowEpisodes: both episodes enriched (within limit)');
+    is($result->{items}[0]{name}, 'Test Episode', 'getShowEpisodes: enriched episode carries name');
+    is($result->{items}[0]{duration_ms}, 1800000, 'getShowEpisodes: normalized episode contains duration_ms');
+    is($result->{items}[0]{release_date}, '2021-03-10', 'getShowEpisodes: normalized episode contains release_date');
+}
+
+# getEpisode: single-object fetch.
+{
+    reset_all();
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/metadata/4/episode/}, episode_fixture());
+
+    my ($result, $err);
+    $SP->getEpisode('acct23', '4iV5W9uYEdYUVa79Axb7Rh', sub { ($result, $err) = @_ });
+
+    ok($result, 'getEpisode: result returned');
+    is($result->{name}, 'Test Episode', 'getEpisode: name mapped');
+    is($result->{duration_ms}, 1800000, 'getEpisode: duration_ms mapped');
+    is($result->{release_date}, '2021-03-10', 'getEpisode: release_date mapped');
+}
+
 done_testing();
