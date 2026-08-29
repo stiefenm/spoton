@@ -94,6 +94,12 @@ sub _streamingModeIsProxy {
     return $mode eq 'proxy' ? 1 : 0;
 }
 
+# Phase 76 D-06 note: this class-level default is NOT the transcode-profile
+# input -- Slim::Player::Song::open() (Song.pm:375-378) starts from
+# Slim::Music::Info::contentType($track) but then unconditionally replaces
+# it with our formatOverride($song) result, which is where the per-player
+# resolver ('soc' vs 'smp' vs 'son') lives. Kept client-agnostic here on
+# purpose: there is no client context at this call site.
 sub contentType { _useSoloist() ? 'soc' : 'son' }
 
 sub isRemote    { 1 }
@@ -142,17 +148,38 @@ sub formatOverride {
     my $client = $song->master;
     my $url = $song->track->url || '';
 
-    # Phase 73 D-03: soloist Browse now uses the same 'soc' daemon-proxy
-    # family as librespot (HTTP /stream, Modell B) -- the per-track 'sol'
-    # transcoder profile is retired.
-    if (_useSoloist() && $url =~ m{^spoton://(?:track|episode):}) {
-        $log->warn("[DIAG] formatOverride: mac=" . ($client ? $client->id : 'none') . " url=$url result=soc (soloist)") if $prefs->get('diagnosticMode');
-        return 'soc';
+    require Plugins::SpotOn::Unified::DaemonManager;
+
+    # Phase 73 D-03 / Phase 76 D-06+D-07: the whole soloist family (Browse
+    # AND Connect, HTTP /stream, Modell B) shares the 'soc' daemon-proxy
+    # content type -- EXCEPT explicit MP3, which routes to the single-rule
+    # 'smp' type. Rationale: TranscodingHelper picks the output format by
+    # iterating the PLAYER's format-preference order (TranscodingHelper.pm:
+    # 352-386) -- under 'soc', flc always beats mp3 on flc-capable players,
+    # so a 'soc mp3' rule could never win there. 'smp' has exactly one rule
+    # (smp mp3 * *, [lame]) so profile matching can only land on MP3 --
+    # the same forcing idiom as 'son' (ogg-only).
+    if (_useSoloist()) {
+        my $resolved = Plugins::SpotOn::Unified::DaemonManager->resolveSoloistFormat($client);
+        my $type = $resolved eq 'mp3' ? 'smp' : 'soc';
+        $log->warn("[DIAG] formatOverride: mac=" . ($client ? $client->id : 'none') . " url=$url result=$type (soloist resolved=$resolved)") if $prefs->get('diagnosticMode');
+        return $type;
     }
 
-    require Plugins::SpotOn::Unified::DaemonManager;
     my $fmt = Plugins::SpotOn::Unified::DaemonManager->resolvePassthroughForClient($client)
             ? 'son' : 'soc';
+
+    # Phase 76 D-07: explicit MP3 under librespot routes to 'smp' too (the
+    # pref regex in canDirectStream already allows mp3 for librespot) --
+    # without this, 'soc' would let flc/pcm beat mp3 in the player's
+    # format-preference order and the explicit choice would never take
+    # effect on flc-capable players.
+    if ($fmt eq 'soc' && $client) {
+        my $pref = $prefs->client($client)->get('streamFormat')
+                || $prefs->client($client)->get('connectOggOverride')
+                || 'auto';
+        $fmt = 'smp' if $pref eq 'mp3';
+    }
 
     $log->warn("[DIAG] formatOverride: mac=" . ($client ? $client->id : 'none') . " url=$url result=$fmt") if $prefs->get('diagnosticMode');
     return $fmt;
@@ -208,6 +235,21 @@ sub canDirectStream {
         }
 
         require Plugins::SpotOn::Unified::DaemonManager;
+
+        # Phase 76 D-06: the resolved soloist format gates direct-vs-transcode
+        # (mirror of the librespot "streamFormat forces transcoding" branch in
+        # the Connect block below). Only resolved 'pcm' keeps the direct
+        # raw-S32 /stream URL (strm samplesize 32, 76-01); 'flac'/'mp3'
+        # return 0 so LMS opens the stream itself and runs the soc/smp
+        # transcode rule.
+        {
+            my $resolved = Plugins::SpotOn::Unified::DaemonManager->resolveSoloistFormat($browseClient);
+            if ($resolved ne 'pcm') {
+                $log->warn("[DIAG] canDirectStream: soloist browse url=$url result=0 reason=resolved_format_$resolved") if $prefs->get('diagnosticMode');
+                return 0;
+            }
+        }
+
         my $helper = Plugins::SpotOn::Unified::DaemonManager->helperForClient($browseClient);
         if ($helper && $helper->alive && $helper->_streamPort) {
             if ($browseClient->isSynced()) {
@@ -273,8 +315,24 @@ sub canDirectStream {
             return 0;
         }
         my $connectClient = $client->can('master') ? $client->master : $client;
-        # Per-player streamFormat: pcm/flac/mp3 force transcoding
-        {
+        if (_useSoloist()) {
+            # Phase 76 D-06: backend-dispatched gating -- the soloist resolver
+            # replaces the raw pref check below (which treats explicit pcm as
+            # "force transcoding"; under soloist explicit pcm KEEPS the direct
+            # raw-S32 /stream path). Only 'flac'/'mp3' force the LMS-side
+            # transcode pipeline.
+            require Plugins::SpotOn::Unified::DaemonManager;
+            my $resolved = Plugins::SpotOn::Unified::DaemonManager->resolveSoloistFormat($connectClient);
+            if ($resolved ne 'pcm') {
+                $log->warn("[DIAG] canDirectStream: unified connect result=0 reason=resolved_format_$resolved") if $prefs->get('diagnosticMode');
+                main::INFOLOG && $log->is_info && $log->info(
+                    "canDirectStream: 0 (soloist resolved format=$resolved forces transcoding)"
+                );
+                return 0;
+            }
+        }
+        else {
+            # Per-player streamFormat: pcm/flac/mp3 force transcoding (librespot)
             my $fmt = $prefs->client($connectClient)->get('streamFormat')
                    || $prefs->client($connectClient)->get('connectOggOverride')
                    || 'auto';
