@@ -610,6 +610,20 @@ sub getNextTrack {
         # No cached spotifyUri — either a live Connect session or an untranslatable URL
         require Plugins::SpotOn::Connect;
         if (Plugins::SpotOn::Connect->isSpotifyConnect($client)) {
+            # D-08 (Phase 76): a live Soloist Connect session streams raw
+            # S32LE from fake-libpulse's /stream (D-04) -- hint 32 so the
+            # soc-flc rule's $SAMPLESIZE$ substitutes correctly. librespot
+            # Connect PCM stays S16LE and sets no hint: TranscodingHelper's
+            # `$track->samplesize || 16` default (TranscodingHelper.pm:449)
+            # covers it.
+            if (_useSoloist()) {
+                my $track = $song->track;
+                if ($track) {
+                    $track->samplesize(32)    if $track->can('samplesize');
+                    $track->samplerate(44100) if $track->can('samplerate');
+                    $track->channels(2)       if $track->can('channels');
+                }
+            }
             $successCb->();
             return;
         }
@@ -628,18 +642,19 @@ sub getNextTrack {
         $song->duration($browseMeta->{duration});
     }
 
-    # D-04/Pitfall-2: Soloist emits raw S32LE/44100/stereo PCM via
-    # fake-libpulse's HTTP /stream (D-04); without these hints the profile
-    # would be announced as 16-bit and produce garbage. CR-02 (72-REVIEW.md):
-    # the sol-flc rule was removed -- the LMS-bundled flac (1.3.x) rejects
-    # --bps=32, and declaring --bps=24 against the unmodified 32-bit frames
-    # would mis-frame every sample instead (72-RESEARCH.md Pitfall 2/A2/A4).
-    # PCM-only remains the baseline; true 24-bit FLAC is deferred to Phase 74.
+    # D-08 (Phase 76): Soloist emits raw S32LE/44100/stereo PCM via
+    # fake-libpulse's HTTP /stream -- D-04 upgraded the ring from S16LE to
+    # S32LE to preserve the full float32 precision, so the hint is now 32.
+    # It drives both the strm-frame pcm_sample_sizes mapping (32 => '3',
+    # Squeezebox.pm:1129) and the $SAMPLESIZE$ substitution in the soc-flc
+    # convert rule ($track->samplesize || 16, TranscodingHelper.pm:449).
+    # librespot soc paths (S16LE) set no samplesize hint and correctly
+    # rely on that 16 default.
     if (_useSoloist() && $url =~ m{^spoton://(track|episode):([A-Za-z0-9]+)$}) {
         my ($type, $id) = ($1, $2);
         my $track = $song->track;
         if ($track) {
-            $track->samplesize(16)    if $track->can('samplesize');
+            $track->samplesize(32)    if $track->can('samplesize');
             $track->samplerate(44100) if $track->can('samplerate');
             $track->channels(2)       if $track->can('channels');
         }

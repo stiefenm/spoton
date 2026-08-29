@@ -13,7 +13,7 @@ my $conf_file   = "$project_dir/Plugins/SpotOn/custom-convert.conf";
 ok(-f $conf_file, "custom-convert.conf exists at $conf_file");
 
 SKIP: {
-    skip "custom-convert.conf not found", 9 unless -f $conf_file;
+    skip "custom-convert.conf not found", 10 unless -f $conf_file;
 
     open(my $fh, '<', $conf_file) or die "Cannot open $conf_file: $!";
     my $content = do { local $/; <$fh> };
@@ -31,17 +31,39 @@ SKIP: {
 
     # Phase 73 (D-03 completion): the Phase-72 per-track `sol` transcoder
     # rule is retired -- the persistent Soloist daemon (73-01/73-03) replaced
-    # per-track --single-track spawning entirely, and with it went the only
-    # external audio-converter dependency this plugin ever had.
+    # per-track --single-track spawning entirely. The sol-family retirement
+    # STANDS. Phase 76 (D-05) deliberately reintroduces sox -- but ONLY as
+    # the LMS-bundled [sox] tool token in the soc-flc rule (LMS resolves
+    # [sox] to its own bundled binary under Bin/<arch>/; this is NOT an
+    # external dependency, unlike the Phase-72 sol-era converter). The old
+    # blanket "no sox anywhere" assertion is therefore rescoped below: the
+    # soc-flc command must START with the [sox] token, and sox must never
+    # appear as a raw path or bare shell word outside that token.
     # <!-- planner-discipline-allow: sox -->
     ok($content !~ m{^sol pcm \* \*}m, "sol pcm pipeline header is gone (D-03 retirement)");
     ok($content !~ m{^sol flc \* \*}m, "sol flc rule absent (retired with the rest of the sol family)");
     ok($content !~ m{spoton-soloist}, "no [spoton-soloist] launcher token anywhere in convert.conf");
-    ok($content !~ m{\bsox\b}i, "no sox reference anywhere in convert.conf (external converter dependency gone)");
 
-    # Seek templating must never return here (unrelated to sol -- soc/son
-    # never used $START$ either).
-    ok($content !~ m{\$START\$}, "no \$START\$ substitution variable anywhere in convert.conf");
+    # Phase 76 D-05 (i): positive pin -- the soc flc rule exists and its
+    # command line starts with the bundled [sox] tool token (capability
+    # comment lines beginning with "\t#" may sit between header and command).
+    ok($content =~ m{^soc flc \* \*\n(?:\t#[^\n]*\n)*\t\[sox\] }m,
+       "soc flc rule present and its command starts with the [sox] tool token (D-05)");
+
+    # Phase 76 D-05 (ii): after stripping all literal [sox] tool tokens,
+    # no bare `sox` word remains -- pins that sox appears ONLY as the
+    # bracketed tool token, never as a raw path or shell word.
+    my $stripped = $content;
+    $stripped =~ s{\[sox\]}{}g;
+    ok($stripped !~ m{\bsox\b}i,
+       "sox appears only as the [sox] tool token, never as a raw path or bare word");
+
+    # Phase 76 D-05: seek templating DID return with the soc-flc
+    # T-capability line -- but in the sanctioned capability-flag form
+    # ({START=--skip=%t} with %t substitution), NOT the legacy $START$
+    # command placeholder. This assertion now pins that the legacy
+    # $START$ style is not used anywhere.
+    ok($content !~ m{\$START\$}, "no legacy \$START\$ command placeholder anywhere in convert.conf (capability-line {START=...} + %t is the sanctioned form)");
 }
 
 done_testing();

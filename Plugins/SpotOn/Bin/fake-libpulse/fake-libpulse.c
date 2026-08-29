@@ -27,7 +27,7 @@
  * Phase 72 UAT correction) and either (Phase 71/72, unchanged when
  * SPOTON_SOLOIST_HTTP_PORT_FILE is unset) forwards those bytes
  * verbatim to an output file descriptor, or (Phase 73, D-04, HTTP
- * mode) converts to S16LE and serves them over a tiny in-process
+ * mode) converts to S32LE and serves them over a tiny in-process
  * HTTP/1.0 server for the persistent per-player daemon.
  *
  * PCM output target resolution (non-HTTP mode, unchanged from Phase
@@ -43,7 +43,7 @@
  * HTTP streaming mode (Phase 73, D-04): activated when
  * SPOTON_SOLOIST_HTTP_PORT_FILE is set in the environment BEFORE
  * dlopen() (SoloistDaemon.pm sets it in the spawn env block). When
- * active, pa_stream_write() converts incoming samples to S16LE and
+ * active, pa_stream_write() converts incoming samples to S32LE and
  * pushes them into a bounded ring buffer; a dedicated server thread
  * (started from the constructor, before Soloist calls any pa_*
  * symbol) serves the ring's contents over HTTP GET /stream --
@@ -309,11 +309,19 @@ static int _pcm_output_fd(void) {
 /* zero-cost when unset -- the FD/path path above is used instead.     */
 /* ------------------------------------------------------------------ */
 
-/* ~20s of S16LE 44100 Hz stereo (44100 * 2ch * 2bytes = 176400 B/s).
- * Widened from ~4s (352800 * 2) to give Soloist's worker thread more
+/* Output side (ring) is always S32LE 44100 Hz stereo -- Phase 76 D-04:
+ * upgraded from S16LE so Soloist's float32 samples keep their full
+ * >=24-bit precision through the /stream -> transcode chain
+ * (44100 Hz * 2 ch * 4 bytes = 352800 B/s). */
+#define RING_BYTES_PER_SEC (44100 * 4 * 2)
+
+/* ~20s of ring capacity. Same duration as the S16 era (352800 * 10
+ * bytes = 20s at 2 bytes/sample); the byte count doubles to ~7 MB at
+ * 4 bytes/sample -- fixed-size, bounded, negligible on all target
+ * platforms (76-RESEARCH Pitfall 3). Gives Soloist's worker thread
  * room to write into before the drop-oldest path in _ring_push kicks
  * in, now that pa_stream_write() never blocks (see _ring_push). */
-#define RING_CAPACITY (352800 * 10)
+#define RING_CAPACITY (RING_BYTES_PER_SEC * 20)
 
 /* Bounded read of the HTTP request head (GET line + headers); any GET
  * is answered -- path checking beyond the fixed /stream endpoint is
@@ -367,7 +375,7 @@ static void _ring_init(ring_buffer_t *r) {
     pthread_cond_init(&r->data_avail, NULL);
 }
 
-/* Push already-converted S16LE bytes into the ring.
+/* Push already-converted S32LE bytes into the ring.
  *
  * pa_stream_write() must NEVER block the caller (real PulseAudio never
  * blocks pa_stream_write() -- see file header / RESEARCH "PulseAudio
@@ -472,22 +480,27 @@ static void _ring_flush(ring_buffer_t *r) {
     pthread_mutex_unlock(&r->lock);
 }
 
-/* Converts already-decoded samples to S16LE per the stream's captured
- * sample_spec.format and pushes the result into the ring:
- *   FLOAT32LE -> s16 = (int16_t)lrintf(clamp(f, -1, 1) * 32767.0f)
- *   S32LE     -> arithmetic shift right 16
- *   S16LE     -> memcpy (already the target format)
+/* Converts already-decoded samples to S32LE per the stream's captured
+ * sample_spec.format and pushes the result into the ring (Phase 76
+ * D-04 -- the ring's native format is S32LE, preserving Soloist's full
+ * float32 precision instead of the destructive S16 down-conversion):
+ *   FLOAT32LE -> s32 = (int32_t)lrint(clamp(f, -1, 1) * 2147483647.0)
+ *                (promoted to DOUBLE before multiplying: 2147483647 is
+ *                not representable as a float -- it rounds up to 2^31,
+ *                so lrintf(1.0f * 2147483647.0f) would overflow int32)
+ *   S32LE     -> memcpy (already the target format)
+ *   S16LE     -> up-conversion: ((int32_t)sample) << 16
  * Soloist emits float32 (Phase-72 UAT); the other two branches are
  * cheap defensive completeness, not speculation. Unknown formats are
  * dropped silently rather than risk feeding misinterpreted bytes into
- * the S16LE-only HTTP path. */
+ * the S32LE-only HTTP path. */
 static void _convert_and_push(pa_sample_format_t fmt, const void *data, size_t nbytes) {
-    if (fmt == PA_SAMPLE_S16LE) {
+    if (fmt == PA_SAMPLE_S32LE) {
         _ring_push(&g_ring, (const unsigned char *)data, nbytes);
         return;
     }
 
-    int16_t stackbuf[1024];
+    int32_t stackbuf[1024];
 
     if (fmt == PA_SAMPLE_FLOAT32LE) {
         size_t nsamples = nbytes / sizeof(float);
@@ -500,25 +513,25 @@ static void _convert_and_push(pa_sample_format_t fmt, const void *data, size_t n
                 float f = src[i + j];
                 if (f > 1.0f) f = 1.0f;
                 if (f < -1.0f) f = -1.0f;
-                stackbuf[j] = (int16_t)lrintf(f * 32767.0f);
+                stackbuf[j] = (int32_t)lrint((double)f * 2147483647.0);
             }
-            _ring_push(&g_ring, (const unsigned char *)stackbuf, batch * sizeof(int16_t));
+            _ring_push(&g_ring, (const unsigned char *)stackbuf, batch * sizeof(int32_t));
             i += batch;
         }
         return;
     }
 
-    if (fmt == PA_SAMPLE_S32LE) {
-        size_t nsamples = nbytes / sizeof(int32_t);
-        const int32_t *src = (const int32_t *)data;
+    if (fmt == PA_SAMPLE_S16LE) {
+        size_t nsamples = nbytes / sizeof(int16_t);
+        const int16_t *src = (const int16_t *)data;
         size_t i = 0;
         while (i < nsamples) {
             size_t batch = nsamples - i;
             if (batch > 1024) batch = 1024;
             for (size_t j = 0; j < batch; j++) {
-                stackbuf[j] = (int16_t)(src[i + j] >> 16);
+                stackbuf[j] = ((int32_t)src[i + j]) << 16;
             }
-            _ring_push(&g_ring, (const unsigned char *)stackbuf, batch * sizeof(int16_t));
+            _ring_push(&g_ring, (const unsigned char *)stackbuf, batch * sizeof(int32_t));
             i += batch;
         }
         return;
@@ -593,10 +606,18 @@ static int _http_write_all(int fd, const unsigned char *data, size_t n) {
 
 /* librespot parity (unified.rs) -- endless stream, no Content-Length.
  * ProtocolHandler already suppresses Range/Enhanced-HTTP for /stream
- * URLs and getFormatForURL maps :port/stream to 'pcm'. */
+ * URLs and getFormatForURL maps :port/stream to 'pcm'.
+ *
+ * Phase 76 D-04: the payload is raw S32LE PCM, 44100 Hz, 2 channels.
+ * There is no registered audio/L32 MIME type, so the Content-Type is
+ * a generic octet-stream with the actual format documented here.
+ * Verified (grep this session): no Perl consumer parses this header --
+ * LMS derives the stream format from the strm frame / convert rules
+ * (custom-types.conf 'soc' + samplesize hints), never from this
+ * Content-Type. */
 static const char HTTP_RESPONSE_HEADER[] =
     "HTTP/1.0 200 OK\r\n"
-    "Content-Type: audio/L16;rate=44100;channels=2\r\n"
+    "Content-Type: application/octet-stream\r\n"
     "Connection: close\r\n"
     "\r\n";
 
@@ -1096,8 +1117,9 @@ static int g_timing_last_corked = -1;
 static struct timeval g_timing_last_logged;
 static int g_timing_last_logged_set = 0;
 
-/* Output side (ring) is always S16LE 44100 Hz stereo -- see RING_CAPACITY. */
-#define RING_BYTES_PER_SEC (44100 * 2 * 2)
+/* RING_BYTES_PER_SEC (S32LE 44100 Hz stereo, 4 bytes/sample) is defined
+ * next to RING_CAPACITY above, which now derives from it (Phase 76
+ * D-04). */
 
 static void _stream_refresh_timing(pa_stream *s, const char *caller) {
     struct timeval now;
@@ -1122,16 +1144,19 @@ static void _stream_refresh_timing(pa_stream *s, const char *caller) {
     s->timing.playing = s->corked ? 0 : 1;
 
     if (g_http_mode) {
-        /* Ring stores S16LE (2 bytes/sample); bytes_written counts
-         * input-format bytes. Scale fill back to input units so the
-         * subtraction is consistent — without this, read_index is
-         * too high and Soloist computes zero elapsed time. */
+        /* Ring stores S32LE (4 bytes/sample, Phase 76 D-04);
+         * bytes_written counts input-format bytes. Scale fill back to
+         * input units so the subtraction is consistent — without this,
+         * read_index is too high and Soloist computes zero elapsed
+         * time. For FLOAT32LE/S32LE input this is identity (both 4
+         * bytes/sample); for S16LE input the ring holds twice the
+         * input bytes, so fill scales down by half. */
         int input_bps = 4; /* FLOAT32LE / S32LE */
         if (s->sample_spec.format == PA_SAMPLE_S16LE) input_bps = 2;
         pthread_mutex_lock(&g_ring.lock);
         int64_t fill = (int64_t)g_ring.fill;
         pthread_mutex_unlock(&g_ring.lock);
-        int64_t fill_input = fill * input_bps / 2;
+        int64_t fill_input = fill * input_bps / 4;
         s->timing.write_index = s->bytes_written;
         s->timing.read_index = s->bytes_written - fill_input;
 
@@ -1678,8 +1703,9 @@ size_t pa_stream_writable_size(const pa_stream *s) {
 
 /* The load-bearing function: consume Soloist's already-decoded PCM.
  * Non-HTTP mode (unchanged, Phase 71/72): forward verbatim to the
- * resolved output FD. HTTP mode (Phase 73, D-04): convert to S16LE
- * and push into the bounded ring the HTTP server thread drains. */
+ * resolved output FD. HTTP mode (Phase 73 D-04, S32LE since Phase 76
+ * D-04): convert to S32LE and push into the bounded ring the HTTP
+ * server thread drains. */
 int pa_stream_write(pa_stream *s, const void *data, size_t nbytes,
                      pa_free_cb_t free_cb, int64_t offset, pa_seek_mode_t seek) {
     static int _write_trace_count = 0;
@@ -1922,7 +1948,7 @@ static int _test_read_header(int fd, int timeout_ms) {
         fprintf(stderr, "  bad status line: %.40s\n", hdrbuf);
         return -1;
     }
-    if (!strstr(hdrbuf, "audio/L16;rate=44100;channels=2")) {
+    if (!strstr(hdrbuf, "application/octet-stream")) {
         fprintf(stderr, "  missing Content-Type header\n");
         return -1;
     }
@@ -2057,19 +2083,21 @@ int main(void) {
     float pattern[6] = { 1.0f, -1.0f, 0.5f, 2.0f, -3.0f, 0.0f };
     pa_stream_write(s, pattern, sizeof(pattern), NULL, 0, 0);
 
-    int16_t expected[6] = { 32767, -32767, 16384, 32767, -32767, 0 };
-    unsigned char got[12];
+    /* Phase 76 D-04 (S32 ring): 0.5 * 2147483647.0 = 1073741823.5,
+     * lrint's round-half-to-even rounds UP to 1073741824. */
+    int32_t expected[6] = { 2147483647, -2147483647, 1073741824, 2147483647, -2147483647, 0 };
+    unsigned char got[24];
     if (_test_read_response(client, got, sizeof(got), 3000) != 0) {
         fprintf(stderr, "FAIL: did not receive expected HTTP response\n");
         failures++;
     } else if (memcmp(got, expected, sizeof(expected)) != 0) {
-        int16_t gotVals[6];
+        int32_t gotVals[6];
         memcpy(gotVals, got, sizeof(gotVals));
-        fprintf(stderr, "FAIL: f32->s16 conversion mismatch: got %d %d %d %d %d %d\n",
+        fprintf(stderr, "FAIL: f32->s32 conversion mismatch: got %d %d %d %d %d %d\n",
                 gotVals[0], gotVals[1], gotVals[2], gotVals[3], gotVals[4], gotVals[5]);
         failures++;
     } else {
-        printf("ok: f32->s16 conversion + clamping (header + body over real /stream)\n");
+        printf("ok: f32->s32 conversion + clamping (header + body over real /stream)\n");
     }
 
     /* Flush test (Task 2, 73-06, D-04/UAT gap 3): pa_stream_flush must
@@ -2132,15 +2160,15 @@ int main(void) {
         pthread_mutex_unlock(&g_ring.lock);
 
         float fresh_pattern[4] = { -1.0f, 1.0f, 0.5f, -0.5f };
-        int16_t expected_fresh[4] = { -32767, 32767, 16384, -16384 };
+        int32_t expected_fresh[4] = { -2147483647, 2147483647, 1073741824, -1073741824 };
         pa_stream_write(s, fresh_pattern, sizeof(fresh_pattern), NULL, 0, 0);
 
-        unsigned char got_fresh[8];
+        unsigned char got_fresh[16];
         if (_test_read_bytes(client, got_fresh, sizeof(got_fresh), 3000) != 0) {
             fprintf(stderr, "FAIL: did not receive post-flush pattern over /stream\n");
             failures++;
         } else if (memcmp(got_fresh, expected_fresh, sizeof(expected_fresh)) != 0) {
-            int16_t gotVals[4];
+            int32_t gotVals[4];
             memcpy(gotVals, got_fresh, sizeof(gotVals));
             fprintf(stderr, "FAIL: post-flush bytes do not match the fresh pattern (flushed bytes leaked?): got %d %d %d %d\n",
                     gotVals[0], gotVals[1], gotVals[2], gotVals[3]);
@@ -2188,7 +2216,7 @@ int main(void) {
                 gettimeofday(&t0, NULL);
                 pa_stream_write(s, sample, sizeof(sample), NULL, 0, 0);
 
-                unsigned char body[4];
+                unsigned char body[8]; /* 2 f32 samples -> 2 S32LE samples */
                 int ok = (_test_read_bytes(active, body, sizeof(body), 500) == 0);
                 gettimeofday(&t1, NULL);
                 long ms = (t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_usec - t0.tv_usec) / 1000;
@@ -2253,7 +2281,7 @@ int main(void) {
         g_ring.client_connected = 0;
         pthread_mutex_unlock(&g_ring.lock);
 
-        size_t nfloats = (RING_CAPACITY / sizeof(int16_t)) + 1000;
+        size_t nfloats = (RING_CAPACITY / sizeof(int32_t)) + 1000;
         float *big = malloc(nfloats * sizeof(float));
         if (!big) {
             fprintf(stderr, "FAIL: malloc for drop-oldest test\n");
