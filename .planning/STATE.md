@@ -5,16 +5,16 @@ milestone_name: Soloist Integration
 current_phase: 75
 current_phase_name: API Unification (spclient-Modell)
 status: executing
-stopped_at: Completed 75-03-PLAN.md
-last_updated: "2026-08-29T08:28:22.675Z"
+stopped_at: Completed 75-04-PLAN.md
+last_updated: "2026-08-29T08:49:27.537Z"
 last_activity: 2026-08-29
 last_activity_desc: Phase 75 execution started
-state_head: d1eb9848f9dbe630818fcdee89d8e42e9a243124
+state_head: 74b1b2f17417aefbe979d2fa8b2b077b701182c5
 progress:
   total_phases: 14
   completed_phases: 3
   total_plans: 23
-  completed_plans: 20
+  completed_plans: 21
   percent: 21
 ---
 
@@ -35,7 +35,7 @@ See: .planning/PROJECT.md (updated 2026-06-30)
 ## Current Position
 
 Phase: 75 (API Unification (spclient-Modell)) — EXECUTING
-Plan: 4 of 6
+Plan: 5 of 6
 Status: Ready to execute
 Last activity: 2026-08-29 — Phase 75 execution started
 
@@ -117,6 +117,7 @@ Phase 77: [ ] Soloist UAT + Release (Final Proof: kein librespot nötig)
 | Phase 75 P01 | 20min | 3 tasks | 7 files |
 | Phase 75 P02 | ~30min | 3 tasks | 2 files |
 | Phase 75 P03 | 10min | 2 tasks | 6 files |
+| Phase 75 P04 | ~35min | 3 tasks | 2 files |
 
 ## Deferred Items
 
@@ -297,6 +298,11 @@ Items carried forward from previous milestones:
 - [Phase 75]: [Phase 75][75-02] getShow/getShowEpisodes/getEpisode mirror the verified album/track pattern for the spike-unverified metadata/4/show and metadata/4/episode paths -- D-07's 4xx/5xx fallback is the accepted mitigation, live verification deferred to mandatory phase UAT
 - [Phase 75]: [Phase 75][75-03] No CI workflow change needed -- build-spoton-helper job has no protobuf-specific step; cross build naturally builds fewer crates now that protobuf/protobuf-codegen are removed (D-02)
 - [Phase 75]: [Phase 75][75-03] proto/README.md documents collection2v2.proto as the field-number reference for collection/v2 paging (ProtobufLite.pm's parse_fields consumers); other 11 files documented as the same kind of reference for their endpoints, all retained as documentation-only per D-02
+- [Phase 75]: [Phase 75][75-04] getSavedTracks has NO play-all-specific shortcut -- play-all reuses the same method via _fetchAllPages, and the cached complete URI list already makes every page cheap regardless of mode
+- [Phase 75]: [Phase 75][75-04] getSavedShows probes the FIRST slice item's metadata/4/show fetch before enriching the rest -- a fallback-classified probe error routes the WHOLE call to Client.pm in one shot, avoiding N per-item fallback roundtrips
+- [Phase 75]: [Phase 75][75-04] getFollowedArtists emulates the Web-API cursor contract (after=last-artist-id) by resolving position in the cached collection/v2 list, matching exactly what _fetchAllFollowedArtists consumes
+- [Phase 75]: [Phase 75][75-04] _enrichCollectionSlice is distinct from 75-02's _enrichMeta because it must re-pair each result with its original added_at, which _enrichMeta's filter-undefs shape would lose
+- [Phase 75]: [Phase 75][75-04] getRecentlyPlayed pairs lastPlayedTime by the ORIGINAL request uri, not the enriched track's returned uri, to guard against relinked/canonicalized track uris
 
 ### Blockers/Concerns
 
@@ -329,8 +335,8 @@ Items carried forward from previous milestones:
 
 **Resume file:** None
 
-**Last session:** 2026-08-29T08:28:22.304Z
-**Stopped at:** Completed 75-03-PLAN.md
+**Last session:** 2026-08-29T08:49:13.247Z
+**Stopped at:** Completed 75-04-PLAN.md
 
 **Completed this session (2026-08-24):**
 
