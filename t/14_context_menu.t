@@ -317,14 +317,17 @@ sub state { return $next_state }
 1;
 END
 
-# Stub: Plugins::SpotOn::API::Client (Phase 52 Plan 04 -- pathfinderHome()/
+# Stub: Plugins::SpotOn::API::SpClient (Phase 52 Plan 04 -- pathfinderHome()/
 # getWebPlayerPlaylistItems() drive the rewritten _madeForYouFeed and the
 # webPlayer-flagged _playlistFeed drill-down; controllable via
 # $next_pathfinder_ids/$next_pathfinder_err/$next_wp_items so success,
 # empty-discovery, and error paths can all be exercised without a real
-# Client.pm (Plan 02, out of this plan's scope).
-write_stub($stub_dir, 'Plugins::SpotOn::API::Client', <<'END');
-package Plugins::SpotOn::API::Client;
+# SpClient.pm. Re-pointed from a Plugins::SpotOn::API::Client stub to this
+# SpClient stub in Phase 75 Plan 06 (D-08 caller switch) -- pathfinderHome
+# and getWebPlayerPlaylistItems are now SpClient passthrough delegations
+# (Plan 06 Task 1), so the consumers call SpClient directly.
+write_stub($stub_dir, 'Plugins::SpotOn::API::SpClient', <<'END');
+package Plugins::SpotOn::API::SpClient;
 use constant SPOTON_DEFAULT_CLIENT_ID => 'test-client-id-stub';
 our $next_pathfinder_ids   = [];
 our $next_pathfinder_err   = undef;
@@ -378,11 +381,11 @@ unshift @INC, $stub_dir, $project_dir;
 # Pre-load the Helper stub so lazy 'require Plugins::SpotOn::Helper' finds the stub.
 require Plugins::SpotOn::Helper;
 
-# Pre-load the Client stub (Phase 52 Plan 04) -- Plugin.pm's _madeForYouFeed
-# and _playlistFeed call Plugins::SpotOn::API::Client->... directly without a
-# require in their own body (mirrors production, where initPlugin loads it
-# once at startup).
-require Plugins::SpotOn::API::Client;
+# Pre-load the SpClient stub (Phase 52 Plan 04, re-pointed Phase 75 Plan 06)
+# -- Plugin.pm's _madeForYouFeed and _playlistFeed call
+# Plugins::SpotOn::API::SpClient->... directly without a require in their own
+# body (mirrors production, where initPlugin loads it once at startup).
+require Plugins::SpotOn::API::SpClient;
 
 # Pre-load the WebPlayer stub too (Phase 52 Plan 04) -- _homeFeed does its own
 # lazy 'require ...::WebPlayer' on every call, but require only executes a
@@ -634,17 +637,17 @@ ok( !defined(&Plugins::SpotOn::ProtocolHandler::trackInfoURL),
     # Test 10: successful discovery -- items built via the webPlayer-flagged
     # _playlistItem, in pathfinderHome's returned order (stable sort, no
     # name metadata to discriminate -- RESEARCH A1).
-    Plugins::SpotOn::API::Client::reset_calls();
-    $Plugins::SpotOn::API::Client::next_pathfinder_ids = [
+    Plugins::SpotOn::API::SpClient::reset_calls();
+    $Plugins::SpotOn::API::SpClient::next_pathfinder_ids = [
         { id => '37i9dQZF1abc', name => 'Test Playlist A', images => [] },
         { id => '37i9dQZF1def', name => 'Test Playlist B', images => [] },
     ];
-    $Plugins::SpotOn::API::Client::next_pathfinder_err = undef;
+    $Plugins::SpotOn::API::SpClient::next_pathfinder_err = undef;
 
     my $result;
     Plugins::SpotOn::Plugin::_madeForYouFeed($client, sub { $result = shift }, {});
 
-    is( scalar(@Plugins::SpotOn::API::Client::pathfinder_home_calls), 1,
+    is( scalar(@Plugins::SpotOn::API::SpClient::pathfinder_home_calls), 1,
         'CTX-10: _madeForYouFeed calls Client->pathfinderHome exactly once' );
     is( scalar @{ $result->{items} }, 2,
         'CTX-10: two discovered playlists produce two OPML items' );
@@ -658,21 +661,21 @@ ok( !defined(&Plugins::SpotOn::ProtocolHandler::trackInfoURL),
 
     # Test 11: selecting the item fetches tracks via getWebPlayerPlaylistItems,
     # never getPlaylistItems (Pitfall 3 -- the stub dies if that were called).
-    Plugins::SpotOn::API::Client::reset_calls();
-    $Plugins::SpotOn::API::Client::next_wp_items = { items => [], total => 0 };
+    Plugins::SpotOn::API::SpClient::reset_calls();
+    $Plugins::SpotOn::API::SpClient::next_wp_items = { items => [], total => 0 };
     my $drillResult;
     $result->{items}[0]{url}->(
         $client, sub { $drillResult = shift }, {}, $result->{items}[0]{passthrough}[0]
     );
-    is( scalar(@Plugins::SpotOn::API::Client::wp_items_calls), 1,
+    is( scalar(@Plugins::SpotOn::API::SpClient::wp_items_calls), 1,
         'CTX-11: playlist drill-down calls Client->getWebPlayerPlaylistItems exactly once' );
-    is( $Plugins::SpotOn::API::Client::wp_items_calls[0][1], '37i9dQZF1abc',
+    is( $Plugins::SpotOn::API::SpClient::wp_items_calls[0][1], '37i9dQZF1abc',
         'CTX-11: getWebPlayerPlaylistItems called with the discovered playlist ID' );
 
     # Test 12: empty discovery -- one graceful textarea item, not a die.
-    Plugins::SpotOn::API::Client::reset_calls();
-    $Plugins::SpotOn::API::Client::next_pathfinder_ids = [];
-    $Plugins::SpotOn::API::Client::next_pathfinder_err = undef;
+    Plugins::SpotOn::API::SpClient::reset_calls();
+    $Plugins::SpotOn::API::SpClient::next_pathfinder_ids = [];
+    $Plugins::SpotOn::API::SpClient::next_pathfinder_err = undef;
     undef $result;
     eval {
         Plugins::SpotOn::Plugin::_madeForYouFeed($client, sub { $result = shift }, {});
@@ -689,9 +692,9 @@ ok( !defined(&Plugins::SpotOn::ProtocolHandler::trackInfoURL),
 
     # Test 13: no_secrets failure -- distinct secrets-down message, not the
     # raw error reason reflected into the menu (Security V7/T-52-02).
-    Plugins::SpotOn::API::Client::reset_calls();
-    $Plugins::SpotOn::API::Client::next_pathfinder_ids = undef;
-    $Plugins::SpotOn::API::Client::next_pathfinder_err = { error => 'no_secrets' };
+    Plugins::SpotOn::API::SpClient::reset_calls();
+    $Plugins::SpotOn::API::SpClient::next_pathfinder_ids = undef;
+    $Plugins::SpotOn::API::SpClient::next_pathfinder_err = { error => 'no_secrets' };
     undef $result;
     Plugins::SpotOn::Plugin::_madeForYouFeed($client, sub { $result = shift }, {});
     is( scalar @{ $result->{items} }, 1,
@@ -699,7 +702,7 @@ ok( !defined(&Plugins::SpotOn::ProtocolHandler::trackInfoURL),
     is( $result->{items}[0]{name}, 'PLUGIN_SPOTON_MFY_SECRETS_DOWN',
         'CTX-13: no_secrets failure renders the distinct secrets-down message' );
 
-    Plugins::SpotOn::API::Client::reset_calls();
+    Plugins::SpotOn::API::SpClient::reset_calls();
 }
 
 done_testing();

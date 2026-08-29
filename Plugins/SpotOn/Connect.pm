@@ -1059,7 +1059,7 @@ sub _connectEvent {
 
         $client->pluginData(pendingConnect => 0);
 
-        # Fetch metadata for NowPlaying display via API::Client (D-13)
+        # Fetch metadata for NowPlaying display via API::SpClient (D-08/D-13)
         if ($trackId) {
             _fetchTrackMetadata($client, $trackId);
         }
@@ -1247,21 +1247,22 @@ sub _connectEvent {
 
 # _fetchTrackMetadata($client, $trackId)
 # Fetches track metadata from Spotify Web API and updates NowPlaying display.
-# Uses API::Client->getTrack() which routes via own-token (me/* path not needed here,
-# track endpoint is accessible with own or bundled token).
+# Uses API::SpClient->getTrack() (D-08) which routes via spclient for
+# login5-capable accounts, falling back to Client.pm's own-token path
+# transparently (track endpoint is accessible with own or bundled token).
 sub _fetchTrackMetadata {
     my ($client, $trackId) = @_;
 
     return unless $trackId;
 
-    require Plugins::SpotOn::API::Client;
+    require Plugins::SpotOn::API::SpClient;
 
     my $accountId = $prefs->client($client)->get('activeAccount')
                  || $prefs->get('activeAccount')
                  || '';
     $log->warn("[DIAG] metadata_fetch: mac=" . $client->id . " track=$trackId account=$accountId") if $prefs->get('diagnosticMode');
 
-    Plugins::SpotOn::API::Client->getTrack($accountId, $trackId, sub {
+    Plugins::SpotOn::API::SpClient->getTrack($accountId, $trackId, sub {
         my ($trackInfo) = @_;
 
         # Stale-API protection (T-05-14 / Pitfall 5): the binary's event track_id

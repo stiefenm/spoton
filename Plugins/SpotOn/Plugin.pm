@@ -151,9 +151,15 @@ sub initPlugin {
 
     require Plugins::SpotOn::API::TokenManager;
     require Plugins::SpotOn::API::Client;
+    require Plugins::SpotOn::API::SpClient;
+    require Plugins::SpotOn::API::Login5;
 
     # Reset API client inflight counter (Pitfall 2 prevention — stale counter on reload)
     Plugins::SpotOn::API::Client->reset();
+    # D-08: reset SpClient's own inflight counter/rate-limit/host caches and
+    # Login5's token cache alongside Client.pm's reset (plugin-reload safety).
+    Plugins::SpotOn::API::SpClient->reset();
+    Plugins::SpotOn::API::Login5->reset();
 
     require Plugins::SpotOn::API::WebPlayer;
     Plugins::SpotOn::API::WebPlayer->reset();
@@ -885,7 +891,7 @@ sub SpotOnManageLike {
     }
 
     # D-06: On-demand API call only on cache miss
-    Plugins::SpotOn::API::Client->checkTracks($accountId, [$trackUri], sub {
+    Plugins::SpotOn::API::SpClient->checkTracks($accountId, [$trackUri], sub {
         my ($result, $err) = @_;
         my $isLiked = ($result && ref $result eq 'ARRAY' && $result->[0]) ? 1 : 0;
         $cache->set($cacheKey, $isLiked, 60) unless $err;
@@ -923,7 +929,7 @@ sub _doLibraryAction {
     my $errorKey  = $opts->{errorKey} // 'PLUGIN_SPOTON_LIKE_ERROR';
     my $saveMethod = $opts->{saveMethod} // 'saveTracks';
 
-    Plugins::SpotOn::API::Client->$apiMethod($accountId, [$uri], sub {
+    Plugins::SpotOn::API::SpClient->$apiMethod($accountId, [$uri], sub {
         my ($result, $err) = @_;
         if ($err) {
             my $msg = (ref $err eq 'HASH' && $err->{code} && $err->{code} == 403)
@@ -980,7 +986,7 @@ sub SpotOnManageFollow {
     }
 
     # On-demand API call only on cache miss
-    Plugins::SpotOn::API::Client->checkShows($accountId, [$showUri], sub {
+    Plugins::SpotOn::API::SpClient->checkShows($accountId, [$showUri], sub {
         my ($result, $err) = @_;
         my $isFollowed = ($result && ref $result eq 'ARRAY' && $result->[0]) ? 1 : 0;
         $cache->set($cacheKey, $isFollowed, 60) unless $err;
@@ -1032,9 +1038,9 @@ sub SpotOnAddToPlaylist {
         accountId   => $accountId,
         apiFn       => sub {
             my ($acct, $params2, $cb2) = @_;
-            Plugins::SpotOn::API::Client->getUserPlaylists($acct, $params2, $cb2);
+            Plugins::SpotOn::API::SpClient->getUserPlaylists($acct, $params2, $cb2);
         },
-        pageLimit   => Plugins::SpotOn::API::Client->getLimit('library'),
+        pageLimit   => Plugins::SpotOn::API::SpClient->getLimit('library'),
         startOffset => $offset,
         maxItems    => $qty,
         done        => sub {
@@ -1071,7 +1077,7 @@ sub _doAddToPlaylist {
     my $spotifyUri   = $args->{spotifyUri};
     my $accountId    = $args->{accountId};
 
-    Plugins::SpotOn::API::Client->addToPlaylist($accountId, $playlistId, [$spotifyUri], sub {
+    Plugins::SpotOn::API::SpClient->addToPlaylist($accountId, $playlistId, [$spotifyUri], sub {
         my ($result, $err) = @_;
         if ($err) {
             $cb->({ items => [{ name => cstring($client, 'PLUGIN_SPOTON_ADD_TO_PLAYLIST_ERROR') }] });
@@ -1471,7 +1477,7 @@ sub _recentlyPlayedFeed {
 
     my $accountId = _getAccountId($client);
 
-    Plugins::SpotOn::API::Client->getRecentlyPlayed($accountId, { limit => Plugins::SpotOn::API::Client->getLimit('library') }, sub {
+    Plugins::SpotOn::API::SpClient->getRecentlyPlayed($accountId, { limit => Plugins::SpotOn::API::SpClient->getLimit('library') }, sub {
         my ($data, $err) = @_;
         unless ($data) {
             $callback->({ items => [ _authRequiredItem($client, $accountId, $err) ] });
@@ -1508,11 +1514,11 @@ sub _madeForYouPriority {
 # Calls $cb->(\@playlists) with valid (non-null) items from all pages.
 sub _fetchAllPersonalMixes {
     my ($accountId, $locale, $cb) = @_;
-    my $lim = Plugins::SpotOn::API::Client->getLimit('library');
+    my $lim = Plugins::SpotOn::API::SpClient->getLimit('library');
     my %params = (limit => $lim);
     $params{_locale} = $locale if $locale;
 
-    Plugins::SpotOn::API::Client->getPersonalMixes($accountId, \%params, sub {
+    Plugins::SpotOn::API::SpClient->getPersonalMixes($accountId, \%params, sub {
         my $data = shift;
         my $items = $data && $data->{playlists} ? $data->{playlists}{items} : [];
         my @valid = grep { $_ && $_->{id} && ($_->{name} // '') =~ /\S/ } @$items;
@@ -1521,7 +1527,7 @@ sub _fetchAllPersonalMixes {
         if ($total > $lim) {
             my %p2 = (limit => $lim, offset => $lim);
             $p2{_locale} = $locale if $locale;
-            Plugins::SpotOn::API::Client->getPersonalMixes($accountId, \%p2, sub {
+            Plugins::SpotOn::API::SpClient->getPersonalMixes($accountId, \%p2, sub {
                 my $page2 = shift;
                 if ($page2 && $page2->{playlists} && $page2->{playlists}{items}) {
                     push @valid, grep { $_ && $_->{id} && ($_->{name} // '') =~ /\S/ } @{ $page2->{playlists}{items} };
@@ -1543,7 +1549,7 @@ sub _madeForYouFeed {
     my ($client, $callback, $args) = @_;
     my $accountId = _getAccountId($client);
 
-    Plugins::SpotOn::API::Client->pathfinderHome($accountId, {}, sub {
+    Plugins::SpotOn::API::SpClient->pathfinderHome($accountId, {}, sub {
         my ($playlists, $err) = @_;
 
         unless ($playlists && @$playlists) {
@@ -1574,7 +1580,7 @@ sub _topTracksFeed {
 
     my $accountId = _getAccountId($client);
 
-    Plugins::SpotOn::API::Client->getTopTracks($accountId, {
+    Plugins::SpotOn::API::SpClient->getTopTracks($accountId, {
         time_range => 'medium_term',
         limit      => 50,
     }, sub {
@@ -1652,7 +1658,7 @@ sub _savedTracksFeed {
 
     my $apiFn = sub {
         my ($acct, $params, $cb) = @_;
-        Plugins::SpotOn::API::Client->getSavedTracks($acct, $params, $cb);
+        Plugins::SpotOn::API::SpClient->getSavedTracks($acct, $params, $cb);
     };
 
     if ($isPlayAll && $offset == 0) {
@@ -1694,7 +1700,7 @@ sub _savedTracksFeed {
         _fetchPages({
             accountId    => $accountId,
             apiFn        => $apiFn,
-            pageLimit    => Plugins::SpotOn::API::Client->getLimit('library'),
+            pageLimit    => Plugins::SpotOn::API::SpClient->getLimit('library'),
             startOffset  => $offset,
             maxItems     => $qty,
             extractItems => sub { $_[0]->{items} || [] },
@@ -1736,14 +1742,14 @@ sub _savedAlbumsFeed {
 
     my $apiFn = sub {
         my ($acct, $params, $cb) = @_;
-        Plugins::SpotOn::API::Client->getSavedAlbums($acct, $params, $cb);
+        Plugins::SpotOn::API::SpClient->getSavedAlbums($acct, $params, $cb);
     };
 
     if ($isPlayAll && $offset == 0) {
         _fetchAllPages({
             accountId    => $accountId,
             apiFn        => $apiFn,
-            pageLimit    => Plugins::SpotOn::API::Client->getLimit('library'),
+            pageLimit    => Plugins::SpotOn::API::SpClient->getLimit('library'),
             extractItems => sub { $_[0]->{items} || [] },
             done         => sub {
                 my ($allItems, $err) = @_;
@@ -1773,7 +1779,7 @@ sub _savedAlbumsFeed {
         _fetchPages({
             accountId    => $accountId,
             apiFn        => $apiFn,
-            pageLimit    => Plugins::SpotOn::API::Client->getLimit('library'),
+            pageLimit    => Plugins::SpotOn::API::SpClient->getLimit('library'),
             startOffset  => $offset,
             maxItems     => $qty,
             extractItems => sub { $_[0]->{items} || [] },
@@ -1821,10 +1827,10 @@ sub _followedArtistsFeed {
 sub _fetchAllFollowedArtists {
     my ($client, $accountId, $after, $accumulated, $done) = @_;
 
-    my %params = (limit => Plugins::SpotOn::API::Client->getLimit('library'));
+    my %params = (limit => Plugins::SpotOn::API::SpClient->getLimit('library'));
     $params{after} = $after if defined $after;
 
-    Plugins::SpotOn::API::Client->getFollowedArtists($accountId, \%params, sub {
+    Plugins::SpotOn::API::SpClient->getFollowedArtists($accountId, \%params, sub {
         my ($data, $err) = @_;
         unless ($data) {
             $done->($accumulated, $err);
@@ -1978,14 +1984,14 @@ sub _userPlaylistsFeed {
 
     my $apiFn = sub {
         my ($acct, $params, $cb) = @_;
-        Plugins::SpotOn::API::Client->getUserPlaylists($acct, $params, $cb);
+        Plugins::SpotOn::API::SpClient->getUserPlaylists($acct, $params, $cb);
     };
 
     if ($isPlayAll && $offset == 0) {
         _fetchAllPages({
             accountId    => $accountId,
             apiFn        => $apiFn,
-            pageLimit    => Plugins::SpotOn::API::Client->getLimit('library'),
+            pageLimit    => Plugins::SpotOn::API::SpClient->getLimit('library'),
             extractItems => sub { $_[0]->{items} || [] },
             done         => sub {
                 my ($allItems, $err) = @_;
@@ -2013,7 +2019,7 @@ sub _userPlaylistsFeed {
         _fetchPages({
             accountId    => $accountId,
             apiFn        => $apiFn,
-            pageLimit    => Plugins::SpotOn::API::Client->getLimit('library'),
+            pageLimit    => Plugins::SpotOn::API::SpClient->getLimit('library'),
             startOffset  => $offset,
             maxItems     => $qty,
             extractItems => sub { $_[0]->{items} || [] },
@@ -2079,14 +2085,14 @@ sub _savedShowsFeed {
 
     my $apiFn = sub {
         my ($acct, $params, $cb) = @_;
-        Plugins::SpotOn::API::Client->getSavedShows($acct, { %$params, _noCache => 1 }, $cb);
+        Plugins::SpotOn::API::SpClient->getSavedShows($acct, { %$params, _noCache => 1 }, $cb);
     };
 
     if ($isPlayAll && $offset == 0) {
         _fetchAllPages({
             accountId    => $accountId,
             apiFn        => $apiFn,
-            pageLimit    => Plugins::SpotOn::API::Client->getLimit('library'),
+            pageLimit    => Plugins::SpotOn::API::SpClient->getLimit('library'),
             extractItems => sub { $_[0]->{items} || [] },
             done         => sub {
                 my ($allItems, $err) = @_;
@@ -2116,7 +2122,7 @@ sub _savedShowsFeed {
         _fetchPages({
             accountId    => $accountId,
             apiFn        => $apiFn,
-            pageLimit    => Plugins::SpotOn::API::Client->getLimit('library'),
+            pageLimit    => Plugins::SpotOn::API::SpClient->getLimit('library'),
             startOffset  => $offset,
             maxItems     => $qty,
             extractItems => sub { $_[0]->{items} || [] },
@@ -2189,7 +2195,7 @@ sub _showFeed {
 
     my $apiFn = sub {
         my ($acct, $params, $cb) = @_;
-        Plugins::SpotOn::API::Client->getShowEpisodes($acct, $showId, $params, $cb);
+        Plugins::SpotOn::API::SpClient->getShowEpisodes($acct, $showId, $params, $cb);
     };
 
     if ($isPlayAll && $offset == 0) {
@@ -2229,7 +2235,7 @@ sub _showFeed {
         _fetchPages({
             accountId    => $accountId,
             apiFn        => $apiFn,
-            pageLimit    => Plugins::SpotOn::API::Client->getLimit('library'),
+            pageLimit    => Plugins::SpotOn::API::SpClient->getLimit('library'),
             startOffset  => $apiOffset,
             maxItems     => $wantItems,
             extractItems => sub { $_[0]->{items} || [] },
@@ -2446,7 +2452,7 @@ sub _episodeInfoFeed {
     }
 
     # Cache miss: fetch full episode to extract show context
-    Plugins::SpotOn::API::Client->getEpisode($accountId, $episodeId, sub {
+    Plugins::SpotOn::API::SpClient->getEpisode($accountId, $episodeId, sub {
         my ($ep, $err) = @_;
         if ($ep && $ep->{show} && $ep->{show}{id}) {
             my $ctx = {
@@ -2625,14 +2631,14 @@ sub _podcastSearchTypeFeed {
         accountId    => $accountId,
         apiFn        => sub {
             my ($acct, $params, $cb) = @_;
-            Plugins::SpotOn::API::Client->search($acct, {
+            Plugins::SpotOn::API::SpClient->search($acct, {
                 q      => $query,
                 type   => $type,
                 limit  => $params->{limit},
                 offset => $params->{offset},
             }, $cb);
         },
-        pageLimit    => Plugins::SpotOn::API::Client->getLimit('search'),
+        pageLimit    => Plugins::SpotOn::API::SpClient->getLimit('search'),
         startOffset  => $offset,
         maxItems     => $qty,
         extractItems => sub { ($_[0]->{$key} || {})->{items} || [] },
@@ -2697,10 +2703,10 @@ sub _multiTypeSearch {
     my $firstErr;
 
     for my $type (@$types) {
-        Plugins::SpotOn::API::Client->search($accountId, {
+        Plugins::SpotOn::API::SpClient->search($accountId, {
             q      => $query,
             type   => $type,
-            limit  => Plugins::SpotOn::API::Client->getLimit('search'),
+            limit  => Plugins::SpotOn::API::SpClient->getLimit('search'),
             offset => 0,
         }, sub {
             my ($data, $err) = @_;
@@ -2994,14 +3000,14 @@ sub _searchTypeFeed {
         accountId    => $accountId,
         apiFn        => sub {
             my ($acct, $params, $cb) = @_;
-            Plugins::SpotOn::API::Client->search($acct, {
+            Plugins::SpotOn::API::SpClient->search($acct, {
                 q      => $query,
                 type   => $type,
                 limit  => $params->{limit},
                 offset => $params->{offset},
             }, $cb);
         },
-        pageLimit    => Plugins::SpotOn::API::Client->getLimit('search'),
+        pageLimit    => Plugins::SpotOn::API::SpClient->getLimit('search'),
         startOffset  => $offset,
         maxItems     => $qty,
         extractItems => sub { ($_[0]->{$key} || {})->{items} || [] },
@@ -3109,7 +3115,7 @@ sub _artistAlbumsFeed {
 
     my $apiFn = sub {
         my ($acct, $params, $cb) = @_;
-        Plugins::SpotOn::API::Client->getArtistAlbums($acct, $artistId, {
+        Plugins::SpotOn::API::SpClient->getArtistAlbums($acct, $artistId, {
             include_groups => $includeGroups,
             offset         => $params->{offset},
             limit          => $params->{limit},
@@ -3120,7 +3126,7 @@ sub _artistAlbumsFeed {
         _fetchAllPages({
             accountId    => $accountId,
             apiFn        => $apiFn,
-            pageLimit    => Plugins::SpotOn::API::Client->getLimit('artist_albums'),
+            pageLimit    => Plugins::SpotOn::API::SpClient->getLimit('artist_albums'),
             extractItems => sub { $_[0]->{items} || [] },
             done         => sub {
                 my ($allItems, $err) = @_;
@@ -3147,7 +3153,7 @@ sub _artistAlbumsFeed {
         _fetchPages({
             accountId    => $accountId,
             apiFn        => $apiFn,
-            pageLimit    => Plugins::SpotOn::API::Client->getLimit('artist_albums'),
+            pageLimit    => Plugins::SpotOn::API::SpClient->getLimit('artist_albums'),
             startOffset  => $offset,
             maxItems     => $qty,
             extractItems => sub { $_[0]->{items} || [] },
@@ -3202,12 +3208,12 @@ sub _albumFeed {
     # play-all branch's inline paginator stays independent/untouched (JVL-08).
     my $apiFn = sub {
         my ($acct, $params, $cb) = @_;
-        Plugins::SpotOn::API::Client->getAlbumTracks($acct, $albumId, $params, $cb);
+        Plugins::SpotOn::API::SpClient->getAlbumTracks($acct, $albumId, $params, $cb);
     };
 
     if ($isPlayAll && $offset == 0) {
         # Play-all mode: first fetch full album for metadata + seed tracks, then paginate remaining
-        Plugins::SpotOn::API::Client->getAlbum($accountId, $albumId, sub {
+        Plugins::SpotOn::API::SpClient->getAlbum($accountId, $albumId, sub {
             my $album = shift;
             unless ($album) {
                 $callback->({ items => [{ name => cstring($client, 'PLUGIN_SPOTON_NO_RESULTS'), type => 'textarea' }] });
@@ -3242,9 +3248,9 @@ sub _albumFeed {
             my $fetchPage;
             $fetchPage = sub {
                 my ($pageOffset) = @_;
-                Plugins::SpotOn::API::Client->getAlbumTracks($accountId, $albumId, {
+                Plugins::SpotOn::API::SpClient->getAlbumTracks($accountId, $albumId, {
                     offset => $pageOffset,
-                    limit  => Plugins::SpotOn::API::Client->getLimit('album_tracks'),
+                    limit  => Plugins::SpotOn::API::SpClient->getLimit('album_tracks'),
                 }, sub {
                     # NON-UNIFORM site (review finding #4): on fetch failure, fall back to
                     # any accumulated tracks from prior pages -- only replace the inner
@@ -3300,7 +3306,7 @@ sub _albumFeed {
         # Initial browse load: fetch full album (includes first page of tracks in tracks.items).
         # GH #157: if quantity exceeds the embedded seed tracks and the album has
         # more, continue fetching via getAlbumTracks (embedded-seed + continuation).
-        Plugins::SpotOn::API::Client->getAlbum($accountId, $albumId, sub {
+        Plugins::SpotOn::API::SpClient->getAlbum($accountId, $albumId, sub {
             my $album = shift;
             unless ($album) {
                 $callback->({ items => [{ name => cstring($client, 'PLUGIN_SPOTON_NO_RESULTS'), type => 'textarea' }] });
@@ -3334,7 +3340,7 @@ sub _albumFeed {
             _fetchPages({
                 accountId   => $accountId,
                 apiFn       => $apiFn,
-                pageLimit   => Plugins::SpotOn::API::Client->getLimit('album_tracks'),
+                pageLimit   => Plugins::SpotOn::API::SpClient->getLimit('album_tracks'),
                 startOffset => $seedCount,
                 maxItems    => $qty - $seedCount,
                 done        => sub {
@@ -3363,7 +3369,7 @@ sub _albumFeed {
         _fetchPages({
             accountId   => $accountId,
             apiFn       => $apiFn,
-            pageLimit   => Plugins::SpotOn::API::Client->getLimit('album_tracks'),
+            pageLimit   => Plugins::SpotOn::API::SpClient->getLimit('album_tracks'),
             startOffset => $offset,
             maxItems    => $qty,
             done        => sub {
@@ -3538,8 +3544,8 @@ sub _playlistFeed {
     my $accountId = _getAccountId($client);
 
     my $fetchItems = $webPlayer
-        ? sub { Plugins::SpotOn::API::Client->getWebPlayerPlaylistItems(@_) }
-        : sub { Plugins::SpotOn::API::Client->getPlaylistItems(@_) };
+        ? sub { Plugins::SpotOn::API::SpClient->getWebPlayerPlaylistItems(@_) }
+        : sub { Plugins::SpotOn::API::SpClient->getPlaylistItems(@_) };
 
     my $apiFn = sub {
         my ($acct, $params, $cb) = @_;
@@ -3587,7 +3593,7 @@ sub _playlistFeed {
         _fetchPages({
             accountId    => $accountId,
             apiFn        => $apiFn,
-            pageLimit    => Plugins::SpotOn::API::Client->getLimit('playlist_items'),
+            pageLimit    => Plugins::SpotOn::API::SpClient->getLimit('playlist_items'),
             startOffset  => $offset,
             maxItems     => $qty,
             extractItems => sub { $_[0]->{items} || [] },

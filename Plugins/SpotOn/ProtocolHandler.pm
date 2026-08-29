@@ -726,9 +726,9 @@ sub explodePlaylist {
         my $albumId = $1;
         require Plugins::SpotOn::Plugin;
         my $accountId = Plugins::SpotOn::Plugin::_getAccountId($client);
-        require Plugins::SpotOn::API::Client;
+        require Plugins::SpotOn::API::SpClient;
 
-        Plugins::SpotOn::API::Client->getAlbum($accountId, $albumId, sub {
+        Plugins::SpotOn::API::SpClient->getAlbum($accountId, $albumId, sub {
             my ($album, $err) = @_;
             unless ($album && $album->{name}) {
                 main::INFOLOG && $log->is_info && $log->info(
@@ -768,9 +768,9 @@ sub explodePlaylist {
             my $fetchPage;
             $fetchPage = sub {
                 my ($offset) = @_;
-                Plugins::SpotOn::API::Client->getAlbumTracks($accountId, $albumId, {
+                Plugins::SpotOn::API::SpClient->getAlbumTracks($accountId, $albumId, {
                     offset => $offset,
-                    limit  => Plugins::SpotOn::API::Client->getLimit('library'),
+                    limit  => Plugins::SpotOn::API::SpClient->getLimit('library'),
                 }, sub {
                     my ($data, $err) = @_;
                     unless ($data && $data->{items}) {
@@ -806,15 +806,15 @@ sub explodePlaylist {
         my $playlistId = $1;
         require Plugins::SpotOn::Plugin;
         my $accountId = Plugins::SpotOn::Plugin::_getAccountId($client);
-        require Plugins::SpotOn::API::Client;
+        require Plugins::SpotOn::API::SpClient;
 
         my @allItems;
         my $fetchPage;
         $fetchPage = sub {
             my ($offset) = @_;
-            Plugins::SpotOn::API::Client->getPlaylistItems($accountId, $playlistId, {
+            Plugins::SpotOn::API::SpClient->getPlaylistItems($accountId, $playlistId, {
                 offset => $offset,
-                limit  => Plugins::SpotOn::API::Client->getLimit('playlist_items'),
+                limit  => Plugins::SpotOn::API::SpClient->getLimit('playlist_items'),
             }, sub {
                 my ($data, $err) = @_;
                 unless ($data && $data->{items}) {
@@ -859,16 +859,16 @@ sub explodePlaylist {
         my $showId = $1;
         require Plugins::SpotOn::Plugin;
         my $accountId = Plugins::SpotOn::Plugin::_getAccountId($client);
-        require Plugins::SpotOn::API::Client;
+        require Plugins::SpotOn::API::SpClient;
 
         my @allItems;
         my $total = 0;
         my $fetchPage;
         $fetchPage = sub {
             my ($offset) = @_;
-            Plugins::SpotOn::API::Client->getShowEpisodes($accountId, $showId, {
+            Plugins::SpotOn::API::SpClient->getShowEpisodes($accountId, $showId, {
                 offset => $offset,
-                limit  => Plugins::SpotOn::API::Client->getLimit('library'),
+                limit  => Plugins::SpotOn::API::SpClient->getLimit('library'),
             }, sub {
                 my ($data, $err) = @_;
                 unless ($data && $data->{items}) {
@@ -1274,7 +1274,7 @@ sub _placeholderMeta {
 }
 
 # _asyncRefetch($class, $client, $url, $canonical)
-# Fires an async API::Client->getTrack call for a cache-miss URL.
+# Fires an async API::SpClient->getTrack call for a cache-miss URL.
 # D-04: extracts track ID from Browse URL or from cached spotifyUri for Connect URLs.
 # D-05: debounce via %_pendingRefetch — one in-flight re-fetch per URL.
 # Pitfall 4: delete from debounce hash is the FIRST action in the callback.
@@ -1314,7 +1314,7 @@ sub _asyncRefetch {
     # D-05: mark in-flight
     $_pendingRefetch{$url} = 1;
 
-    require Plugins::SpotOn::API::Client;
+    require Plugins::SpotOn::API::SpClient;
 
     my $fetchCb = sub {
         my ($info) = @_;
@@ -1389,9 +1389,9 @@ sub _asyncRefetch {
     };
 
     if ($episodeId) {
-        Plugins::SpotOn::API::Client->getEpisode($accountId, $episodeId, $fetchCb);
+        Plugins::SpotOn::API::SpClient->getEpisode($accountId, $episodeId, $fetchCb);
     } else {
-        Plugins::SpotOn::API::Client->getTrack($accountId, $trackId, $fetchCb);
+        Plugins::SpotOn::API::SpClient->getTrack($accountId, $trackId, $fetchCb);
     }
 }
 

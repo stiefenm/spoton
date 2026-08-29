@@ -56,10 +56,10 @@ sub dontStopTheMusic {
         return;
     }
 
-    require Plugins::SpotOn::API::Client;
+    require Plugins::SpotOn::API::SpClient;
 
     # D1: if search is blocked (getLimit returns 0), skip search entirely
-    my $searchAvailable = Plugins::SpotOn::API::Client->getLimit('search') > 0;
+    my $searchAvailable = Plugins::SpotOn::API::SpClient->getLimit('search') > 0;
 
     # Build seed exclusion set from current playlist (D3: prevent self-queueing)
     my %seedExclude;
@@ -117,7 +117,7 @@ sub _withDiversityPool {
     if ($pool && ref $pool eq 'ARRAY' && @$pool) {
         return $cb->($pool);
     }
-    Plugins::SpotOn::API::Client->getTopTracks($accountId, {
+    Plugins::SpotOn::API::SpClient->getTopTracks($accountId, {
         time_range => 'medium_term',
         limit      => 50,
     }, sub {
@@ -137,7 +137,7 @@ sub _searchArtists {
     }
 
     my $artist = $artists->[$idx];
-    my $limit  = Plugins::SpotOn::API::Client->getLimit('search') || 10;
+    my $limit  = Plugins::SpotOn::API::SpClient->getLimit('search') || 10;
     my $perArtist = int(DSTM_MAX_TRACKS / scalar(@$artists)) + 1;
     $limit = min($limit, $perArtist);
     my $offset = int(rand(3)) * $perArtist;
@@ -145,7 +145,7 @@ sub _searchArtists {
     # D5: escape quotes in artist names
     (my $safeArtist = $artist) =~ s/"//g;
 
-    Plugins::SpotOn::API::Client->search($accountId, {
+    Plugins::SpotOn::API::SpClient->search($accountId, {
         q      => sprintf('artist:"%s"', $safeArtist),
         type   => 'track',
         limit  => $limit,
@@ -157,7 +157,7 @@ sub _searchArtists {
 
         # D6: only retry on successful-but-empty, not on errors
         if (!@$tracks && $offset > 0 && $result && $result->{tracks}) {
-            Plugins::SpotOn::API::Client->search($accountId, {
+            Plugins::SpotOn::API::SpClient->search($accountId, {
                 q      => sprintf('artist:"%s"', $safeArtist),
                 type   => 'track',
                 limit  => $limit,

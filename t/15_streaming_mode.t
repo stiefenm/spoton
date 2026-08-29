@@ -285,9 +285,11 @@ sub can { 1 }
 1;
 END
 
-# Stub: Plugins::SpotOn::API::Client with controllable $mock_track
-write_stub($stub_dir, 'Plugins::SpotOn::API::Client', <<'END');
-package Plugins::SpotOn::API::Client;
+# Stub: Plugins::SpotOn::API::SpClient with controllable $mock_track
+# (re-pointed from a Plugins::SpotOn::API::Client stub in Phase 75 Plan 06 --
+# ProtocolHandler.pm's _asyncRefetch now calls SpClient->getTrack, D-08)
+write_stub($stub_dir, 'Plugins::SpotOn::API::SpClient', <<'END');
+package Plugins::SpotOn::API::SpClient;
 our $mock_track = undef;
 sub getTrack {
     my ($class, $account_id, $track_id, $cb) = @_;
@@ -363,7 +365,7 @@ unshift @INC, $stub_dir, $project_dir;
 
 # Pre-load stubs so subsequent `require` calls inside ProtocolHandler.pm find the stubs.
 require Plugins::SpotOn::Helper;
-require Plugins::SpotOn::API::Client;
+require Plugins::SpotOn::API::SpClient;
 require Plugins::SpotOn::Unified::DaemonManager;
 require Slim::Control::Request;
 

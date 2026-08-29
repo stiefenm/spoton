@@ -285,9 +285,11 @@ sub can { 1 }
 1;
 END
 
-# Stub: Plugins::SpotOn::API::Client with controllable $mock_track
-write_stub($stub_dir, 'Plugins::SpotOn::API::Client', <<'END');
-package Plugins::SpotOn::API::Client;
+# Stub: Plugins::SpotOn::API::SpClient with controllable $mock_track
+# (re-pointed from a Plugins::SpotOn::API::Client stub in Phase 75 Plan 06 --
+# ProtocolHandler.pm's _asyncRefetch now calls SpClient->getTrack, D-08)
+write_stub($stub_dir, 'Plugins::SpotOn::API::SpClient', <<'END');
+package Plugins::SpotOn::API::SpClient;
 our $mock_track = undef;
 sub getTrack {
     my ($class, $account_id, $track_id, $cb) = @_;
@@ -348,7 +350,7 @@ unshift @INC, $stub_dir, $project_dir;
 
 # Pre-load stubs so subsequent `require` calls inside ProtocolHandler.pm find the stubs.
 require Plugins::SpotOn::Helper;
-require Plugins::SpotOn::API::Client;
+require Plugins::SpotOn::API::SpClient;
 require Slim::Control::Request;
 
 # ============================================================
@@ -541,13 +543,13 @@ subtest 'Connect URL with spotifyUri in cache returns metadata with play field' 
 # ============================================================
 subtest 'Debounce prevents duplicate fetch on cache miss' => sub {
     Slim::Utils::Cache->new->clear();
-    $Plugins::SpotOn::API::Client::mock_track = undef;
+    $Plugins::SpotOn::API::SpClient::mock_track = undef;
 
     # Track call count via a local counter
     my $call_count = 0;
     {
         no warnings 'redefine';
-        local *Plugins::SpotOn::API::Client::getTrack = sub {
+        local *Plugins::SpotOn::API::SpClient::getTrack = sub {
             $call_count++;
             # Don't invoke callback — simulates in-flight request
         };
@@ -576,8 +578,8 @@ subtest 'Async re-fetch populates cache and fires newmetadata' => sub {
     Slim::Utils::Cache->new->clear();
     $Slim::Control::Request::notify_count = 0;
 
-    # Set mock_track so API::Client->getTrack returns metadata synchronously
-    $Plugins::SpotOn::API::Client::mock_track = {
+    # Set mock_track so API::SpClient->getTrack returns metadata synchronously
+    $Plugins::SpotOn::API::SpClient::mock_track = {
         name       => 'Async Track',
         artists    => [{ name => 'Async Artist' }],
         album      => { name => 'Async Album', images => [{ url => 'https://example.com/img.jpg', width => 640 }], release_date => '2021-03-19' },
@@ -604,7 +606,7 @@ subtest 'Async re-fetch populates cache and fires newmetadata' => sub {
     cmp_ok($Slim::Control::Request::notify_count, '>=', 1, 'notifyFromArray fired after re-fetch');
 
     # Clean up mock
-    $Plugins::SpotOn::API::Client::mock_track = undef;
+    $Plugins::SpotOn::API::SpClient::mock_track = undef;
 };
 
 # ============================================================
