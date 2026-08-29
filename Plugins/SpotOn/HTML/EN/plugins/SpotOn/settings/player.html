@@ -42,7 +42,10 @@
 	[% WRAPPER setting title="PLUGIN_SPOTON_STREAM_FORMAT" desc="PLUGIN_SPOTON_STREAM_FORMAT_DESC" %]
 		<select class="stdedit" name="pref_streamFormat" id="pref_streamFormat">
 			<option value="auto" [% IF streamFormat == 'auto' %]selected[% END %]>[% 'PLUGIN_SPOTON_STREAM_FORMAT_AUTO' | string %]</option>
+			[%# D-07: OGG passthrough is librespot-only -- hidden for the soloist backend %]
+			[% IF backend != 'soloist' %]
 			<option value="ogg"  [% IF streamFormat == 'ogg'  %]selected[% END %]>[% 'PLUGIN_SPOTON_STREAM_FORMAT_OGG'  | string %]</option>
+			[% END %]
 			<option value="pcm"  [% IF streamFormat == 'pcm'  %]selected[% END %]>[% 'PLUGIN_SPOTON_STREAM_FORMAT_PCM'  | string %]</option>
 			<option value="flac" [% IF streamFormat == 'flac' %]selected[% END %]>[% 'PLUGIN_SPOTON_STREAM_FORMAT_FLAC' | string %]</option>
 			<option value="mp3"  [% IF streamFormat == 'mp3'  %]selected[% END %]>[% 'PLUGIN_SPOTON_STREAM_FORMAT_MP3'  | string %]</option>
