@@ -304,7 +304,7 @@
 | 72. Soloist Browse Playback | v4.0 | 3/3 | Complete | 2026-08-26 |
 | 73. Soloist Connect Mode | v4.0 | 6/6 | Complete | 2026-08-27 |
 | 74. spoton-helper Binary | v4.0 | 0/? | In Progress|  |
-| 75. API Unification | v4.0 | 0/? | Not started | — |
+| 75. API Unification | v4.0 | 0/? | In Progress|  |
 | 76. Soloist UX Polish | v4.0 | 0/? | Not started | — |
 | 77. Soloist UAT + Release | v4.0 | 0/? | Not started | — |
 | 38-41 (4 phases) | v2.3→v5.0 | 0/? | Deferred | — |
@@ -534,7 +534,7 @@ Ein-Host-Modell — spclient.spotify.com deckt ALLE Browse/Library-Features:
 
   Plans:
 
-  - [ ] 75-01-PLAN.md — Tracer: ProtobufLite + Login5 + SpClient-Skelett, getTrack end-to-end über Router/Fallback (D-01/D-03/D-04/D-06/D-07/D-09)
+  - [x] 75-01-PLAN.md — Tracer: ProtobufLite + Login5 + SpClient-Skelett, getTrack end-to-end über Router/Fallback (D-01/D-03/D-04/D-06/D-07/D-09)
   - [ ] 75-02-PLAN.md — Metadata-Familie: Album/Artist/Show/Episode + Search-Router (context-resolve Track-Search, Web-API-Fallback für Multi-Type, S-04/S-05)
   - [ ] 75-03-PLAN.md — D-02 Rückbau: protobuf-Subcommand, build.rs-Codegen + 2 Crates aus spoton-helper entfernt; .proto-Dateien bleiben als Schema-Doku
   - [ ] 75-04-PLAN.md — Collection-Familie: collection/v2 Sets (S-06/S-07), Liked Songs via context-resolve (kein Paging), Recently Played (Protobuf S-09)

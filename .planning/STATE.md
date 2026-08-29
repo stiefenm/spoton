@@ -5,16 +5,16 @@ milestone_name: Soloist Integration
 current_phase: 75
 current_phase_name: API Unification (spclient-Modell)
 status: executing
-stopped_at: Phase 75 context gathered
-last_updated: "2026-08-28T22:48:32.507Z"
-last_activity: 2026-08-28
-last_activity_desc: Phase 74 complete, transitioned to Phase 75
-state_head: 7b023a6ed2f974d66f58d5876af6cb458228c3aa
+stopped_at: Completed 75-01-PLAN.md
+last_updated: "2026-08-29T08:03:59.623Z"
+last_activity: 2026-08-29
+last_activity_desc: Phase 75 execution started
+state_head: 64696516c3ae5220207e526e5446e8e9f1a03a31
 progress:
   total_phases: 14
   completed_phases: 3
   total_plans: 23
-  completed_plans: 17
+  completed_plans: 18
   percent: 21
 ---
 
@@ -30,14 +30,14 @@ See: .planning/PROJECT.md (updated 2026-06-30)
 
 **Core Value:** Reliable Spotify playback and Connect integration on LMS — Browse, stream, and control via Spotify app, without 429 bursts, zombie daemons, or audio glitches.
 
-**Current Focus:** Phase 74 — spoton-helper Binary
+**Current Focus:** Phase 75 — API Unification (spclient-Modell)
 
 ## Current Position
 
-Phase: 75 (API Unification (spclient-Modell)) — READY TO EXECUTE
-Plan: Not started
+Phase: 75 (API Unification (spclient-Modell)) — EXECUTING
+Plan: 2 of 6
 Status: Ready to execute
-Last activity: 2026-08-28 — Phase 74 complete, transitioned to Phase 75
+Last activity: 2026-08-29 — Phase 75 execution started
 
 ## Progress Bar
 
@@ -114,6 +114,7 @@ Phase 77: [ ] Soloist UAT + Release (Final Proof: kein librespot nötig)
 | Phase 74 P02 | 8min | 2 tasks | 3 files |
 | Phase 74 P03 | 25min | 2 tasks | 16 files |
 | Phase 74 P04 | 20min | 3 tasks | 7 files |
+| Phase 75 P01 | 20min | 3 tasks | 7 files |
 
 ## Deferred Items
 
@@ -285,6 +286,9 @@ Items carried forward from previous milestones:
 - [Phase 74]: build-spoton-helper runs unconditionally on tag/workflow_dispatch, no detect-changes gate (compiles in seconds, must never be stale)
 - [Phase 74]: Private pattern injection is a guarded CI step keyed on repo secrets that do not yet exist -- shipped binary presently always keeps the public empty patterns.rs table
 - [Phase 74]: _autoPatch in Soloist.pm is unconditionally fail-open: any incomplete/failed patch logs a warning and Soloist continues unpatched, never blocking playback
+- [Phase 75]: [Phase 75][75-01] parse_fields collects every field occurrence into an arrayref (never overwrite) -- fixes RESEARCH.md's last-item-wins sample so collection/v2 repeated items decode completely
+- [Phase 75]: [Phase 75][75-01] SpClient.pm runtime-require's Login5/Credentials/Client (never compile-time use) -- extends D-03's no-compile-time-coupling guarantee to all three collaborators, not just Client.pm
+- [Phase 75]: [Phase 75][75-01] D-07a single 401 remint-retry implemented exactly as user-approved: one retry with a fresh token, second 401 falls back to Client.pm immediately
 
 ### Blockers/Concerns
 
@@ -315,10 +319,10 @@ Items carried forward from previous milestones:
 
 ## Session Continuity
 
-**Resume file:** .planning/phases/75-api-unification-spclient-modell/75-CONTEXT.md
+**Resume file:** None
 
-**Last session:** 2026-08-28T21:39:08.970Z
-**Stopped at:** Phase 75 context gathered
+**Last session:** 2026-08-29T08:03:59.212Z
+**Stopped at:** Completed 75-01-PLAN.md
 
 **Completed this session (2026-08-24):**
 
