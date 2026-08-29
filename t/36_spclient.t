@@ -1606,4 +1606,89 @@ sub encode_rootlist_response {
     $Slim::Networking::SimpleAsyncHTTP::auto_mode = 'success';
 }
 
+# ============================================================
+# Phase 75 Plan 05 fixtures -- playlist/v2 (JSON contents envelope), Task 2
+# ============================================================
+
+sub playlist_envelope_fixture {
+    my ($n) = @_;
+    my @items = map { { uri => 'spotify:track:' . b62id($_) } } (1 .. $n);
+    return JSON::XS::VersionOneAndTwo::to_json({
+        revision   => 'abc123',
+        length     => $n,
+        attributes => { name => 'Test Playlist' },
+        contents   => { items => \@items, pos => 0, truncated => 0 },
+    });
+}
+
+# ============================================================
+# Task 2: getPlaylistItems via playlist/v2 (JSON) with sliced enrichment
+# ============================================================
+
+# Slice test: 5-track envelope, offset=0/limit=3 -> exactly 3 enrichment
+# calls, total reported 5 (the full envelope length, not the slice).
+{
+    reset_all();
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/playlist/v2/playlist/}, playlist_envelope_fixture(5));
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/metadata/4/track/}, to_json_fixture());
+
+    my ($result, $err);
+    $SP->getPlaylistItems('acct95', 'testplaylist0000000001', { offset => 0, limit => 3 }, sub { ($result, $err) = @_ });
+
+    ok($result, 'getPlaylistItems: result returned');
+    is($result->{total}, 5, 'getPlaylistItems: total reflects the FULL envelope length (5), not the slice');
+    is(scalar(@{ $result->{items} }), 3, 'getPlaylistItems: items sliced to the requested limit (3)');
+
+    my @trackReqs = grep { $_->{url} =~ m{/metadata/4/track/} } Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests();
+    is(scalar(@trackReqs), 3, 'getPlaylistItems: exactly limit-many (3) enrichment calls -- sliced, not all 5');
+    is($result->{items}[0]{track}{name}, 'Test Track', 'getPlaylistItems: item wraps the enriched track under a "track" key (Web-API shape)');
+}
+
+# Envelope cache test: two sequential getPlaylistItems calls (different
+# offsets) within TTL share ONE playlist/v2 GET (300s envelope cache).
+{
+    reset_all();
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/playlist/v2/playlist/}, playlist_envelope_fixture(5));
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/metadata/4/track/}, to_json_fixture());
+
+    my ($r1, $e1);
+    $SP->getPlaylistItems('acct96', 'testplaylist0000000002', { offset => 0, limit => 2 }, sub { ($r1, $e1) = @_ });
+    my $firstEnvCount = scalar(grep { $_->{url} =~ m{/playlist/v2/playlist/} } Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests());
+
+    my ($r2, $e2);
+    $SP->getPlaylistItems('acct96', 'testplaylist0000000002', { offset => 2, limit => 2 }, sub { ($r2, $e2) = @_ });
+    my $secondEnvCount = scalar(grep { $_->{url} =~ m{/playlist/v2/playlist/} } Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests());
+
+    is($firstEnvCount, 1, 'getPlaylistItems: first call issues one playlist/v2 GET');
+    is($secondEnvCount, $firstEnvCount, 'getPlaylistItems: second call within TTL issues zero additional playlist/v2 GETs (300s envelope cache)');
+    is($r2->{total}, 5, 'getPlaylistItems: cached-envelope second call still reports the full total (5)');
+}
+
+# PKCE-only account -> Client delegation (D-06), zero spclient HTTP.
+{
+    reset_all();
+    $Plugins::SpotOn::API::Credentials::mock_creds = undef;
+
+    my ($result, $err);
+    $SP->getPlaylistItems('acct97', 'testplaylist0000000003', {}, sub { ($result, $err) = @_ });
+
+    is(scalar(Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests()), 0, 'getPlaylistItems D-06: zero spclient HTTP when creds absent');
+    is(scalar(@Plugins::SpotOn::API::Client::getPlaylistItems_calls), 1, 'getPlaylistItems D-06: delegates to Client.pm exactly once');
+
+    $Plugins::SpotOn::API::Credentials::mock_creds = { username => 'testuser', auth_data => 'ZGF0YQ==' };
+}
+
+# D-07: playlist/v2 500 -> Client.pm delegated once.
+{
+    reset_all();
+    $Slim::Networking::SimpleAsyncHTTP::auto_mode = 'error_500';
+
+    my ($result, $err);
+    $SP->getPlaylistItems('acct98', 'testplaylist0000000004', {}, sub { ($result, $err) = @_ });
+
+    is(scalar(@Plugins::SpotOn::API::Client::getPlaylistItems_calls), 1, 'getPlaylistItems D-07: falls back to Client.pm on a playlist/v2 500');
+
+    $Slim::Networking::SimpleAsyncHTTP::auto_mode = 'success';
+}
+
 done_testing();

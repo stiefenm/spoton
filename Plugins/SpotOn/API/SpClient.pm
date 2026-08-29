@@ -2031,4 +2031,107 @@ sub getUserPlaylists {
     });
 }
 
+# ============================================================
+# getPlaylistItems (playlist/v2, JSON) with sliced enrichment
+# Phase 75 Plan 05 Task 2
+# ============================================================
+
+# _playlistEnvelope($class, $accountId, $playlistId, $cb)
+# Fetches (and caches 300s per account+playlist -- CLAUDE.md's playlist-
+# tracks tier) the FULL playlist/v2 envelope: { revision, length,
+# attributes, contents: { items: [{uri, attributes}, ...] } }. Unlike
+# rootlist, playlist/v2/playlist/{id} honors Accept: application/json
+# (spike RESULTS.md S-10 note). cb->($envelope, undef) on success,
+# cb->(undef, $err) on a request-level failure -- errors bubble up
+# unclassified for the caller to apply D-07.
+sub _playlistEnvelope {
+    my ($class, $accountId, $playlistId, $cb) = @_;
+
+    my $cacheKey = "spoton_spclient_plenv_${accountId}_${playlistId}";
+    if (my $cached = $cache->get($cacheKey)) {
+        $cb->($cached, undef);
+        return;
+    }
+
+    $class->_request('get', "playlist/v2/playlist/$playlistId", {
+        _accountId => $accountId,
+        _accept    => 'application/json',
+        _noCache   => 1,   # this module owns the 300s envelope cache below
+    }, sub {
+        my ($result, $err) = @_;
+
+        if ($err) {
+            $cb->(undef, $err);
+            return;
+        }
+
+        $cache->set($cacheKey, $result, PLAYLIST_ENVELOPE_TTL);
+        $cb->($result, undef);
+    });
+}
+
+# getPlaylistItems($class, $accountId, $playlistId, $params, $cb)
+# Same cb contract/signature as Client.pm::getPlaylistItems, INCLUDING the
+# plain params-hashref variant ProtocolHandler.pm's explodePlaylist uses
+# (no distinct opts arg -- Client.pm's own getPlaylistItems takes exactly
+# this 5-arg shape, verified in read_first). The playlist/v2 envelope
+# (cached 300s) carries contents.items[] with track URIs but NO track
+# names (mirrors S-04's album-tracks limitation) -- only the requested
+# offset/limit slice is enriched via _enrichTracks (lazy, D-09), riding the
+# shared 3600s track cache. Result shape { items => [{track=>...}], total,
+# offset, limit, next } is identical to getSavedTracks -- a superset of
+# what ProtocolHandler's resolution path needs (uri/id) and exactly what
+# _playlistFeed/_trackItem consume.
+sub getPlaylistItems {
+    my ($class, $accountId, $playlistId, $params, $cb) = @_;
+    $params ||= {};
+    my $offset = $params->{offset} // 0;
+    my $limit  = $params->{limit}  // 100;
+
+    unless ($class->_hasLogin5Creds($accountId)) {
+        main::INFOLOG && $log->info('SpClient: no login5-capable credentials, delegating getPlaylistItems to Client.pm (D-06)');
+        require Plugins::SpotOn::API::Client;
+        Plugins::SpotOn::API::Client->getPlaylistItems($accountId, $playlistId, $params, $cb);
+        return;
+    }
+
+    $class->_playlistEnvelope($accountId, $playlistId, sub {
+        my ($envelope, $err) = @_;
+
+        if ($err) {
+            if ($class->_isFallbackError($err)) {
+                main::INFOLOG && $log->info('SpClient: getPlaylistItems playlist/v2 error, falling back to Client.pm (D-07): '
+                    . ($err->{error} // '?'));
+                require Plugins::SpotOn::API::Client;
+                Plugins::SpotOn::API::Client->getPlaylistItems($accountId, $playlistId, $params, $cb);
+                return;
+            }
+            $cb->(undef, $err);
+            return;
+        }
+
+        my @contentItems = ($envelope && ref($envelope) eq 'HASH' && ref($envelope->{contents}) eq 'HASH')
+            ? @{ $envelope->{contents}{items} || [] } : ();
+        my @uris = map { $_->{uri} } grep { ref($_) eq 'HASH' && $_->{uri} } @contentItems;
+
+        my $total = ($envelope && ref($envelope) eq 'HASH' && defined $envelope->{length})
+            ? $envelope->{length} : scalar(@uris);
+
+        my ($sliceUris) = $class->_sliceAsPage(\@uris, $offset, $limit);
+        my @trackIds = map { /^spotify:track:(.+)$/ ? $1 : () } @$sliceUris;
+
+        $class->_enrichTracks($accountId, \@trackIds, sub {
+            my ($tracks) = @_;
+            my @items = map { { track => $_ } } @$tracks;
+            $cb->({
+                items  => \@items,
+                total  => $total,
+                offset => $offset,
+                limit  => $limit,
+                next   => (($offset + $limit) < $total) ? 1 : undef,
+            });
+        });
+    });
+}
+
 1;
