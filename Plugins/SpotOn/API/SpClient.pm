@@ -640,13 +640,23 @@ sub _enrichMeta {
     my $remaining = scalar @$ids;
 
     for my $i (0 .. $#$ids) {
-        my $hexId = $class->idToHex($ids->[$i]);
+        my $id    = $ids->[$i];
+        my $hexId = $class->idToHex($id);
+
+        # CR-01: a failed idToHex/metadata-fetch never drops the slot -- a
+        # minimal id/uri stub is substituted instead, so
+        # scalar(@results) == scalar(@$ids) ALWAYS holds regardless of
+        # individual failures (429s/timeouts under load, the D-09 degraded
+        # mode this facade is designed to tolerate). Dropping items here
+        # desyncs every offset-advance-by-returned-count caller
+        # (_fetchPages/_albumFeed play-all/explodePlaylist).
+        my $stub = { id => $id, uri => "spotify:$metaType:$id", name => undef };
 
         my $finish = sub {
             my ($val) = @_;
-            $results[$i] = $val;
+            $results[$i] = $val || $stub;
             if (--$remaining == 0) {
-                $cb->([ grep { defined } @results ]);
+                $cb->(\@results);
             }
         };
 
@@ -1360,11 +1370,17 @@ sub _enrichCollectionSlice {
         my ($id)  = ($entry->{uri} // '') =~ /^spotify:\Q$metaType\E:(.+)$/;
         my $hexId = $id ? $class->idToHex($id) : undef;
 
+        # CR-01: substitute a minimal stub (re-paired with the original
+        # added_at) instead of dropping the slot on failure -- identical
+        # discipline to _enrichMeta above, keeping scalar(@results) ==
+        # scalar(@$slice) always.
+        my $stub = { id => $id, uri => ($entry->{uri} // "spotify:$metaType:"), name => undef };
+
         my $finish = sub {
             my ($val) = @_;
-            $results[$i] = $val ? { added_at => $entry->{added_at}, $wrapKey => $val } : undef;
+            $results[$i] = { added_at => $entry->{added_at}, $wrapKey => ($val || $stub) };
             if (--$remaining == 0) {
-                $cb->([ grep { defined } @results ]);
+                $cb->(\@results);
             }
         };
 
@@ -2114,10 +2130,15 @@ sub getPlaylistItems {
             ? @{ $envelope->{contents}{items} || [] } : ();
         my @uris = map { $_->{uri} } grep { ref($_) eq 'HASH' && $_->{uri} } @contentItems;
 
-        my $total = ($envelope && ref($envelope) eq 'HASH' && defined $envelope->{length})
-            ? $envelope->{length} : scalar(@uris);
-
-        my ($sliceUris) = $class->_sliceAsPage(\@uris, $offset, $limit);
+        # CR-01: filter to track URIs BEFORE slicing (non-track playlist
+        # entries -- episodes, local files -- must never be sliced into the
+        # window or counted toward total), and derive $total from
+        # _sliceAsPage's count of the FILTERED list so window arithmetic and
+        # `total` always agree -- restores the offset-advance-by-
+        # returned-count contract every caller (_fetchPages/_albumFeed
+        # play-all/explodePlaylist) depends on.
+        my @trackUris = grep { /^spotify:track:/ } @uris;
+        my ($sliceUris, $total) = $class->_sliceAsPage(\@trackUris, $offset, $limit);
         my @trackIds = map { /^spotify:track:(.+)$/ ? $1 : () } @$sliceUris;
 
         $class->_enrichTracks($accountId, \@trackIds, sub {

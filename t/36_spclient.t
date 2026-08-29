@@ -1713,6 +1713,42 @@ sub playlist_envelope_fixture {
     });
 }
 
+# track_fixture_for_id($id): a metadata/4/track fixture whose gid is derived
+# from $id (unlike to_json_fixture()'s always-fixed gid) -- needed whenever a
+# test must distinguish enriched tracks by which id was actually requested
+# (e.g. a duplicate-tracks regression check across chained pages).
+sub track_fixture_for_id {
+    my ($id) = @_;
+    require JSON::XS::VersionOneAndTwo;
+    return JSON::XS::VersionOneAndTwo::to_json({
+        gid      => $SP->idToHex($id),
+        name     => "Track $id",
+        duration => 200000,
+        explicit => 0,
+        artist   => [],
+        album    => {},
+    });
+}
+
+# playlist_mixed_envelope_fixture: 3 spotify:track: URIs interleaved with 2
+# non-track URIs (episode + local file) -- CR-01 regression fixture. Envelope
+# length (5) intentionally differs from the track-only count (3).
+sub playlist_mixed_envelope_fixture {
+    my @items = (
+        { uri => 'spotify:track:'   . b62id(1) },
+        { uri => 'spotify:episode:' . b62id(2) },
+        { uri => 'spotify:track:'   . b62id(3) },
+        { uri => 'spotify:local:'   . b62id(4) },
+        { uri => 'spotify:track:'   . b62id(5) },
+    );
+    return JSON::XS::VersionOneAndTwo::to_json({
+        revision   => 'abc123',
+        length     => scalar(@items),
+        attributes => { name => 'Mixed Content Playlist' },
+        contents   => { items => \@items, pos => 0, truncated => 0 },
+    });
+}
+
 # ============================================================
 # Task 2: getPlaylistItems via playlist/v2 (JSON) with sliced enrichment
 # ============================================================
@@ -1781,6 +1817,108 @@ sub playlist_envelope_fixture {
     is(scalar(@Plugins::SpotOn::API::Client::getPlaylistItems_calls), 1, 'getPlaylistItems D-07: falls back to Client.pm on a playlist/v2 500');
 
     $Slim::Networking::SimpleAsyncHTTP::auto_mode = 'success';
+}
+
+# ============================================================
+# CR-01 gap closure (Phase 75 Plan 07, Task 1) -- mixed-content windows,
+# offset-advance-by-returned-count chaining, and partial-enrichment-failure
+# windows must never desync total/items or drop items below the requested
+# window size.
+# ============================================================
+
+# Mixed-content window: 5-item envelope (3 track + 2 non-track), offset=0/
+# limit=3 -> total reflects the 3 FILTERED track URIs (not the raw envelope
+# length of 5), and items is exactly the track-filtered slice.
+{
+    reset_all();
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/playlist/v2/playlist/}, playlist_mixed_envelope_fixture());
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/metadata/4/track/}, to_json_fixture());
+
+    my ($result, $err);
+    $SP->getPlaylistItems('acct99', 'testplaylist0000000005', { offset => 0, limit => 3 }, sub { ($result, $err) = @_ });
+
+    ok($result, 'CR-01 mixed-content: result returned');
+    is($result->{total}, 3, 'CR-01 mixed-content: total reflects the 3 filtered track URIs, NOT the raw envelope length (5)');
+    is(scalar(@{ $result->{items} }), 3, 'CR-01 mixed-content: items count is exactly the track-filtered slice');
+}
+
+# Sequential-call chaining: simulates how explodePlaylist/_fetchPages
+# actually chain pages (second call's offset = first call's returned item
+# count) against the SAME mixed-content envelope -> the full track set is
+# collected with zero duplicates and zero premature termination.
+{
+    reset_all();
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/playlist/v2/playlist/}, playlist_mixed_envelope_fixture());
+    # Per-id distinguishable track fixtures -- to_json_fixture() always
+    # returns the SAME fixed gid regardless of which hex was requested,
+    # which would make every enriched track look identical and hide a real
+    # duplicate-tracks regression. Registered per-hex so each of the 3
+    # track ids in the mixed envelope normalizes to a distinct uri.
+    for my $id (b62id(1), b62id(3), b62id(5)) {
+        Slim::Networking::SimpleAsyncHTTP::set_response_for(
+            qr{/metadata/4/track/} . quotemeta($SP->idToHex($id)),
+            track_fixture_for_id($id),
+        );
+    }
+
+    my ($r1, $e1);
+    $SP->getPlaylistItems('acct100', 'testplaylist0000000006', { offset => 0, limit => 2 }, sub { ($r1, $e1) = @_ });
+    my $nextOffset = 0 + scalar(@{ $r1->{items} || [] });   # Plugin.pm _fetchPages contract
+
+    my ($r2, $e2);
+    $SP->getPlaylistItems('acct100', 'testplaylist0000000006', { offset => $nextOffset, limit => 2 }, sub { ($r2, $e2) = @_ });
+
+    my @allUris = (
+        (map { $_->{track}{uri} } @{ $r1->{items} || [] }),
+        (map { $_->{track}{uri} } @{ $r2->{items} || [] }),
+    );
+    my %seen;
+    my @dupes = grep { $seen{$_}++ } @allUris;
+
+    is(scalar(@allUris), 3, 'CR-01 chaining: exactly 3 track uris collected across both chained calls (no premature termination)');
+    is(scalar(@dupes), 0, 'CR-01 chaining: zero duplicate tracks across the chained windows');
+}
+
+# Partial-enrichment-failure window: one of three metadata/4/track requests
+# forced to error -> items array length stays 3 (stub substituted, not
+# dropped); stub's track.name is undef, track.uri matches the source uri.
+{
+    reset_all();
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/playlist/v2/playlist/}, playlist_envelope_fixture(3));
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/metadata/4/track/}, to_json_fixture());
+    Slim::Networking::SimpleAsyncHTTP::set_error_for(qr{/metadata/4/track/} . quotemeta($SP->idToHex(b62id(2))), 429);
+
+    my ($result, $err);
+    $SP->getPlaylistItems('acct101', 'testplaylist0000000007', { offset => 0, limit => 3 }, sub { ($result, $err) = @_ });
+
+    ok($result, 'CR-01 partial-enrichment-failure: result returned');
+    is(scalar(@{ $result->{items} }), 3, 'CR-01 partial-enrichment-failure: items length stays 3 (stub substituted, not dropped)');
+    is($result->{items}[1]{track}{name}, undef, 'CR-01 partial-enrichment-failure: failed slot\'s stub has undef name');
+    is($result->{items}[1]{track}{uri}, 'spotify:track:' . b62id(2), 'CR-01 partial-enrichment-failure: failed slot\'s stub uri matches the source uri');
+}
+
+# Same partial-enrichment-failure pattern against getSavedAlbums (collection/
+# v2 + _enrichCollectionSlice path) -- one metadata/4/album fetch forced to
+# fail -> the full requested count is still returned with a stub in the
+# failed slot.
+{
+    reset_all();
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/collection/v2/paging}, encode_page_response(
+        items => [
+            { uri => 'spotify:album:' . b62id(1), added_at => 10 },
+            { uri => 'spotify:album:' . b62id(2), added_at => 11 },
+        ],
+    ));
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/metadata/4/album/}, album_fixture());
+    Slim::Networking::SimpleAsyncHTTP::set_error_for(qr{/metadata/4/album/} . quotemeta($SP->idToHex(b62id(2))), 429);
+
+    my ($result, $err);
+    $SP->getSavedAlbums('acct102', { offset => 0, limit => 50 }, sub { ($result, $err) = @_ });
+
+    ok($result, 'CR-01 getSavedAlbums partial-enrichment-failure: result returned');
+    is($result->{total}, 2, 'CR-01 getSavedAlbums partial-enrichment-failure: total unaffected (2 collection items)');
+    is(scalar(@{ $result->{items} }), 2, 'CR-01 getSavedAlbums partial-enrichment-failure: full requested count returned (stub in failed slot, not dropped)');
+    is($result->{items}[1]{album}{name}, undef, 'CR-01 getSavedAlbums partial-enrichment-failure: failed slot\'s stub has undef name');
 }
 
 # ============================================================
