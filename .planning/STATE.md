@@ -5,16 +5,16 @@ milestone_name: Soloist Integration
 current_phase: 75
 current_phase_name: API Unification (spclient-Modell)
 status: executing
-stopped_at: Completed 75-02-PLAN.md
-last_updated: "2026-08-29T08:24:13.209Z"
+stopped_at: Completed 75-03-PLAN.md
+last_updated: "2026-08-29T08:28:22.675Z"
 last_activity: 2026-08-29
 last_activity_desc: Phase 75 execution started
-state_head: a3556b23416065882158aa4029293ffd7a3d3f41
+state_head: d1eb9848f9dbe630818fcdee89d8e42e9a243124
 progress:
   total_phases: 14
   completed_phases: 3
   total_plans: 23
-  completed_plans: 19
+  completed_plans: 20
   percent: 21
 ---
 
@@ -35,7 +35,7 @@ See: .planning/PROJECT.md (updated 2026-06-30)
 ## Current Position
 
 Phase: 75 (API Unification (spclient-Modell)) — EXECUTING
-Plan: 3 of 6
+Plan: 4 of 6
 Status: Ready to execute
 Last activity: 2026-08-29 — Phase 75 execution started
 
@@ -116,6 +116,7 @@ Phase 77: [ ] Soloist UAT + Release (Final Proof: kein librespot nötig)
 | Phase 74 P04 | 20min | 3 tasks | 7 files |
 | Phase 75 P01 | 20min | 3 tasks | 7 files |
 | Phase 75 P02 | ~30min | 3 tasks | 2 files |
+| Phase 75 P03 | 10min | 2 tasks | 6 files |
 
 ## Deferred Items
 
@@ -294,6 +295,8 @@ Items carried forward from previous milestones:
 - [Phase 75]: [Phase 75][75-02] getAlbum's tracks.items always empty (S-04) -- getAlbumTracks owns all per-track enrichment via metadata/4/track
 - [Phase 75]: [Phase 75][75-02] search() context-resolve routing checks the hardcoded 20-result ceiling before any HTTP call, then re-checks against the actual returned URI count -- avoids wasted calls for offsets that can never be satisfied
 - [Phase 75]: [Phase 75][75-02] getShow/getShowEpisodes/getEpisode mirror the verified album/track pattern for the spike-unverified metadata/4/show and metadata/4/episode paths -- D-07's 4xx/5xx fallback is the accepted mitigation, live verification deferred to mandatory phase UAT
+- [Phase 75]: [Phase 75][75-03] No CI workflow change needed -- build-spoton-helper job has no protobuf-specific step; cross build naturally builds fewer crates now that protobuf/protobuf-codegen are removed (D-02)
+- [Phase 75]: [Phase 75][75-03] proto/README.md documents collection2v2.proto as the field-number reference for collection/v2 paging (ProtobufLite.pm's parse_fields consumers); other 11 files documented as the same kind of reference for their endpoints, all retained as documentation-only per D-02
 
 ### Blockers/Concerns
 
@@ -326,8 +329,8 @@ Items carried forward from previous milestones:
 
 **Resume file:** None
 
-**Last session:** 2026-08-29T08:24:12.841Z
-**Stopped at:** Completed 75-02-PLAN.md
+**Last session:** 2026-08-29T08:28:22.304Z
+**Stopped at:** Completed 75-03-PLAN.md
 
 **Completed this session (2026-08-24):**
 
