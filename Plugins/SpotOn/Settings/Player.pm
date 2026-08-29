@@ -78,6 +78,20 @@ sub handler {
         $paramRef->{streamFormat} = $prefs->client($client)->get('streamFormat')
                                  || $prefs->client($client)->get('connectOggOverride')
                                  || 'auto';
+
+        # D-07: OGG passthrough is librespot-exclusive -- the template hides
+        # the OGG option when the global backend is soloist (server-rendered
+        # TT conditional; player.html has no live backend toggle).
+        $paramRef->{backend} = $prefs->get('backend') || 'librespot';
+
+        # D-07 stored-pref edge: with backend=soloist a stored 'ogg' value is
+        # resolved as 'auto' at runtime (76-04 resolveSoloistFormat maps
+        # ogg->auto), so the page shows Auto as selected. Display-only -- the
+        # stored pref is deliberately NOT rewritten here, so switching back
+        # to librespot restores the user's OGG choice.
+        if ($paramRef->{backend} eq 'soloist' && $paramRef->{streamFormat} eq 'ogg') {
+            $paramRef->{streamFormat} = 'auto';
+        }
         # COMPAT-01: no legacy-pref fallback chain (D-05 — streamingMode has no predecessor pref)
         $paramRef->{streamingMode} = $prefs->client($client)->get('streamingMode') || 'global';
         require Plugins::SpotOn::Helper;
