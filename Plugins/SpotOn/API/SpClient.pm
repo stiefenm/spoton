@@ -1221,13 +1221,18 @@ sub search {
             @uris = map { $_->{uri} } grep { ref($_) eq 'HASH' && $_->{uri} } @{ $page->{tracks} || [] };
         }
 
-        if ($offset >= scalar(@uris)) {
+        # Window 6 (WINDOWS.md #6): filter BEFORE the count guard -- the slice
+        # below operates on the track-filtered list, so the offset must be
+        # compared against the filtered count, not the raw URI count (same
+        # filter-before-slice shape as 75-07's getPlaylistItems CR-01 fix).
+        my @trackIds = map { /^spotify:track:(.+)$/ ? $1 : () } @uris;
+
+        if ($offset >= scalar(@trackIds)) {
             main::INFOLOG && $log->info('SpClient: search offset beyond context-resolve result count, delegating to Client.pm (S-05)');
             $fallbackToClient->();
             return;
         }
 
-        my @trackIds = map { /^spotify:track:(.+)$/ ? $1 : () } @uris;
         my $end = $offset + $limit - 1;
         $end = $#trackIds if $end > $#trackIds;
         my @sliceIds = @trackIds[$offset .. $end];
