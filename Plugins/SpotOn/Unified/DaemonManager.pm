@@ -155,6 +155,72 @@ sub resolvePassthroughForClient {
     return $result ? 1 : 0;
 }
 
+# resolveSoloistFormat($class, $client)
+# Phase 76 D-06: single source of truth for the soloist stream format.
+# Returns 'pcm' | 'flac' | 'mp3' -- a three-value SIBLING of the boolean
+# resolvePassthroughForClient() above, kept separate on purpose: the boolean
+# contract has two librespot consumers (Daemon.pm --passthrough flag,
+# startHelper's wantPassthrough) and must not change (D-14 / 76-RESEARCH
+# Pitfall 3). Callers dispatch by backend: ProtocolHandler's canDirectStream
+# gates direct-vs-transcode on this result ('pcm' keeps the direct raw-S32
+# /stream URL; 'flac'/'mp3' force the LMS-side soc/smp transcode pipeline),
+# and formatOverride routes 'mp3' to the single-rule 'smp' content type.
+#
+# Unlike the librespot passthrough probe there is NO Helper-capability check
+# here: FLAC/MP3 are produced LMS-side by the transcoding framework
+# ([sox]/[lame] convert rules), not by the daemon.
+#
+# Accepted corner (76-04): explicit 'pcm' on a SYNCED flc-capable group
+# proxies through LMS (canDirectStream is 0 for synced players) and
+# TranscodingHelper's capability-order selection (TranscodingHelper.pm:
+# 352-386) may still match the soc-flc rule -- the player then receives
+# bit-correct lossless FLAC instead of raw PCM. A dedicated pcm-forcing
+# content type was deliberately not added (YAGNI until a user reports it).
+sub resolveSoloistFormat {
+    my ($class, $client) = @_;
+    return 'pcm' unless $client;
+
+    # Per-client resolution. Inside a sync group the MASTER's pref governs:
+    # the group streams as one (a single daemon keyed by the master's MAC),
+    # so per-slave prefs cannot meaningfully diverge -- slave prefs are
+    # deliberately ignored, only slave CAPABILITIES matter (aggregation
+    # below).
+    my $resolveOne = sub {
+        my ($c) = @_;
+        my $fmt = $prefs->client($c)->get('streamFormat') || 'auto';
+
+        # D-06: explicit format override -- trust the user's choice directly,
+        # no capability check (transcoding is LMS-side).
+        return $fmt if $fmt =~ /^(?:pcm|flac|mp3)$/;
+
+        # 'ogg' is librespot passthrough only (D-07) -- under soloist it
+        # falls through to auto. auto: capability-based, same idiom as the
+        # librespot OGG probe above ('flc' announced -> FLAC, else PCM).
+        return (grep { $_ eq 'flc' } $c->formats) ? 'flac' : 'pcm';
+    };
+
+    my $target = ($client->isSynced() && $client->master) ? $client->master : $client;
+    my $result = $resolveOne->($target);
+
+    # D-06 sync-group aggregation, mirroring the OGG aggregation above:
+    # if ANY member lacks flc, the whole group downgrades to PCM. Note that
+    # LMS CapabilitiesHelper::supportedFormats performs the authoritative
+    # capability intersection for convert-rule matching (76-RESEARCH
+    # Pattern 3) -- this Perl aggregation only keeps canDirectStream and
+    # display decisions consistent with what LMS will actually pick.
+    if ($result eq 'flac' && $client->isSynced() && $client->master) {
+        my $master = $client->master;
+        for my $member ($master, Slim::Player::Sync::slaves($master)) {
+            unless (grep { $_ eq 'flc' } $member->formats) {
+                $result = 'pcm';
+                last;
+            }
+        }
+    }
+
+    return $result;
+}
+
 # Single source of truth for the librespot --name value (GH #143).
 # Static suffix instead of composed syncname: membership changes inside a
 # group no longer alter the name, so the daemon survives them.  Only the
