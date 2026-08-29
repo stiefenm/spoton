@@ -72,6 +72,13 @@ use constant SET_MAP => {
     saved_episodes   => 'listenlater',
 };
 
+# rootlist (S-10, protobuf-only user playlist library) + playlist/v2
+# (JSON contents envelope) -- Phase 75 Plan 05.
+use constant ROOTLIST_DECORATE     => 'revision,attributes,length,owner,timestamp';
+use constant ROOTLIST_LIST_TTL     => 60;    # CLAUDE.md: library-item lists = 60s
+use constant ROOTLIST_MAX_DEPTH    => 10;    # T-75-16/V5: bounded folder recursion
+use constant PLAYLIST_ENVELOPE_TTL => 300;   # CLAUDE.md: playlist tracks = 300s tier
+
 my $log   = logger('plugin.spoton');
 my $prefs = preferences('plugin.spoton');
 # M5: cache version lives in Plugin.pm (single source of truth). Plugin.pm is
@@ -1818,6 +1825,209 @@ sub getRecentlyPlayed {
                 $finish->($err ? undef : $class->_normalizeTrack($result));
             });
         }
+    });
+}
+
+# ============================================================
+# getUserPlaylists (rootlist, protobuf-only, S-10)
+# Phase 75 Plan 05 Task 1
+# ============================================================
+
+# _rootlistPlaylists($class, $accountId, $cb)
+# Fetches (and caches 60s per account -- CLAUDE.md's library-item-list tier)
+# the user's FULLY FLATTENED playlist library via the protobuf-only
+# rootlist endpoint (S-10 -- Accept header has no effect, always protobuf,
+# unlike playlist/v2/playlist/{id}). cb->(\@playlists, undef) on success,
+# cb->(undef, $err) on a request-level OR protobuf-parse failure (the
+# latter reported as {error=>'parse_error'}, already fallback-classified by
+# _isFallbackError -- T-75-12, never a crash on malformed bytes).
+sub _rootlistPlaylists {
+    my ($class, $accountId, $cb) = @_;
+
+    my $cacheKey = "spoton_spclient_rootlist_${accountId}";
+    if (my $cached = $cache->get($cacheKey)) {
+        $cb->($cached, undef);
+        return;
+    }
+
+    my $username = $class->_username($accountId);
+    unless ($username) {
+        $cb->(undef, { error => 'no_credentials' });
+        return;
+    }
+
+    my $path = 'playlist/v2/user/' . uri_escape_utf8($username) . '/rootlist?decorate=' . ROOTLIST_DECORATE;
+
+    $class->_request('get', $path, {
+        _accountId => $accountId,
+        _raw       => 1,
+        _noCache   => 1,   # this module owns the 60s list-level cache below
+    }, sub {
+        my ($raw, $err) = @_;
+
+        if ($err) {
+            $cb->(undef, $err);
+            return;
+        }
+
+        my $playlists = $class->_parseRootlist($raw);
+        unless ($playlists) {
+            $cb->(undef, { error => 'parse_error' });
+            return;
+        }
+
+        $cache->set($cacheKey, $playlists, ROOTLIST_LIST_TTL);
+        $cb->($playlists, undef);
+    });
+}
+
+# _parseRootlist($class, $bytes)
+# Decodes the rootlist Response message (proto/rootlist_request.proto:
+# Response.root is a Folder, field 1) and flattens the nested
+# Folder->Item->{Playlist|Folder} tree into a flat arrayref of normalized
+# playlist entries, in tree order (top-level items first, nested-folder
+# playlists after). Returns undef on any top-level protobuf parse failure;
+# an absent root Folder returns an empty arrayref (a rootlist response with
+# zero playlists is not an error).
+sub _parseRootlist {
+    my ($class, $bytes) = @_;
+
+    my $fields = Plugins::SpotOn::API::ProtobufLite::parse_fields($bytes);
+    return undef unless $fields;
+
+    my $rootBytes = Plugins::SpotOn::API::ProtobufLite::field_first($fields, 1);   # Response.root (Folder)
+    return [] unless defined $rootBytes;
+
+    my @playlists;
+    $class->_flattenRootlistFolder($rootBytes, \@playlists, 0);
+    return \@playlists;
+}
+
+# _flattenRootlistFolder($class, $folderBytes, \@playlists, $depth)
+# Recursively walks a Folder message's repeated Item field (field 1),
+# collecting normalized Playlist entries (Item.playlist, field 3) and
+# recursing into nested Folder entries (Item.folder, field 2). T-75-16/V5:
+# $depth is bounded at ROOTLIST_MAX_DEPTH -- a pathological/adversarial
+# fixture with arbitrarily deep folder nesting cannot recurse unboundedly;
+# anything beyond the cap is silently dropped rather than exhausting the
+# call stack. A folder/item whose bytes fail to parse is skipped, never a
+# die (Pitfall 6: untrusted network protobuf).
+sub _flattenRootlistFolder {
+    my ($class, $folderBytes, $playlists, $depth) = @_;
+    return if $depth > ROOTLIST_MAX_DEPTH;
+
+    my $folderFields = Plugins::SpotOn::API::ProtobufLite::parse_fields($folderBytes);
+    return unless $folderFields;
+
+    for my $itemBytes (@{ $folderFields->{1} || [] }) {   # Folder.item (repeated Item)
+        my $itemFields = Plugins::SpotOn::API::ProtobufLite::parse_fields($itemBytes);
+        next unless $itemFields;
+
+        if (defined(my $plBytes = Plugins::SpotOn::API::ProtobufLite::field_first($itemFields, 3))) {   # Item.playlist
+            my $norm = $class->_normalizePlaylistMeta($plBytes);
+            push @$playlists, $norm if $norm;
+        }
+        elsif (defined(my $subFolderBytes = Plugins::SpotOn::API::ProtobufLite::field_first($itemFields, 2))) {   # Item.folder
+            $class->_flattenRootlistFolder($subFolderBytes, $playlists, $depth + 1);
+        }
+    }
+}
+
+# _normalizePlaylistMeta($class, $plBytes)
+# Decodes a single Playlist message (row_id=1, playlist_metadata=2) into a
+# Web-API-shaped playlist stub: { id, uri, name, owner, images }. The
+# decorated PlaylistMetadata submessage carries link(1)/name(2)/owner(3);
+# owner is a User submessage (username=2/display_name=3). Prefers
+# PlaylistMetadata.link as the canonical URI source (Spotify's own
+# spotify:playlist:{id} convention) and falls back to row_id -- either
+# already a full spotify:playlist: URI, or a bare base62 id to derive one
+# from. Degrades to undef (dropped by the caller) only if NEITHER yields
+# anything usable, never dies on missing/malformed submessages (Pitfall 6).
+sub _normalizePlaylistMeta {
+    my ($class, $plBytes) = @_;
+
+    my $plFields = Plugins::SpotOn::API::ProtobufLite::parse_fields($plBytes);
+    return undef unless $plFields;
+
+    my $rowId     = Plugins::SpotOn::API::ProtobufLite::field_first($plFields, 1);   # Playlist.row_id
+    my $metaBytes = Plugins::SpotOn::API::ProtobufLite::field_first($plFields, 2);   # Playlist.playlist_metadata
+
+    my ($link, $name, $ownerUsername, $ownerDisplayName);
+    if (defined $metaBytes) {
+        my $metaFields = Plugins::SpotOn::API::ProtobufLite::parse_fields($metaBytes);
+        if ($metaFields) {
+            $link = Plugins::SpotOn::API::ProtobufLite::field_first($metaFields, 1);   # PlaylistMetadata.link
+            $name = Plugins::SpotOn::API::ProtobufLite::field_first($metaFields, 2);   # PlaylistMetadata.name
+
+            if (defined(my $ownerBytes = Plugins::SpotOn::API::ProtobufLite::field_first($metaFields, 3))) {   # PlaylistMetadata.owner
+                my $ownerFields = Plugins::SpotOn::API::ProtobufLite::parse_fields($ownerBytes);
+                if ($ownerFields) {
+                    $ownerUsername    = Plugins::SpotOn::API::ProtobufLite::field_first($ownerFields, 2);   # User.username
+                    $ownerDisplayName = Plugins::SpotOn::API::ProtobufLite::field_first($ownerFields, 3);   # User.display_name
+                }
+            }
+        }
+    }
+
+    my $uri;
+    for my $candidate ($link, $rowId) {
+        next unless defined $candidate && length $candidate;
+        if ($candidate =~ /^spotify:playlist:/) {
+            $uri = $candidate;
+            last;
+        }
+    }
+    unless ($uri) {
+        return undef unless defined $rowId && length $rowId;
+        $uri = "spotify:playlist:$rowId";
+    }
+
+    my ($id) = $uri =~ /^spotify:playlist:(.+)$/;
+
+    return {
+        id     => $id,
+        uri    => $uri,
+        name   => $name // '',
+        owner  => $ownerUsername ? { display_name => $ownerDisplayName // $ownerUsername } : undef,
+        images => [],
+    };
+}
+
+# getUserPlaylists($class, $accountId, $params, $cb)
+# Same cb contract as Client.pm::getUserPlaylists ({ items => [...], total,
+# offset, limit }). No login5-capable creds -> Client delegation (D-06). A
+# rootlist request/parse failure (fallback-classified, including the
+# dedicated parse_error case, T-75-12) -> Client delegation (D-07).
+sub getUserPlaylists {
+    my ($class, $accountId, $params, $cb) = @_;
+    $params ||= {};
+    my $offset = $params->{offset} // 0;
+    my $limit  = $params->{limit}  // 50;
+
+    unless ($class->_hasLogin5Creds($accountId)) {
+        main::INFOLOG && $log->info('SpClient: no login5-capable credentials, delegating getUserPlaylists to Client.pm (D-06)');
+        require Plugins::SpotOn::API::Client;
+        Plugins::SpotOn::API::Client->getUserPlaylists($accountId, $params, $cb);
+        return;
+    }
+
+    $class->_rootlistPlaylists($accountId, sub {
+        my ($playlists, $err) = @_;
+
+        if ($err) {
+            if ($class->_isFallbackError($err)) {
+                main::INFOLOG && $log->info('SpClient: getUserPlaylists rootlist error, falling back to Client.pm (D-07): '
+                    . ($err->{error} // '?'));
+                require Plugins::SpotOn::API::Client;
+                Plugins::SpotOn::API::Client->getUserPlaylists($accountId, $params, $cb);
+                return;
+            }
+            $cb->(undef, $err);
+            return;
+        }
+
+        my ($slice, $total) = $class->_sliceAsPage($playlists, $offset, $limit);
+        $cb->({ items => $slice, total => $total, offset => $offset, limit => $limit });
     });
 }
 
