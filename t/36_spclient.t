@@ -309,7 +309,9 @@ our @getShow_calls         = ();
 our @getShowEpisodes_calls = ();
 our @getEpisode_calls      = ();
 our @search_calls          = ();
-our @getSavedAlbums_calls  = ();
+our @getSavedAlbums_calls     = ();
+our @getFollowedArtists_calls = ();
+our @getSavedShows_calls      = ();
 our $mock_result = { id => 'mockclienttrackid0000' };
 
 sub getTrack {
@@ -362,6 +364,16 @@ sub getSavedAlbums {
     push @getSavedAlbums_calls, { accountId => $accountId, params => $params };
     $cb->($mock_result, undef);
 }
+sub getFollowedArtists {
+    my ($class, $accountId, $params, $cb) = @_;
+    push @getFollowedArtists_calls, { accountId => $accountId, params => $params };
+    $cb->($mock_result, undef);
+}
+sub getSavedShows {
+    my ($class, $accountId, $params, $cb) = @_;
+    push @getSavedShows_calls, { accountId => $accountId, params => $params };
+    $cb->($mock_result, undef);
+}
 sub reset_calls {
     @getTrack_calls        = ();
     @getAlbum_calls        = ();
@@ -372,7 +384,9 @@ sub reset_calls {
     @getShowEpisodes_calls = ();
     @getEpisode_calls      = ();
     @search_calls          = ();
-    @getSavedAlbums_calls  = ();
+    @getSavedAlbums_calls     = ();
+    @getFollowedArtists_calls = ();
+    @getSavedShows_calls      = ();
 }
 1;
 END
@@ -1085,6 +1099,113 @@ sub encode_page_response {
     is(scalar(@Plugins::SpotOn::API::Client::getSavedAlbums_calls), 1, 'getSavedAlbums D-07: falls back to Client.pm on a spclient 500');
 
     $Slim::Networking::SimpleAsyncHTTP::auto_mode = 'success';
+}
+
+# ============================================================
+# Task 2: getFollowedArtists + getSavedShows on collection sets
+# ============================================================
+
+# Cursor-emulation walk over a 3-artist fixture across 2 sequential calls.
+{
+    reset_all();
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/collection/v2/paging}, encode_page_response(
+        items => [
+            { uri => 'spotify:artist:' . b62id(1), added_at => 1 },
+            { uri => 'spotify:artist:' . b62id(2), added_at => 2 },
+            { uri => 'spotify:artist:' . b62id(3), added_at => 3 },
+        ],
+    ));
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/metadata/4/artist/}, artist_fixture());
+
+    my ($result1, $err1);
+    $SP->getFollowedArtists('acct70', { limit => 2 }, sub { ($result1, $err1) = @_ });
+
+    ok($result1, 'cursor walk (1): result returned');
+    is(scalar(@{ $result1->{artists}{items} }), 2, 'cursor walk (1): first call returns 2 of 3 artists');
+    is($result1->{artists}{total}, 3, 'cursor walk (1): total reflects the full 3-artist list');
+    ok(defined($result1->{artists}{cursors}{after}), 'cursor walk (1): cursors.after is set (more remain)');
+    is($result1->{artists}{cursors}{after}, b62id(2), 'cursor walk (1): cursors.after is the id of the last returned artist');
+
+    my ($result2, $err2);
+    $SP->getFollowedArtists('acct70', { after => $result1->{artists}{cursors}{after}, limit => 2 }, sub { ($result2, $err2) = @_ });
+
+    ok($result2, 'cursor walk (2): result returned');
+    is(scalar(@{ $result2->{artists}{items} }), 1, 'cursor walk (2): second call returns the remaining 1 artist');
+    ok(!defined($result2->{artists}{cursors}{after}), 'cursor walk (2): cursors.after is undef -- terminating cursor (exhausted)');
+
+    my @collReqs = grep { $_->{url} =~ m{/collection/v2/paging} } Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests();
+    is(scalar(@collReqs), 1, 'cursor walk: both calls share the same cached collection/v2 list (one POST total)');
+}
+
+# getFollowedArtists D-06 router regression: PKCE-only account -> Client stub
+# records the call, zero spclient HTTP.
+{
+    reset_all();
+    $Plugins::SpotOn::API::Credentials::mock_creds = undef;
+
+    my ($result, $err);
+    $SP->getFollowedArtists('acct71', {}, sub { ($result, $err) = @_ });
+
+    is(scalar(Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests()), 0, 'getFollowedArtists D-06: zero spclient HTTP when creds absent');
+    is(scalar(@Plugins::SpotOn::API::Client::getFollowedArtists_calls), 1, 'getFollowedArtists D-06: delegates to Client.pm exactly once');
+
+    $Plugins::SpotOn::API::Credentials::mock_creds = { username => 'testuser', auth_data => 'ZGF0YQ==' };
+}
+
+# getSavedShows: items nest under a show key (Web-API shape).
+{
+    reset_all();
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/collection/v2/paging}, encode_page_response(
+        items => [
+            { uri => 'spotify:show:' . b62id(1), added_at => 5 },
+            { uri => 'spotify:show:' . b62id(2), added_at => 6 },
+        ],
+    ));
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/metadata/4/show/}, show_fixture());
+
+    my ($result, $err);
+    $SP->getSavedShows('acct72', { offset => 0, limit => 50 }, sub { ($result, $err) = @_ });
+
+    ok($result, 'getSavedShows: result returned');
+    is($result->{total}, 2, 'getSavedShows: total reflects both collection items');
+    is(scalar(@{ $result->{items} }), 2, 'getSavedShows: both items enriched');
+    is($result->{items}[0]{show}{name}, 'Test Show', 'getSavedShows: item nests the normalized show under a "show" key (Web-API shape)');
+    ok(exists $result->{items}[0]{added_at}, 'getSavedShows: item carries added_at from the collection entry');
+}
+
+# getSavedShows: probe-detected degenerate metadata/4/show -> the WHOLE call
+# delegates to Client.pm in one shot (not N per-item fallbacks).
+{
+    reset_all();
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/collection/v2/paging}, encode_page_response(
+        items => [
+            { uri => 'spotify:show:' . b62id(1), added_at => 5 },
+            { uri => 'spotify:show:' . b62id(2), added_at => 6 },
+        ],
+    ));
+    Slim::Networking::SimpleAsyncHTTP::set_error_for(qr{/metadata/4/show/}, 404);
+
+    my ($result, $err);
+    $SP->getSavedShows('acct73', { offset => 0, limit => 50 }, sub { ($result, $err) = @_ });
+
+    my @showMetaReqs = grep { $_->{url} =~ m{/metadata/4/show/} } Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests();
+    is(scalar(@showMetaReqs), 1, 'getSavedShows probe: exactly one metadata/4/show attempt (the probe), not N per-item fallbacks');
+    is(scalar(@Plugins::SpotOn::API::Client::getSavedShows_calls), 1, 'getSavedShows probe: delegates the WHOLE call to Client.pm exactly once');
+}
+
+# getSavedShows D-06 router regression: PKCE-only account -> Client stub
+# records the call, zero spclient HTTP.
+{
+    reset_all();
+    $Plugins::SpotOn::API::Credentials::mock_creds = undef;
+
+    my ($result, $err);
+    $SP->getSavedShows('acct74', {}, sub { ($result, $err) = @_ });
+
+    is(scalar(Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests()), 0, 'getSavedShows D-06: zero spclient HTTP when creds absent');
+    is(scalar(@Plugins::SpotOn::API::Client::getSavedShows_calls), 1, 'getSavedShows D-06: delegates to Client.pm exactly once');
+
+    $Plugins::SpotOn::API::Credentials::mock_creds = { username => 'testuser', auth_data => 'ZGF0YQ==' };
 }
 
 done_testing();

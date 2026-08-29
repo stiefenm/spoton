@@ -1421,4 +1421,174 @@ sub getSavedAlbums {
     });
 }
 
+# ============================================================
+# getFollowedArtists + getSavedShows (Phase 75 Plan 04 Task 2)
+# ============================================================
+
+# getFollowedArtists($class, $accountId, $params, $cb)
+# Web-API's /me/following is cursor-based (Pitfall 4); collection/v2's
+# 'artist' set is a plain list. This emulates the cursor contract
+# _fetchAllFollowedArtists actually consumes (loops on cursors.after until
+# empty/absent): $params->{after} is treated as the URI-derived id of the
+# LAST artist returned by the previous call -- its position is resolved in
+# the cached full list and iteration continues from position+1. An absent
+# `after` starts from the beginning.
+sub getFollowedArtists {
+    my ($class, $accountId, $params, $cb) = @_;
+    $params ||= {};
+    my $limit = $params->{limit} // 50;
+
+    unless ($class->_hasLogin5Creds($accountId)) {
+        main::INFOLOG && $log->info('SpClient: no login5-capable credentials, delegating getFollowedArtists to Client.pm (D-06)');
+        require Plugins::SpotOn::API::Client;
+        Plugins::SpotOn::API::Client->getFollowedArtists($accountId, $params, $cb);
+        return;
+    }
+
+    $class->_collectionAll($accountId, SET_MAP->{artists}, sub {
+        my ($list, $err) = @_;
+
+        if ($err) {
+            if ($class->_isFallbackError($err)) {
+                main::INFOLOG && $log->info('SpClient: getFollowedArtists collection/v2 error, falling back to Client.pm (D-07): '
+                    . ($err->{error} // '?'));
+                require Plugins::SpotOn::API::Client;
+                Plugins::SpotOn::API::Client->getFollowedArtists($accountId, $params, $cb);
+                return;
+            }
+            $cb->(undef, $err);
+            return;
+        }
+
+        $list ||= [];
+        my $startIdx = 0;
+        if (defined $params->{after} && length $params->{after}) {
+            my $afterUri = 'spotify:artist:' . $params->{after};
+            my $pos = -1;
+            for my $i (0 .. $#$list) {
+                if (($list->[$i]{uri} // '') eq $afterUri) {
+                    $pos = $i;
+                    last;
+                }
+            }
+            # Cursor not found (stale/foreign cursor) -- treat as exhausted
+            # rather than restarting from the beginning (avoids duplicate
+            # items on a stale cursor).
+            $startIdx = ($pos >= 0) ? $pos + 1 : scalar(@$list);
+        }
+
+        my $end = $startIdx + $limit - 1;
+        $end = $#$list if $end > $#$list;
+        my @slice = ($startIdx <= $end && $startIdx < scalar(@$list)) ? @$list[$startIdx .. $end] : ();
+
+        my @artistIds = map { /^spotify:artist:(.+)$/ ? $1 : () } map { $_->{uri} } @slice;
+
+        $class->_enrichMeta($accountId, \@artistIds, 'artist', '_normalizeArtist', sub {
+            my ($artists) = @_;
+
+            my $hasMore = ($startIdx + scalar(@slice)) < scalar(@$list);
+            my $afterCursor;
+            if ($hasMore && @slice) {
+                ($afterCursor) = (($slice[-1]{uri} // '')) =~ /^spotify:artist:(.+)$/;
+            }
+
+            $cb->({
+                artists => {
+                    items   => $artists,
+                    total   => scalar(@$list),
+                    cursors => { after => $afterCursor },
+                },
+            });
+        });
+    });
+}
+
+# getSavedShows($class, $accountId, $params, $cb)
+# Same offset/limit contract as Client.pm::getSavedShows. Saved Shows live
+# under the collection/v2 set 'show' (S-07). metadata/4/show is
+# spike-unverified (see the getShow/getShowEpisodes block above) -- rather
+# than risk N per-item Client.pm fallback roundtrips if the endpoint is
+# broadly broken for this account, the FIRST slice item's metadata fetch is
+# probed first; a fallback-classified error there routes the WHOLE call to
+# Client.pm in one shot. Only once the probe succeeds (or the slice is
+# empty) does the remaining slice get enriched normally.
+sub getSavedShows {
+    my ($class, $accountId, $params, $cb) = @_;
+    $params ||= {};
+    my $offset = $params->{offset} // 0;
+    my $limit  = $params->{limit}  // 50;
+
+    unless ($class->_hasLogin5Creds($accountId)) {
+        main::INFOLOG && $log->info('SpClient: no login5-capable credentials, delegating getSavedShows to Client.pm (D-06)');
+        require Plugins::SpotOn::API::Client;
+        Plugins::SpotOn::API::Client->getSavedShows($accountId, $params, $cb);
+        return;
+    }
+
+    $class->_collectionAll($accountId, SET_MAP->{shows}, sub {
+        my ($list, $err) = @_;
+
+        if ($err) {
+            if ($class->_isFallbackError($err)) {
+                main::INFOLOG && $log->info('SpClient: getSavedShows collection/v2 error, falling back to Client.pm (D-07): '
+                    . ($err->{error} // '?'));
+                require Plugins::SpotOn::API::Client;
+                Plugins::SpotOn::API::Client->getSavedShows($accountId, $params, $cb);
+                return;
+            }
+            $cb->(undef, $err);
+            return;
+        }
+
+        my ($slice, $total) = $class->_sliceAsPage($list, $offset, $limit);
+
+        unless (@$slice) {
+            $cb->({ items => [], total => $total, offset => $offset, limit => $limit });
+            return;
+        }
+
+        my ($firstId) = (($slice->[0]{uri} // '')) =~ /^spotify:show:(.+)$/;
+        my $firstHex  = $firstId ? $class->idToHex($firstId) : undef;
+
+        my $afterProbe = sub {
+            my ($firstResult, $firstErr) = @_;
+
+            if ($firstErr && $class->_isFallbackError($firstErr)) {
+                main::INFOLOG && $log->info('SpClient: getSavedShows metadata/4/show probe failed, '
+                    . 'delegating the WHOLE call to Client.pm (D-07, avoids N per-item fallbacks)');
+                require Plugins::SpotOn::API::Client;
+                Plugins::SpotOn::API::Client->getSavedShows($accountId, $params, $cb);
+                return;
+            }
+
+            my @rest = (@$slice > 1) ? @{$slice}[1 .. $#$slice] : ();
+            $class->_enrichCollectionSlice($accountId, \@rest, 'show', '_normalizeShow', 'show', sub {
+                my ($restItems) = @_;
+
+                my @items;
+                unless ($firstErr) {
+                    my $normFirst = $class->_normalizeShow($firstResult);
+                    push @items, { added_at => $slice->[0]{added_at}, show => $normFirst } if $normFirst;
+                }
+                push @items, @$restItems;
+
+                $cb->({ items => \@items, total => $total, offset => $offset, limit => $limit });
+            });
+        };
+
+        unless ($firstHex) {
+            $afterProbe->(undef, { error => 'invalid_id' });
+            return;
+        }
+
+        $class->_request('get', "metadata/4/show/$firstHex", {
+            _accountId => $accountId,
+            _accept    => 'application/json',
+        }, sub {
+            my ($result, $err) = @_;
+            $afterProbe->($result, $err);
+        });
+    });
+}
+
 1;
