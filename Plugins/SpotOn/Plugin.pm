@@ -1404,7 +1404,7 @@ sub _homeFeed {
         {
             name  => cstring($client, 'PLUGIN_SPOTON_RECENTLY_PLAYED'),
             url   => \&_recentlyPlayedFeed,
-            type  => 'link',
+            type  => 'playlist',   # GH #161: flat track list -> playlist type for Play All / Add hover actions
             image => 'plugins/SpotOn/html/images/MTL_icon_history.png',
         },
     );
@@ -1440,7 +1440,7 @@ sub _homeFeed {
     push @items, {
         name  => cstring($client, 'PLUGIN_SPOTON_TOP_TRACKS'),
         url   => \&_topTracksFeed,
-        type  => 'link',
+        type  => 'playlist',   # GH #161: flat track list -> playlist type for Play All / Add hover actions
         image => 'plugins/SpotOn/html/images/toptracks.png',
     };
 
@@ -1609,7 +1609,7 @@ sub _libraryFeed {
             name  => cstring($client, 'PLUGIN_SPOTON_LIKED_SONGS'),
             url   => \&_savedTracksFeed,
             image => 'plugins/SpotOn/html/images/song.png',
-            type  => 'link',
+            type  => 'playlist',   # GH #161: flat track list -> playlist type for Play All / Add hover actions
         },
         {
             name  => cstring($client, 'PLUGIN_SPOTON_ALBUMS'),
