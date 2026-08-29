@@ -538,7 +538,7 @@ Ein-Host-Modell — spclient.spotify.com deckt ALLE Browse/Library-Features:
   - [x] 75-02-PLAN.md — Metadata-Familie: Album/Artist/Show/Episode + Search-Router (context-resolve Track-Search, Web-API-Fallback für Multi-Type, S-04/S-05)
   - [x] 75-03-PLAN.md — D-02 Rückbau: protobuf-Subcommand, build.rs-Codegen + 2 Crates aus spoton-helper entfernt; .proto-Dateien bleiben als Schema-Doku
   - [x] 75-04-PLAN.md — Collection-Familie: collection/v2 Sets (S-06/S-07), Liked Songs via context-resolve (kein Paging), Recently Played (Protobuf S-09)
-  - [ ] 75-05-PLAN.md — Playlist-Familie: Rootlist (Protobuf S-10, Folder-Flattening) + playlist/v2 Items mit Slice-Enrichment
+  - [x] 75-05-PLAN.md — Playlist-Familie: Rootlist (Protobuf S-10, Folder-Flattening) + playlist/v2 Items mit Slice-Enrichment
   - [ ] 75-06-PLAN.md — Unification: ~70 Call-Sites auf SpClient-Facade, Passthrough-Delegationen, UAT-Smoke-Script, CHANGELOG (D-08)
 
 - [ ] **Phase 76: Soloist UX Polish** — Quality-Dropdown (OGG/FLAC/Lossless), Per-Player Backend-Auswahl (librespot vs soloist per Player-Pref), Pairing-Flow-Ausbau in Settings (Basis-Howto/App-Tap-Status bereits in 73-04 vorhanden — hier QR-Code oder erweiterte In-App-Anleitung), Diagnostics (Soloist-spezifische Health-Checks im Status-Dashboard), Lifetime-Patcher-UI.

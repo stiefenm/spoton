@@ -5,16 +5,16 @@ milestone_name: Soloist Integration
 current_phase: 75
 current_phase_name: API Unification (spclient-Modell)
 status: executing
-stopped_at: Completed 75-04-PLAN.md
-last_updated: "2026-08-29T08:49:27.537Z"
+stopped_at: Completed 75-05-PLAN.md
+last_updated: "2026-08-29T09:02:12.450Z"
 last_activity: 2026-08-29
 last_activity_desc: Phase 75 execution started
-state_head: 74b1b2f17417aefbe979d2fa8b2b077b701182c5
+state_head: f7aca28d4e24f81663f8aab13693c43e96fb869d
 progress:
   total_phases: 14
   completed_phases: 3
   total_plans: 23
-  completed_plans: 21
+  completed_plans: 22
   percent: 21
 ---
 
@@ -35,7 +35,7 @@ See: .planning/PROJECT.md (updated 2026-06-30)
 ## Current Position
 
 Phase: 75 (API Unification (spclient-Modell)) — EXECUTING
-Plan: 5 of 6
+Plan: 6 of 6
 Status: Ready to execute
 Last activity: 2026-08-29 — Phase 75 execution started
 
@@ -118,6 +118,7 @@ Phase 77: [ ] Soloist UAT + Release (Final Proof: kein librespot nötig)
 | Phase 75 P02 | ~30min | 3 tasks | 2 files |
 | Phase 75 P03 | 10min | 2 tasks | 6 files |
 | Phase 75 P04 | ~35min | 3 tasks | 2 files |
+| Phase 75-api-unification-spclient-modell P05 | 12min | 2 tasks | 2 files |
 
 ## Deferred Items
 
@@ -303,6 +304,9 @@ Items carried forward from previous milestones:
 - [Phase 75]: [Phase 75][75-04] getFollowedArtists emulates the Web-API cursor contract (after=last-artist-id) by resolving position in the cached collection/v2 list, matching exactly what _fetchAllFollowedArtists consumes
 - [Phase 75]: [Phase 75][75-04] _enrichCollectionSlice is distinct from 75-02's _enrichMeta because it must re-pair each result with its original added_at, which _enrichMeta's filter-undefs shape would lose
 - [Phase 75]: [Phase 75][75-04] getRecentlyPlayed pairs lastPlayedTime by the ORIGINAL request uri, not the enriched track's returned uri, to guard against relinked/canonicalized track uris
+- [Phase 75]: [Phase 75][75-05] PlaylistMetadata.link takes precedence over row_id for rootlist URI derivation, with row_id as a dual-purpose fallback (already-full URI, or bare id to derive one from) -- the proto documents row_id only as string with no format guarantee across decorate-param variants
+- [Phase 75]: [Phase 75][75-05] ROOTLIST_MAX_DEPTH=10 bounds _flattenRootlistFolder recursion (T-75-16/V5), proven against a synthetic 20-level-deep nested-folder fixture
+- [Phase 75]: [Phase 75][75-05] _playlistEnvelope caches the FULL playlist/v2 response (not per-page) at 300s, matching 75-04's full-fetch-then-slice convention rather than a new caching shape
 
 ### Blockers/Concerns
 
@@ -335,8 +339,8 @@ Items carried forward from previous milestones:
 
 **Resume file:** None
 
-**Last session:** 2026-08-29T08:49:13.247Z
-**Stopped at:** Completed 75-04-PLAN.md
+**Last session:** 2026-08-29T09:02:02.224Z
+**Stopped at:** Completed 75-05-PLAN.md
 
 **Completed this session (2026-08-24):**
 
