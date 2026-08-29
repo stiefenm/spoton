@@ -105,6 +105,44 @@ fn advance_connect_track_generation(
 }
 
 // -------------------------------------------------------------------------
+// /control status mapping — GH #159
+// -------------------------------------------------------------------------
+
+/// Maps a /control/{cmd} dispatch outcome to an HTTP status.
+///
+/// GH #159: Spirc drops transport commands (play/pause/next/prev) while the
+/// device is not the active Connect target ("SpircCommand::X will be ignored
+/// while Not Active"), but the channel send itself still succeeds — so
+/// `result_present` alone cannot detect the drop. The caller passes the
+/// `spirc_active` flag (maintained from SessionConnected/SessionDisconnected
+/// player events) as the authoritative activity signal.
+///
+/// 409 CONFLICT means: the command was (or would have been) dropped because
+/// this device is not the active Connect target — a distinct status so the
+/// Perl side (Connect.pm) can eject the stale LMS stream instead of buffering
+/// forever. Two paths produce it for the four transport commands:
+///   1. `spirc_active == false` — SessionDisconnected observed (device
+///      deselected in the Spotify app, explicit Disconnect, Spirc shutdown).
+///   2. `result_present == false` — the Spirc handle is gone (Browse
+///      preemption / ZeroConf reconnect window / never activated) or the
+///      command channel is closed (Spirc task ended). Both also mean "not an
+///      active Connect target", so 409 is the correct signal here too.
+///      (Body-parse failures cannot reach this arm — those exist only for
+///      volume/seek, which keep their 422 mapping.)
+fn control_status(spirc_active: bool, result_present: bool, cmd: &str) -> StatusCode {
+    match (spirc_active, result_present, cmd) {
+        (false, _, "pause" | "play" | "next" | "prev") => StatusCode::CONFLICT,
+        (_, false, "pause" | "play" | "next" | "prev") => StatusCode::CONFLICT,
+        (_, true, _) => StatusCode::NO_CONTENT,
+        (_, false, "volume" | "seek") => {
+            log::debug!("[spoton/unified] /control/{cmd}: body parse failed, returning 422");
+            StatusCode::UNPROCESSABLE_ENTITY
+        }
+        _ => StatusCode::NOT_FOUND,
+    }
+}
+
+// -------------------------------------------------------------------------
 // PassthroughMixer — GH #144: eliminates PCM double attenuation
 // -------------------------------------------------------------------------
 //
@@ -1214,17 +1252,30 @@ async fn unified_http_server(
                             };
                             drop(spirc_guard);
 
-                            let status = match (result.is_some(), cmd) {
-                                (true, _) => StatusCode::NO_CONTENT,
-                                (false, "pause") | (false, "play") | (false, "next") | (false, "prev") => {
-                                    StatusCode::NO_CONTENT
-                                }
-                                (false, "volume") | (false, "seek") => {
-                                    log::debug!("[spoton/unified] /control/{cmd}: body parse failed, returning 422");
-                                    StatusCode::UNPROCESSABLE_ENTITY
-                                }
-                                _ => StatusCode::NOT_FOUND,
-                            };
+                            // GH #159: a transport command that Spirc drops because the
+                            // device is not the active Connect target must NOT look like
+                            // success to the Perl side. Note the fork's Spirc handle only
+                            // returns Err when the command CHANNEL is closed — the
+                            // "SpircCommand::X will be ignored while Not Active" drop
+                            // happens asynchronously inside the Spirc task AFTER a
+                            // successful send, so `result.is_some()` alone cannot detect
+                            // it. The spirc_active flag (cleared on SessionDisconnected,
+                            // which the fork emits from handle_disconnect() whenever the
+                            // device stops being the active target) is the authoritative
+                            // signal. The command is still dispatched above regardless:
+                            // Spirc safely ignores it while Not Active, and if the flag
+                            // is momentarily stale the dispatch keeps behavior identical
+                            // to before.
+                            let active = spirc_active.load(Ordering::Acquire);
+                            let status = control_status(active, result.is_some(), cmd);
+                            if status == StatusCode::CONFLICT {
+                                log::warn!(
+                                    "[spoton/unified] /control/{cmd}: 409 — device is not \
+                                     the active Connect target (GH #159, spirc_active={}, \
+                                     dispatched={})",
+                                    active, result.is_some()
+                                );
+                            }
 
                             let body = Full::new(Bytes::new())
                                 .map_err(|e| match e {})
@@ -1513,6 +1564,16 @@ pub async fn run_unified(
                         sa.store(true, Ordering::SeqCst);
                     }
 
+                    // GH #159: the Spirc fork emits SessionDisconnected from
+                    // handle_disconnect() whenever the device stops being the
+                    // active Connect target (cluster update picked another
+                    // device, explicit Disconnect, Spirc shutdown). Clear the
+                    // flag so /control rejects transport commands with 409
+                    // instead of reporting success while Spirc drops them.
+                    if matches!(event, PlayerEvent::SessionDisconnected { .. }) {
+                        sa.store(false, Ordering::SeqCst);
+                    }
+
                     let mut mode = mode_state_lms.lock().await;
 
                     // D-09: Connect takes over from Browse — transition mode first,
@@ -1550,6 +1611,13 @@ pub async fn run_unified(
                 let mut current_sink_track: Option<String> = None;
                 while let Some(event) = event_chan.recv().await {
                     advance_connect_track_generation(&event, &mut current_sink_track, &track_gen_w);
+
+                    // GH #159: mirror the LMS-configured dispatcher — clear
+                    // spirc_active when the device stops being the active
+                    // Connect target so /control can answer 409.
+                    if matches!(event, PlayerEvent::SessionDisconnected { .. }) {
+                        sa.store(false, Ordering::SeqCst);
+                    }
 
                     if matches!(event,
                         PlayerEvent::SessionConnected { .. } |
@@ -1779,6 +1847,10 @@ pub async fn run_unified(
                                             ) {
                                                 sa_d.store(true, Ordering::SeqCst);
                                             }
+                                            // GH #159: device no longer the active Connect target.
+                                            if matches!(event, PlayerEvent::SessionDisconnected { .. }) {
+                                                sa_d.store(false, Ordering::SeqCst);
+                                            }
                                             let mut mode = mode_state_d.lock().await;
                                             if matches!(*mode, ActiveMode::Browse(_))
                                                 && matches!(event, PlayerEvent::TrackChanged { .. } | PlayerEvent::Playing { .. })
@@ -1807,6 +1879,11 @@ pub async fn run_unified(
                                         let mut current_sink_track: Option<String> = None;
                                         while let Some(event) = event_chan.recv().await {
                                             advance_connect_track_generation(&event, &mut current_sink_track, &track_gen_d);
+
+                                            // GH #159: device no longer the active Connect target.
+                                            if matches!(event, PlayerEvent::SessionDisconnected { .. }) {
+                                                sa_d.store(false, Ordering::SeqCst);
+                                            }
 
                                             if matches!(event,
                                                 PlayerEvent::SessionConnected { .. } |
@@ -2101,5 +2178,88 @@ mod passthrough_mixer_tests {
                 "attenuation_factor must be 1.0 at volume={v} — GH #144 regression test"
             );
         }
+    }
+}
+
+// -------------------------------------------------------------------------
+// /control status mapping unit tests (GH #159)
+// -------------------------------------------------------------------------
+
+#[cfg(test)]
+mod control_status_tests {
+    use super::*;
+
+    const TRANSPORT_CMDS: [&str; 4] = ["play", "pause", "next", "prev"];
+
+    /// Active device + dispatched command — unchanged success contract.
+    #[test]
+    fn active_dispatched_transport_is_204() {
+        for cmd in TRANSPORT_CMDS {
+            assert_eq!(
+                control_status(true, true, cmd),
+                StatusCode::NO_CONTENT,
+                "active + dispatched {cmd} must stay 204 (no behavior change, GH #159)"
+            );
+        }
+    }
+
+    /// GH #159 core: transport commands while the device is not the active
+    /// Connect target must be 409, NOT 204 — regardless of whether the
+    /// channel send succeeded (Spirc drops them asynchronously).
+    #[test]
+    fn inactive_transport_is_409() {
+        for cmd in TRANSPORT_CMDS {
+            assert_eq!(
+                control_status(false, true, cmd),
+                StatusCode::CONFLICT,
+                "inactive {cmd} (send ok, Spirc drops it) must be 409 — GH #159"
+            );
+            assert_eq!(
+                control_status(false, false, cmd),
+                StatusCode::CONFLICT,
+                "inactive {cmd} (handle gone / channel closed) must be 409 — GH #159"
+            );
+        }
+    }
+
+    /// Second None-producing path: Spirc handle gone or command channel
+    /// closed while the flag still reads active — also "not an active
+    /// Connect target", also 409.
+    #[test]
+    fn result_absent_transport_is_409() {
+        for cmd in TRANSPORT_CMDS {
+            assert_eq!(
+                control_status(true, false, cmd),
+                StatusCode::CONFLICT,
+                "{cmd} with no Spirc handle must be 409 — GH #159"
+            );
+        }
+    }
+
+    /// volume/seek keep their existing mappings (204 dispatched / 422 body
+    /// parse failure) — GH #159 changes only transport commands.
+    #[test]
+    fn volume_seek_unchanged() {
+        for cmd in ["volume", "seek"] {
+            assert_eq!(control_status(true, true, cmd), StatusCode::NO_CONTENT);
+            assert_eq!(control_status(false, true, cmd), StatusCode::NO_CONTENT);
+            assert_eq!(
+                control_status(true, false, cmd),
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "{cmd} body-parse failure must stay 422"
+            );
+            assert_eq!(
+                control_status(false, false, cmd),
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "{cmd} body-parse failure must stay 422 even while inactive"
+            );
+        }
+    }
+
+    /// Unknown commands stay 404.
+    #[test]
+    fn unknown_command_is_404() {
+        assert_eq!(control_status(true, false, "bogus"), StatusCode::NOT_FOUND);
+        assert_eq!(control_status(false, false, "bogus"), StatusCode::NOT_FOUND);
     }
 }
