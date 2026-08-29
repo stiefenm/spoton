@@ -764,8 +764,8 @@ sub artist_fixture {
         portrait_group => {
             image => [ { file_id => 'artistportraitfileidxxxxxxxxxxxxxxxxxx', width => 640, height => 640 } ],
         },
-        album_group       => [ { album => [ { gid => hexid(10), name => 'Album One' } ] } ],
-        single_group      => [ { album => [ { gid => hexid(11), name => 'Single One' } ] } ],
+        album_group       => [ { album => [ { gid => hexid(10) } ] } ],
+        single_group      => [ { album => [ { gid => hexid(11) } ] } ],
         compilation_group => [],
     });
 }
@@ -929,21 +929,35 @@ sub context_resolve_fixture {
     $Plugins::SpotOn::API::Credentials::mock_creds = { username => 'testuser', auth_data => 'ZGF0YQ==' };
 }
 
-# getArtistAlbums: album_group + single_group flattening, no per-album metadata calls.
+# getArtistAlbums: album_group + single_group flattening, per-album enrichment.
+# spclient artist metadata only embeds gid per album (no name/cover), so each
+# album in the page is enriched via metadata/4/album.
 {
     reset_all();
     Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/metadata/4/artist/}, artist_fixture());
+    my $albumHex10 = hexid(10);
+    my $albumHex11 = hexid(11);
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/metadata/4/album/$albumHex11}, JSON::XS::VersionOneAndTwo::to_json({
+        gid  => $albumHex11, name => 'Single One',
+        artist => [ { gid => hexid(201), name => 'Artist' } ],
+        cover_group => { image => [ { file_id => 'coverid11', width => 300, height => 300 } ] },
+    }));
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/metadata/4/album/$albumHex10}, JSON::XS::VersionOneAndTwo::to_json({
+        gid  => $albumHex10, name => 'Album One',
+        artist => [ { gid => hexid(201), name => 'Artist' } ],
+        cover_group => { image => [ { file_id => 'coverid10', width => 300, height => 300 } ] },
+    }));
 
     my ($result, $err);
     $SP->getArtistAlbums('acct14', '4iV5W9uYEdYUVa79Axb7Rh', {}, sub { ($result, $err) = @_ });
 
     ok($result, 'getArtistAlbums: result returned');
     is($result->{total}, 2, 'getArtistAlbums: album_group + single_group flattened to 2 total');
-    is($result->{items}[0]{name}, 'Album One', 'getArtistAlbums: album_group entry name preserved');
-    is($result->{items}[1]{name}, 'Single One', 'getArtistAlbums: single_group entry name preserved');
+    is($result->{items}[0]{name}, 'Album One', 'getArtistAlbums: album enrichment delivers name');
+    is($result->{items}[1]{name}, 'Single One', 'getArtistAlbums: single enrichment delivers name');
 
     my @metaReqs = grep { $_->{url} =~ m{/metadata/4/} } Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests();
-    is(scalar(@metaReqs), 1, 'getArtistAlbums: exactly one metadata call total -- no per-album enrichment calls');
+    is(scalar(@metaReqs), 3, 'getArtistAlbums: 1 artist + 2 album enrichment calls');
 }
 
 # WR-01 (gap closure 75-07 Task 2): empty-body 200 -> Client.pm delegation,

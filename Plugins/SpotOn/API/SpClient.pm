@@ -912,10 +912,10 @@ sub _normalizeAlbumStub {
 
 # getArtistAlbums($class, $accountId, $artistId, $params, $cb)
 # Flattens artist metadata's album_group/single_group/compilation_group
-# arrays (each group entry wraps an album[] array) into a single Web-API
-# album-stub list, sliced per $params->{offset}/{limit}. No per-album
-# metadata calls -- embedded gid+name is all Plugin.pm's _albumItem/
-# _artistAlbumsFeed consume.
+# arrays (each group entry wraps an album[] array with gid-only entries)
+# into a single Web-API album list. spclient's artist metadata only
+# embeds gid per album (no name/cover), so the requested page is enriched
+# via metadata/4/album per album.
 sub getArtistAlbums {
     my ($class, $accountId, $artistId, $params, $cb) = @_;
     $params ||= {};
@@ -935,7 +935,6 @@ sub getArtistAlbums {
         return;
     }
 
-    # WR-01: see getAlbumTracks for the named-fallback-reuse rationale.
     my $fallback = sub {
         my ($fcb) = @_;
         require Plugins::SpotOn::API::Client;
@@ -952,22 +951,24 @@ sub getArtistAlbums {
                 return;
             }
 
-            my @albums;
+            my @albumIds;
             for my $groupKey (qw(album_group single_group compilation_group)) {
                 for my $group (@{ $meta->{$groupKey} || [] }) {
                     for my $album (@{ $group->{album} || [] }) {
-                        my $norm = $class->_normalizeAlbumStub($album);
-                        push @albums, $norm if $norm;
+                        next unless $album && ref($album) eq 'HASH' && $album->{gid};
+                        my $id = $class->hexToId($album->{gid});
+                        push @albumIds, $id if $id;
                     }
                 }
             }
 
-            my $total = scalar @albums;
-            my $end   = $offset + $limit - 1;
-            $end = $total - 1 if $end > $total - 1;
-            my @slice = ($offset < $total && $offset <= $end) ? @albums[$offset .. $end] : ();
+            my $total = scalar @albumIds;
+            my ($slicedRef) = $class->_sliceAsPage(\@albumIds, $offset, $limit);
 
-            $fcb->({ items => \@slice, total => $total, offset => $offset, limit => $limit });
+            $class->_enrichMeta($accountId, $slicedRef, 'album', '_normalizeAlbum', sub {
+                my ($enriched) = @_;
+                $fcb->({ items => $enriched, total => $total, offset => $offset, limit => $limit });
+            });
         },
         $fallback,
         $cb,
