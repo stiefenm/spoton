@@ -339,6 +339,19 @@ static pthread_t g_http_thread;
  * point in file order) needs it for the flush-disconnect debug line. */
 static int g_debug_trace;
 
+/* Forward declaration (real definition next to g_debug_trace's, below):
+ * 76-07 reconnect-gap instrumentation needs wall-clock ms timestamps on
+ * the client attach/close/first-drain trace lines emitted from
+ * _http_thread_fn, which precedes _trace_ts in file order. */
+static void _trace_ts(char *buf, size_t buflen);
+
+/* 76-07 (WINDOWS #5, D-12): set alongside g_flush_disconnect's consumption
+ * so the drain loop can stamp the FIRST successful ring pop after a
+ * flush-disconnect (timeline point t4) -- same single-writer (HTTP thread)
+ * discipline as g_flush_disconnect's consumption side; only ever touched
+ * from _http_thread_fn. */
+static int g_awaiting_first_drain = 0;
+
 /* 260827-of9 (~30s Connect-skip audio delay): set by pa_stream_flush() when
  * Soloist discards buffered audio on an app-side skip, consumed by
  * _http_thread_fn's poll loop (never touched directly from pa_stream_flush's
@@ -652,7 +665,12 @@ static void *_http_thread_fn(void *arg) {
             g_ring.client_connected = 0;
             pthread_mutex_unlock(&g_ring.lock);
             g_flush_disconnect = 0;
-            if (g_debug_trace) fprintf(stderr, "[fakepulse] flush-disconnect: closed active HTTP client\n");
+            g_awaiting_first_drain = 1;   /* 76-07: arm the t4 (first-drain) stamp */
+            if (g_debug_trace) {
+                char _ts[32];
+                _trace_ts(_ts, sizeof(_ts));
+                fprintf(stderr, "[fakepulse %s] flush-disconnect: closed active HTTP client\n", _ts);
+            }
         }
 
         struct pollfd fds[2];
@@ -721,6 +739,11 @@ static void *_http_thread_fn(void *arg) {
                 pthread_mutex_lock(&g_ring.lock);
                 g_ring.client_connected = 0;
                 pthread_mutex_unlock(&g_ring.lock);
+                if (g_debug_trace) {
+                    char _ts[32];
+                    _trace_ts(_ts, sizeof(_ts));
+                    fprintf(stderr, "[fakepulse %s] client-close: superseded by new connection (takeover)\n", _ts);
+                }
             }
 
             if (_http_write_all(pending.fd, (const unsigned char *)HTTP_RESPONSE_HEADER,
@@ -729,6 +752,13 @@ static void *_http_thread_fn(void *arg) {
                 pthread_mutex_lock(&g_ring.lock);
                 g_ring.client_connected = 1;
                 pthread_mutex_unlock(&g_ring.lock);
+                /* 76-07 (WINDOWS #5): t3 -- a new GET /stream client is
+                 * attached and will be served from the next drain pass. */
+                if (g_debug_trace) {
+                    char _ts[32];
+                    _trace_ts(_ts, sizeof(_ts));
+                    fprintf(stderr, "[fakepulse %s] client-attach: new /stream client fd=%d\n", _ts, client_fd);
+                }
             } else {
                 close(pending.fd);
             }
@@ -746,12 +776,29 @@ static void *_http_thread_fn(void *arg) {
             unsigned char chunk[16384];
             size_t n = _ring_pop_timed(&g_ring, chunk, sizeof(chunk), 50);
             if (n > 0) {
+                /* 76-07 (WINDOWS #5): t4 -- first ring drain reaching a
+                 * client after a flush-disconnect closed the previous one.
+                 * One line per skip cycle (flag re-armed only by the next
+                 * flush-disconnect), so level-1 gating is spam-safe. */
+                if (g_awaiting_first_drain) {
+                    g_awaiting_first_drain = 0;
+                    if (g_debug_trace) {
+                        char _ts[32];
+                        _trace_ts(_ts, sizeof(_ts));
+                        fprintf(stderr, "[fakepulse %s] first-drain: %zu bytes to fd=%d after flush-disconnect\n", _ts, n, client_fd);
+                    }
+                }
                 if (_http_write_all(client_fd, chunk, n) != 0) {
                     close(client_fd);
                     client_fd = -1;
                     pthread_mutex_lock(&g_ring.lock);
                     g_ring.client_connected = 0;
                     pthread_mutex_unlock(&g_ring.lock);
+                    if (g_debug_trace) {
+                        char _ts[32];
+                        _trace_ts(_ts, sizeof(_ts));
+                        fprintf(stderr, "[fakepulse %s] client-close: write error/disconnect\n", _ts);
+                    }
                 }
             }
         }
@@ -1636,7 +1683,14 @@ pa_operation *pa_stream_cork(pa_stream *s, int b, pa_stream_success_cb_t cb, voi
 }
 
 pa_operation *pa_stream_flush(pa_stream *s, pa_stream_success_cb_t cb, void *userdata) {
-    if (g_debug_trace) fprintf(stderr, "[fakepulse] pa_stream_flush(stream=%p)\n", (void *)s);
+    /* 76-07 (WINDOWS #5): t0 of the reconnect timeline -- Soloist discards
+     * buffered audio on an app-side skip. Timestamped so the daemon log can
+     * be correlated against LMS server.log's [DIAG] lines (t2). */
+    if (g_debug_trace) {
+        char _ts[32];
+        _trace_ts(_ts, sizeof(_ts));
+        fprintf(stderr, "[fakepulse %s] pa_stream_flush(stream=%p)\n", _ts, (void *)s);
+    }
     TRACE2("pa_stream_flush(stream=%p, cb=%p)", (void *)s, (void *)cb);
     if (s && g_http_mode) {
         /* HTTP mode only (D-04): the non-HTTP path forwards bytes to the
@@ -2264,6 +2318,133 @@ int main(void) {
                     fprintf(stderr, "FAIL: server thread never noticed the WR-11 test's "
                                     "client close (client_connected still true)\n");
                     failures++;
+                }
+            }
+        }
+    }
+
+    /* 76-07 (WINDOWS #5, D-12): reconnect-after-flush regression guard.
+     * pa_stream_flush() on an app-side skip both empties the ring AND
+     * flags the HTTP thread to close the active client (260827-of9). The
+     * live-measured ~8s reconnect gap was owned by the LMS-side stream
+     * reopen in the pre-76-04 direct-stream configuration, NOT by the
+     * shim -- this check pins the shim's half of the contract so it stays
+     * that way: the old client is closed within ~1s of the flush, and a
+     * new client arriving immediately afterwards is attached and served
+     * fresh audio within 500ms of its GET. */
+    {
+        pthread_mutex_lock(&g_ring.lock);
+        g_ring.head = g_ring.tail = g_ring.fill = 0;
+        g_ring.client_connected = 0;
+        pthread_mutex_unlock(&g_ring.lock);
+
+        int old_fd = _test_connect_loopback(port);
+        if (old_fd < 0) {
+            fprintf(stderr, "FAIL: could not connect old client for reconnect-after-flush test\n");
+            failures++;
+        } else {
+            static const char req3[] = "GET /stream HTTP/1.0\r\n\r\n";
+            if (write(old_fd, req3, sizeof(req3) - 1) < 0) {
+                fprintf(stderr, "FAIL: could not send GET for reconnect-after-flush test\n");
+                failures++;
+            }
+            if (_test_read_header(old_fd, 3000) != 0) {
+                fprintf(stderr, "FAIL: no response header for reconnect-after-flush old client\n");
+                failures++;
+            }
+
+            /* Make it an actively-draining client. */
+            float pre[2] = { 0.5f, -0.5f };
+            pa_stream_write(s, pre, sizeof(pre), NULL, 0, 0);
+            unsigned char prebuf[8];
+            if (_test_read_bytes(old_fd, prebuf, sizeof(prebuf), 1000) != 0) {
+                fprintf(stderr, "FAIL: old client never received pre-flush audio\n");
+                failures++;
+            }
+
+            /* The skip: flush -> HTTP thread must close the active client. */
+            pa_operation *skip_op = pa_stream_flush(s, NULL, NULL);
+            if (skip_op) {
+                pa_operation_unref(skip_op);
+            }
+
+            /* Old socket must reach EOF within ~1s (50ms poll tick + slack). */
+            int got_eof = 0;
+            for (int i = 0; i < 100 && !got_eof; i++) {
+                struct pollfd pfd;
+                pfd.fd = old_fd;
+                pfd.events = POLLIN;
+                int prc = poll(&pfd, 1, 10);
+                if (prc > 0) {
+                    unsigned char sink[256];
+                    ssize_t n = read(old_fd, sink, sizeof(sink));
+                    if (n == 0) {
+                        got_eof = 1;
+                    } else if (n < 0 && errno != EAGAIN && errno != EINTR) {
+                        got_eof = 1; /* RST also counts as "connection dropped" */
+                    }
+                }
+            }
+            close(old_fd);
+            if (!got_eof) {
+                fprintf(stderr, "FAIL: flush did not disconnect the active client within 1s\n");
+                failures++;
+            } else {
+                /* Immediate reconnect (the LMS/player side reopening the
+                 * stream) -- must attach and serve fresh audio promptly. */
+                struct timeval rt0, rt1;
+                gettimeofday(&rt0, NULL);
+                int new_fd = _test_connect_loopback(port);
+                if (new_fd < 0) {
+                    fprintf(stderr, "FAIL: could not reconnect after flush-disconnect\n");
+                    failures++;
+                } else {
+                    if (write(new_fd, req3, sizeof(req3) - 1) < 0) {
+                        fprintf(stderr, "FAIL: could not send GET on reconnected client\n");
+                        failures++;
+                    }
+                    if (_test_read_header(new_fd, 3000) != 0) {
+                        fprintf(stderr, "FAIL: no response header on reconnected client\n");
+                        failures++;
+                    }
+
+                    float fresh[2] = { 0.5f, -0.5f };
+                    int32_t expected_reconnect[2] = { 1073741824, -1073741824 };
+                    pa_stream_write(s, fresh, sizeof(fresh), NULL, 0, 0);
+
+                    unsigned char got[8];
+                    int ok = (_test_read_bytes(new_fd, got, sizeof(got), 500) == 0);
+                    gettimeofday(&rt1, NULL);
+                    long ms = (rt1.tv_sec - rt0.tv_sec) * 1000 + (rt1.tv_usec - rt0.tv_usec) / 1000;
+
+                    if (!ok) {
+                        fprintf(stderr, "FAIL: reconnected client received no audio within 500ms\n");
+                        failures++;
+                    } else if (memcmp(got, expected_reconnect, sizeof(expected_reconnect)) != 0) {
+                        fprintf(stderr, "FAIL: reconnected client received stale/wrong bytes\n");
+                        failures++;
+                    } else {
+                        printf("ok: reconnect after flush-disconnect attaches and drains immediately (%ldms)\n", ms);
+                    }
+                    close(new_fd);
+
+                    /* Drain the disconnect-notice for the fd we just
+                     * closed so the drop-oldest test below starts from a
+                     * clean no-client state (same nudge pattern as the
+                     * WR-11 cleanup above). */
+                    int stillConnected2 = 1;
+                    for (int i = 0; i < 50 && stillConnected2; i++) {
+                        float flush2[2] = { 0.0f, 0.0f };
+                        pa_stream_write(s, flush2, sizeof(flush2), NULL, 0, 0);
+                        usleep(20000);
+                        pthread_mutex_lock(&g_ring.lock);
+                        stillConnected2 = g_ring.client_connected;
+                        pthread_mutex_unlock(&g_ring.lock);
+                    }
+                    if (stillConnected2) {
+                        fprintf(stderr, "FAIL: server thread never noticed the reconnect test's client close\n");
+                        failures++;
+                    }
                 }
             }
         }

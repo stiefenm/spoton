@@ -1280,7 +1280,19 @@ sub _connectEvent {
                 sprintf("spoton://connect-%u", $ts)
             ]);
             $playReq->source(__PACKAGE__);
+
+            # 76-07 (WINDOWS #5, D-12): t2 of the skip reconnect timeline --
+            # millisecond-stamped bracket around the playlist-play dispatch so
+            # server.log correlates against the daemon log's [fakepulse <ts>]
+            # flush-disconnect (t1) and client-attach (t3) lines.
+            my $skipDispatchT = Time::HiRes::time();
+            $log->warn(sprintf("[DIAG] [%.3f] skip_dispatch: mac=%s playlist play spoton://connect-%u",
+                $skipDispatchT, $client->id, $ts)) if $diagMode;
+
             $playReq->execute();
+
+            $log->warn(sprintf("[DIAG] [%.3f] skip_dispatch_done: mac=%s execute_elapsed=%.3fs",
+                Time::HiRes::time(), $client->id, Time::HiRes::time() - $skipDispatchT)) if $diagMode;
 
             $client->pluginData(connectStartTime => Time::HiRes::time());
 

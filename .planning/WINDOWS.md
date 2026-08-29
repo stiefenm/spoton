@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 5
+open_count: 6
 waived_count: 0
 fixed_count: 0
-total_count: 5
-last_updated: 2026-08-29T20:56:58.192Z
+total_count: 6
+last_updated: 2026-08-29T21:20:53.536Z
 ---
 
 # Broken Windows Ledger
@@ -20,6 +20,7 @@ last_updated: 2026-08-29T20:56:58.192Z
 | 3 | 76 | unrun-verify | Plugins/SpotOn/Connect.pm |  | 76-05 Task 1: restart-autoplay live repro — pinned to Phase 76 UAT | open |  | 2026-08-29T20:56:57.248Z |  |
 | 4 | 76 | unrun-verify | Plugins/SpotOn/Connect.pm |  | 76-05 Task 3: GH #158 group-player crash live repro — pinned to Phase 76 UAT | open |  | 2026-08-29T20:56:57.718Z |  |
 | 5 | 76 | unrun-verify | Plugins/SpotOn/Connect.pm |  | 76-05 Task 2: GH #151 power-state restore live check — pinned to Phase 76 UAT | open |  | 2026-08-29T20:56:58.192Z |  |
+| 6 | 76 | unrun-verify | Plugins/SpotOn/Connect.pm |  | 76-07 Task 2 human-check at consolidated Phase 76 UAT: Spotify-app Skip Next in Soloist Connect -- audible audio within ~3s (log/TCP-measured 5 runs sub-second, FIXED; ear-level confirmation + PCM-only-player direct-stream path outstanding) | open |  | 2026-08-29T21:20:53.536Z |  |
 
 ````json
 [
@@ -81,6 +82,18 @@ last_updated: 2026-08-29T20:56:58.192Z
     "status": "open",
     "reason": "",
     "recorded_at": "2026-08-29T20:56:58.192Z",
+    "resolved_at": null
+  },
+  {
+    "id": 6,
+    "kind": "unrun-verify",
+    "phase": "76",
+    "file": "Plugins/SpotOn/Connect.pm",
+    "line": null,
+    "description": "76-07 Task 2 human-check at consolidated Phase 76 UAT: Spotify-app Skip Next in Soloist Connect -- audible audio within ~3s (log/TCP-measured 5 runs sub-second, FIXED; ear-level confirmation + PCM-only-player direct-stream path outstanding)",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-08-29T21:20:53.536Z",
     "resolved_at": null
   }
 ]
