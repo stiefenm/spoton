@@ -14,6 +14,7 @@ use Slim::Utils::Timers;
 use Slim::Utils::Cache;
 use Digest::MD5 qw(md5_hex);
 use JSON::XS qw(encode_json);
+use Scalar::Util qw(blessed);
 use Time::HiRes;
 use Time::Local qw(timelocal);
 use File::Basename;
@@ -290,6 +291,14 @@ sub initPlugin {
     #                                                           C  Q  T  F
     Slim::Control::Request::addDispatch(['spoton', 'recentsearches'],
                                                                 [0, 1, 1, \&_recentSearchesCLI]
+    );
+
+    # GH #94: browse More menu routed through the TrackInfo framework so the
+    # OPML context menu and the Now Playing TrackInfo menu render the same
+    # item set (LMS standard items + every registered provider). Dispatched
+    # by the `info` itemAction on _trackItem/_albumTrackItem/_episodeItem.
+    Slim::Control::Request::addDispatch(['spotoninfo', 'items', '_index', '_quantity'],
+                                                                [0, 1, 1, \&_trackInfoItemsCLI]
     );
 }
 
@@ -1267,6 +1276,15 @@ sub _trackItem {
         type          => 'audio',
         # spoton:// URL for LMS Favorites playback
         favorites_url => $spoton_url,
+        # GH #94: More menu routed through the TrackInfo framework -- one
+        # menu source for browse and Now Playing. @contextItems stays as the
+        # Default-skin drill-down (`items`); jive/Material clients use this.
+        itemActions   => {
+            info => {
+                command     => ['spotoninfo', 'items'],
+                fixedParams => { url => $spoton_url },
+            },
+        },
     );
     $item{items} = \@contextItems if @contextItems;
 
@@ -2380,6 +2398,14 @@ sub _episodeItem {
         type          => 'audio',
         # spoton:// URL for LMS Favorites playback
         favorites_url => $spoton_url,
+        # GH #94: More menu routed through the TrackInfo framework (episode
+        # parity -- shows/episodes discrepancy called out in the issue).
+        itemActions   => {
+            info => {
+                command     => ['spotoninfo', 'items'],
+                fixedParams => { url => $spoton_url },
+            },
+        },
     );
     $item{items} = \@contextItems;
 
@@ -2855,6 +2881,77 @@ sub _recentSearchesCLI {
     }
 
     $request->setStatusDone;
+}
+
+# _trackInfoItemsCLI($request)
+# GH #94: CLI backend for the browse items' `info` itemAction
+# (['spotoninfo','items'] with a url fixedParam). Builds the SAME feed as
+# the Now Playing More menu via Slim::Menu::TrackInfo->menu() -- LMS
+# standard items (favorites, More Info, ...) plus every registered
+# provider (spotonTrackInfo: Artist View / Album View / Like / Add to
+# Playlist; GH-93 url override) -- and serves it through XMLBrowser.
+#
+# LMS 8.x gap bridged here: TrackInfo::menu() requires a track object, but
+# Slim::Schema::RemoteTrack->fetch() is cache-only (RemoteTrack.pm), so a
+# browse item that has never been PLAYED has no RemoteTrack yet and
+# Slim::Schema->objectForUrl() returns undef. A RemoteTrack is therefore
+# created on demand from the spoton_meta cache before building the menu --
+# display data still flows from ProtocolHandler::getMetadataFor via the
+# same cache, the object mainly has to exist.
+sub _trackInfoItemsCLI {
+    my $request = shift;
+
+    if ($request->isNotQuery([['spotoninfo'], ['items']])) {
+        $request->setStatusBadDispatch();
+        return;
+    }
+
+    my $client = $request->client;
+    my $url    = $request->getParam('url') || '';
+
+    # T-76-08: spoton:// urls carry public track/episode ids only; strict
+    # shape check before the url reaches Schema/TrackInfo.
+    unless ($url =~ m{^spoton://(?:track|episode):[A-Za-z0-9]+$}) {
+        $request->setStatusBadParams();
+        return;
+    }
+
+    require Slim::Schema;
+    require Slim::Menu::TrackInfo;
+    require Slim::Control::XMLBrowser;
+
+    my $track = Slim::Schema->objectForUrl({ url => $url });
+    unless (blessed($track)) {
+        my $meta = $cache->get('spoton_meta_' . md5_hex($url)) || {};
+        $track = Slim::Schema->updateOrCreate({
+            url        => $url,
+            attributes => {
+                title  => $meta->{title},
+                artist => $meta->{artist},
+                album  => $meta->{album},
+                secs   => $meta->{duration},
+            },
+        });
+    }
+
+    unless (blessed($track)) {
+        main::INFOLOG && $log->is_info && $log->info("spotoninfo: no track object for $url (GH #94)");
+        $request->setStatusBadParams();
+        return;
+    }
+
+    my $tags = {
+        menuMode    => $request->getParam('menu') || 0,
+        menuContext => $request->getParam('context') || 'normal',
+    };
+
+    my $feed = Slim::Menu::TrackInfo->menu($client, $url, $track, $tags);
+    unless ($feed) {
+        $request->setStatusBadParams();
+        return;
+    }
+
+    Slim::Control::XMLBrowser::cliQuery('spotoninfo', $feed, $request);
 }
 
 # _searchFromHistoryFeed($client, $callback, $args, $passthrough)
@@ -3506,6 +3603,14 @@ sub _albumTrackItem {
         image     => $image || 'html/images/cover.png',
         duration  => $duration,
         type      => 'audio',
+        # GH #94: More menu routed through the TrackInfo framework -- one
+        # menu source for browse and Now Playing.
+        itemActions => {
+            info => {
+                command     => ['spotoninfo', 'items'],
+                fixedParams => { url => $spoton_url },
+            },
+        },
     );
     $item{items} = \@contextItems if @contextItems;
 
