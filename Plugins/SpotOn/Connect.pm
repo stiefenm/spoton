@@ -642,6 +642,10 @@ sub _onPause {
         main::INFOLOG && $log->is_info && $log->info(
             "Got unpause event - forwarding to Connect binary via HTTP /control/play (D-14)"
         );
+        # GH #158: LMS-side unpause resumes the Spotify session — clear the
+        # remembered pause state immediately (the daemon's own resume/playing
+        # echo would clear it too, but not before the next change could race).
+        $client->pluginData(connectSessionPaused => 0);
         _sendControlCommand($client, '/control/play', undef);
     } else {
         main::INFOLOG && $log->is_info && $log->info(
@@ -994,6 +998,7 @@ sub _connectEvent {
             # newTrack prevents _onPause from forwarding the LMS stop-before-play
             # sequence to the binary, which would immediately re-pause Spotify.
             $client->pluginData(connectPauseTs => 0);
+            $client->pluginData(connectSessionPaused => 0);   # GH #158: resuming
             $client->pluginData(newTrack => 1);
             _armNewTrackFallback($client);   # H7
             $client->pluginData(connectStartTime => Time::HiRes::time());
@@ -1039,6 +1044,7 @@ sub _connectEvent {
         # Unpause squeezelite — CRITICAL: use ['pause', 0] NOT ['play'].
         # ['play'] would open a new HTTP stream connection and break the
         # continuous PCM stream (Pitfall 1). Source-mark for T-05-13 loop prevention.
+        $client->pluginData(connectSessionPaused => 0);   # GH #158: session resumed
         $client->pluginData(connectPauseTs => Time::HiRes::time());
         my $unPauseReq = Slim::Control::Request->new($client->id, ['pause', 0]);
         $unPauseReq->source(__PACKAGE__);
@@ -1137,6 +1143,8 @@ sub _connectEvent {
 
         # Clear echo suppression — new track start is authoritative
         $client->pluginData(connectPauseTs => 0);
+        # GH #158: a fresh session start supersedes any remembered pause state
+        $client->pluginData(connectSessionPaused => 0);
 
         # D-08 mutual exclusion: stop any Browse playback on this player
         my $song = $client->playingSong();
@@ -1230,7 +1238,15 @@ sub _connectEvent {
         # Ensure player is playing — stop→change from skip leaves squeezelite paused.
         # (isSpotifyConnect re-check kept although the H6 top guard makes it
         # near-redundant: pendingConnect-only entry must not force playback.)
-        if (!$client->isPlaying && __PACKAGE__->isSpotifyConnect($client)) {
+        # GH #158: NEVER force-unpause while the Spotify session itself is
+        # paused (connectSessionPaused, tracked from stop/resume events). A
+        # skip while user-paused delivers a 'change' with Spotify STILL
+        # paused — the old unconditional unpause here made LMS stream
+        # against a paused (data-less) source, which on sync groups spirals
+        # into a rebuffer/restart loop ("song starts over and over"). The
+        # later user play arrives as 'resume' and unpauses normally.
+        if (!$client->isPlaying && __PACKAGE__->isSpotifyConnect($client)
+            && !$client->pluginData('connectSessionPaused')) {
             $client->pluginData(connectPauseTs => Time::HiRes::time());
             my $playReq = Slim::Control::Request->new($client->id, ['pause', 0]);
             $playReq->source(__PACKAGE__);
@@ -1254,6 +1270,9 @@ sub _connectEvent {
         my $soloistWs = _soloistConnectWs($client);
         if ($soloistWs && $soloistWs->skipInitiated) {
             $soloistWs->skipInitiated(0);    # consume the flag
+            # GH #158: the forced reconnect below starts playback — any
+            # remembered session-pause state is superseded.
+            $client->pluginData(connectSessionPaused => 0);
 
             my $ts      = int(Time::HiRes::time() * 1000);
             my $playReq = Slim::Control::Request->new($client->id, [
@@ -1303,6 +1322,9 @@ sub _connectEvent {
                 $pauseReq->execute();
             }
 
+            # GH #158: session over — drop the remembered pause state
+            $client->pluginData(connectSessionPaused => 0);
+
             _restorePowerAfterConnect($client);
 
             $log->warn("[DIAG] [$diagTs] stop: player=" . $client->id
@@ -1329,6 +1351,13 @@ sub _connectEvent {
             ) if $diagMode;
 
             return;
+        }
+
+        # GH #158: a genuine (post-grace) stop means the Spotify session is
+        # paused — remember it so the 'change' handler does not force-unpause
+        # a skip-while-paused sequence. Cleared on start/resume/unpause.
+        if (__PACKAGE__->isSpotifyConnect($client)) {
+            $client->pluginData(connectSessionPaused => 1);
         }
 
         if ($client->isPlaying && __PACKAGE__->isSpotifyConnect($client)) {
