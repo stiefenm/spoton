@@ -564,6 +564,9 @@ async fn unified_http_server(
     // Issue #97: bitrate for Browse Player creation
     bitrate: Bitrate,
     enable_normalisation: bool,
+    // GH #128: LMS notifier clone for the relay-start position resync.
+    // Some when enable_connect and --lms are configured; None otherwise.
+    lms_notify: Option<LMS>,
 ) {
     let graceful = GracefulShutdown::new();
     let mut shutdown_rx = std::pin::pin!(shutdown_rx);
@@ -605,6 +608,7 @@ async fn unified_http_server(
                 let ogg_header_buf = ogg_header_buf.as_ref().map(Arc::clone);
                 let ogg_header_serial = ogg_header_serial.as_ref().map(Arc::clone);
                 let ogg_headers_complete = ogg_headers_complete.as_ref().map(Arc::clone);
+                let lms_notify = lms_notify.clone();
 
                 let svc = hyper::service::service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
                     let session = Arc::clone(&session);
@@ -627,6 +631,7 @@ async fn unified_http_server(
                     let ogg_header_buf = ogg_header_buf.as_ref().map(Arc::clone);
                     let ogg_header_serial = ogg_header_serial.as_ref().map(Arc::clone);
                     let ogg_headers_complete = ogg_headers_complete.as_ref().map(Arc::clone);
+                    let lms_notify = lms_notify.clone();
 
                     async move {
                         let path = req.uri().path().to_owned();
@@ -783,6 +788,19 @@ async fn unified_http_server(
                                 let mut drained = 0u64;
                                 while rx.try_recv().is_ok() { drained += 1; }
                                 log::debug!("[spoton/unified] /stream: relay starting, drained {} stale chunks", drained);
+                            }
+
+                            // GH #128: the relay is now actually about to serve audio.
+                            // Push a fresh position notification anchored to THIS moment
+                            // — the transfer-time position LMS received via the Playing
+                            // event is stale by the whole buffer-fill gap on a mid-song
+                            // handoff. Spawned so a slow/unreachable LMS (notify has a
+                            // 5s timeout) can never delay the relay itself.
+                            if let Some(ref lms) = lms_notify {
+                                let lms = lms.clone();
+                                tokio::spawn(async move {
+                                    lms.resync_position_at_relay_start().await;
+                                });
                             }
 
                             // Per-connection relay channel (64 frames capacity).
@@ -1536,6 +1554,10 @@ pub async fn run_unified(
         // and the Seeked event still sends "seek" via notify() (unaffected by flush_tx).
         let lms_for_dispatcher = lms.clone();
 
+        // GH #128: clone for the /stream relay-start position resync. Shares
+        // the position_anchor Arc with the dispatcher's LMS instance.
+        let lms_for_relay = lms.clone();
+
         // LMS event dispatcher + mode transition (combined to avoid race condition).
         // Previously two separate tasks raced on the mode mutex: the LMS dispatcher
         // could see Browse mode and drop a TrackChanged event before the mode-watcher
@@ -1735,6 +1757,7 @@ pub async fn run_unified(
             ogg_headers_complete_arc,
             bitrate_enum,
             enable_normalisation,
+            Some(lms_for_relay), // GH #128: relay-start position resync
         ));
 
         // Main event loop — Spirc reconnect, ZeroConf, ctrl_c.
@@ -2065,6 +2088,7 @@ pub async fn run_unified(
             None,  // ogg_headers_complete
             bitrate_enum,
             enable_normalisation,
+            None,  // lms_notify (GH #128) — no Connect, no relay
         ));
 
         // Pure Browse: wait for Ctrl+C or session reconnect.
