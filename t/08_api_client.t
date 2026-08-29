@@ -925,6 +925,102 @@ SKIP: {
         'WP-05: getWebPlayerPlaylistItems never calls TokenManager->getToken');
 }
 
+# UN-01 (GH #135): getQueue sends GET to /me/player/queue and delivers the
+# decoded { currently_playing, queue } payload to the callback unmodified.
+SKIP: {
+    skip "Client.pm not yet created", 6
+        unless -f $client_module;
+
+    Slim::Networking::SimpleAsyncHTTP::reset_requests();
+    Plugins::SpotOn::API::Client->reset() if Plugins::SpotOn::API::Client->can('reset');
+    Slim::Utils::Cache->new()->clear();
+    $Slim::Networking::SimpleAsyncHTTP::auto_mode = 'success';
+    $Slim::Networking::SimpleAsyncHTTP::auto_response_content =
+        '{"currently_playing":{"name":"Now Track","uri":"spotify:track:NOW11111"},'
+      . '"queue":[{"name":"Next Track","uri":"spotify:track:NEXT2222"}]}';
+
+    my ($got_result, $got_err);
+    my $lived = eval {
+        Plugins::SpotOn::API::Client->getQueue('testacct', sub {
+            ($got_result, $got_err) = @_;
+        });
+        1;
+    };
+    ok($lived, 'UN-01: getQueue does not die');
+
+    my @reqs = @Slim::Networking::SimpleAsyncHTTP::requests;
+    is(scalar(@reqs), 1, 'UN-01: getQueue dispatches exactly one HTTP request');
+    is($reqs[0] && $reqs[0]->{method}, 'GET', 'UN-01: getQueue uses GET method');
+    like($reqs[0] && $reqs[0]->{url} || '', qr{/me/player/queue},
+        'UN-01: getQueue URL targets /me/player/queue');
+    is($got_err, undef, 'UN-01: getQueue callback receives no error on success');
+    ok($got_result
+        && ref($got_result) eq 'HASH'
+        && $got_result->{currently_playing}{name} eq 'Now Track'
+        && ref($got_result->{queue}) eq 'ARRAY'
+        && $got_result->{queue}[0]{name} eq 'Next Track',
+        'UN-01: success payload {currently_playing, queue} passed through unmodified');
+}
+
+# UN-02 (GH #135): getQueue is never cached — no cache read, no cache write.
+# Player state has TTL 0 (CLAUDE.md); a second identical call must dispatch
+# a second HTTP request, and no spoton_resp_* key may be written.
+SKIP: {
+    skip "Client.pm not yet created", 3
+        unless -f $client_module;
+    skip "getQueue not yet implemented", 3
+        unless Plugins::SpotOn::API::Client->can('getQueue');
+
+    Slim::Networking::SimpleAsyncHTTP::reset_requests();
+    Plugins::SpotOn::API::Client->reset() if Plugins::SpotOn::API::Client->can('reset');
+    Slim::Utils::Cache->new()->clear();
+    $Slim::Networking::SimpleAsyncHTTP::auto_mode = 'success';
+    $Slim::Networking::SimpleAsyncHTTP::auto_response_content =
+        '{"currently_playing":null,"queue":[]}';
+
+    Plugins::SpotOn::API::Client->getQueue('testacct', sub { });
+    is(scalar(@Slim::Networking::SimpleAsyncHTTP::requests), 1,
+        'UN-02: first getQueue call issues one HTTP request');
+
+    my $cache = Slim::Utils::Cache->new();
+    ok(!$cache->get('spoton_resp_testacct_me/player/queue'),
+        'UN-02: getQueue writes no response-cache entry');
+
+    Plugins::SpotOn::API::Client->getQueue('testacct', sub { });
+    is(scalar(@Slim::Networking::SimpleAsyncHTTP::requests), 2,
+        'UN-02: second identical getQueue call dispatches HTTP again (no cache read)');
+}
+
+# UN-03 (GH #135): API error reaches the callback as an error hash — never a die.
+SKIP: {
+    skip "Client.pm not yet created", 3
+        unless -f $client_module;
+    skip "getQueue not yet implemented", 3
+        unless Plugins::SpotOn::API::Client->can('getQueue');
+
+    Slim::Networking::SimpleAsyncHTTP::reset_requests();
+    Plugins::SpotOn::API::Client->reset() if Plugins::SpotOn::API::Client->can('reset');
+    Slim::Utils::Cache->new()->clear();
+    $Slim::Networking::SimpleAsyncHTTP::auto_mode = 'error_generic';
+
+    my ($got_result, $got_err);
+    my $lived = eval {
+        Plugins::SpotOn::API::Client->getQueue('testacct', sub {
+            ($got_result, $got_err) = @_;
+        });
+        1;
+    };
+    ok($lived, 'UN-03: getQueue does not die on HTTP error');
+    is($got_result, undef, 'UN-03: no result delivered on error');
+    ok($got_err && ref($got_err) eq 'HASH' && $got_err->{error},
+        'UN-03: error hash delivered to callback per Client.pm convention');
+
+    # Reset for subsequent tests
+    Slim::Utils::Cache->new()->clear();
+    $Slim::Networking::SimpleAsyncHTTP::auto_mode = 'success';
+    Plugins::SpotOn::API::Client->reset() if Plugins::SpotOn::API::Client->can('reset');
+}
+
 # API-06: No LWP or SimpleSyncHTTP in API/ modules — grep test (runs immediately)
 {
     my @api_files = glob("$project_dir/Plugins/SpotOn/API/*.pm");

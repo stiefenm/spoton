@@ -895,6 +895,32 @@ PLUGIN_SPOTON_MADE_FOR_YOU
 	PL	Stworzone dla Ciebie
 	SV	Gjort för dig
 
+PLUGIN_SPOTON_UP_NEXT
+	CS	Další v pořadí
+	DA	Næste i køen
+	DE	Als Nächstes
+	EN	Up Next
+	ES	A continuación
+	FR	À suivre
+	IT	In coda
+	NL	Hierna
+	NO	Neste i køen
+	PL	Następne w kolejce
+	SV	Nästa i kön
+
+PLUGIN_SPOTON_UP_NEXT_EMPTY
+	CS	Žádná aktivní relace Spotify Connect
+	DA	Ingen aktiv Spotify Connect-session
+	DE	Keine aktive Spotify Connect-Sitzung
+	EN	No active Spotify Connect session
+	ES	No hay ninguna sesión activa de Spotify Connect
+	FR	Aucune session Spotify Connect active
+	IT	Nessuna sessione Spotify Connect attiva
+	NL	Geen actieve Spotify Connect-sessie
+	NO	Ingen aktiv Spotify Connect-økt
+	PL	Brak aktywnej sesji Spotify Connect
+	SV	Ingen aktiv Spotify Connect-session
+
 PLUGIN_SPOTON_MAIN_MENU
 	CS	Hlavní nabídka
 	DA	Hovedmenu
