@@ -1425,6 +1425,15 @@ sub _homeFeed {
             type  => 'playlist',   # GH #161: flat track list -> playlist type for Play All / Add hover actions
             image => 'plugins/SpotOn/html/images/MTL_icon_history.png',
         },
+        {
+            name  => cstring($client, 'PLUGIN_SPOTON_UP_NEXT'),
+            url   => \&_upNextFeed,
+            # GH #135: live-status list, deliberately NOT 'playlist' -- the
+            # GH #161 convention does not apply here since Play All on an
+            # already-playing Connect queue would double-play.
+            type  => 'link',
+            image => 'plugins/SpotOn/html/images/playlist.png',
+        },
     );
 
     require Plugins::SpotOn::API::WebPlayer;
@@ -1505,6 +1514,66 @@ sub _recentlyPlayedFeed {
                     grep { defined $_->{track} }
                     map  { _normalizeLibraryItem($_, 'track') }
                     @{ $data->{items} || [] };
+        $callback->({ items => \@items });
+    });
+}
+
+# _upNextFeed($client, $callback, $args)
+# GH #135: renders the Spotify Connect queue ("Up Next") -- the currently
+# playing track followed by the queued tracks -- fetched ON DEMAND when the
+# menu is opened. This invocation is the ONLY trigger: no timers, no
+# Request subscriptions, no polling. Rationale (GH #135 / CLAUDE.md P-01):
+# the Web API rate pool is shared app-wide over a rolling 30s window, so a
+# recurring queue poll would burn it continuously, while a single
+# user-initiated fetch per menu open is rate-safe. Event-driven refresh via
+# Spirc events (issue Option B) can layer on top of this feed later without
+# undoing it. Works for BOTH backends: the Web API queue reflects the
+# account's active session regardless of which local daemon hosts it.
+# Single page, no pagination -- the queue is bounded (~20 items).
+sub _upNextFeed {
+    my ($client, $callback, $args) = @_;
+
+    my $accountId = _getAccountId($client);
+
+    require Plugins::SpotOn::API::Client;
+    Plugins::SpotOn::API::Client->getQueue($accountId, sub {
+        my ($data, $err) = @_;
+
+        # GH #155: rate-limit errors get the established clear message.
+        if ($err && ref $err eq 'HASH' && ($err->{error} || '') =~ /^rate_limited/) {
+            $callback->({ items => [ _authRequiredItem($client, $accountId, $err) ] });
+            return;
+        }
+
+        # T-76-14: untrusted payload -- type-check every level before use.
+        # Any other error, a malformed payload, or an idle account renders
+        # the empty state: "no active session" is a normal condition here,
+        # not a failure.
+        my $now = ($data && ref $data eq 'HASH' && ref $data->{currently_playing} eq 'HASH')
+            ? $data->{currently_playing} : undef;
+        my @queue = ($data && ref $data eq 'HASH' && ref $data->{queue} eq 'ARRAY')
+            ? grep { ref $_ eq 'HASH' && $_->{uri} } @{ $data->{queue} }
+            : ();
+
+        my @items;
+        if ($now && $now->{uri}) {
+            # Rendering goes through the established _trackItem pipeline
+            # (escaping/metadata handling); name-prefix with the LMS core
+            # NOW_PLAYING string so the head row reads as "now playing".
+            my $item = _trackItem($client, $now);
+            $item->{name} = cstring($client, 'NOW_PLAYING') . ': ' . $item->{name};
+            push @items, $item;
+        }
+        push @items, map { _trackItem($client, $_) } @queue;
+
+        unless (@items) {
+            $callback->({ items => [{
+                name => cstring($client, 'PLUGIN_SPOTON_UP_NEXT_EMPTY'),
+                type => 'textarea',
+            }] });
+            return;
+        }
+
         $callback->({ items => \@items });
     });
 }
