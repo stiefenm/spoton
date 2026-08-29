@@ -210,7 +210,40 @@ sub _sendControlCommand {
             $log->warn("[DIAG] control_cmd_ok: mac=" . $client->id . " endpoint=$endpoint") if $prefs->get('diagnosticMode');
         },
         sub {
-            my ($http, $error) = @_;
+            my ($http, $error, $response) = @_;
+
+            # GH #159: the daemon answers 409 Conflict when Spirc dropped the
+            # command because this device is no longer the active Connect
+            # target (deselected in the Spotify app). SimpleAsyncHTTP routes
+            # every non-2xx/3xx response through this error callback; the
+            # response object (third arg, newer LMS) carries the code, and
+            # $error holds the status line ("409 Conflict") as a fallback for
+            # LMS versions whose onError only passes two args.
+            my $code = ($response && blessed($response) && $response->can('code'))
+                ? ($response->code || 0) : 0;
+            $code ||= ($error && $error =~ /^(\d{3})\b/) ? $1 : 0;
+
+            if ($code == 409) {
+                $log->warn(
+                    "_sendControlCommand: $endpoint rejected for " . $client->id
+                    . " — device is not the active Connect target (GH #159); ejecting stale stream"
+                );
+                $log->warn("[DIAG] control_cmd_rejected: mac=" . $client->id . " endpoint=$endpoint code=409") if $prefs->get('diagnosticMode');
+
+                # Eject the stale stream so LMS leaves BUFFERING-STREAMING
+                # instead of hanging until the device is re-selected.
+                # source(__PACKAGE__) prevents _onPause from echoing the stop
+                # back to the daemon (T-05-13 / T-76-05).
+                my $stopReq = Slim::Control::Request->new($client->id, ['stop']);
+                $stopReq->source(__PACKAGE__);
+                $stopReq->execute();
+
+                # Deliberately NO _sendControlFallback here: the Web API PUT
+                # would act on the user's actually-active device — exactly
+                # wrong for a command meant for this (deselected) player.
+                return;
+            }
+
             $log->warn("[DIAG] control_cmd_fail: mac=" . $client->id . " endpoint=$endpoint error=$error fallback=web_api") if $prefs->get('diagnosticMode');
             main::INFOLOG && $log->is_info && $log->info(
                 "_sendControlCommand: $endpoint failed ($error) — trying Web API fallback (D-15)"
