@@ -530,7 +530,7 @@ Ein-Host-Modell — spclient.spotify.com deckt ALLE Browse/Library-Features:
   **Set-Mapping (verifiziert, Spike 009):** `collection`=Saved Albums, `artist`=Followed Artists, `show`=Saved Shows, `ylpin`=Pinned Playlists, `listenlater`=Saved Episodes. Liked Songs via context-resolve `spotify:user:{id}:collection`. Multi-Type-Search bleibt Web-API-Fallback (context-resolve liefert nur Track-URIs).
   **Depends on:** Keine harte Abhängigkeit (login5 Token-Minting in Perl machbar). Optional beschleunigt durch Phase 74 (spoton-helper als Protobuf-Konverter), aber nicht erforderlich.
   **Stolpersteine:** Siehe Spike 009 RESULTS.md S-01 bis S-11 (u.a. base62→hex ID-Konversion S-02, Accept-Header zwingend S-03, collection Content-Type S-06, Set-Namen S-07, Protobuf-only bei recently-played/rootlist S-09/S-10)
-  **Plans:** 6 plans (Wave 1: 75-01 Tracer · Wave 2: 75-02 ∥ 75-03 · Wave 3: 75-04 · Wave 4: 75-05 · Wave 5: 75-06)
+  **Plans:** 7 plans (Wave 1: 75-01 Tracer · Wave 2: 75-02 ∥ 75-03 · Wave 3: 75-04 · Wave 4: 75-05 · Wave 5: 75-06 · Wave 1 gap closure: 75-07)
 
   Plans:
 
@@ -540,6 +540,7 @@ Ein-Host-Modell — spclient.spotify.com deckt ALLE Browse/Library-Features:
   - [x] 75-04-PLAN.md — Collection-Familie: collection/v2 Sets (S-06/S-07), Liked Songs via context-resolve (kein Paging), Recently Played (Protobuf S-09)
   - [x] 75-05-PLAN.md — Playlist-Familie: Rootlist (Protobuf S-10, Folder-Flattening) + playlist/v2 Items mit Slice-Enrichment
   - [x] 75-06-PLAN.md — Unification: ~70 Call-Sites auf SpClient-Facade, Passthrough-Delegationen, UAT-Smoke-Script, CHANGELOG (D-08)
+  - [ ] 75-07-PLAN.md — Gap Closure: CR-01 Pagination-Offset-Desync (filter-before-slice + Stub-Substitution), WR-01 Unguarded $meta, WR-02 _noCache + Write-Invalidation, WR-03 Unbounded Pagination-Loop, WR-04 playlistId-Validierung (D-07/D-08/D-09)
 
 - [ ] **Phase 76: Soloist UX Polish** — Quality-Dropdown (OGG/FLAC/Lossless), Per-Player Backend-Auswahl (librespot vs soloist per Player-Pref), Pairing-Flow-Ausbau in Settings (Basis-Howto/App-Tap-Status bereits in 73-04 vorhanden — hier QR-Code oder erweiterte In-App-Anleitung), Diagnostics (Soloist-spezifische Health-Checks im Status-Dashboard), Lifetime-Patcher-UI.
   **Depends on:** Phase 74 (spoton-helper `patch`-Modus für Lifetime/FLAC24)
