@@ -36,6 +36,8 @@ use Slim::Utils::Timers;
 use Time::HiRes;
 use URI::Escape qw(uri_escape_utf8);
 
+use Plugins::SpotOn::API::ProtobufLite;
+
 # ------------------------------------------------------------
 # Constants
 # ------------------------------------------------------------
@@ -48,6 +50,23 @@ use constant SPCLIENT_FALLBACK_HOST  => 'gew4-spclient.spotify.com:443';
 use constant HOST_CACHE_KEY          => 'spoton_spclient_host';
 use constant HOST_CACHE_TTL          => 3600;
 use constant BASE62_CHARSET          => '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
+
+# collection/v2 (S-06/S-07, Phase 75 Plan 04 Task 1)
+use constant COLLECTION_V2_CONTENT_TYPE => 'application/vnd.collection-v2.spotify.proto';
+use constant COLLECTION_PAGE_LIMIT      => 200;
+use constant COLLECTION_LIST_TTL        => 60;   # CLAUDE.md: library-item lists = 60s
+
+# SET_MAP: verified collection/v2 set names (Spike 009 S-07). Saved Albums
+# live under the confusingly generic 'collection' set (NOT 'album', which
+# 403s). pinned_playlists/saved_episodes are documented here even though no
+# facade in this plan consumes them yet (full verified mapping per plan spec).
+use constant SET_MAP => {
+    albums           => 'collection',
+    artists          => 'artist',
+    shows            => 'show',
+    pinned_playlists => 'ylpin',
+    saved_episodes   => 'listenlater',
+};
 
 my $log   = logger('plugin.spoton');
 my $prefs = preferences('plugin.spoton');
@@ -185,6 +204,19 @@ sub _hasLogin5Creds {
     require Plugins::SpotOn::API::Credentials;
     my $creds = Plugins::SpotOn::API::Credentials->verifyCredentials($accountId);
     return $creds ? 1 : 0;
+}
+
+# _username($class, $accountId)
+# The Spotify canonical username from stored credentials -- ALWAYS the
+# source for collection/v2, context-resolve, recently-played, and rootlist
+# username fields (RESEARCH.md username-source rule). NEVER read from prefs
+# spotifyUserId, which may differ from the credentials.json username
+# depending on provenance (A5).
+sub _username {
+    my ($class, $accountId) = @_;
+    require Plugins::SpotOn::API::Credentials;
+    my $creds = Plugins::SpotOn::API::Credentials->verifyCredentials($accountId);
+    return ($creds && ref($creds) eq 'HASH') ? $creds->{username} : undef;
 }
 
 # _isFallbackError($class, $err)
@@ -385,9 +417,18 @@ sub _doRequest {
                 'Authorization' => "Bearer $token",
                 'Accept'        => $accept,
             );
+            # collection/v2 (S-06) needs Content-Type AND Accept set to the
+            # exact same vendor string -- any other Content-Type is a 400.
+            push @headers, 'Content-Type' => $params->{_contentType} if defined $params->{_contentType};
+
+            # POST bodies (collection/v2 PageRequest protobuf) are appended
+            # as the final argument -- SimpleHTTP::Base treats an odd-length
+            # arg list as (headers..., content).
+            my @callArgs = @headers;
+            push @callArgs, $params->{_body} if defined $params->{_body};
 
             eval {
-                $http->$method($url, @headers);
+                $http->$method($url, @callArgs);
                 1;
             } or do {
                 $log->error("SpClient: HTTP dispatch failed for $cleanPath: $@");
@@ -1147,6 +1188,235 @@ sub search {
         $class->_enrichTracks($accountId, \@sliceIds, sub {
             my ($tracks) = @_;
             $cb->({ tracks => { items => $tracks, total => scalar(@trackIds), limit => $limit, offset => $offset } });
+        });
+    });
+}
+
+# ============================================================
+# collection/v2 plumbing (D-08, S-06/S-07, A1) + getSavedAlbums
+# Phase 75 Plan 04 Task 1
+# ============================================================
+
+# _collectionPage($class, $accountId, $set, $pageToken, $limit, $cb)
+# One collection/v2/paging POST. Body is a hand-encoded PageRequest
+# (username=1, set=2, pagination_token=3 -- OMITTED entirely when empty,
+# limit=4 varint). Content-Type AND Accept are both set to the exact
+# vendor string (S-06 -- any other value is a 400). Response is decoded as
+# a PageResponse: field 1 is the repeated CollectionItem list (A1 --
+# ProtobufLite's parse_fields already collects every occurrence into an
+# arrayref, so all items across a single page survive, not just the last).
+# cb->(\@items, $nextPageToken, undef) on success, cb->(undef, undef, $err)
+# on failure. Each item is { uri, added_at } -- is_removed tombstones are
+# filtered out here so callers never see them (S-08: added_at is for
+# relative sort only, never render as a date).
+sub _collectionPage {
+    my ($class, $accountId, $set, $pageToken, $limit, $cb) = @_;
+
+    my $username = $class->_username($accountId);
+    unless ($username) {
+        $cb->(undef, undef, { error => 'no_credentials' });
+        return;
+    }
+
+    my $body = Plugins::SpotOn::API::ProtobufLite::encode_field(1, 2, $username)
+        . Plugins::SpotOn::API::ProtobufLite::encode_field(2, 2, $set);
+    $body .= Plugins::SpotOn::API::ProtobufLite::encode_field(3, 2, $pageToken)
+        if defined $pageToken && length $pageToken;
+    $body .= Plugins::SpotOn::API::ProtobufLite::encode_field(4, 0, $limit // COLLECTION_PAGE_LIMIT);
+
+    $class->_request('post', 'collection/v2/paging', {
+        _accountId   => $accountId,
+        _accept      => COLLECTION_V2_CONTENT_TYPE,
+        _contentType => COLLECTION_V2_CONTENT_TYPE,
+        _body        => $body,
+        _raw         => 1,
+        _noCache     => 1,   # A1/pagination: caller (_collectionAll) owns list-level caching
+    }, sub {
+        my ($raw, $err) = @_;
+
+        if ($err) {
+            $cb->(undef, undef, $err);
+            return;
+        }
+
+        my $fields = Plugins::SpotOn::API::ProtobufLite::parse_fields($raw);
+        unless ($fields) {
+            $cb->(undef, undef, { error => 'parse_error' });
+            return;
+        }
+
+        my @items;
+        for my $itemBytes (@{ $fields->{1} || [] }) {
+            my $itemFields = Plugins::SpotOn::API::ProtobufLite::parse_fields($itemBytes);
+            next unless $itemFields;
+
+            my $isRemoved = Plugins::SpotOn::API::ProtobufLite::field_first($itemFields, 3);
+            next if $isRemoved;
+
+            push @items, {
+                uri      => Plugins::SpotOn::API::ProtobufLite::field_first($itemFields, 1),
+                added_at => Plugins::SpotOn::API::ProtobufLite::field_first($itemFields, 2),
+            };
+        }
+
+        my $nextPageToken = Plugins::SpotOn::API::ProtobufLite::field_first($fields, 2) // '';
+        $cb->(\@items, $nextPageToken, undef);
+    });
+}
+
+# _collectionAll($class, $accountId, $set, $cb)
+# Paginates _collectionPage until next_page_token is empty, accumulating
+# every page's items. The FULL accumulated list is cached 60s per
+# account+set (T-75-15: accountId in the cache key prevents cross-account
+# bleed) -- callers slice/enrich only what they need (_sliceAsPage), never
+# re-fetching collection/v2 on every OPML page turn within the TTL window.
+# cb->(\@items, undef) on success, cb->(undef, $err) on the first page-fetch
+# failure (T-75-12: a malformed/erroring page routes through D-07 at the
+# facade level, never a crash here).
+sub _collectionAll {
+    my ($class, $accountId, $set, $cb) = @_;
+
+    my $cacheKey = "spoton_spclient_coll_${accountId}_${set}";
+    if (my $cached = $cache->get($cacheKey)) {
+        $cb->($cached, undef);
+        return;
+    }
+
+    my @accumulated;
+    my $fetchPage;
+    $fetchPage = sub {
+        my ($pageToken) = @_;
+        $class->_collectionPage($accountId, $set, $pageToken, COLLECTION_PAGE_LIMIT, sub {
+            my ($items, $nextPageToken, $err) = @_;
+
+            if ($err) {
+                undef $fetchPage;
+                $cb->(undef, $err);
+                return;
+            }
+
+            push @accumulated, @{ $items || [] };
+
+            if (defined $nextPageToken && length $nextPageToken) {
+                $fetchPage->($nextPageToken);
+            } else {
+                undef $fetchPage;
+                $cache->set($cacheKey, \@accumulated, COLLECTION_LIST_TTL);
+                $cb->(\@accumulated, undef);
+            }
+        });
+    };
+    $fetchPage->(undef);
+}
+
+# _sliceAsPage($class, \@list, $offset, $limit)
+# Offset/limit slice of an already-complete in-memory list. Returns
+# (\@slice, $total) -- $total is always the FULL list length, matching the
+# Web-API pagination contract callers expect (offset/limit against a known
+# total) even though spclient itself delivered the whole list, not a page.
+sub _sliceAsPage {
+    my ($class, $list, $offset, $limit) = @_;
+    $list ||= [];
+    my $total = scalar @$list;
+    my $end   = $offset + $limit - 1;
+    $end = $total - 1 if $end > $total - 1;
+    my @slice = ($offset < $total && $offset <= $end) ? @$list[$offset .. $end] : ();
+    return (\@slice, $total);
+}
+
+# _enrichCollectionSlice($class, $accountId, \@slice, $metaType, $normalizeMethod, $wrapKey, $cb)
+# Fetches metadata/4/$metaType/{hex} for each { uri, added_at } slice entry
+# (THROUGH _request, so the cap-2 gate and 3600s response cache apply --
+# D-09) and re-pairs each successful result with its ORIGINAL added_at
+# (order-preserving pairing, unlike _enrichMeta's plain id-in/object-out
+# shape which would lose the added_at association). Failed/undef
+# normalizations are dropped. cb->(\@items) where each item is
+# { added_at => ..., $wrapKey => $normalizedObject }.
+sub _enrichCollectionSlice {
+    my ($class, $accountId, $slice, $metaType, $normalizeMethod, $wrapKey, $cb) = @_;
+    $slice ||= [];
+
+    unless (@$slice) {
+        $cb->([]);
+        return;
+    }
+
+    my @results   = (undef) x scalar(@$slice);
+    my $remaining = scalar @$slice;
+
+    for my $i (0 .. $#$slice) {
+        my $entry = $slice->[$i];
+        my ($id)  = ($entry->{uri} // '') =~ /^spotify:\Q$metaType\E:(.+)$/;
+        my $hexId = $id ? $class->idToHex($id) : undef;
+
+        my $finish = sub {
+            my ($val) = @_;
+            $results[$i] = $val ? { added_at => $entry->{added_at}, $wrapKey => $val } : undef;
+            if (--$remaining == 0) {
+                $cb->([ grep { defined } @results ]);
+            }
+        };
+
+        unless ($hexId) {
+            $finish->(undef);
+            next;
+        }
+
+        $class->_request('get', "metadata/4/$metaType/$hexId", {
+            _accountId => $accountId,
+            _accept    => 'application/json',
+        }, sub {
+            my ($result, $err) = @_;
+            $finish->($err ? undef : $class->$normalizeMethod($result));
+        });
+    }
+}
+
+# getSavedAlbums($class, $accountId, $params, $cb)
+# Same cb contract as Client.pm::getSavedAlbums. Saved Albums live under the
+# collection/v2 set 'collection' (S-07 -- the intuitive name 'album' 403s).
+# Full list is fetched/cached once (_collectionAll), then only the
+# requested offset/limit slice is enriched with real album metadata
+# (D-09 burst avoidance).
+sub getSavedAlbums {
+    my ($class, $accountId, $params, $cb) = @_;
+    $params ||= {};
+    my $offset = $params->{offset} // 0;
+    my $limit  = $params->{limit}  // 50;
+
+    unless ($class->_hasLogin5Creds($accountId)) {
+        main::INFOLOG && $log->info('SpClient: no login5-capable credentials, delegating getSavedAlbums to Client.pm (D-06)');
+        require Plugins::SpotOn::API::Client;
+        Plugins::SpotOn::API::Client->getSavedAlbums($accountId, $params, $cb);
+        return;
+    }
+
+    $class->_collectionAll($accountId, SET_MAP->{albums}, sub {
+        my ($list, $err) = @_;
+
+        if ($err) {
+            if ($class->_isFallbackError($err)) {
+                main::INFOLOG && $log->info('SpClient: getSavedAlbums collection/v2 error, falling back to Client.pm (D-07): '
+                    . ($err->{error} // '?'));
+                require Plugins::SpotOn::API::Client;
+                Plugins::SpotOn::API::Client->getSavedAlbums($accountId, $params, $cb);
+                return;
+            }
+            $cb->(undef, $err);
+            return;
+        }
+
+        my ($slice, $total) = $class->_sliceAsPage($list, $offset, $limit);
+
+        $class->_enrichCollectionSlice($accountId, $slice, 'album', '_normalizeAlbum', 'album', sub {
+            my ($items) = @_;
+            $cb->({
+                items  => $items,
+                total  => $total,
+                offset => $offset,
+                limit  => $limit,
+                next   => (($offset + $limit) < $total) ? 1 : undef,
+            });
         });
     });
 }

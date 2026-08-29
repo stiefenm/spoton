@@ -145,10 +145,22 @@ our $auto_mode = 'success';   # success | error_429 | error_401 | error_404 | er
 our $auto_response_content = '{}';
 our $last_response_headers = {};
 our @response_rules = ();     # [ qr/.../, $content ] -- first match wins, most-recently-pushed first
+our @error_rules    = ();     # [ qr/.../, $code ]    -- per-URL error injection regardless of $auto_mode
 
 sub set_response_for {
     my ($pattern, $content) = @_;
     unshift @response_rules, [ $pattern, $content ];
+}
+
+# set_error_for($pattern, $code)
+# Forces the error callback for any URL matching $pattern, regardless of
+# $auto_mode -- lets a test make ONE endpoint fail (e.g. metadata/4/show)
+# while collection/v2 (a different URL) keeps succeeding via
+# set_response_for, needed for the getSavedShows single-item-probe test
+# (Plan 04 Task 2).
+sub set_error_for {
+    my ($pattern, $code) = @_;
+    unshift @error_rules, [ $pattern, $code ];
 }
 
 sub new {
@@ -181,11 +193,34 @@ sub _dispatch {
         return;
     }
 
+    for my $rule (@error_rules) {
+        if ($url =~ $rule->[0]) {
+            my $resp = bless { _code => $rule->[1], _headers => {} },
+                'Slim::Networking::SimpleAsyncHTTP::MockResponse';
+            $self->{error_cb}->($self, "$rule->[1] forced error", $resp);
+            return;
+        }
+    }
+
     if ($auto_mode eq 'success') {
         my $content = $auto_response_content;
         for my $rule (@response_rules) {
             if ($url =~ $rule->[0]) {
-                $content = $rule->[1];
+                my $c = $rule->[1];
+                if (ref($c) eq 'ARRAY') {
+                    # Sequential responses per matching URL (e.g. collection/v2
+                    # pagination: page 1 then page 2) -- shift each call,
+                    # sticking on the last entry once exhausted.
+                    $content = (@$c > 1) ? shift(@$c) : $c->[0];
+                }
+                elsif (ref($c) eq 'CODE') {
+                    # Inspect the request body to decide the response (e.g.
+                    # branch on the collection/v2 PageRequest's pagination_token).
+                    $content = $c->($body);
+                }
+                else {
+                    $content = $c;
+                }
                 last;
             }
         }
@@ -221,6 +256,7 @@ sub reset_requests {
     $auto_response_content = '{}';
     $last_response_headers = {};
     @response_rules = ();
+    @error_rules = ();
 }
 
 sub non_apresolve_requests {
@@ -273,6 +309,7 @@ our @getShow_calls         = ();
 our @getShowEpisodes_calls = ();
 our @getEpisode_calls      = ();
 our @search_calls          = ();
+our @getSavedAlbums_calls  = ();
 our $mock_result = { id => 'mockclienttrackid0000' };
 
 sub getTrack {
@@ -320,6 +357,11 @@ sub search {
     push @search_calls, { accountId => $accountId, params => $params };
     $cb->($mock_result, undef);
 }
+sub getSavedAlbums {
+    my ($class, $accountId, $params, $cb) = @_;
+    push @getSavedAlbums_calls, { accountId => $accountId, params => $params };
+    $cb->($mock_result, undef);
+}
 sub reset_calls {
     @getTrack_calls        = ();
     @getAlbum_calls        = ();
@@ -330,6 +372,7 @@ sub reset_calls {
     @getShowEpisodes_calls = ();
     @getEpisode_calls      = ();
     @search_calls          = ();
+    @getSavedAlbums_calls  = ();
 }
 1;
 END
@@ -878,6 +921,168 @@ sub context_resolve_fixture {
     my @nonApresolve = Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests();
     is(scalar(@nonApresolve), 1, 'search context-resolve 500: exactly one spclient attempt');
     is(scalar(@Plugins::SpotOn::API::Client::search_calls), 1, 'search context-resolve 500: falls back to Client.pm exactly once (D-07)');
+
+    $Slim::Networking::SimpleAsyncHTTP::auto_mode = 'success';
+}
+
+# ============================================================
+# Phase 75 Plan 04 fixtures -- collection/v2 (Task 1)
+# ============================================================
+
+sub encode_collection_item {
+    my (%args) = @_;
+    my $bytes = '';
+    $bytes .= Plugins::SpotOn::API::ProtobufLite::encode_field(1, 2, $args{uri})
+        if defined $args{uri};
+    $bytes .= Plugins::SpotOn::API::ProtobufLite::encode_field(2, 0, $args{added_at})
+        if defined $args{added_at};
+    $bytes .= Plugins::SpotOn::API::ProtobufLite::encode_field(3, 0, 1)
+        if $args{is_removed};
+    return $bytes;
+}
+
+sub encode_page_response {
+    my (%args) = @_;
+    my $bytes = '';
+    for my $item (@{ $args{items} || [] }) {
+        $bytes .= Plugins::SpotOn::API::ProtobufLite::encode_field(1, 2, encode_collection_item(%$item));
+    }
+    $bytes .= Plugins::SpotOn::API::ProtobufLite::encode_field(2, 2, $args{next_page_token})
+        if defined $args{next_page_token} && length $args{next_page_token};
+    return $bytes;
+}
+
+# ============================================================
+# Task 1: collection/v2 plumbing + getSavedAlbums (S-06/S-07, A1)
+# ============================================================
+
+# (a) wire-level: Content-Type + Accept exact CT string, body decodes to
+# username/set/limit via ProtobufLite (S-06).
+{
+    reset_all();
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/collection/v2/paging}, encode_page_response(
+        items => [ { uri => 'spotify:album:' . b62id(1), added_at => 10 } ],
+    ));
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/metadata/4/album/}, album_fixture());
+
+    my ($result, $err);
+    $SP->getSavedAlbums('acct60', {}, sub { ($result, $err) = @_ });
+
+    my @collReqs = grep { $_->{url} =~ m{/collection/v2/paging} } Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests();
+    is(scalar(@collReqs), 1, 'getSavedAlbums: exactly one collection/v2/paging POST');
+    is($collReqs[0]->{headers}{'Content-Type'}, 'application/vnd.collection-v2.spotify.proto',
+        'collection/v2: Content-Type is the exact vendor string (S-06)');
+    is($collReqs[0]->{headers}{'Accept'}, 'application/vnd.collection-v2.spotify.proto',
+        'collection/v2: Accept is the exact vendor string (S-06)');
+
+    my $reqFields = Plugins::SpotOn::API::ProtobufLite::parse_fields($collReqs[0]->{body});
+    is(Plugins::SpotOn::API::ProtobufLite::field_first($reqFields, 1), 'testuser',
+        'collection/v2 body: field 1 (username) decodes from credentials.json username');
+    is(Plugins::SpotOn::API::ProtobufLite::field_first($reqFields, 2), 'collection',
+        'collection/v2 body: field 2 (set) is "collection" for Saved Albums (S-07)');
+    is($SP->SET_MAP->{albums}, 'collection', 'SET_MAP: albums maps to the verified "collection" set name (S-07)');
+    is(Plugins::SpotOn::API::ProtobufLite::field_first($reqFields, 4), 200,
+        'collection/v2 body: field 4 (limit) is 200');
+    ok(!defined(Plugins::SpotOn::API::ProtobufLite::field_first($reqFields, 3)),
+        'collection/v2 body: field 3 (pagination_token) omitted entirely on the first page');
+}
+
+# (b) pagination: 2 pages, >=4 items total, all present in order (A1 --
+# repeated-field decode across multiple pages).
+{
+    reset_all();
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/collection/v2/paging}, sub {
+        my ($body) = @_;
+        my $fields = Plugins::SpotOn::API::ProtobufLite::parse_fields($body);
+        my $token  = Plugins::SpotOn::API::ProtobufLite::field_first($fields, 3);
+        if (!defined $token || $token eq '') {
+            return encode_page_response(
+                items => [
+                    { uri => 'spotify:album:' . b62id(1), added_at => 10 },
+                    { uri => 'spotify:album:' . b62id(2), added_at => 11 },
+                ],
+                next_page_token => 'page2token',
+            );
+        }
+        return encode_page_response(
+            items => [
+                { uri => 'spotify:album:' . b62id(3), added_at => 12 },
+                { uri => 'spotify:album:' . b62id(4), added_at => 13 },
+            ],
+        );
+    });
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/metadata/4/album/}, album_fixture());
+
+    my ($result, $err);
+    $SP->getSavedAlbums('acct61', { offset => 0, limit => 10 }, sub { ($result, $err) = @_ });
+
+    my @collReqs = grep { $_->{url} =~ m{/collection/v2/paging} } Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests();
+    is(scalar(@collReqs), 2, 'pagination: exactly 2 collection/v2 POSTs (page 1 + page 2)');
+
+    ok($result, 'pagination: result returned');
+    is($result->{total}, 4, 'pagination: total reflects all 4 items across both pages');
+    is(scalar(@{ $result->{items} }), 4, 'pagination: all 4 items surfaced in the enriched slice');
+}
+
+# (c) is_removed tombstones are filtered out at the wire-decode level.
+{
+    reset_all();
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/collection/v2/paging}, encode_page_response(
+        items => [
+            { uri => 'spotify:album:' . b62id(1), added_at => 10 },
+            { uri => 'spotify:album:' . b62id(2), added_at => 11, is_removed => 1 },
+        ],
+    ));
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/metadata/4/album/}, album_fixture());
+
+    my ($result, $err);
+    $SP->getSavedAlbums('acct62', {}, sub { ($result, $err) = @_ });
+
+    ok($result, 'is_removed: result returned');
+    is($result->{total}, 1, 'is_removed: tombstoned item excluded from the total (1 of 2 survives)');
+}
+
+# (d) D-09: second getSavedAlbums call within TTL issues zero additional
+# collection/v2 POSTs (list-level cache).
+{
+    reset_all();
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/collection/v2/paging}, encode_page_response(
+        items => [ { uri => 'spotify:album:' . b62id(1), added_at => 10 } ],
+    ));
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/metadata/4/album/}, album_fixture());
+
+    my $noop = sub { };
+    $SP->getSavedAlbums('acct63', {}, $noop);
+    my $firstCollCount = scalar(grep { $_->{url} =~ m{/collection/v2/paging} } Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests());
+
+    $SP->getSavedAlbums('acct63', {}, $noop);
+    my $secondCollCount = scalar(grep { $_->{url} =~ m{/collection/v2/paging} } Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests());
+
+    is($firstCollCount, 1, 'D-09: first getSavedAlbums call issues one collection/v2 POST');
+    is($secondCollCount, $firstCollCount, 'D-09: second getSavedAlbums call within TTL issues zero additional collection/v2 POSTs');
+}
+
+# getSavedAlbums D-06/D-07 router regressions (shared _collectionAll/_isFallbackError path).
+{
+    reset_all();
+    $Plugins::SpotOn::API::Credentials::mock_creds = undef;
+
+    my ($result, $err);
+    $SP->getSavedAlbums('acct64', {}, sub { ($result, $err) = @_ });
+
+    is(scalar(Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests()), 0, 'getSavedAlbums D-06: zero spclient HTTP when creds absent');
+    is(scalar(@Plugins::SpotOn::API::Client::getSavedAlbums_calls), 1, 'getSavedAlbums D-06: delegates to Client.pm exactly once');
+
+    $Plugins::SpotOn::API::Credentials::mock_creds = { username => 'testuser', auth_data => 'ZGF0YQ==' };
+}
+{
+    reset_all();
+    $Slim::Networking::SimpleAsyncHTTP::auto_mode = 'error_500';
+
+    my ($result, $err);
+    $SP->getSavedAlbums('acct65', {}, sub { ($result, $err) = @_ });
+
+    is(scalar(@Plugins::SpotOn::API::Client::getSavedAlbums_calls), 1, 'getSavedAlbums D-07: falls back to Client.pm on a spclient 500');
 
     $Slim::Networking::SimpleAsyncHTTP::auto_mode = 'success';
 }
