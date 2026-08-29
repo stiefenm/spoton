@@ -159,28 +159,28 @@ sub curlGet {
 }
 
 # ------------------------------------------------------------
-# count_playlists_in_folder($folderBytes, $depth) -- mirrors
-# SpClient.pm::_flattenRootlistFolder but only counts (script only needs the
-# count for UAT, not the full normalized list)
+# count_rootlist_playlists($responseBytes) -- counts playlist URIs in the
+# rootlist response. The live server wraps items in field 5 (ListContent),
+# with playlist URIs in field 5.3[].1.
 # ------------------------------------------------------------
-sub count_playlists_in_folder {
-    my ($folderBytes, $depth) = @_;
-    return 0 if $depth > ROOTLIST_MAX_DEPTH;
+sub count_rootlist_playlists {
+    my ($responseBytes) = @_;
 
-    my $folderFields = Plugins::SpotOn::API::ProtobufLite::parse_fields($folderBytes);
-    return 0 unless $folderFields;
+    my $fields = Plugins::SpotOn::API::ProtobufLite::parse_fields($responseBytes);
+    return 0 unless $fields;
+
+    my $listBytes = Plugins::SpotOn::API::ProtobufLite::field_first($fields, 5);
+    return 0 unless defined $listBytes;
+
+    my $listFields = Plugins::SpotOn::API::ProtobufLite::parse_fields($listBytes);
+    return 0 unless $listFields;
 
     my $count = 0;
-    for my $itemBytes (@{ $folderFields->{1} || [] }) {   # Folder.item (repeated Item)
+    for my $itemBytes (@{ $listFields->{3} || [] }) {
         my $itemFields = Plugins::SpotOn::API::ProtobufLite::parse_fields($itemBytes);
         next unless $itemFields;
-
-        if (defined Plugins::SpotOn::API::ProtobufLite::field_first($itemFields, 3)) {   # Item.playlist
-            $count++;
-        }
-        elsif (defined(my $subFolderBytes = Plugins::SpotOn::API::ProtobufLite::field_first($itemFields, 2))) {   # Item.folder
-            $count += count_playlists_in_folder($subFolderBytes, $depth + 1);
-        }
+        my $uri = Plugins::SpotOn::API::ProtobufLite::field_first($itemFields, 1);
+        $count++ if defined $uri && $uri =~ /^spotify:playlist:/;
     }
     return $count;
 }
@@ -287,11 +287,8 @@ my ($rootExit, $rootResp, $rootErr) = curlGet($rootlistUrl,
 );
 fail('rootlist', "curl exited $rootExit: $rootErr") if $rootExit != 0;
 
-my $rootFields = Plugins::SpotOn::API::ProtobufLite::parse_fields($rootResp);
-fail('rootlist', 'failed to parse rootlist protobuf response') unless $rootFields;
-
-my $rootFolderBytes = Plugins::SpotOn::API::ProtobufLite::field_first($rootFields, 1);   # Response.root (Folder)
-my $playlistCount = defined($rootFolderBytes) ? count_playlists_in_folder($rootFolderBytes, 0) : 0;
+my $playlistCount = count_rootlist_playlists($rootResp);
+fail('rootlist', 'failed to parse rootlist protobuf response (no items in field 5)') if $playlistCount == 0 && length($rootResp) > 100;
 
 print "rootlist: playlist count=$playlistCount\n";
 

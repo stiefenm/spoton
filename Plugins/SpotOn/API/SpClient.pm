@@ -1966,55 +1966,60 @@ sub _rootlistPlaylists {
 }
 
 # _parseRootlist($class, $bytes)
-# Decodes the rootlist Response message (proto/rootlist_request.proto:
-# Response.root is a Folder, field 1) and flattens the nested
-# Folder->Item->{Playlist|Folder} tree into a flat arrayref of normalized
-# playlist entries, in tree order (top-level items first, nested-folder
-# playlists after). Returns undef on any top-level protobuf parse failure;
-# an absent root Folder returns an empty arrayref (a rootlist response with
-# zero playlists is not an error).
+# Decodes the rootlist response. The live server wraps the actual item list
+# in field 5 (ListContent), NOT in field 1 (which is a 24-byte revision
+# hash). Items are flat in field 5.3 (each with URI in sub-field 1);
+# decorated metadata is in field 5.4 (name in .2.1, owner in .5, length
+# in .3), paired by index. Returns undef on parse failure; an absent or
+# empty item list returns an empty arrayref.
 sub _parseRootlist {
     my ($class, $bytes) = @_;
 
     my $fields = Plugins::SpotOn::API::ProtobufLite::parse_fields($bytes);
     return undef unless $fields;
 
-    my $rootBytes = Plugins::SpotOn::API::ProtobufLite::field_first($fields, 1);   # Response.root (Folder)
-    return [] unless defined $rootBytes;
+    my $listBytes = Plugins::SpotOn::API::ProtobufLite::field_first($fields, 5);
+    return [] unless defined $listBytes;
+
+    my $listFields = Plugins::SpotOn::API::ProtobufLite::parse_fields($listBytes);
+    return [] unless $listFields;
+
+    my @items       = @{ $listFields->{3} || [] };
+    my @decorations = @{ $listFields->{4} || [] };
 
     my @playlists;
-    $class->_flattenRootlistFolder($rootBytes, \@playlists, 0);
-    return \@playlists;
-}
-
-# _flattenRootlistFolder($class, $folderBytes, \@playlists, $depth)
-# Recursively walks a Folder message's repeated Item field (field 1),
-# collecting normalized Playlist entries (Item.playlist, field 3) and
-# recursing into nested Folder entries (Item.folder, field 2). T-75-16/V5:
-# $depth is bounded at ROOTLIST_MAX_DEPTH -- a pathological/adversarial
-# fixture with arbitrarily deep folder nesting cannot recurse unboundedly;
-# anything beyond the cap is silently dropped rather than exhausting the
-# call stack. A folder/item whose bytes fail to parse is skipped, never a
-# die (Pitfall 6: untrusted network protobuf).
-sub _flattenRootlistFolder {
-    my ($class, $folderBytes, $playlists, $depth) = @_;
-    return if $depth > ROOTLIST_MAX_DEPTH;
-
-    my $folderFields = Plugins::SpotOn::API::ProtobufLite::parse_fields($folderBytes);
-    return unless $folderFields;
-
-    for my $itemBytes (@{ $folderFields->{1} || [] }) {   # Folder.item (repeated Item)
-        my $itemFields = Plugins::SpotOn::API::ProtobufLite::parse_fields($itemBytes);
+    for my $i (0 .. $#items) {
+        my $itemFields = Plugins::SpotOn::API::ProtobufLite::parse_fields($items[$i]);
         next unless $itemFields;
 
-        if (defined(my $plBytes = Plugins::SpotOn::API::ProtobufLite::field_first($itemFields, 3))) {   # Item.playlist
-            my $norm = $class->_normalizePlaylistMeta($plBytes);
-            push @$playlists, $norm if $norm;
+        my $uri = Plugins::SpotOn::API::ProtobufLite::field_first($itemFields, 1);
+        next unless defined $uri && $uri =~ /^spotify:playlist:(.+)$/;
+        my $id = $1;
+
+        my ($name, $ownerUsername, $trackCount);
+        if ($i <= $#decorations) {
+            my $decoFields = Plugins::SpotOn::API::ProtobufLite::parse_fields($decorations[$i]);
+            if ($decoFields) {
+                $ownerUsername = Plugins::SpotOn::API::ProtobufLite::field_first($decoFields, 5);
+                $trackCount   = Plugins::SpotOn::API::ProtobufLite::field_first($decoFields, 3);
+                if (defined(my $attrBytes = Plugins::SpotOn::API::ProtobufLite::field_first($decoFields, 2))) {
+                    my $attrFields = Plugins::SpotOn::API::ProtobufLite::parse_fields($attrBytes);
+                    $name = Plugins::SpotOn::API::ProtobufLite::field_first($attrFields, 1) if $attrFields;
+                }
+            }
         }
-        elsif (defined(my $subFolderBytes = Plugins::SpotOn::API::ProtobufLite::field_first($itemFields, 2))) {   # Item.folder
-            $class->_flattenRootlistFolder($subFolderBytes, $playlists, $depth + 1);
-        }
+
+        push @playlists, {
+            id     => $id,
+            uri    => $uri,
+            name   => $name // '',
+            owner  => $ownerUsername ? { display_name => $ownerUsername } : undef,
+            tracks => { total => $trackCount // 0 },
+            images => [],
+        };
     }
+
+    return \@playlists;
 }
 
 # _normalizePlaylistMeta($class, $plBytes)

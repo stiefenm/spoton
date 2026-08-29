@@ -1643,102 +1643,60 @@ sub liked_songs_fixture {
 }
 
 # ============================================================
-# Phase 75 Plan 05 fixtures -- rootlist (protobuf, nested
-# Folder/Item/Playlist tree), Task 1
+# Phase 75 Plan 05 fixtures -- rootlist (ListContent in field 5), Task 1
+# The live server wraps items in Response.field_5 (ListContent), with
+# item URIs in field 5.3[].1 and decorations in field 5.4[].
 # ============================================================
 
-# encode_user(%args): User submessage (username=2, display_name=3)
-sub encode_user {
-    my (%args) = @_;
-    my $bytes = '';
-    $bytes .= Plugins::SpotOn::API::ProtobufLite::encode_field(2, 2, $args{username})
-        if defined $args{username};
-    $bytes .= Plugins::SpotOn::API::ProtobufLite::encode_field(3, 2, $args{display_name})
-        if defined $args{display_name};
-    return $bytes;
-}
-
-# encode_playlist_metadata(%args): link=1, name=2, owner=3 (User submessage)
-sub encode_playlist_metadata {
-    my (%args) = @_;
-    my $bytes = '';
-    $bytes .= Plugins::SpotOn::API::ProtobufLite::encode_field(1, 2, $args{link})
-        if defined $args{link};
-    $bytes .= Plugins::SpotOn::API::ProtobufLite::encode_field(2, 2, $args{name})
-        if defined $args{name};
-    if ($args{owner}) {
-        $bytes .= Plugins::SpotOn::API::ProtobufLite::encode_field(3, 2, encode_user(%{ $args{owner} }));
-    }
-    return $bytes;
-}
-
-# encode_rootlist_playlist(%args): row_id=1, playlist_metadata=2
-sub encode_rootlist_playlist {
-    my (%args) = @_;
-    my $bytes = '';
-    $bytes .= Plugins::SpotOn::API::ProtobufLite::encode_field(1, 2, $args{row_id})
-        if defined $args{row_id};
-    if ($args{metadata}) {
-        $bytes .= Plugins::SpotOn::API::ProtobufLite::encode_field(2, 2, encode_playlist_metadata(%{ $args{metadata} }));
-    }
-    return $bytes;
-}
-
-# encode_rootlist_item(%args): folder=2 OR playlist=3
+# encode_rootlist_item($uri): Item { field 1 = URI }
 sub encode_rootlist_item {
+    my ($uri) = @_;
+    return Plugins::SpotOn::API::ProtobufLite::encode_field(1, 2, $uri);
+}
+
+# encode_rootlist_decoration(%args): { field 2 = attributes{name=1}, field 3 = track_count, field 5 = owner }
+sub encode_rootlist_decoration {
     my (%args) = @_;
     my $bytes = '';
-    $bytes .= Plugins::SpotOn::API::ProtobufLite::encode_field(2, 2, $args{folder})
-        if defined $args{folder};
-    $bytes .= Plugins::SpotOn::API::ProtobufLite::encode_field(3, 2, $args{playlist})
-        if defined $args{playlist};
+    if (defined $args{name}) {
+        my $attrs = Plugins::SpotOn::API::ProtobufLite::encode_field(1, 2, $args{name});
+        $bytes .= Plugins::SpotOn::API::ProtobufLite::encode_field(2, 2, $attrs);
+    }
+    $bytes .= Plugins::SpotOn::API::ProtobufLite::encode_field(3, 0, $args{track_count} // 0);
+    $bytes .= Plugins::SpotOn::API::ProtobufLite::encode_field(5, 2, $args{owner})
+        if defined $args{owner};
     return $bytes;
 }
 
-# encode_rootlist_folder(@itemBytesList): item=1 (repeated)
-sub encode_rootlist_folder {
-    my (@itemBytesList) = @_;
-    my $bytes = '';
-    $bytes .= Plugins::SpotOn::API::ProtobufLite::encode_field(1, 2, $_) for @itemBytesList;
-    return $bytes;
-}
-
-# encode_rootlist_response($rootFolderBytes): root=1
+# encode_rootlist_response(@items, @decorations): Response { field 5 = ListContent { field 3 = items, field 4 = decorations } }
 sub encode_rootlist_response {
-    my ($rootFolderBytes) = @_;
-    return Plugins::SpotOn::API::ProtobufLite::encode_field(1, 2, $rootFolderBytes);
+    my ($items_ref, $decorations_ref) = @_;
+    my $listContent = '';
+    $listContent .= Plugins::SpotOn::API::ProtobufLite::encode_field(3, 2, $_) for @$items_ref;
+    $listContent .= Plugins::SpotOn::API::ProtobufLite::encode_field(4, 2, $_) for @$decorations_ref;
+    return Plugins::SpotOn::API::ProtobufLite::encode_field(5, 2, $listContent);
 }
 
 # ============================================================
 # Task 1: getUserPlaylists via rootlist (protobuf-only, S-10)
 # ============================================================
 
-# Nested-folder fixture: 2 top-level playlists + 1 folder containing 1
-# playlist -> all 3 surface flattened, in tree order, with the folder's
-# playlist last.
+# Flat ListContent fixture: 3 playlists with decorations (live server
+# wraps items in Response.field_5, not a nested Folder tree).
 {
     reset_all();
 
-    my $pl1 = encode_rootlist_playlist(
-        row_id   => 'spotify:playlist:' . b62id(1),
-        metadata => { name => 'Top Playlist One', owner => { username => 'testuser', display_name => 'Test User' } },
+    my @items = (
+        encode_rootlist_item('spotify:playlist:' . b62id(1)),
+        encode_rootlist_item('spotify:playlist:' . b62id(2)),
+        encode_rootlist_item('spotify:playlist:' . b62id(3)),
     );
-    my $pl2 = encode_rootlist_playlist(
-        row_id   => 'spotify:playlist:' . b62id(2),
-        metadata => { name => 'Top Playlist Two', owner => { username => 'testuser', display_name => 'Test User' } },
+    my @decos = (
+        encode_rootlist_decoration(name => 'Top Playlist One',   owner => 'testuser', track_count => 42),
+        encode_rootlist_decoration(name => 'Top Playlist Two',   owner => 'testuser', track_count => 10),
+        encode_rootlist_decoration(name => 'Nested Playlist Three', owner => 'testuser', track_count => 5),
     );
-    my $pl3 = encode_rootlist_playlist(
-        row_id   => 'spotify:playlist:' . b62id(3),
-        metadata => { name => 'Nested Playlist Three', owner => { username => 'testuser', display_name => 'Test User' } },
-    );
-
-    my $subFolder  = encode_rootlist_folder(encode_rootlist_item(playlist => $pl3));
-    my $rootFolder = encode_rootlist_folder(
-        encode_rootlist_item(playlist => $pl1),
-        encode_rootlist_item(playlist => $pl2),
-        encode_rootlist_item(folder   => $subFolder),
-    );
-    my $rootlistBytes = encode_rootlist_response($rootFolder);
+    my $rootlistBytes = encode_rootlist_response(\@items, \@decos);
 
     Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/playlist/v2/user/.+/rootlist}, $rootlistBytes);
 
@@ -1746,13 +1704,13 @@ sub encode_rootlist_response {
     $SP->getUserPlaylists('acct90', {}, sub { ($result, $err) = @_ });
 
     ok($result, 'getUserPlaylists: result returned');
-    is($result->{total}, 3, 'getUserPlaylists: nested-folder fixture flattens to 3 playlists');
+    is($result->{total}, 3, 'getUserPlaylists: ListContent fixture yields 3 playlists');
     is(scalar(@{ $result->{items} }), 3, 'getUserPlaylists: all 3 items present in the sliced page');
-    is($result->{items}[0]{uri}, 'spotify:playlist:' . b62id(1), 'getUserPlaylists: playlist 1 uri preserved (tree order)');
-    is($result->{items}[1]{uri}, 'spotify:playlist:' . b62id(2), 'getUserPlaylists: playlist 2 uri preserved (tree order)');
-    is($result->{items}[2]{uri}, 'spotify:playlist:' . b62id(3), 'getUserPlaylists: nested playlist surfaces flattened, after the top-level items');
-    is($result->{items}[2]{name}, 'Nested Playlist Three', 'getUserPlaylists: nested playlist name decoded from playlist_metadata');
-    is($result->{items}[0]{owner}{display_name}, 'Test User', 'getUserPlaylists: owner display_name decoded from the User submessage');
+    is($result->{items}[0]{uri}, 'spotify:playlist:' . b62id(1), 'getUserPlaylists: playlist 1 uri preserved');
+    is($result->{items}[1]{uri}, 'spotify:playlist:' . b62id(2), 'getUserPlaylists: playlist 2 uri preserved');
+    is($result->{items}[2]{uri}, 'spotify:playlist:' . b62id(3), 'getUserPlaylists: playlist 3 uri preserved');
+    is($result->{items}[2]{name}, 'Nested Playlist Three', 'getUserPlaylists: playlist name decoded from decoration attributes');
+    is($result->{items}[0]{owner}{display_name}, 'testuser', 'getUserPlaylists: owner decoded from decoration field 5');
 
     my @rootlistReqs = grep { $_->{url} =~ m{/rootlist} } Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests();
     is(scalar(@rootlistReqs), 1, 'getUserPlaylists: exactly one rootlist request');
@@ -1773,66 +1731,28 @@ sub encode_rootlist_response {
         'getUserPlaylists: malformed rootlist bytes delegate to Client.pm exactly once (D-07/T-75-12), no die');
 }
 
-# Recursion depth guard (T-75-16/V5): folder nesting well beyond
-# ROOTLIST_MAX_DEPTH never crashes/hangs -- each level wraps the previous
-# folder's bytes, simulating a pathological/adversarial rootlist payload.
-# The playlist buried past the cap is silently dropped, not returned.
+# Non-playlist URIs in items are skipped (e.g. start-group/end-group markers).
 {
     reset_all();
 
-    my $deepPlaylist = encode_rootlist_playlist(
-        row_id   => 'spotify:playlist:' . b62id(99),
-        metadata => { name => 'Buried Playlist' },
+    my @items = (
+        encode_rootlist_item('spotify:playlist:' . b62id(1)),
+        encode_rootlist_item('spotify:start-group:v2:folder-name'),
+        encode_rootlist_item('spotify:playlist:' . b62id(2)),
     );
-    my $innerFolder = encode_rootlist_folder(encode_rootlist_item(playlist => $deepPlaylist));
-    for (1 .. 20) {   # 20 levels, well beyond ROOTLIST_MAX_DEPTH (10)
-        $innerFolder = encode_rootlist_folder(encode_rootlist_item(folder => $innerFolder));
-    }
-    my $deepRootlistBytes = encode_rootlist_response($innerFolder);
-
-    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/playlist/v2/user/.+/rootlist}, $deepRootlistBytes);
+    my @decos = (
+        encode_rootlist_decoration(name => 'Real Playlist', owner => 'user1', track_count => 5),
+        encode_rootlist_decoration(),
+        encode_rootlist_decoration(name => 'Another Playlist', owner => 'user1', track_count => 3),
+    );
+    my $bytes = encode_rootlist_response(\@items, \@decos);
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/playlist/v2/user/.+/rootlist}, $bytes);
 
     my ($result, $err);
     $SP->getUserPlaylists('acct94', {}, sub { ($result, $err) = @_ });
 
-    ok($result, 'getUserPlaylists: 20-level-deep folder nesting does not crash/hang (T-75-16 depth guard)');
-    is(scalar(@{ $result->{items} }), 0, 'getUserPlaylists: playlist buried beyond ROOTLIST_MAX_DEPTH is dropped, not returned (bounded recursion)');
-}
-
-# Source-level assertion: the depth-guard constant and its bail-out check
-# exist in SpClient.pm (acceptance criterion: "Recursion depth guard exists
-# (source assertion)").
-{
-    my $srcPath = "$project_dir/Plugins/SpotOn/API/SpClient.pm";
-    open(my $fh, '<', $srcPath) or die "Cannot read $srcPath: $!";
-    local $/;
-    my $src = <$fh>;
-    close($fh);
-    like($src, qr/ROOTLIST_MAX_DEPTH/, 'source: ROOTLIST_MAX_DEPTH depth-guard constant present in SpClient.pm');
-    like($src, qr/return if \$depth > ROOTLIST_MAX_DEPTH/, 'source: _flattenRootlistFolder bails out once the depth cap is exceeded');
-}
-
-# _normalizePlaylistMeta: URI derivation branches (link precedence over a
-# non-URI row_id; bare row_id fallback when no link is present; malformed
-# bytes return undef, not a die).
-{
-    my $withLink = encode_rootlist_playlist(
-        row_id   => 'raw_row_id_value',
-        metadata => { link => 'spotify:playlist:' . b62id(50), name => 'Linked Playlist' },
-    );
-    my $norm1 = $SP->_normalizePlaylistMeta($withLink);
-    is($norm1->{uri}, 'spotify:playlist:' . b62id(50), '_normalizePlaylistMeta: prefers PlaylistMetadata.link over a non-URI row_id');
-    is($norm1->{id}, b62id(50), '_normalizePlaylistMeta: id derived from the link-based uri');
-
-    my $rawIdOnly = encode_rootlist_playlist(
-        row_id   => b62id(51),
-        metadata => { name => 'Raw Id Playlist' },
-    );
-    my $norm2 = $SP->_normalizePlaylistMeta($rawIdOnly);
-    is($norm2->{uri}, 'spotify:playlist:' . b62id(51), '_normalizePlaylistMeta: derives spotify:playlist:{id} from a bare row_id when no link is present');
-
-    my $malformedPlaylist = pack('C*', 0xFF, 0xFF, 0xFF);
-    is($SP->_normalizePlaylistMeta($malformedPlaylist), undef, '_normalizePlaylistMeta: malformed playlist bytes return undef, not a die');
+    ok($result, 'getUserPlaylists: non-playlist URIs skipped without crash');
+    is($result->{total}, 2, 'getUserPlaylists: start-group URI filtered out, only 2 playlists');
 }
 
 # getUserPlaylists D-06/D-07 router regressions.
