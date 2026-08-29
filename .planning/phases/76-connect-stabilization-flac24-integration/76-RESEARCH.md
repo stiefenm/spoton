@@ -396,7 +396,7 @@ type  => 'playlist',   # war 'link' → aktiviert Play All / Add to Queue in Mat
    - **Auflösung (Planner):** Plan 76-06 shippt Option A in rate-sicherer Form — ON-DEMAND only, ein Request pro Menü-Öffnung, nie gepollt. Das umgeht den Rate-Pool-Einwand des Issue-Autors (der zielt auf wiederkehrende Calls) und funktioniert für BEIDE Backends. Option B bleibt als kompatibles Phase-77+-Layering erhalten (event-getriebener Refresh desselben Feeds) und wird durch 76-06 nicht verbaut.
    - **Offener Rest:** Die Option-A-Wahl wird beim Phase-76-UAT dem User zur Absegnung vorgelegt (Issue-Autor-Präferenz war Option B — siehe A5).
 
-2. **`resolvePassthroughForClient` erweitern oder neuer Resolver?**
+2. **`resolvePassthroughForClient` erweitern oder neuer Resolver? (RESOLVED — Plan 76-04)**
    - Was wir wissen: Boolean-Contract von 2 Aufrufern konsumiert (librespot).
    - Empfehlung: Neuer `resolveSoloistFormat()`, ProtocolHandler verzweigt per backend. Planner bestätigt.
 
@@ -449,7 +449,7 @@ type  => 'playlist',   # war 'link' → aktiviert Play All / Add to Queue in Mat
 | D-04 fake-libpulse S32 | float32→S32LE Konversion + Clamping | unit (C) | `make -C Plugins/SpotOn/Bin/fake-libpulse test` | ✅ (erweitern um S32-Assertion) |
 | D-05 soc flc Regel | Regel parst, sox-Pipeline lauffähig | unit + manual | `prove -l t/03_*.t t/04_*.t` (conf-syntax) + manueller sox-Test | ✅ conf-tests / ❌ Pipeline-Test Wave 0 |
 | D-06 Format-Resolver | flc∈formats → flac, sonst pcm | unit | `prove -l t/28_soloist_dispatch.t` (erweitern) | ❌ Wave 0 (neuer Resolver) |
-| D-08 samplesize hint | samplesize(32) gesetzt | unit | `prove -l t/29_soloist_browse.t` | ✅ (Wert-Assertion anpassen) |
+| D-08 samplesize hint | samplesize(32) gesetzt | unit | `prove -l t/29_soloist_browse.t` | ✅ (keine bestehende samplesize-Assertion — neue Assertions ergänzen, nichts anzupassen) |
 | #149/#150 | idle-guard / key-timeout classifier | unit (schon grün) | `prove -l t/22_audio_key_classifier.t` | ✅ |
 | #159 /control status | (false,play) → distinkter Status | unit (Rust) | `cargo test` in librespot-spoton | ❌ Wave 0 |
 | #161 flat-list type | Recently/Liked → type playlist | unit | `prove -l t/` (Plugin.pm feed test) | ⚠️ prüfen ob feed-test existiert |
