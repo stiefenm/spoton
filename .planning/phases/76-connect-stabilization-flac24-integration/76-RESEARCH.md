@@ -391,22 +391,22 @@ type  => 'playlist',   # war 'link' → aktiviert Play All / Add to Queue in Mat
 
 ## Open Questions
 
-1. **#135 Connect-Queue: Option A (Web API poll) vs. Option B (Spirc events)?**
+1. **#135 Connect-Queue: Option A (Web API poll) vs. Option B (Spirc events)? (RESOLVED — Plan 76-06)**
    - Was wir wissen: Option A funktioniert heute mit bundled Client ID (`GET /me/player/queue`), rein Perl. Option B braucht librespot-PR #1676+#1677 Cherry-Picks + Rust→Perl-Channel-Erweiterung.
-   - Was unklar ist: Ob der volle Scope (D-01 „alle Items") Option B in Phase 76 realistisch macht, oder ob eine schlanke Option-A-Variante (langsames Poll, nur währenddessen aktive Session) genügt.
-   - Empfehlung: Planner sollte #135 als eigenständigen, abtrennbaren Task behandeln; bei Zeitdruck Option A minimal, Option B in Phase 77. Mit User abstimmen (Scope-Entscheidung).
+   - **Auflösung (Planner):** Plan 76-06 shippt Option A in rate-sicherer Form — ON-DEMAND only, ein Request pro Menü-Öffnung, nie gepollt. Das umgeht den Rate-Pool-Einwand des Issue-Autors (der zielt auf wiederkehrende Calls) und funktioniert für BEIDE Backends. Option B bleibt als kompatibles Phase-77+-Layering erhalten (event-getriebener Refresh desselben Feeds) und wird durch 76-06 nicht verbaut.
+   - **Offener Rest:** Die Option-A-Wahl wird beim Phase-76-UAT dem User zur Absegnung vorgelegt (Issue-Autor-Präferenz war Option B — siehe A5).
 
 2. **`resolvePassthroughForClient` erweitern oder neuer Resolver?**
    - Was wir wissen: Boolean-Contract von 2 Aufrufern konsumiert (librespot).
    - Empfehlung: Neuer `resolveSoloistFormat()`, ProtocolHandler verzweigt per backend. Planner bestätigt.
 
-3. **8s-Gap Root Cause (D-12) — Ring-leeren löst es oder ist es LMS-Stream-Latenz?**
+3. **8s-Gap Root Cause (D-12) — Ring-leeren löst es oder ist es LMS-Stream-Latenz? (RESOLVED — Plan 76-07)**
    - Was wir wissen: Ring `_ring_flush` existiert, wird beim `pa_stream_flush` gerufen; Frage ob der disconnect-Pfad ihn auch braucht.
-   - Empfehlung: Erst instrumentieren (Timestamp play-command → erster GET), dann gezielt fixen. Soft-Blocker (D-13).
+   - **Auflösung (Planner):** Genau der empfohlene Instrument-first-Ansatz ist Plan 76-07: Task 1 misst alle fünf Hops (t0 pa_stream_flush → t4 first ring drain, 3 Läufe), Task 2 fixt den identifizierten Hop oder dokumentiert per D-13-Soft-Blocker ein Known Issue (TROUBLESHOOTING + WINDOWS.md-#5-Annotation). Die Root-Cause-Frage wird also nicht vorab entschieden, sondern datengetrieben im Plan aufgelöst.
 
-4. **spoton-helper Live-Patch für UAT verfügbar?**
+4. **spoton-helper Live-Patch für UAT verfügbar? (RESOLVED — Plan 76-08)**
    - Was wir wissen: Kein Binary im Tree, keine CI-Secrets, keine lokalen Patterns gefunden.
-   - Empfehlung: FLAC24-Enum-Effekt aus dem Phase-76-Erfolgskriterium herausnehmen (unverifizierbar); Pipeline-Qualität an der fake-libpulse-S32-Kette messen, nicht am Enum-Patch. Phase-77-UAT-Sache.
+   - **Auflösung (Planner):** Empfehlung übernommen — Plan 76-08 Task 2 dokumentiert den verifizierten Status im ROADMAP-Eintrag (Wiring seit 74-04 komplett, fail-open, t/33-gedeckt; öffentliche Builds mit leerer Pattern-Tabelle, Secrets `SPOTON_PRIVATE_PATTERNS_TOKEN`/`REPO` fehlen). Der FLAC24-Enum-Effekt ist explizit AUS den Phase-76-Erfolgskriterien genommen und auf Phase-77-UAT verschoben; Pipeline-Qualität wird an der fake-libpulse-S32-Kette gemessen. Diese Deferral-Ausnahme zu D-01 („Keine Deferrals") ist umgebungsbedingt (fehlende CI-Secrets) und wird beim UAT-/Verify-Review dem User explizit zur Bestätigung vorgelegt.
 
 ## Environment Availability
 
@@ -437,7 +437,7 @@ type  => 'playlist',   # war 'link' → aktiviert Play All / Add to Queue in Mat
 ### Test Framework
 | Property | Value |
 |----------|-------|
-| Framework | Perl `Test::More` via `prove` (32 Test-Dateien, 1356 Tests) + C-Host-Test (`make test`, 6 Assertions) |
+| Framework | Perl `Test::More` via `prove` (36 Test-Dateien, live gezählt bei Planning-Verify; Testanzahl wächst mit den Phase-76-Plänen) + C-Host-Test (`make test`, 6 Assertions) |
 | Config file | keine — `prove -l t/` Konvention |
 | Quick run command | `prove -l t/32_soloist_events.t t/31_soloist_ws.t` (relevante Soloist-Tests) |
 | Full suite command | `prove -l t/` + `make -C Plugins/SpotOn/Bin/fake-libpulse test` |
