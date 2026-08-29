@@ -2,20 +2,20 @@
 gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: Soloist Integration
-current_phase: 75
-current_phase_name: API Unification (spclient-Modell)
-status: verifying
-stopped_at: Completed 75-07-PLAN.md (gap closure — CR-01, WR-01..WR-04 all closed)
-last_updated: "2026-08-29T15:08:11.766Z"
+current_phase: 76
+current_phase_name: soloist ux polish
+status: planning
+stopped_at: Phase 75 complete, ready to plan Phase 76
+last_updated: "2026-08-29T15:14:31.816Z"
 last_activity: 2026-08-29
-last_activity_desc: Phase 75 execution started
-state_head: 4b3197379896b054d93704fd2676992e171a8c1b
+last_activity_desc: Phase 75 complete, transitioned to Phase 76
+state_head: 9a6ace9940236f1cfa98423d4ab64ce0372c0d32
 progress:
   total_phases: 14
-  completed_phases: 3
+  completed_phases: 4
   total_plans: 24
   completed_plans: 24
-  percent: 21
+  percent: 29
 ---
 
 # Project State: SpotOn
@@ -34,10 +34,10 @@ See: .planning/PROJECT.md (updated 2026-06-30)
 
 ## Current Position
 
-Phase: 75 (API Unification (spclient-Modell)) — EXECUTING
-Plan: 6 of 6
-Status: Phase complete — ready for verification
-Last activity: 2026-08-29 — Phase 75 execution started
+Phase: 76 — soloist ux polish
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-08-29 — Phase 75 complete, transitioned to Phase 76
 
 ## Progress Bar
 
@@ -348,7 +348,7 @@ Items carried forward from previous milestones:
 **Resume file:** None
 
 **Last session:** 2026-08-29T15:08:11.324Z
-**Stopped at:** Completed 75-07-PLAN.md (gap closure — CR-01, WR-01..WR-04 all closed)
+**Stopped at:** Phase 75 complete, ready to plan Phase 76
 
 **Completed this session (2026-08-24):**
 
