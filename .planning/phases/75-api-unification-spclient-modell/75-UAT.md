@@ -8,20 +8,20 @@ updated: 2026-08-29T09:55:00Z
 
 ## Current Test
 
-number: 1
-name: Login5 + SpClient Metadata Roundtrip (live)
+number: 2
+name: Album/Artist/Search + Show/Episode Shapes (live)
 expected: |
-  `tools/spclient-smoke.pl --credentials ~/.spoton/credentials.json` completes
-  Stage 1 (login5 Bearer token), Stage 2 (spclient metadata/4/track), and
-  Stage 3 (rootlist) successfully. Token is >400 chars, track JSON contains
-  name/artists/album fields, rootlist returns at least one playlist.
+  Browse an album (track list loads), browse an artist (albums list loads),
+  search for a track (results appear). Verify no visible regressions vs.
+  pre-Phase-75 behavior.
 awaiting: user response
 
 ## Tests
 
 ### 1. Login5 + SpClient Metadata Roundtrip (live)
-expected: Run `tools/spclient-smoke.pl --credentials ~/.spoton/credentials.json` on the LMS dev machine. All 3 stages pass — login5 token minted, metadata/4/track returns valid JSON, rootlist decodes playlists.
-result: [pending]
+expected: Run `tools/spclient-smoke.pl /var/lib/squeezeboxserver/cache/spoton/<accountId>/credentials.json` on the LMS dev machine. All 3 stages pass — login5 token minted, metadata/4/track returns valid JSON, rootlist decodes playlists.
+result: pass
+notes: "Initial test used Spotty credentials (CID mismatch → HashCash challenge). SpotOn's own credentials work. Rootlist initially returned count=0 due to Response field mapping bug (field 5 not field 1) — fixed in 0c7ff9f. Re-test: token=438 chars, metadata=OK, rootlist=93 playlists. Proto audit: all endpoints (collection/v2, context-resolve, recently-played) match expected structures."
 
 ### 2. Album/Artist/Search + Show/Episode Shapes (live)
 expected: Browse an album (track list loads with correct names/durations), browse an artist (albums list loads), search for a track (results appear). If you have podcast content: browse a show (episodes load). Verify no visible regressions vs. pre-Phase-75 behavior — same menus, same data.
@@ -72,9 +72,9 @@ coverage_id: D1-D6
 ## Summary
 
 total: 10
-passed: 5
+passed: 6
 issues: 0
-pending: 5
+pending: 4
 skipped: 0
 blocked: 0
 
