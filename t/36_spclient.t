@@ -312,6 +312,8 @@ our @search_calls          = ();
 our @getSavedAlbums_calls     = ();
 our @getFollowedArtists_calls = ();
 our @getSavedShows_calls      = ();
+our @getSavedTracks_calls     = ();
+our @getRecentlyPlayed_calls  = ();
 our $mock_result = { id => 'mockclienttrackid0000' };
 
 sub getTrack {
@@ -374,6 +376,16 @@ sub getSavedShows {
     push @getSavedShows_calls, { accountId => $accountId, params => $params };
     $cb->($mock_result, undef);
 }
+sub getSavedTracks {
+    my ($class, $accountId, $params, $cb) = @_;
+    push @getSavedTracks_calls, { accountId => $accountId, params => $params };
+    $cb->($mock_result, undef);
+}
+sub getRecentlyPlayed {
+    my ($class, $accountId, $params, $cb) = @_;
+    push @getRecentlyPlayed_calls, { accountId => $accountId, params => $params };
+    $cb->($mock_result, undef);
+}
 sub reset_calls {
     @getTrack_calls        = ();
     @getAlbum_calls        = ();
@@ -387,6 +399,8 @@ sub reset_calls {
     @getSavedAlbums_calls     = ();
     @getFollowedArtists_calls = ();
     @getSavedShows_calls      = ();
+    @getSavedTracks_calls     = ();
+    @getRecentlyPlayed_calls  = ();
 }
 1;
 END
@@ -1206,6 +1220,158 @@ sub encode_page_response {
     is(scalar(@Plugins::SpotOn::API::Client::getSavedShows_calls), 1, 'getSavedShows D-06: delegates to Client.pm exactly once');
 
     $Plugins::SpotOn::API::Credentials::mock_creds = { username => 'testuser', auth_data => 'ZGF0YQ==' };
+}
+
+# ============================================================
+# Phase 75 Plan 04 fixtures -- context-resolve (liked songs), recently-played
+# (protobuf), Task 3
+# ============================================================
+
+sub encode_context {
+    my (%args) = @_;
+    my $bytes = '';
+    $bytes .= Plugins::SpotOn::API::ProtobufLite::encode_field(1, 2, $args{uri})
+        if defined $args{uri};
+    $bytes .= Plugins::SpotOn::API::ProtobufLite::encode_field(2, 0, $args{lastPlayedTime})
+        if defined $args{lastPlayedTime};
+    return $bytes;
+}
+
+sub encode_recently_played {
+    my (@contexts) = @_;
+    my $bytes = '';
+    for my $c (@contexts) {
+        $bytes .= Plugins::SpotOn::API::ProtobufLite::encode_field(1, 2, encode_context(%$c));
+    }
+    return $bytes;
+}
+
+sub liked_songs_fixture {
+    my ($n) = @_;
+    my @tracks = map { { uri => 'spotify:track:' . b62id($_) } } (1 .. $n);
+    return JSON::XS::VersionOneAndTwo::to_json({
+        pages => [ { tracks => \@tracks } ],
+        uri   => 'spotify:user:testuser:collection',
+        url   => 'context://spotify:user:testuser:collection',
+    });
+}
+
+# ============================================================
+# Task 3: getSavedTracks (Liked Songs, no paging) + getRecentlyPlayed (S-09)
+# ============================================================
+
+# Liked-songs fixture (25 URIs), offset=10/limit=10 -> exactly 10 enrichment
+# calls, total=25 (the full list, not the slice -- S-04 no-paging win).
+{
+    reset_all();
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/context-resolve/v1/spotify:user:}, liked_songs_fixture(25));
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/metadata/4/track/}, to_json_fixture());
+
+    my ($result, $err);
+    $SP->getSavedTracks('acct80', { offset => 10, limit => 10 }, sub { ($result, $err) = @_ });
+
+    ok($result, 'getSavedTracks: result returned');
+    is($result->{total}, 25, 'getSavedTracks: total reflects the FULL liked-songs list (25), not the slice');
+    is(scalar(@{ $result->{items} }), 10, 'getSavedTracks: items sliced to the requested limit (10)');
+
+    my @trackReqs = grep { $_->{url} =~ m{/metadata/4/track/} } Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests();
+    is(scalar(@trackReqs), 10, 'getSavedTracks: exactly limit-many (10) enrichment calls -- sliced, not all 25');
+    is($result->{items}[0]{track}{name}, 'Test Track', 'getSavedTracks: item wraps the enriched track under a "track" key (Web-API shape)');
+}
+
+# getSavedTracks D-06/D-07 router regressions.
+{
+    reset_all();
+    $Plugins::SpotOn::API::Credentials::mock_creds = undef;
+
+    my ($result, $err);
+    $SP->getSavedTracks('acct81', {}, sub { ($result, $err) = @_ });
+
+    is(scalar(Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests()), 0, 'getSavedTracks D-06: zero spclient HTTP when creds absent');
+    is(scalar(@Plugins::SpotOn::API::Client::getSavedTracks_calls), 1, 'getSavedTracks D-06: delegates to Client.pm exactly once');
+
+    $Plugins::SpotOn::API::Credentials::mock_creds = { username => 'testuser', auth_data => 'ZGF0YQ==' };
+}
+{
+    reset_all();
+    $Slim::Networking::SimpleAsyncHTTP::auto_mode = 'error_500';
+
+    my ($result, $err);
+    $SP->getSavedTracks('acct82', {}, sub { ($result, $err) = @_ });
+
+    is(scalar(@Plugins::SpotOn::API::Client::getSavedTracks_calls), 1, 'getSavedTracks D-07: falls back to Client.pm on a context-resolve 500');
+
+    $Slim::Networking::SimpleAsyncHTTP::auto_mode = 'success';
+}
+
+# Username-source test (A5): prefs spotifyUserId differs from the
+# credentials.json username -- the request URL must use the CREDENTIALS
+# username, never the prefs value.
+{
+    reset_all();
+    $Plugins::SpotOn::API::Credentials::mock_creds = { username => 'crealuser123', auth_data => 'ZGF0YQ==' };
+    Slim::Utils::Prefs::preferences('plugin.spoton')->set('spotifyUserId', 'wrongprefsid999');
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/context-resolve/v1/spotify:user:}, liked_songs_fixture(1));
+
+    my ($result, $err);
+    $SP->getSavedTracks('acct83', {}, sub { ($result, $err) = @_ });
+
+    my @ctxReqs = grep { $_->{url} =~ m{/context-resolve/v1/spotify:user:} } Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests();
+    is(scalar(@ctxReqs), 1, 'username-source: exactly one context-resolve request');
+    like($ctxReqs[0]->{url}, qr{spotify:user:crealuser123:collection}, 'username-source (A5): URL uses the credentials.json username');
+    unlike($ctxReqs[0]->{url}, qr{wrongprefsid999}, 'username-source (A5): URL never contains the prefs spotifyUserId value');
+
+    $Plugins::SpotOn::API::Credentials::mock_creds = { username => 'testuser', auth_data => 'ZGF0YQ==' };
+}
+
+# getRecentlyPlayed: protobuf fixture with 2 track contexts + 1 playlist
+# context -> exactly 2 track items out, non-track context filtered,
+# lastPlayedTime decoded via multi-byte varint (epoch-ms values need >5 bytes).
+{
+    reset_all();
+    my $rpFixture = encode_recently_played(
+        { uri => 'spotify:track:' . b62id(1),    lastPlayedTime => 1_700_000_000_123 },
+        { uri => 'spotify:playlist:' . b62id(2), lastPlayedTime => 1_700_000_000_456 },
+        { uri => 'spotify:track:' . b62id(3),    lastPlayedTime => 1_700_000_000_789 },
+    );
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/recently-played/v3/}, $rpFixture);
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/metadata/4/track/}, to_json_fixture());
+
+    my ($result, $err);
+    $SP->getRecentlyPlayed('acct84', {}, sub { ($result, $err) = @_ });
+
+    ok($result, 'getRecentlyPlayed: result returned');
+    is(scalar(@{ $result->{items} }), 2, 'getRecentlyPlayed: filters out the non-track (playlist) context -- 2 of 3 contexts survive');
+    is($result->{items}[0]{played_at}, 1_700_000_000_123, 'getRecentlyPlayed: lastPlayedTime decoded correctly via multi-byte varint');
+    is($result->{items}[1]{played_at}, 1_700_000_000_789, 'getRecentlyPlayed: second track context lastPlayedTime decoded correctly');
+
+    my @recentReqs = grep { $_->{url} =~ m{/recently-played/v3/} } Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests();
+    like($recentReqs[0]->{url}, qr{/user/testuser/}, 'getRecentlyPlayed: URL uses the credentials.json username');
+}
+
+# getRecentlyPlayed D-06/D-07 router regressions.
+{
+    reset_all();
+    $Plugins::SpotOn::API::Credentials::mock_creds = undef;
+
+    my ($result, $err);
+    $SP->getRecentlyPlayed('acct85', {}, sub { ($result, $err) = @_ });
+
+    is(scalar(Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests()), 0, 'getRecentlyPlayed D-06: zero spclient HTTP when creds absent');
+    is(scalar(@Plugins::SpotOn::API::Client::getRecentlyPlayed_calls), 1, 'getRecentlyPlayed D-06: delegates to Client.pm exactly once');
+
+    $Plugins::SpotOn::API::Credentials::mock_creds = { username => 'testuser', auth_data => 'ZGF0YQ==' };
+}
+{
+    reset_all();
+    $Slim::Networking::SimpleAsyncHTTP::auto_mode = 'error_500';
+
+    my ($result, $err);
+    $SP->getRecentlyPlayed('acct86', {}, sub { ($result, $err) = @_ });
+
+    is(scalar(@Plugins::SpotOn::API::Client::getRecentlyPlayed_calls), 1, 'getRecentlyPlayed D-07: falls back to Client.pm on a spclient 500');
+
+    $Slim::Networking::SimpleAsyncHTTP::auto_mode = 'success';
 }
 
 done_testing();

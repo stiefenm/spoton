@@ -56,6 +56,10 @@ use constant COLLECTION_V2_CONTENT_TYPE => 'application/vnd.collection-v2.spotif
 use constant COLLECTION_PAGE_LIMIT      => 200;
 use constant COLLECTION_LIST_TTL        => 60;   # CLAUDE.md: library-item lists = 60s
 
+# context-resolve (Liked Songs) + recently-played (S-09, Phase 75 Plan 04 Task 3)
+use constant LIKED_SONGS_LIST_TTL   => 60;   # same tier -- Liked Songs is a library list
+use constant RECENTLY_PLAYED_ACCEPT => 'vnd.spotify/collection-favorites';  # S-09: protobuf-only, value is documentation
+
 # SET_MAP: verified collection/v2 set names (Spike 009 S-07). Saved Albums
 # live under the confusingly generic 'collection' set (NOT 'album', which
 # 403s). pinned_playlists/saved_episodes are documented here even though no
@@ -1588,6 +1592,232 @@ sub getSavedShows {
             my ($result, $err) = @_;
             $afterProbe->($result, $err);
         });
+    });
+}
+
+# ============================================================
+# getSavedTracks (Liked Songs, no paging) + getRecentlyPlayed (S-09)
+# Phase 75 Plan 04 Task 3
+# ============================================================
+
+# _likedSongsUris($class, $accountId, $cb)
+# Fetches (and caches 60s per account) the FULL Liked Songs URI list via
+# context-resolve/v1/spotify:user:{username}:collection -- the headline
+# spclient win: ALL liked tracks in one response, no Spotify-side 50-item
+# paging (unlike Web API's /me/tracks). username comes from
+# verifyCredentials (_username), NEVER prefs spotifyUserId (A5).
+sub _likedSongsUris {
+    my ($class, $accountId, $cb) = @_;
+
+    my $cacheKey = "spoton_spclient_liked_${accountId}";
+    if (my $cached = $cache->get($cacheKey)) {
+        $cb->($cached, undef);
+        return;
+    }
+
+    my $username = $class->_username($accountId);
+    unless ($username) {
+        $cb->(undef, { error => 'no_credentials' });
+        return;
+    }
+
+    my $path = 'context-resolve/v1/spotify:user:' . uri_escape_utf8($username) . ':collection';
+
+    $class->_request('get', $path, {
+        _accountId => $accountId,
+        _accept    => 'application/json',
+        _noCache   => 1,   # this module owns the 60s list-level cache below
+    }, sub {
+        my ($result, $err) = @_;
+
+        if ($err) {
+            $cb->(undef, $err);
+            return;
+        }
+
+        my @uris;
+        if ($result && ref($result) eq 'HASH' && ref($result->{pages}) eq 'ARRAY') {
+            for my $page (@{ $result->{pages} }) {
+                push @uris, map { $_->{uri} }
+                            grep { ref($_) eq 'HASH' && $_->{uri} }
+                            @{ (ref($page) eq 'HASH' ? $page->{tracks} : []) || [] };
+            }
+        }
+
+        $cache->set($cacheKey, \@uris, LIKED_SONGS_LIST_TTL);
+        $cb->(\@uris, undef);
+    });
+}
+
+# getSavedTracks($class, $accountId, $params, $cb)
+# Same cb contract as Client.pm::getSavedTracks ({ items => [{track=>...}],
+# total, offset, limit }, matching _normalizeLibraryItem/_savedTracksFeed's
+# consumption). Decision (recorded per plan): NO play-all-specific shortcut
+# -- _savedTracksFeed's play-all branch calls this SAME method repeatedly
+# via _fetchAllPages with successive offset/limit windows and feeds every
+# page through _trackItem, which needs full track fields (name/artists/
+# album/duration_ms), not just uri+id. The already-complete URI list
+# (_likedSongsUris, cached 60s) makes every page just a slice + enrichment
+# call -- no repeated Spotify-side pagination regardless of mode.
+sub getSavedTracks {
+    my ($class, $accountId, $params, $cb) = @_;
+    $params ||= {};
+    my $offset = $params->{offset} // 0;
+    my $limit  = $params->{limit}  // 50;
+
+    unless ($class->_hasLogin5Creds($accountId)) {
+        main::INFOLOG && $log->info('SpClient: no login5-capable credentials, delegating getSavedTracks to Client.pm (D-06)');
+        require Plugins::SpotOn::API::Client;
+        Plugins::SpotOn::API::Client->getSavedTracks($accountId, $params, $cb);
+        return;
+    }
+
+    $class->_likedSongsUris($accountId, sub {
+        my ($uris, $err) = @_;
+
+        if ($err) {
+            if ($class->_isFallbackError($err)) {
+                main::INFOLOG && $log->info('SpClient: getSavedTracks context-resolve error, falling back to Client.pm (D-07): '
+                    . ($err->{error} // '?'));
+                require Plugins::SpotOn::API::Client;
+                Plugins::SpotOn::API::Client->getSavedTracks($accountId, $params, $cb);
+                return;
+            }
+            $cb->(undef, $err);
+            return;
+        }
+
+        my ($slice, $total) = $class->_sliceAsPage($uris, $offset, $limit);
+        my @trackIds = map { /^spotify:track:(.+)$/ ? $1 : () } @$slice;
+
+        $class->_enrichTracks($accountId, \@trackIds, sub {
+            my ($tracks) = @_;
+            my @items = map { { track => $_ } } @$tracks;
+            $cb->({
+                items  => \@items,
+                total  => $total,
+                offset => $offset,
+                limit  => $limit,
+                next   => (($offset + $limit) < $total) ? 1 : undef,
+            });
+        });
+    });
+}
+
+# getRecentlyPlayed($class, $accountId, $params, $cb)
+# recently-played/v3 is protobuf-ONLY (S-09 -- Accept: application/json has
+# no effect). Decoded via ProtobufLite as a flat RecentlyPlayed message
+# (repeated Context contexts=1; each Context: uri=1, lastPlayedTime=2
+# int64/varint -- recently_played_backend.proto). The endpoint mixes track/
+# album/playlist/artist/show/episode contexts; only spotify:track: URIs are
+# kept (Plugin.pm's _recentlyPlayedFeed renders tracks only). username comes
+# from verifyCredentials (_username), NEVER prefs (A5).
+sub getRecentlyPlayed {
+    my ($class, $accountId, $params, $cb) = @_;
+    $params ||= {};
+    my $limit = $params->{limit} // 50;
+
+    unless ($class->_hasLogin5Creds($accountId)) {
+        main::INFOLOG && $log->info('SpClient: no login5-capable credentials, delegating getRecentlyPlayed to Client.pm (D-06)');
+        require Plugins::SpotOn::API::Client;
+        Plugins::SpotOn::API::Client->getRecentlyPlayed($accountId, $params, $cb);
+        return;
+    }
+
+    my $username = $class->_username($accountId);
+    unless ($username) {
+        main::INFOLOG && $log->info('SpClient: no credentials username, delegating getRecentlyPlayed to Client.pm (D-06)');
+        require Plugins::SpotOn::API::Client;
+        Plugins::SpotOn::API::Client->getRecentlyPlayed($accountId, $params, $cb);
+        return;
+    }
+
+    my $path = 'recently-played/v3/user/' . uri_escape_utf8($username) . '/recently-played';
+
+    $class->_request('get', $path, {
+        _accountId => $accountId,
+        _accept    => RECENTLY_PLAYED_ACCEPT,
+        _raw       => 1,
+        _noCache   => 1,
+    }, sub {
+        my ($raw, $err) = @_;
+
+        if ($err) {
+            if ($class->_isFallbackError($err)) {
+                main::INFOLOG && $log->info('SpClient: getRecentlyPlayed error, falling back to Client.pm (D-07): '
+                    . ($err->{error} // '?'));
+                require Plugins::SpotOn::API::Client;
+                Plugins::SpotOn::API::Client->getRecentlyPlayed($accountId, $params, $cb);
+                return;
+            }
+            $cb->(undef, $err);
+            return;
+        }
+
+        my $fields = Plugins::SpotOn::API::ProtobufLite::parse_fields($raw);
+        unless ($fields) {
+            main::INFOLOG && $log->info('SpClient: getRecentlyPlayed protobuf parse failure, falling back to Client.pm (T-75-12)');
+            require Plugins::SpotOn::API::Client;
+            Plugins::SpotOn::API::Client->getRecentlyPlayed($accountId, $params, $cb);
+            return;
+        }
+
+        my @trackUris;
+        my %lastPlayed;
+        for my $ctxBytes (@{ $fields->{1} || [] }) {
+            my $ctxFields = Plugins::SpotOn::API::ProtobufLite::parse_fields($ctxBytes);
+            next unless $ctxFields;
+
+            my $uri = Plugins::SpotOn::API::ProtobufLite::field_first($ctxFields, 1);
+            next unless $uri && $uri =~ /^spotify:track:/;
+
+            push @trackUris, $uri;
+            $lastPlayed{$uri} = Plugins::SpotOn::API::ProtobufLite::field_first($ctxFields, 2);
+        }
+
+        my $end = $limit - 1;
+        $end = $#trackUris if $end > $#trackUris;
+        my @sliceUris = (@trackUris && $end >= 0) ? @trackUris[0 .. $end] : ();
+
+        unless (@sliceUris) {
+            $cb->({ items => [] });
+            return;
+        }
+
+        # Pair each enriched track with its ORIGINAL request uri's
+        # lastPlayedTime (not the enriched object's own uri, which may be a
+        # canonicalized/relinked uri that differs from the recently-played
+        # context's uri) -- order-preserving, individual-failure-tolerant,
+        # same shape discipline as _enrichCollectionSlice.
+        my @results   = (undef) x scalar(@sliceUris);
+        my $remaining = scalar @sliceUris;
+
+        for my $i (0 .. $#sliceUris) {
+            my $uri   = $sliceUris[$i];
+            my ($id)  = $uri =~ /^spotify:track:(.+)$/;
+            my $hexId = $id ? $class->idToHex($id) : undef;
+
+            my $finish = sub {
+                my ($val) = @_;
+                $results[$i] = $val ? { track => $val, played_at => $lastPlayed{$uri} } : undef;
+                if (--$remaining == 0) {
+                    $cb->({ items => [ grep { defined } @results ] });
+                }
+            };
+
+            unless ($hexId) {
+                $finish->(undef);
+                next;
+            }
+
+            $class->_request('get', "metadata/4/track/$hexId", {
+                _accountId => $accountId,
+                _accept    => 'application/json',
+            }, sub {
+                my ($result, $err) = @_;
+                $finish->($err ? undef : $class->_normalizeTrack($result));
+            });
+        }
     });
 }
 
