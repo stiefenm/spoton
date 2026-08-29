@@ -805,6 +805,25 @@ sub context_resolve_fixture {
     });
 }
 
+# context_resolve_mixed_fixture: 5 URIs of which only 3 are spotify:track:
+# (episode + local interleaved) -- Window 6 regression fixture. The offset
+# guard in search() must compare against the track-FILTERED count (3), not
+# the raw URI count (5).
+sub context_resolve_mixed_fixture {
+    my @entries = (
+        { uri => 'spotify:track:'   . b62id(1) },
+        { uri => 'spotify:episode:' . b62id(90) },
+        { uri => 'spotify:track:'   . b62id(2) },
+        { uri => 'spotify:local:not-a-track' },
+        { uri => 'spotify:track:'   . b62id(3) },
+    );
+    return JSON::XS::VersionOneAndTwo::to_json({
+        pages => [ { tracks => \@entries } ],
+        uri   => 'spotify:search:radiohead',
+        url   => 'context://spotify:search:radiohead',
+    });
+}
+
 # ============================================================
 # Task 1: Album + artist endpoints with track-name enrichment (S-04)
 # ============================================================
@@ -1124,6 +1143,40 @@ sub context_resolve_fixture {
     is(scalar(@Plugins::SpotOn::API::Client::search_calls), 1, 'search context-resolve 500: falls back to Client.pm exactly once (D-07)');
 
     $Slim::Networking::SimpleAsyncHTTP::auto_mode = 'success';
+}
+
+# (e) Window 6 regression (WINDOWS.md #6): offset >= track-FILTERED count but
+# < raw URI count -> must delegate to Client.pm instead of serving an empty
+# window. Mixed fixture: 5 raw URIs, 3 spotify:track:, offset 3.
+{
+    reset_all();
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/context-resolve/}, context_resolve_mixed_fixture());
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/metadata/4/track/}, to_json_fixture());
+
+    my ($result, $err);
+    $SP->search('acct34', { q => 'radiohead', type => 'track', offset => 3, limit => 5 }, sub { ($result, $err) = @_ });
+
+    is(scalar(@Plugins::SpotOn::API::Client::search_calls), 1,
+        'W6: offset 3 with 3 filtered tracks (5 raw uris) delegates to Client.pm exactly once');
+    my @trackReqs = grep { $_->{url} =~ m{/metadata/4/track/} } Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests();
+    is(scalar(@trackReqs), 0, 'W6: no enrichment attempted for the unsatisfiable window');
+}
+
+# (f) Window 6 guard must not over-delegate: offset 2 with 3 filtered tracks
+# is still within the filtered window -> served from context-resolve.
+{
+    reset_all();
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/context-resolve/}, context_resolve_mixed_fixture());
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/metadata/4/track/}, to_json_fixture());
+
+    my ($result, $err);
+    $SP->search('acct35', { q => 'radiohead', type => 'track', offset => 2, limit => 5 }, sub { ($result, $err) = @_ });
+
+    is(scalar(@Plugins::SpotOn::API::Client::search_calls), 0,
+        'W6: offset 2 with 3 filtered tracks still serves from context-resolve (no over-delegation)');
+    ok($result, 'W6: offset 2 result returned');
+    is($result->{tracks}{total}, 3, 'W6: total reflects the filtered track count (3), not the raw URI count (5)');
+    is(scalar(@{ $result->{tracks}{items} }), 1, 'W6: exactly one item (track 3 of 3) in the offset-2 window');
 }
 
 # ============================================================
