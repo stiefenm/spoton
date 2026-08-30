@@ -44,7 +44,21 @@ sub handler {
         if (defined $paramRef->{'pref_streamFormat'}) {
             my $fmt = $paramRef->{'pref_streamFormat'};
             $fmt = 'auto' unless $fmt =~ /^(?:auto|ogg|pcm|flac|mp3)$/;
-            $prefs->client($client)->set('streamFormat', $fmt);
+
+            # WR-05 (Phase 76 review): under soloist a stored 'ogg' choice is
+            # display-remapped to Auto (see the render block below), so ANY
+            # save of this page posts pref_streamFormat=auto. Persisting that
+            # echo would destroy the stored OGG choice the remap promises to
+            # preserve for a later switch back to librespot. Only skip the
+            # write for exactly this echo case; a user actively selecting a
+            # different value (pcm/flac/mp3) still persists normally.
+            my $stored = $prefs->client($client)->get('streamFormat')
+                      || $prefs->client($client)->get('connectOggOverride')
+                      || 'auto';
+            my $backend = $prefs->get('backend') || 'librespot';
+            unless ($backend eq 'soloist' && $stored eq 'ogg' && $fmt eq 'auto') {
+                $prefs->client($client)->set('streamFormat', $fmt);
+            }
         }
 
         if (defined $paramRef->{'pref_streamingMode'}) {
@@ -88,7 +102,10 @@ sub handler {
         # resolved as 'auto' at runtime (76-04 resolveSoloistFormat maps
         # ogg->auto), so the page shows Auto as selected. Display-only -- the
         # stored pref is deliberately NOT rewritten here, so switching back
-        # to librespot restores the user's OGG choice.
+        # to librespot restores the user's OGG choice. The save handler above
+        # guards the matching echo (WR-05): a posted 'auto' while the stored
+        # value is 'ogg' under soloist is NOT persisted, otherwise any save of
+        # this page would silently destroy the preserved OGG choice.
         if ($paramRef->{backend} eq 'soloist' && $paramRef->{streamFormat} eq 'ogg') {
             $paramRef->{streamFormat} = 'auto';
         }
