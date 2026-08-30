@@ -195,7 +195,15 @@ sub resolveSoloistFormat {
     # below).
     my $resolveOne = sub {
         my ($c) = @_;
-        my $fmt = $prefs->client($c)->get('streamFormat') || 'auto';
+        # WR-04 (Phase 76 review): identical fallback chain as every other
+        # reader of the per-player format (Settings/Player.pm,
+        # ProtocolHandler.pm, Plugin.pm _typeString, resolvePassthroughForClient
+        # above) -- a legacy choice living solely in connectOggOverride must
+        # resolve the same here as on the settings page. 'ogg' safely falls
+        # through to auto below.
+        my $fmt = $prefs->client($c)->get('streamFormat')
+               || $prefs->client($c)->get('connectOggOverride')
+               || 'auto';
 
         # D-06: explicit format override -- trust the user's choice directly,
         # no capability check (transcoding is LMS-side).
