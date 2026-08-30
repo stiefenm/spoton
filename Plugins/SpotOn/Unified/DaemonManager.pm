@@ -170,12 +170,20 @@ sub resolvePassthroughForClient {
 # here: FLAC/MP3 are produced LMS-side by the transcoding framework
 # ([sox]/[lame] convert rules), not by the daemon.
 #
-# Accepted corner (76-04): explicit 'pcm' on a SYNCED flc-capable group
-# proxies through LMS (canDirectStream is 0 for synced players) and
-# TranscodingHelper's capability-order selection (TranscodingHelper.pm:
-# 352-386) may still match the soc-flc rule -- the player then receives
-# bit-correct lossless FLAC instead of raw PCM. A dedicated pcm-forcing
-# content type was deliberately not added (YAGNI until a user reports it).
+# Accepted corner (76-04, scope corrected by WR-02): explicit/resolved
+# 'pcm' lands on FLAC on EVERY flc-capable player, synced or not, both
+# backends -- Slim::Player::Song::open chooses the transcoder BEFORE
+# canDirectStream is consulted (Song.pm:375-465; direct streaming only
+# happens when the chosen command is '-'), and getConvertCommand2
+# iterates the player's own format-preference order (TranscodingHelper.pm:
+# 352-386). squeezelite announces [ogg, flc, aif, pcm, mp3], so
+# soc-flc-*-* ([sox], bundled, always present) wins over soc-pcm-*-*
+# ('-') on every flc-capable player. The player then receives
+# bit-correct lossless FLAC instead of raw PCM; the direct-PCM path is
+# only reachable on players without flc (or with flc listed after pcm).
+# A dedicated pcm-forcing content type was deliberately not added (YAGNI
+# until a user reports it); the behavior is documented user-visibly in
+# PLUGIN_SPOTON_STREAM_FORMAT_DESC.
 sub resolveSoloistFormat {
     my ($class, $client) = @_;
     return 'pcm' unless $client;

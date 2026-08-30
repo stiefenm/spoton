@@ -242,6 +242,12 @@ sub canDirectStream {
         # raw-S32 /stream URL (strm samplesize 32, 76-01); 'flac'/'mp3'
         # return 0 so LMS opens the stream itself and runs the soc/smp
         # transcode rule.
+        # WR-02 scope note: this 'pcm' direct path is only reachable on
+        # players WITHOUT flc (or with flc listed after pcm) -- Song::open
+        # picks the transcoder before consulting canDirectStream, and on
+        # flc-first players (e.g. squeezelite) the soc-flc rule wins over
+        # the soc-pcm passthrough, so explicit PCM is delivered as lossless
+        # FLAC. Accepted corner, see resolveSoloistFormat's doc comment.
         {
             my $resolved = Plugins::SpotOn::Unified::DaemonManager->resolveSoloistFormat($browseClient);
             if ($resolved ne 'pcm') {
@@ -321,6 +327,11 @@ sub canDirectStream {
             # "force transcoding"; under soloist explicit pcm KEEPS the direct
             # raw-S32 /stream path). Only 'flac'/'mp3' force the LMS-side
             # transcode pipeline.
+            # WR-02 scope note: on flc-first players the direct-PCM intent is
+            # overridden anyway -- Song::open picks the transcoder before
+            # canDirectStream, and the soc-flc rule outranks soc-pcm in the
+            # player's format-preference order, so explicit PCM lands on
+            # lossless FLAC. See resolveSoloistFormat's doc comment.
             require Plugins::SpotOn::Unified::DaemonManager;
             my $resolved = Plugins::SpotOn::Unified::DaemonManager->resolveSoloistFormat($connectClient);
             if ($resolved ne 'pcm') {
