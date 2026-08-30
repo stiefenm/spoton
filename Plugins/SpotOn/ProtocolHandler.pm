@@ -671,15 +671,24 @@ sub getNextTrack {
             # D-08 (Phase 76): a live Soloist Connect session streams raw
             # S32LE from fake-libpulse's /stream (D-04) -- hint 32 so the
             # soc-flc rule's $SAMPLESIZE$ substitutes correctly. librespot
-            # Connect PCM stays S16LE and sets no hint: TranscodingHelper's
-            # `$track->samplesize || 16` default (TranscodingHelper.pm:449)
-            # covers it.
+            # Connect PCM stays S16LE and must EXPLICITLY reset the hint to
+            # 16 (CR-01): RemoteTrack objects are cached in-memory by URL
+            # (Slim::Schema::RemoteTrack %Cache) and survive a backend
+            # switch within one LMS uptime, so a stale samplesize(32) from a
+            # prior soloist playback would misframe librespot's S16LE stream
+            # (transcode: $SAMPLESIZE$=32; direct: strm pcmsamplesize '3').
             if (_useSoloist()) {
                 my $track = $song->track;
                 if ($track) {
                     $track->samplesize(32)    if $track->can('samplesize');
                     $track->samplerate(44100) if $track->can('samplerate');
                     $track->channels(2)       if $track->can('channels');
+                }
+            }
+            else {
+                my $track = $song->track;
+                if ($track) {
+                    $track->samplesize(16) if $track->can('samplesize');
                 }
             }
             $successCb->();
@@ -706,8 +715,11 @@ sub getNextTrack {
     # It drives both the strm-frame pcm_sample_sizes mapping (32 => '3',
     # Squeezebox.pm:1129) and the $SAMPLESIZE$ substitution in the soc-flc
     # convert rule ($track->samplesize || 16, TranscodingHelper.pm:449).
-    # librespot soc paths (S16LE) set no samplesize hint and correctly
-    # rely on that 16 default.
+    # librespot soc paths (S16LE) must EXPLICITLY reset the hint to 16
+    # (CR-01, elsif below): RemoteTrack objects are cached in-memory by URL
+    # and survive a backend switch within one LMS uptime, so relying on the
+    # "never set" 16 default would leave a stale 32 from a prior soloist
+    # playback in place.
     if (_useSoloist() && $url =~ m{^spoton://(track|episode):([A-Za-z0-9]+)$}) {
         my ($type, $id) = ($1, $2);
         my $track = $song->track;
@@ -765,6 +777,18 @@ sub getNextTrack {
                 $errorCb->('PROBLEM_OPENING', 'Soloist daemon send failed');
                 return;
             }
+        }
+    }
+    elsif ($url =~ m{^spoton://(?:track|episode):[A-Za-z0-9]+$}) {
+        # CR-01 (Phase 76 review): librespot browse path -- explicitly reset
+        # the samplesize hint instead of relying on "never set". The shared
+        # RemoteTrack keeps a stale 32 from a prior soloist playback
+        # otherwise (backend switch without LMS restart), misframing the
+        # daemon's S16LE stream in both the transcode ($SAMPLESIZE$) and
+        # direct (strm pcmsamplesize) paths.
+        my $track = $song->track;
+        if ($track) {
+            $track->samplesize(16) if $track->can('samplesize');
         }
     }
 
