@@ -584,32 +584,27 @@ sub new {
         }
     }
 
-    # (b3) D-03 (Phase 73, Modell B): soloist Browse sync-group proxy —
-    # mirrors the Connect (b) block below verbatim (same /stream endpoint,
-    # same daemon, same proxy pattern) since soloist Browse plays through
-    # the identical HTTP /stream server Connect uses. Unsynced, non-proxy
-    # soloist browse clients need no substitution here — canDirectStream()
-    # above already returns the direct /stream URL for them. WR-05: also
-    # substitute for an UNSYNCED player in streamingMode=proxy, since
-    # canDirectStream() now returns 0 for that case too instead of a direct URL.
+    # (b3) D-03 (Phase 73, Modell B): soloist Browse URL substitution —
+    # new() is only called when canDirectStream() returned 0, so the
+    # spoton://track:xxx URL always needs substitution to the daemon's
+    # HTTP /stream endpoint. Covers: synced players, proxy mode, AND
+    # the transcode path (resolved format = flac/mp3 from 76-04).
     if (_useSoloist() && $url =~ m{^spoton://(?:track|episode):[A-Za-z0-9]+$} && $url !~ m{spoton://connect-}) {
         my $client = $args->{client};
         if ($client) {
             $client = $client->master if $client->can('master');
-            if ($client->isSynced() || _streamingModeIsProxy($client)) {
-                require Plugins::SpotOn::Unified::DaemonManager;
-                my $helper = Plugins::SpotOn::Unified::DaemonManager->helperForClient($client);
-                if ($helper && $helper->alive && $helper->_streamPort) {
-                    my $host    = Slim::Utils::Network::serverAddr();
-                    my $httpUrl = "http://$host:" . $helper->_streamPort . "/stream";
-                    $log->warn("[DIAG] soloist_browse_sync_proxy: mac=" . $client->id . " http_url=$httpUrl") if $prefs->get('diagnosticMode');
-                    $args = { %$args, url => $httpUrl };
-                } else {
-                    main::INFOLOG && $log->is_info && $log->info(
-                        "Soloist browse URL but no active daemon for " . $client->id . " — returning undef"
-                    );
-                    return undef;
-                }
+            require Plugins::SpotOn::Unified::DaemonManager;
+            my $helper = Plugins::SpotOn::Unified::DaemonManager->helperForClient($client);
+            if ($helper && $helper->alive && $helper->_streamPort) {
+                my $host    = Slim::Utils::Network::serverAddr();
+                my $httpUrl = "http://$host:" . $helper->_streamPort . "/stream";
+                $log->warn("[DIAG] soloist_browse_proxy: mac=" . $client->id . " http_url=$httpUrl") if $prefs->get('diagnosticMode');
+                $args = { %$args, url => $httpUrl };
+            } else {
+                main::INFOLOG && $log->is_info && $log->info(
+                    "Soloist browse URL but no active daemon for " . $client->id . " — returning undef"
+                );
+                return undef;
             }
         }
     }
