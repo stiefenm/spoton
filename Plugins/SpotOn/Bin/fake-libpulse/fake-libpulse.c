@@ -379,6 +379,26 @@ typedef struct {
 
 static ring_buffer_t g_ring;
 
+/* Debug session soloist-browse-stutter (2026-08-30): the currently active
+ * playback stream, tracked purely so the HTTP drain thread can invoke its
+ * underflow_cb on a genuine ring-empty transition -- real PulseAudio fires
+ * this when the sink runs dry; this stub previously never did (see the doc
+ * comment on pa_stream_set_underflow_callback below, which flagged this as
+ * an untested "candidate difference from real PulseAudio, worth ruling
+ * in/out"). Live reproduction confirmed Soloist writes an initial burst of
+ * audio, the ring drains to empty as the HTTP client reads it in real
+ * time, and Soloist's writer thread then permanently stops calling
+ * pa_stream_write() -- with no underflow_cb ever firing, it has nothing
+ * telling it to resume. Single-writer (Soloist's own thread, via
+ * pa_stream_connect_playback/pa_stream_unref) / single-reader (HTTP
+ * thread) -- same unlocked-global discipline already used by
+ * g_flush_disconnect elsewhere in this file. g_ring_underrun_fired is
+ * edge-triggered (reset whenever fresh data lands in the ring, in
+ * _ring_push/_ring_flush) so the HTTP thread's 50ms poll loop signals a
+ * stall exactly once per genuine empty streak, not on every tick. */
+static pa_stream *g_active_stream = NULL;
+static int g_ring_underrun_fired = 0;
+
 static void _ring_init(ring_buffer_t *r) {
     r->buf = malloc(RING_CAPACITY);
     r->capacity = RING_CAPACITY;
@@ -430,6 +450,13 @@ static void _ring_push(ring_buffer_t *r, const unsigned char *data, size_t n) {
         n -= chunk;
 
         pthread_cond_broadcast(&r->data_avail);
+    }
+    /* Fresh data landed (soloist-browse-stutter fix): allow a future
+     * ring-empty transition to signal underflow_cb again. Cheap,
+     * unconditional -- g_ring_underrun_fired only matters for g_ring, the
+     * sole real instance of this ring type in this stub. */
+    if (r->fill > 0) {
+        g_ring_underrun_fired = 0;
     }
     pthread_mutex_unlock(&r->lock);
 }
@@ -491,6 +518,10 @@ static void _ring_flush(ring_buffer_t *r) {
     r->tail = r->head;
     r->fill = 0;
     pthread_mutex_unlock(&r->lock);
+    /* soloist-browse-stutter fix: a flush starts a fresh empty streak for
+     * the new track -- allow it to signal underflow_cb again once it
+     * genuinely drains, same as any other empty transition. */
+    g_ring_underrun_fired = 0;
 }
 
 /* Converts already-decoded samples to S32LE per the stream's captured
@@ -801,6 +832,46 @@ static void *_http_thread_fn(void *arg) {
                         _trace_ts(_ts, sizeof(_ts));
                         fprintf(stderr, "[fakepulse %s] client-close: write error/disconnect\n", _ts);
                     }
+                }
+            }
+
+            /* soloist-browse-stutter fix: real-PA underflow signal. A
+             * client is attached and actively being drained (we just
+             * either served n>0 bytes or waited the full 50ms and found
+             * the ring empty) -- if the ring is genuinely empty, tell the
+             * producer (Soloist) via its registered underflow_cb so it
+             * knows to feed more audio. Live reproduction confirmed
+             * Soloist's writer thread permanently stops calling
+             * pa_stream_write() once the ring drains to empty with no
+             * feed-me-more signal ever arriving -- this is that signal.
+             * Edge-triggered via g_ring_underrun_fired (reset on any fresh
+             * ring_push/ring_flush) so this fires once per genuine empty
+             * streak, not every 50ms tick while legitimately idle. */
+            if (client_fd >= 0) {
+                pthread_mutex_lock(&g_ring.lock);
+                int ringEmpty = (g_ring.fill == 0);
+                pthread_mutex_unlock(&g_ring.lock);
+                if (ringEmpty && !g_ring_underrun_fired
+                    && g_active_stream && g_active_stream->underflow_cb)
+                {
+                    g_ring_underrun_fired = 1;
+                    if (g_debug_trace) {
+                        char _ts[32];
+                        _trace_ts(_ts, sizeof(_ts));
+                        fprintf(stderr, "[fakepulse %s] underflow: ring empty, invoking underflow_cb\n", _ts);
+                    }
+                    /* Match real PA's actual dispatch contract: stream
+                     * callbacks are invoked with the threaded-mainloop
+                     * lock held. Our mutex is recursive (see
+                     * pa_threaded_mainloop_new), so this only blocks if a
+                     * DIFFERENT thread (Soloist's own) currently holds it
+                     * -- exactly the synchronization we want before
+                     * handing control to Soloist's callback from this
+                     * foreign HTTP thread. */
+                    pa_threaded_mainloop *ml = g_active_stream->context ? g_active_stream->context->mainloop : NULL;
+                    if (ml) pthread_mutex_lock(&ml->lock);
+                    g_active_stream->underflow_cb(g_active_stream, g_active_stream->underflow_userdata);
+                    if (ml) pthread_mutex_unlock(&ml->lock);
                 }
             }
         }
@@ -1559,6 +1630,11 @@ pa_stream *pa_stream_new_with_proplist(pa_context *c, const char *name, const pa
 
 void pa_stream_unref(pa_stream *s) {
     TRACE2("pa_stream_unref(stream=%p)", (void *)s);
+    /* soloist-browse-stutter fix: never leave g_active_stream dangling
+     * once the stream it points to is freed. */
+    if (g_active_stream == s) {
+        g_active_stream = NULL;
+    }
     free(s);
 }
 
@@ -1587,16 +1663,19 @@ void pa_stream_set_started_callback(pa_stream *s, pa_stream_notify_cb_t cb, void
 }
 
 void pa_stream_set_underflow_callback(pa_stream *s, pa_stream_notify_cb_t cb, void *userdata) {
-    /* DIAG (fakepulse-timing-buffer): this stub NEVER invokes underflow_cb
-     * anywhere -- it is stored here and then dead for the lifetime of the
-     * stream, because this stub never simulates a sink underrun (the ring
-     * either has data or doesn't; there is no "starved sink" condition
-     * distinct from "corked"/"not yet written to"). Flagged explicitly at
-     * registration time (once per stream) because a real client MAY use
-     * "have I ever seen an underflow_cb fire" as part of its own internal
-     * readiness/health bookkeeping -- if so, its total absence here is a
-     * candidate difference from real PulseAudio, worth ruling in/out. */
-    TRACE2("pa_stream_set_underflow_callback(stream=%p, cb=%p) -- NOTE: this stub never invokes underflow_cb (no underrun ever simulated)", (void *)s, (void *)cb);
+    /* soloist-browse-stutter (2026-08-30): previously this stub NEVER
+     * invoked underflow_cb -- it was stored here and then dead for the
+     * lifetime of the stream (flagged at the time as an untested
+     * "candidate difference from real PulseAudio, worth ruling in/out").
+     * Live reproduction confirmed the gap: Soloist writes an initial burst
+     * of audio, the ring drains to empty as the HTTP client reads it in
+     * real time, and Soloist's writer thread then permanently stops
+     * calling pa_stream_write() -- with underflow_cb never firing, it has
+     * no signal telling it to resume feeding audio. Now invoked by
+     * _http_thread_fn (the ring's sole drain point) on a genuine
+     * ring-empty edge, matching real PulseAudio's actual sink-underrun
+     * signal. */
+    TRACE2("pa_stream_set_underflow_callback(stream=%p, cb=%p) -- invoked on genuine ring-empty transitions (soloist-browse-stutter fix)", (void *)s, (void *)cb);
     if (!s) {
         return;
     }
@@ -1630,6 +1709,10 @@ int pa_stream_connect_playback(pa_stream *s, const char *dev, const pa_buffer_at
      * read_index doesn't go negative from leftover fill. */
     if (g_http_mode) {
         _ring_flush(&g_ring);
+        /* soloist-browse-stutter fix: track this as the stream whose
+         * underflow_cb the HTTP drain thread should invoke on a ring-empty
+         * edge -- see g_active_stream's doc comment above g_ring. */
+        g_active_stream = s;
     }
     gettimeofday(&s->connect_time, NULL);
     _stream_set_state(s, PA_STREAM_READY);
