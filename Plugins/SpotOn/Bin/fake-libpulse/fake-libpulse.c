@@ -622,15 +622,17 @@ static int _http_write_all(int fd, const unsigned char *data, size_t n) {
  * URLs and getFormatForURL maps :port/stream to 'pcm'.
  *
  * Phase 76 D-04: the payload is raw S32LE PCM, 44100 Hz, 2 channels.
- * There is no registered audio/L32 MIME type, so the Content-Type is
- * a generic octet-stream with the actual format documented here.
- * Verified (grep this session): no Perl consumer parses this header --
- * LMS derives the stream format from the strm frame / convert rules
- * (custom-types.conf 'soc' + samplesize hints), never from this
- * Content-Type. */
+ * There is no registered audio/L32 MIME type; audio/x-pcm maps to 'pcm'
+ * in stock LMS types.conf (line 45). This matters on the direct-stream
+ * path (WR-01): Squeezebox2::directHeaders -> parseDirectHeaders runs
+ * mimeToType on this header, and an unmapped type (e.g.
+ * application/octet-stream) falls back to 'mp3' -- misclassifying the
+ * stream in status queries/UI and polluting the schema's content type
+ * via setContentType. Decode itself is governed by the strm frame /
+ * convert rules (custom-types.conf 'soc' + samplesize hints). */
 static const char HTTP_RESPONSE_HEADER[] =
     "HTTP/1.0 200 OK\r\n"
-    "Content-Type: application/octet-stream\r\n"
+    "Content-Type: audio/x-pcm\r\n"
     "Connection: close\r\n"
     "\r\n";
 
@@ -2002,7 +2004,7 @@ static int _test_read_header(int fd, int timeout_ms) {
         fprintf(stderr, "  bad status line: %.40s\n", hdrbuf);
         return -1;
     }
-    if (!strstr(hdrbuf, "application/octet-stream")) {
+    if (!strstr(hdrbuf, "audio/x-pcm")) {
         fprintf(stderr, "  missing Content-Type header\n");
         return -1;
     }
