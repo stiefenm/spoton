@@ -3863,12 +3863,35 @@ sub _typeString {
            || 'auto')
         : 'auto';
 
+    # WR-03 (Phase 76 review): dispatch by backend. resolvePassthroughForClient
+    # short-circuits to 0 under soloist, which mislabeled everything as PCM
+    # even when resolveSoloistFormat yields flac/mp3 (D-06 auto default on
+    # flc-capable players). Use the soloist resolver so the display label —
+    # written into every spoton_meta_* cache entry — matches what LMS will
+    # actually stream. 'ogg' is librespot-only and falls through to auto
+    # inside the soloist resolver.
+    if (($prefs->get('backend') // 'librespot') eq 'soloist') {
+        if ($fmt eq 'auto' || $fmt eq 'ogg') {
+            if ($client) {
+                eval {
+                    require Plugins::SpotOn::Unified::DaemonManager;
+                    $fmt = Plugins::SpotOn::Unified::DaemonManager->resolveSoloistFormat($client);
+                };
+                if ($@) {
+                    main::INFOLOG && $log->is_info && $log->info("resolveSoloistFormat failed: $@");
+                    $fmt = 'pcm';
+                }
+            } else {
+                $fmt = 'pcm';
+            }
+        }
+    }
     # D-09: resolve via shared capability resolver for formats where
     # sync-group aggregation can change the actual daemon output.
     # 'auto': resolver determines OGG vs PCM based on player capabilities.
     # 'ogg': resolver catches sync-group downgrade (explicit OGG + hardware slave → PCM).
     # pcm/flac/mp3: always PCM in unified daemon, no sync-group concern.
-    if ($fmt eq 'auto' || $fmt eq 'ogg') {
+    elsif ($fmt eq 'auto' || $fmt eq 'ogg') {
         if ($client) {
             eval {
                 require Plugins::SpotOn::Unified::DaemonManager;
