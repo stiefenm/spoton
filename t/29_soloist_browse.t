@@ -322,8 +322,12 @@ my $pkg = 'Plugins::SpotOn::ProtocolHandler';
 
     my $streamObj = $pkg->new({ url => 'spoton://track:abc123', client => $client });
     ok(defined $streamObj, "new({url => spoton://track:..., unsynced}) is defined when backend=soloist");
-    is($streamObj->{url}, 'spoton://track:abc123',
-        "new() leaves the url untouched for an unsynced soloist browse client (falls through unchanged)");
+    # 28293d4 (Browse-stutter debug session): new() is only called when
+    # canDirectStream() returned 0, so the spoton:// URL ALWAYS needs
+    # substitution to the daemon's /stream endpoint -- synced or not
+    # (covers proxy mode and the 76-04 transcode path).
+    like($streamObj->{url}, qr{^http://127\.0\.0\.1:39755/stream$},
+        "new() substitutes the daemon /stream URL for an unsynced soloist browse client too (28293d4)");
 }
 
 # ============================================================

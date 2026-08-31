@@ -13,7 +13,7 @@ my $conf_file   = "$project_dir/Plugins/SpotOn/custom-convert.conf";
 ok(-f $conf_file, "custom-convert.conf exists at $conf_file");
 
 SKIP: {
-    skip "custom-convert.conf not found", 13 unless -f $conf_file;
+    skip "custom-convert.conf not found", 14 unless -f $conf_file;
 
     open(my $fh, '<', $conf_file) or die "Cannot open $conf_file: $!";
     my $content = do { local $/; <$fh> };
@@ -44,11 +44,17 @@ SKIP: {
     ok($content !~ m{^sol flc \* \*}m, "sol flc rule absent (retired with the rest of the sol family)");
     ok($content !~ m{spoton-soloist}, "no [spoton-soloist] launcher token anywhere in convert.conf");
 
-    # Phase 76 D-05 (i): positive pin -- the soc flc rule exists and its
-    # command line starts with the bundled [sox] tool token (capability
-    # comment lines beginning with "\t#" may sit between header and command).
-    ok($content =~ m{^soc flc \* \*\n(?:\t#[^\n]*\n)*\t\[sox\] }m,
-       "soc flc rule present and its command starts with the [sox] tool token (D-05)");
+    # Phase 76 D-05 (i), amended by the Browse-stutter debug session
+    # (1cf4272, D-18): the soc flc rule is temporarily DISABLED (commented
+    # out) -- the FLAC24 transcode architecture needs a prefetch-collision
+    # fix before it can work with LMS's track-transition model and is
+    # deferred to a dedicated phase. Pin the CURRENT deliberate state:
+    # no ACTIVE soc flc rule, but the commented-out rule text (with its
+    # [sox] command) is preserved for the future re-enable.
+    ok($content !~ m{^soc flc \* \*}m,
+       "no ACTIVE soc flc rule (deferred by 1cf4272 / D-18 until the prefetch architecture fix)");
+    ok($content =~ m{^#soc flc \* \*\n(?:#[^\n]*\n)*#\t\[sox\] }m,
+       "commented-out soc flc rule preserved with its [sox] command for the future re-enable");
 
     # Phase 76 D-05 (ii): after stripping all literal [sox] tool tokens,
     # no bare `sox` word remains -- pins that sox appears ONLY as the
