@@ -783,6 +783,54 @@ sub getNextTrack {
                 $errorCb->('PROBLEM_OPENING', 'Soloist daemon send failed');
                 return;
             }
+
+            # D-17 (RC-4, .planning/debug/soloist-browse-stutter.md):
+            # stream-handoff gate. Soloist's internal decoder threads take
+            # 10-215s+ to start producing audio, while LMS's
+            # StreamingController::_RetryOrNext reconnects after ~10s of
+            # premature stream end and resets position to 0 on every retry
+            # -- the collision is the cyclic Browse stutter. getNextTrack
+            # is LMS's designed async point BEFORE the stream/transcode
+            # pipeline opens (other services do multi-second API work here;
+            # LMS shows the player as connecting/buffering while deferred),
+            # so deferring successCb here means squeezelite is never handed
+            # the /stream URL (neither via canDirectStream nor new()'s
+            # proxy substitution) until Soloist demonstrably produces
+            # audio. The stall becomes visible-as-buffering instead of
+            # audible-as-stutter, and the retry loop never arms because no
+            # stream has started and "ended prematurely".
+            #
+            # This gate exists ONLY on this fresh-startBrowseTrack path:
+            # the seeded-advance re-entry above (browseAdvancePending --
+            # Soloist is already mid-gapless-transition and demonstrably
+            # producing audio), the Connect branch, and all librespot
+            # paths call successCb exactly as before.
+            $ws->waitForBrowseReady(sub {
+                my ($status) = @_;
+
+                if (($status // '') eq 'ended') {
+                    # The browse session was torn down before audio started
+                    # (a Pitfall-4 queue-exhausted defense or an LMS stop)
+                    # -- handing the stream over would play nothing.
+                    $errorCb->('PROBLEM_OPENING',
+                        'Soloist browse session ended before audio started');
+                    return;
+                }
+
+                if (($status // '') eq 'timeout') {
+                    # FAIL-OPEN: proceed with the handoff exactly as today
+                    # (worst case equals pre-gate behavior, never worse).
+                    # Info-level so UAT can spot residual stalls.
+                    main::INFOLOG && $log->is_info && $log->info(
+                        "getNextTrack: browse-ready gate timeout -- proceeding fail-open (D-17, mac="
+                        . ($client ? $client->id : '?') . ", uri=spotify:$type:$id)"
+                    );
+                }
+
+                # 'ready' and 'timeout' both proceed with the handoff.
+                $successCb->();
+            });
+            return;
         }
     }
     elsif ($url =~ m{^spoton://(?:track|episode):[A-Za-z0-9]+$}) {
