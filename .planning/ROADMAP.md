@@ -484,6 +484,7 @@ Der ursprüngliche Ansatz (unbounded `/stream` Endpoint + Zwei-Sequenzer-Modell)
 Siehe: `.planning/debug/browse-architecture-review.md`, `.planning/research/playback-architecture-comparison.md`
 
 **Key Decisions:**
+
 - Soloist ist Community-Alternative neben librespot im öffentlichen Repo
 - Kein Key im Repo, keine Key-Verteilung — reines BYOK (Spotify's eigenes Modell)
 - Fake-libpulse statt PulseAudio-Capture — kein Systemprozess-Overhead, kein Binary-Patch für Audio
@@ -516,6 +517,7 @@ Siehe: `.planning/debug/browse-architecture-review.md`, `.planning/research/play
 - [~] **Phase 76: Connect Stabilization (SUPERSEDED)** — D-15/D-16/D-17 Gates, browseAdvanceTs Grace, _prefetchWatchdog Browse-Pfade, stale-claim Guards. Kompensatorischer Code der die Grundprobleme nicht löst. Wird komplett in Phase 78 entfernt.
 
 Zu entfernende LOC (Phase 78):
+
 - `SoloistWS.pm`: ~300 LOC (browseSession SM, _emitAllowed, _onBrowseTrackChanged, waitForBrowseReady, startBrowseTrack, _maybeSeedBrowseQueue, endBrowseSession)
 - `Plugin.pm`: ~100 LOC (_prefetchWatchdog Browse-Pfade, _pauseGuardCheck)
 - `Connect.pm`: ~50 LOC (D-16 stale-claim, browse forwarding in _onPause)
@@ -535,6 +537,7 @@ Exit-Kriterium: Boundary-Offset mit Jitter < ~50ms (≈8.8 KB bei S32LE/44100Hz)
 `GET /stream/track?uri=X&start=Y` implementieren: serviert Ring-Buffer-Daten bis zum nächsten Boundary-Marker, dann Socket close. Validierung per curl: Byte-Counts, sauberer Close bei Boundary, kontiguöses Audio über zwei Requests (PCM diff gegen Referenz), Rapid-Skip-Verhalten, Pause-Semantik.
 
 **Implementation:**
+
 - Track-Boundary-Marker-Datenstruktur im Ring-Buffer (Owntone `INPUT_FLAG_*` Pattern)
 - Ring-Buffer Write-Offset wird bei WS `track_changed` + pa_stream Lifecycle markiert
 - HTTP-Thread serviert bis Marker, dann close (chunked Transfer-Encoding, kein Content-Length nötig)
@@ -550,12 +553,24 @@ Exit-Kriterium: Boundary-Offset mit Jitter < ~50ms (≈8.8 KB bei S32LE/44100Hz)
 **Plans:** 4 plans
 
 Plans:
+**Wave 1**
+
 - [ ] 78-01-PLAN.md — Spike-Baseline committen + Browse auf bounded Endpoint (Tracer: canDirectStream /stream/track-URL, gate-freies getNextTrack, D-02 Boundary auf 'stopped', t/29+t/31)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 78-02-PLAN.md — Connect.pm Browse-Koexistenz: Echo-Guard (Pitfall 1) + Pause/Seek-Forwarding auf bounded Kriterium (Pitfall 4/5)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
 - [ ] 78-03-PLAN.md — browseSession-Maschinerie entfernen (~470 LOC SoloistWS.pm) + Browse-SM-Tests löschen (D-06/D-07)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
 - [ ] 78-04-PLAN.md — Connect D-04: spoton://track:ID backend-dispatched, Soloist-Ownership-Kriterium (Pitfall 2), Watchdog-Guards (Pitfall 3), t/37
 
 **Tasks:**
+
 1. ProtocolHandler.pm: `canDirectStream` für Soloist Browse zeigt auf `http://host:PORT/stream/track?uri=X&start=Y` (bounded). Kein `waitForBrowseReady`, kein Gate — Track-Request = bounded HTTP wie librespot
 2. custom-convert.conf: `soc` Profil für Soloist Browse über bounded Endpoint (gleiche Pipeline wie `son`)
 3. **Entfernen (Phase 72/76 Code):**
@@ -579,6 +594,7 @@ Plans:
 **Goal:** Vollständige E2E-Validierung beider Playback-Pfade (Browse + Connect) auf dem bounded Endpoint, Edge Cases, Release.
 
 **UAT Checklist:**
+
 - [ ] Browse: Auto-Advance via EOF, korrekte Elapsed/Duration, Seek, Skip fwd/back
 - [ ] Browse: Gapless-Verhalten bei natürlichen Übergängen
 - [ ] Browse: Mixed Playlist (Spotify + lokale Dateien) — Handoff an Boundary
@@ -596,6 +612,7 @@ Plans:
 **Depends on:** Phase 78, Phase 74b
 
 **Risks:**
+
 - Spotify kann Soloist-API-Terms ändern oder Keys revoken
 - Build-Expiry-Mechanismus kann serverseitig verschärft werden
 - Soloist ist Linux-only (kein macOS/Windows)
@@ -605,6 +622,7 @@ Plans:
 - **NEU:** Soloist self-cork/warmup Latenz bei erstem Track einer Session (einmalig, akzeptabel — kein Retry-Loop mehr)
 
 **References:**
+
 - Spotify Docs: developer.spotify.com/documentation/soloist
 - Downloads: developer.spotify.com/documentation/soloist/reference/downloads-and-updates
 - GitHub: github.com/spotify/soloist
@@ -623,6 +641,7 @@ Plans:
 **Phases:** TBD — to be broken down when milestone becomes active.
 
 **Key Decisions (from v2.3 research):**
+
 - Importer follows OnlineLibraryBase pattern (Spotty, Qobuz, TIDAL, Deezer)
 - me/tracks returns full objects — no individual entity fetches needed
 - Incremental sync via added_at early-exit
