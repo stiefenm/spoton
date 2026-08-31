@@ -1097,10 +1097,22 @@ sub _connectEvent {
         # restored/dormant session — NOT a fresh user transfer (see constant
         # comment for the captured event sequence). Suppress the playlist
         # play (no self-starting audio), but keep the session visible and
-        # manually resumable: metadata is still fetched, the ownership claim
-        # ($_activeConnectPlayer / pendingConnect, set above) stays, and a
-        # later play tap in the Spotify app arrives as 'resume' whose
-        # not-on-Connect-stream branch re-enters via playlist play normally.
+        # manually resumable: metadata is still fetched, and a later play
+        # tap in the Spotify app arrives as 'resume' whose not-on-Connect-
+        # stream branch re-enters via playlist play normally.
+        #
+        # D-16 (RC-2 stale-claim hygiene): the ownership claim
+        # $_activeConnectPlayer deliberately STAYS (the dormant session
+        # remains identifiable and manually resumable), but pendingConnect
+        # must NOT — it is strictly the start-event-precedes-playlist-play
+        # window flag (used by the change/seek handlers' || pendingConnect
+        # exceptions), and leaking it lets those handlers manipulate
+        # whatever the player is actually doing (metadata bleed, KE
+        # connect-metadata-bleed) for the lifetime of the dormant session.
+        # The non-suppressed path clears it at the playlist-play site
+        # (line after $playReq->execute); the resume re-entry path clears
+        # it likewise. This suppressed branch must clear it too.
+        #
         # The isPlaying exception preserves daemon-crash recovery: if the
         # player was already audibly playing when the daemon respawned,
         # resuming the stream is not a "self-start".
@@ -1123,6 +1135,10 @@ sub _connectEvent {
                 . " track=" . ($trackId || 'none')
                 . " daemonUptime=" . sprintf('%.2f', $daemonUptime)
             ) if $diagMode;
+
+            # D-16: clear the start-window flag — the playlist play was
+            # suppressed, so there is no pending start to protect.
+            $client->pluginData(pendingConnect => 0);
 
             return;
         }
