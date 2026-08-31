@@ -886,6 +886,75 @@ sub new_ws {
     is($parsed->{command}, 'pause', "no-next-track correction sends pause");
 }
 
+# D-15 (RC-1, Phase 76 extension): track_changed whose uri equals
+# browseCurrentUri is the daemon confirming SpotOn's own play command (or
+# re-announcing the current track).  Must be a no-op: session stays active,
+# no WS writes, no playlist-pointer movement.
+
+# Test A -- single-entry queue confirmation (D-15)
+{
+    @Slim::Control::Request::EXECUTED = ();
+    local $Slim::Player::Source::STREAMING_INDEX = 0;
+    local @Slim::Player::Playlist::TRACKS = ('spoton://track:abc');
+
+    my $ws         = new_ws();
+    my $fakeClient = Test::FakeWsClient->new;
+    $ws->_client($fakeClient);
+    $ws->connected(1);
+    $ws->startBrowseTrack('spotify:track:abc', undef);
+    $fakeClient->{writes} = [];    # clear the startBrowseTrack play write
+
+    $ws->_onMessage('{"type":"track_changed","item":{"uri":"spotify:track:abc"}}');
+
+    is($ws->browseSession, 1, "D-15 Test A: confirmation does not end the browse session (single-entry queue)");
+    is(scalar(@{ $fakeClient->{writes} }), 0, "D-15 Test A: confirmation sends no WS command (no pause, no corrective play)");
+    is(scalar(@Slim::Control::Request::EXECUTED), 0, "D-15 Test A: confirmation does not touch the LMS playlist pointer");
+    is($ws->browseCurrentUri, 'spotify:track:abc', "D-15 Test A: browseCurrentUri unchanged after confirmation");
+}
+
+# Test B -- multi-entry queue confirmation (D-15)
+{
+    @Slim::Control::Request::EXECUTED = ();
+    local $Slim::Player::Source::STREAMING_INDEX = 0;
+    local @Slim::Player::Playlist::TRACKS = ('spoton://track:abc', 'spoton://track:def');
+
+    my $ws         = new_ws();
+    my $fakeClient = Test::FakeWsClient->new;
+    $ws->_client($fakeClient);
+    $ws->connected(1);
+    $ws->startBrowseTrack('spotify:track:abc', undef);
+    $fakeClient->{writes} = [];
+
+    $ws->_onMessage('{"type":"track_changed","item":{"uri":"spotify:track:abc"}}');
+
+    is($ws->browseSession, 1, "D-15 Test B: confirmation does not end the browse session (multi-entry queue)");
+    is(scalar(@{ $fakeClient->{writes} }), 0, "D-15 Test B: confirmation sends no WS command (no corrective play for identical uri)");
+    is(scalar(@Slim::Control::Request::EXECUTED), 0, "D-15 Test B: confirmation does not move the playlist pointer");
+}
+
+# Test C -- confirmation with a pending seed (D-15)
+{
+    @Slim::Control::Request::EXECUTED = ();
+    local $Slim::Player::Source::STREAMING_INDEX = 0;
+    local @Slim::Player::Playlist::TRACKS = ('spoton://track:abc', 'spoton://track:def');
+
+    my $ws         = new_ws();
+    my $fakeClient = Test::FakeWsClient->new;
+    $ws->_client($fakeClient);
+    $ws->connected(1);
+    $ws->startBrowseTrack('spotify:track:abc', undef);
+    $ws->browseSeededUri('spotify:track:def');
+    $fakeClient->{writes} = [];
+
+    # Re-announcement of the CURRENT track, not the seeded one
+    $ws->_onMessage('{"type":"track_changed","item":{"uri":"spotify:track:abc"}}');
+
+    is($ws->browseSeededUri, 'spotify:track:def', "D-15 Test C: pending seed survives a current-track confirmation");
+    is($ws->browseAdvancePending, 0, "D-15 Test C: browseAdvancePending stays 0 (not a seeded advance)");
+    is(scalar(@Slim::Control::Request::EXECUTED), 0, "D-15 Test C: no playlist-index request issued");
+    is(scalar(@{ $fakeClient->{writes} }), 0, "D-15 Test C: no WS command sent");
+}
+
 # device_changed(is_active:false) during a browse session -- the app took
 # over (handover to Connect): end the session, but send NO pause (Connect
 # owns transport from here).
