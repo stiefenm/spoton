@@ -222,6 +222,54 @@ Ledger (Abschnitt 6). `/gsd-verify-work` kann diese Datei konversationell abarbe
 
 ---
 
+## 5b. Browse-Stutter Fix (Pläne 76-09..76-11)
+
+> Nachtrag 2026-08-31 (Extension-Scope, Debug-Session `soloist-browse-stutter`).
+> Voraussetzung: Wave-6-Merge (76-09/76-10/76-11) im Main-Checkout + LMS-Restart
+> (wie 1.1). Play-Budget beachten (KE Rapid-Skip Audio-Key-Throttle): maximal 4
+> Play-Kommandos, bei einem Stall ≥ 2 Minuten Abstand zwischen den Versuchen.
+> Sinus-Testton: `spoton://track:5aoe582nRsthk1hpeqn36G` (Debug-Doc „Test Resources").
+
+- [ ] **5b.1 Single-Track-Browse überlebt den Start (D-15, 76-09).**
+  Setup: backend=soloist, EIN Spotify-Track als einziger Playlist-Eintrag.
+  Aktion: Track über Browse abspielen, 60s laufen lassen.
+  Erwartet: KEINE `browse track_changed unexpected uri X (expected X)`-Zeile im
+  server.log (die Equality-Bestätigung loggt stattdessen `confirmed current uri ... no-op
+  (D-15)`); kein `endBrowseSession('queue_end')` beim Start; Audio stoppt nicht nach ~1s.
+  Evidenz: server.log-Auszug Startsequenz.
+- [ ] **5b.2 Daemon-Restart → Restored Session → Browse nicht gekapert (D-16, 76-10).**
+  Setup: Aktive/pausierte Session, dann Soloist-Daemon killen (DaemonManager respawnt),
+  warten bis die restaurierte Session im Log auftaucht (`restored session, not a user
+  transfer`).
+  Aktion: DANACH einen Track über Browse abspielen.
+  Erwartet: Der Play geht durch den Browse-Pfad (`startBrowseTrack` im server.log),
+  NICHT durch Connect-Handler; kein Stale-Claim-Intercept; Audio startet.
+  Evidenz: server.log (startBrowseTrack-Zeile nach dem Restart, kein Connect-Dispatch).
+- [ ] **5b.3 Album-Browse ohne zyklisches Stutter (D-17, 76-11) — Kernszenario.**
+  Setup: backend=soloist, Album (≥3 Tracks) über Browse queuen.
+  Aktion: Abspielen; pro Trackstart 60s beobachten (LMS-Statuszeit + Ohr); ≥ 2
+  Track-Übergänge abwarten.
+  Erwartet: Erwartete server.log-Sequenz pro Start: `startBrowseTrack` →
+  (ggf. Wartephase, Player zeigt Buffering) → `confirmed current uri` (D-15) →
+  `browse-ready gate resolved 'ready'` (D-17) → Stream-Open. KEIN Muster
+  „progressives Stutter → ~5s Stille → Positions-Reset auf 0 → Wiederholung".
+  **PASS/FAIL-Definition:** Ein verzögerter, dann SAUBERER Start (bis 30s Wartezeit,
+  Gate-Timeout-Fail-open eingeschlossen — Logzeile `browse-ready gate timeout --
+  proceeding fail-open (D-17)`) zählt als **PASS**. Ein Positions-Reset-auf-0-Loop
+  (LMS-Zeit springt wiederholt auf 0, Reconnect-Zyklen) zählt als **FAIL**.
+  Bekannte Grenze: Stalls > 30s (BROWSE_READY_TIMEOUT) degradieren absichtlich auf das
+  Vor-Gate-Verhalten — dann „wartet, spielt dann (oder timed sauber out)" statt
+  Retry-Stutter dokumentieren.
+  Evidenz: Zeitgestempelter server.log-Auszug EINES gegateten Starts
+  (Registrierung → Resolution) + LMS-Statuszeit-Verlauf.
+- [ ] **5b.4 librespot-Regression (D-14).**
+  Aktion: Backend auf librespot, je einen Browse-Play und einen Connect-Transfer testen.
+  Erwartet: Verhalten unverändert (kein Gate im librespot-Pfad — `waitForBrowseReady`
+  existiert nur im Soloist-Browse-Zweig); keine neuen Log-Warnungen.
+  Evidenz: server.log + Ohr.
+
+---
+
 ## 6. Ergebnis-Ledger
 
 ### 6.1 WINDOWS.md-Einträge (nach bestandenem Item im MAIN-CHECKOUT schließen)
