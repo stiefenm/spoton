@@ -658,6 +658,21 @@ sub _onTrackChanged {
 # _onBrowseTrackChanged($self, $uri) -- 73-03 Task 2 (D-03, RESEARCH Pattern
 # 6 Modell B, Pitfall 4): the advance/correction state machine for a
 # track_changed arriving during a browse session.
+#
+# Three-way classification (D-15, .planning/debug/soloist-browse-stutter.md):
+#   1. Seeded match ($uri eq browseSeededUri): expected gapless transition --
+#      advance the LMS playlist pointer to match.
+#   2. Current-track confirmation ($uri eq browseCurrentUri): the daemon
+#      confirming SpotOn's own `play` command (startBrowseTrack §992, or a
+#      prior corrective play §715) or re-announcing the current track after
+#      an internal flush/session-restore.  No-op: no WS command, no pointer
+#      movement, pending seeds preserved.
+#   3. Otherwise: Pitfall-4 defense -- rogue/autoplay URI; correct or pause.
+#
+# Ordering constraint: the seeded-match check MUST stay first.  If
+# browseCurrentUri and browseSeededUri were ever equal (track repeated twice
+# in a playlist), the seeded advance takes priority -- the LMS pointer needs
+# to move forward, not silently absorb the event as a confirmation.
 sub _onBrowseTrackChanged {
 	my ($self, $uri) = @_;
 
@@ -695,6 +710,22 @@ sub _onBrowseTrackChanged {
 		my $req = Slim::Control::Request->new($client->id, ['playlist', 'index', '+1']);
 		$req->source('PLUGIN_SPOTON_SOLOIST_BROWSE');
 		$req->execute();
+		return;
+	}
+
+	# D-15 (RC-1, Phase 76 extension): current-track confirmation -- the
+	# daemon is confirming SpotOn's own play command (startBrowseTrack §992,
+	# or a prior corrective play) or re-announcing the current track after
+	# an internal flush/session-restore.  This is NOT an unexpected URI:
+	# do NOT send any WS command (no corrective play, no pause), do NOT
+	# clear browseSeededUri (a pending seed describes the upcoming gapless
+	# transition and must survive), and do NOT touch browseAdvancePending
+	# or the LMS playlist pointer.
+	if ($uri eq ($self->browseCurrentUri // '')) {
+		main::INFOLOG && $log->is_info && $log->info(
+			"SoloistWS: browse track_changed confirmed current uri $uri -- no-op (D-15, mac="
+			. ($self->mac // '?') . ")"
+		);
 		return;
 	}
 
