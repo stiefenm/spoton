@@ -55,6 +55,32 @@ use constant HANDSHAKE_TIMEOUT => 5;
 # the seed always lands long before the track actually ends.
 use constant BROWSE_SEED_LEAD_SECONDS => 15;
 
+# D-17 (RC-4, Phase 76 extension, .planning/debug/soloist-browse-stutter.md):
+# stream-handoff readiness gate. Soloist's internal decoder/worker threads
+# take 10-215s+ to start producing audio after a play command (five
+# fake-libpulse-side mechanisms tested and refuted across two debug
+# sessions -- the latency is Soloist-internal, not fixable from the PA-API
+# surface). LMS's StreamingController::_RetryOrNext reconnects after ~10s
+# of premature stream end, resetting position to 0 on every retry -- the
+# collision produces the cyclic Browse stutter. getNextTrack defers the
+# stream handoff behind this gate until Soloist demonstrably produces
+# audio.
+#
+# BROWSE_READY_TIMEOUT tradeoff: Soloist's observed worst case is 215s+,
+# but an indefinite buffering spinner is worse UX than fail-open reverting
+# to today's retry behavior -- 30s bounds the common case (healthy starts
+# resolve in <1s) while stalls longer than this degrade gracefully to the
+# pre-gate behavior with a diagnosable log line.
+use constant BROWSE_READY_TIMEOUT => 30;
+
+# Seconds a playback_changed 'playing' must survive without an immediately
+# following 'paused'/'stopped' before it counts as genuine audio
+# production. Live captures show Soloist self-corking ('playing' ->
+# 'paused') within ~20ms of its initial burst (evidence entry 20:28:
+# playing 23.244 -> paused 23.264, real audio only at 33.575) -- a bare
+# 'playing' is NOT sufficient.
+use constant BROWSE_READY_CONFIRM => 1;
+
 __PACKAGE__->mk_accessor( rw => qw(
 	mac
 	port
@@ -75,6 +101,8 @@ __PACKAGE__->mk_accessor( rw => qw(
 	browseSeededUri
 	browseAdvancePending
 	browseAdvanceTs
+	browseReadyCb
+	browseTrackConfirmed
 	reconnectDelay
 	_sock
 	_client
@@ -114,6 +142,22 @@ __PACKAGE__->mk_accessor( weak => qw( daemon ) );
 #                        this timestamp (short grace window) before
 #                        forwarding a pause to the daemon -- mirroring the
 #                        Connect path's own connectStartTime grace period.
+# browseReadyCb:         D-17 (RC-4): the single pending waitForBrowseReady
+#                        callback, or undef. Registered by ProtocolHandler::
+#                        getNextTrack after a fresh startBrowseTrack;
+#                        resolved exactly once via _resolveBrowseReady with
+#                        'ready'/'timeout'/'ended'. A second registration
+#                        silently discards the first WITHOUT invoking it
+#                        (LMS has superseded the earlier getNextTrack --
+#                        invoking a stale successCb could resurrect an
+#                        abandoned Song).
+# browseTrackConfirmed:  D-17 Stage A: true once a track_changed has
+#                        confirmed the expected uri (equality branch or
+#                        seeded-match branch) for the CURRENT browse start.
+#                        Gates Stage B so a stale position_sync frame from
+#                        the previous track can never resolve the gate.
+#                        Reset by startBrowseTrack (each new browse start
+#                        begins unconfirmed).
 # sessionStarted:        true once _emitStart has fired; prevents redundant
 #                        'start' on device re-activation mid-session.
 # skipInitiated:         260827-of9 (~30s Connect-skip audio delay): true
@@ -176,6 +220,7 @@ sub new {
 	$self->skipInitiated(0);
 	$self->deactivating(0);
 	$self->browseSession(0);
+	$self->browseTrackConfirmed(0);
 	$self->reconnectDelay(RECONNECT_DELAY_MIN);
 
 	return $self;
@@ -297,6 +342,12 @@ sub _onClosed {
 	$self->_client(undef);
 	$self->connected(0);
 	$self->_sockOpen(0);
+
+	# D-17 fail-open: WS/daemon loss must never strand a player mid-gate --
+	# resolve a pending readiness callback with 'timeout' semantics so the
+	# caller proceeds exactly as it would today (the alive-poll owns process
+	# recovery, not this gate).
+	$self->_resolveBrowseReady('timeout');
 
 	$self->_scheduleReconnect;
 }
@@ -701,6 +752,9 @@ sub _onBrowseTrackChanged {
 		$self->browseAdvancePending(1);
 		$self->browseCurrentUri($uri);
 		$self->browseSeededUri(undef);
+		# D-17 Stage A: the daemon is provably on the track LMS expects --
+		# a pending readiness gate may now accept Stage-B audio signals.
+		$self->browseTrackConfirmed(1);
 		# CR-02: LMS internally stops the previous playlist item during this
 		# jump, generating an un-sourced stop/pause notification -- record
 		# the timestamp so Connect.pm's _onPause browse branch can suppress
@@ -726,6 +780,10 @@ sub _onBrowseTrackChanged {
 			"SoloistWS: browse track_changed confirmed current uri $uri -- no-op (D-15, mac="
 			. ($self->mac // '?') . ")"
 		);
+		# D-17 Stage A: same confirmation semantics as the seeded-match
+		# branch above -- the daemon announced exactly the track LMS asked
+		# for (startBrowseTrack's own play command echoing back).
+		$self->browseTrackConfirmed(1);
 		return;
 	}
 
@@ -743,6 +801,11 @@ sub _onBrowseTrackChanged {
 			$uri, ($expected // '?'), ($self->mac // '?')
 		));
 		$self->browseSeededUri(undef);
+		# D-17: the daemon is on a rogue track -- position_sync frames from
+		# it must not resolve a pending readiness gate. The corrective play
+		# below re-announces the expected uri, which re-confirms via the
+		# equality branch.
+		$self->browseTrackConfirmed(0);
 		$self->sendCommand('play', uri => $expected) if defined $expected;
 	}
 	else {
@@ -775,6 +838,25 @@ sub _onPlaybackChanged {
 	}
 
 	if ($self->browseSession) {
+		# D-17 Stage B via playback_changed: a bare 'playing' is NOT
+		# sufficient evidence of audio production -- live captures show it
+		# flipping to 'paused' (self-cork) within ~20ms of the initial
+		# burst. 'playing' after Stage-A confirmation arms a short confirm
+		# window; a 'paused'/'stopped' arriving before it fires disarms it
+		# (blip). Only a 'playing' that survives the window resolves the
+		# pending readiness gate.
+		if ($status eq 'playing') {
+			if ($self->browseTrackConfirmed && $self->browseReadyCb) {
+				Slim::Utils::Timers::killTimers($self, \&_browseReadyConfirmTimer);
+				Slim::Utils::Timers::setTimer($self,
+					Time::HiRes::time() + BROWSE_READY_CONFIRM,
+					\&_browseReadyConfirmTimer);
+			}
+		}
+		elsif ($status eq 'paused' || $status eq 'stopped') {
+			Slim::Utils::Timers::killTimers($self, \&_browseReadyConfirmTimer);
+		}
+
 		# Task-1-DEFERRED default: a 'stopped' status with no seed sent means
 		# Soloist reached the natural end of the track it was asked to play
 		# (no queued follow-up). End the browse session WITHOUT sending
@@ -875,6 +957,18 @@ sub _onPositionSync {
 	return unless defined $posMs;
 
 	$self->_maybeSeedBrowseQueue($posMs) if $self->browseSession;
+
+	# D-17 Stage B via position_sync: after Stage-A confirmation, the first
+	# frame with speed != 0 proves Soloist is genuinely advancing through
+	# the confirmed track -- resolve a pending readiness gate. Frames
+	# arriving BEFORE confirmation are ignored (stale-frame protection: a
+	# position_sync from the PREVIOUS track could arrive between our play
+	# command and Soloist's internal switch).
+	if ($self->browseSession && $self->browseTrackConfirmed
+		&& $msg->{speed} && $self->browseReadyCb)
+	{
+		$self->_resolveBrowseReady('ready');
+	}
 
 	# 73-05 (D-06, Pitfall 5): speed 0 is the daemon's own signal that
 	# playback is currently paused -- update sessionPaused directly from
@@ -1010,6 +1104,15 @@ sub startBrowseTrack {
 	$self->browseCurrentUri($uri);
 	$self->browseSeededUri(undef);
 	$self->browseAdvancePending(0);
+	# D-17: each new browse start begins unconfirmed; a stale pending
+	# readiness cb from an abandoned earlier start is discarded WITHOUT
+	# invoking it (the getNextTrack that registered it has been superseded
+	# by this new start -- invoking it could resurrect an abandoned Song).
+	$self->browseTrackConfirmed(0);
+	if ($self->browseReadyCb) {
+		$self->browseReadyCb(undef);
+		$self->_clearBrowseReadyTimers;
+	}
 	# CR-02: a fresh browse play also triggers an internal stop of the
 	# previous item -- today that pause is immediately overridden by this
 	# same play, but it is a race, not a guarantee. Same grace timestamp as
@@ -1057,8 +1160,108 @@ sub endBrowseSession {
 	$self->browseCurrentUri(undef);
 	$self->browseSeededUri(undef);
 	$self->browseAdvancePending(0);
+	$self->browseTrackConfirmed(0);
+
+	# D-17: the session was torn down (queue-end defense, LMS stop,
+	# handover) -- a pending readiness gate resolves 'ended' so the caller
+	# can error out cleanly instead of handing over a stream that would
+	# play nothing.
+	$self->_resolveBrowseReady('ended');
 
 	$self->sendCommand('pause') unless $_BROWSE_END_SKIP_PAUSE{$reason // ''};
+}
+
+# ---------------------------------------------------------------------
+# D-17 (RC-4, Phase 76 extension): waitForBrowseReady -- two-stage stream-
+# handoff readiness gate (see BROWSE_READY_TIMEOUT above for the full
+# mechanism rationale).
+#
+#   Stage A: a track_changed confirming the expected uri (the D-15
+#            equality branch or the seeded-match branch) sets
+#            browseTrackConfirmed.
+#   Stage B: after Stage A, EITHER the first position_sync with
+#            speed != 0, OR a playback_changed 'playing' that survives
+#            BROWSE_READY_CONFIRM seconds without an immediately
+#            following 'paused'/'stopped' (self-cork blip).
+#
+# Resolution statuses handed to the callback (invoked at most once per
+# registration, all state cleared through the _resolveBrowseReady choke
+# point):
+#   'ready'   -- Soloist demonstrably produces audio; proceed.
+#   'timeout' -- gate timed out or the WS/daemon connection was lost;
+#                FAIL-OPEN: the caller proceeds exactly as it would
+#                without the gate (worst case equals today's behavior,
+#                never worse).
+#   'ended'   -- the browse session was torn down before audio started;
+#                the caller should error out rather than hand over a
+#                stream that would play nothing.
+#
+# Timers are keyed on $self via Slim::Utils::Timers with DISTINCT
+# coderefs for confirm vs timeout so killTimers cannot collide
+# (mirroring the _bufferedBrowseSeek/_bufferedSeek precedent in
+# Connect.pm).
+# ---------------------------------------------------------------------
+
+sub waitForBrowseReady {
+	my ($self, $cb, $timeout) = @_;
+
+	return 0 unless ref($cb) eq 'CODE';
+	$timeout ||= BROWSE_READY_TIMEOUT;
+
+	# Supersede: a second registration silently discards the first WITHOUT
+	# invoking it -- LMS has superseded the earlier getNextTrack (user
+	# skip, prefetch churn); invoking a stale successCb could resurrect an
+	# abandoned Song.
+	if ($self->browseReadyCb) {
+		main::DEBUGLOG && $log->is_debug && $log->debug(
+			"SoloistWS: waitForBrowseReady superseding an earlier pending gate ("
+			. ($self->mac // '?') . ")"
+		);
+	}
+
+	$self->browseReadyCb($cb);
+	$self->_clearBrowseReadyTimers;
+	Slim::Utils::Timers::setTimer($self,
+		Time::HiRes::time() + $timeout, \&_browseReadyTimeoutTimer);
+	return 1;
+}
+
+# _resolveBrowseReady($self, $status) -- single choke point: kills both
+# timers, clears all readiness state, and invokes the pending cb exactly
+# once. No-op when no cb is pending.
+sub _resolveBrowseReady {
+	my ($self, $status) = @_;
+
+	my $cb = $self->browseReadyCb or return;
+
+	# Clear state BEFORE the cb runs so a re-entrant registration from
+	# inside the callback is never clobbered afterward.
+	$self->browseReadyCb(undef);
+	$self->_clearBrowseReadyTimers;
+
+	main::INFOLOG && $log->is_info && $log->info(
+		"SoloistWS: browse-ready gate resolved '$status' (D-17, mac="
+		. ($self->mac // '?') . ")"
+	);
+
+	$cb->($status);
+}
+
+sub _clearBrowseReadyTimers {
+	my $self = shift;
+	Slim::Utils::Timers::killTimers($self, \&_browseReadyConfirmTimer);
+	Slim::Utils::Timers::killTimers($self, \&_browseReadyTimeoutTimer);
+}
+
+# Timer targets -- distinct coderefs so killTimers cannot collide.
+sub _browseReadyTimeoutTimer {
+	my $self = shift;
+	$self->_resolveBrowseReady('timeout');
+}
+
+sub _browseReadyConfirmTimer {
+	my $self = shift;
+	$self->_resolveBrowseReady('ready');
 }
 
 # Snapshot on connect / get_state response -- initial resync after a WS
