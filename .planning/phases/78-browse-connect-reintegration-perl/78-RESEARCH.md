@@ -353,23 +353,29 @@ $self->_signalBoundary if $status eq 'stopped';
 | A4 | Die ~46 ms Chunk-Drop-Limitierung am Boundary ist unhörbar (Track-Anfang, leiser Bereich) | C-Vertrag Punkt 8 | Hörbarer Clip am Trackanfang → kleine C-Korrektur (Carry-over) als Follow-up nötig |
 | A5 | `spoton-uat`-Skill deckt die neuen Szenarien (EOF-Advance, Connect-Transfer auf track-URLs) nach Anpassung ab | Validation | UAT-Aufwand steigt; manuelles Dev-Box-UAT als Fallback (Phase-76 D-09-Muster) |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Soloist-Ownership-Kriterium (ersetzt `connect-`-URL-Checks)**
+Alle vier Fragen sind in den Plänen 78-01..78-04 dispositioniert:
+
+1. **Soloist-Ownership-Kriterium (ersetzt `connect-`-URL-Checks)** — RESOLVED (Plan 78-04, Task 2)
    - What we know: Claim via `$_activeConnectPlayer`; alle Live-Checks hängen an `m{spoton://connect-}`; unter D-04 kollidiert das (Pitfall 2).
    - What's unclear: exaktes Release-Kriterium bei „User startet eigenes Playback" ohne URL-Unterscheidbarkeit (Browse-Track vs. Connect-Track sehen identisch aus).
    - Recommendation: Source-Marking der Connect-eigenen playlist-Requests + Vergleich gegen `ws->lastTrackId`; Release bei un-marked newsong mit URI ≠ lastTrackId sowie bei `stop 'inactive'`. Planner entscheidet die Details (liegt in Discretion „Connect.pm Browse-Pfade").
-2. **Wer erzeugt den Connect-Folgeeintrag: `playlist add`+advance oder `playlist play`?**
+   - **Disposition:** `_isSoloistOwnedSong($client)` = aktueller Song-URL == `spoton://track:` . `$ws->lastTrackId`; D-16-Release nur bei newsong das weder connect-URL noch Soloist-owned ist; `stop 'inactive'` bleibt der autoritative Session-End-Release. Akzeptierte Kante (inline dokumentiert): manuelles Browse-Play exakt des announced Tracks released erst beim nächsten abweichenden Track.
+2. **Wer erzeugt den Connect-Folgeeintrag: `playlist add`+advance oder `playlist play`?** — RESOLVED (Plan 78-04, Task 1)
    - What we know: `playlist play` ersetzt die Playlist (heutiges Verhalten, 1 Eintrag); D-04 sagt „erzeugt … einen neuen [Eintrag]".
    - What's unclear: ob eine wachsende Connect-History-Playlist (add) gewünscht ist oder Ein-Eintrag-Ersetzung (play) reicht.
    - Recommendation: `playlist play` (Ein-Eintrag, minimale Abweichung vom heutigen UX); History kommt weiter über den Meta-Cache.
-3. **~46 ms Boundary-Chunk-Drop akzeptieren oder C-Fix?**
+   - **Disposition:** Recommendation übernommen — `playlist play` Ein-Eintrag-Ersetzung an allen vier Dispatch-Sites, source-marked; History weiter über den `spoton_meta_`-Cache.
+3. **~46 ms Boundary-Chunk-Drop akzeptieren oder C-Fix?** — RESOLVED (akzeptiert; UAT-Beobachtung)
    - What we know: dokumentierte Prototyp-Limitierung [VERIFIED: fake-libpulse.c:925-934]; CONTEXT deklariert C als fertig.
    - Recommendation: In Wave-1-UAT hörprüfen; wenn hörbar → kleiner, isolierter C-Task (Carry-over-Buffer) als Plan-Ergänzung mit User-Rücksprache (Scope-Abweichung von „rein Perl").
-4. **Verhält sich der erste GET einer Session korrekt, wenn der Ring noch leer ist (Soloist-Warmup)?**
+   - **Disposition:** Kein Plan-Task; Drop akzeptiert. Hörprüfung läuft über die Live-UAT nach Wave 2 (Plan 78-02 Verification) bzw. die Phase-End-UAT (Plan 78-04 human-check). Ein C-Fix würde als separate Plan-Ergänzung nur nach User-Rücksprache aufgesetzt.
+4. **Verhält sich der erste GET einer Session korrekt, wenn der Ring noch leer ist (Soloist-Warmup)?** — RESOLVED (akzeptiert; Design trägt den Fall)
    - What we know: Serve-Loop poppt mit 50 ms-Timeout und schreibt nichts, solange leer — Verbindung bleibt offen [VERIFIED: fake-libpulse.c:903-905]; LMS `_RetryOrNext` reconnected nach ~10 s stalled Stream; Warmup gesund <1 s, Worst Case >200 s.
    - What's unclear: ob der 10s-Retry beim Cold-Start noch zuschlägt (Reconnect ist im bounded Modell aber harmlos: Takeover, weiter warten).
    - Recommendation: Akzeptieren (Retry rejoint verlustfrei — kein Positions-Reset mehr relevant, da noch nichts spielte); im UAT den Cold-Start-Pfad beobachten.
+   - **Disposition:** Recommendation übernommen — Plan 78-01 Task 2 baut das gate-freie getNextTrack mit synchronem successCb genau darauf: Startup-Latenz erscheint als LMS-Buffering auf der offenen bounded Connection; ein etwaiger 10s-Retry rejoint verlustfrei. Cold-Start-Pfad wird in der UAT beobachtet (Plan 78-02/78-04 Verification).
 
 ## Environment Availability
 
