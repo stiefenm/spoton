@@ -300,6 +300,15 @@
 | 64. PassthroughMixer | v3.x | 2/2 | Complete | — |
 | 65-67. ZeroConf + Auth Revert | v3.x | 13/16 | Complete | — |
 | 70. JiveLite Pagination | v3.x | 5/5 | Complete | 2026-08-22 |
+| 71. Soloist Foundation | v4.0 | 4/4 | Complete | 2026-08-25 |
+| 72. Soloist Browse (unbounded) | v4.0 | 3/3 | SUPERSEDED | — |
+| 73. Soloist Connect + WS | v4.0 | 6/6 | Partial (WS base ✅, browse SM ✗) | — |
+| 74. spoton-helper Binary | v4.0 | 4/4 | Complete | — |
+| 75. API Unification (SpClient) | v4.0 | 7/7 | Complete | — |
+| 76. Connect Stabilization | v4.0 | 11/11 | SUPERSEDED | — |
+| 77. Bounded Audio Facade | v4.0 | 0/? | Not started | — |
+| 78. Browse+Connect Reintegration | v4.0 | 0/? | Not started | — |
+| 79. Soloist E2E UAT + Release | v4.0 | 0/? | Not started | — |
 | 38-41 (4 phases) | v2.3 | 0/? | Not started | — |
 | 62. Browse + Connect Queue | — | 0/? | Not started | — |
 
@@ -450,7 +459,7 @@ Items discovered during development — not assigned to a milestone.
 
 **Context:** Spotify launched Soloist am 2026-08-13 als offizielles Developer-Produkt. spak-Key ist Self-Service im Developer Dashboard (Premium required). Drei Linux-Architekturen: x86_64, arm64, arm32 — deckt Pi und Desktop ab.
 
-**Approach:** BYOK + Fake-libpulse. User generiert eigenen spak-Key, Projekt liefert Integration + eine schlanke Fake-libpulse.so.0 die Audio direkt per FD abgreift statt PulseAudio zu benötigen.
+**Approach:** BYOK + Fake-libpulse + **Bounded Audio Facade**. User generiert eigenen spak-Key, Projekt liefert Integration + eine schlanke Fake-libpulse.so.0 die Audio per Ring-Buffer abgreift und als bounded per-Track HTTP-Responses an LMS serviert.
 
 **Spike Results (2026-08-24):**
 
@@ -462,26 +471,129 @@ Items discovered during development — not assigned to a milestone.
 | **Audio Pipeline** | VALIDIERT | PCM → FLAC (68% Ratio, 93x Realtime), PCM → OGG (10% Ratio). Gleiche Pipeline wie librespot via custom-convert.conf. |
 | **24-Bit FLAC Patch** | TEILWEISE | 6 Enum-Downgrade-Gates gefunden (cmp 6/mov 5), 5 davon sicher patchbar (Gate 4 crasht). Aber: Patch allein reicht nicht — Soloist muss `supported_audio_quality=HIFI_24` in DeviceCapabilities announcen UND Spotify muss die Quality-Stufe serverseitig zuweisen. A/B-Test zeigt identische CDN-Dateigrößen (~4.5 MB OGG). Needs deeper analysis in Phase 74. |
 
+**Architecture Review (2026-08-31):**
+
+Der ursprüngliche Ansatz (unbounded `/stream` Endpoint + Zwei-Sequenzer-Modell) ist architekturell gescheitert — Phase 72/73/76 haben ~530 LOC kompensatorischen Code produziert (D-15/D-16/D-17 Gates, browseSession State Machine, Watchdogs, Seeding) der die Grundprobleme nicht löst: Phantom-Progress, Stutter, kein Auto-Advance, Metadata-Bleed.
+
+**Recherche-Ergebnis:** Analyse von 8 vergleichbaren Projekten (Spotty-Plugin, owntone, Mopidy, Volumio+go-librespot, Snapcast, librespot, go-librespot, Roon) zeigt: kein einziges funktionierendes Projekt betreibt zwei Sequenzer gegen einen unbounded Stream. Nur zwei Pattern existieren: (A) Player zieht bounded per-Track Streams mit echtem EOF, oder (B) Daemon besitzt alles, Player ist Remote Control.
+
+**Neuer Ansatz — Bounded Audio Facade:** Fake-libpulse stampt Track-Boundaries auf den Ring-Buffer (korreliert `track_changed` Events mit Write-Offsets). Neuer Endpoint `GET /stream/track?uri&start` serviert bis zum Boundary-Marker, dann Socket close = echtes EOF. LMS bekommt denselben Vertrag wie bei librespot `--single-track`: ein Track = ein bounded HTTP-Stream mit EOF-driven Advance. Daemon-Auto-Advance wird als Prefetch ausgenutzt statt bekämpft.
+
+**Schlüssel-Erkenntnis Spotty:** Herger's Connect-Daemon hat nie Audio geliefert (Output → `/dev/null`). Connect-Audio lief über dieselbe bounded `--single-track` Pipeline wie Browse. SpotOn's existierender Connect.pm + ProtocolHandler implementieren bereits dieses Pattern — die Bounded Facade muss nur den Soloist-Transport auf denselben Vertrag bringen.
+
+Siehe: `.planning/debug/browse-architecture-review.md`, `.planning/research/playback-architecture-comparison.md`
+
 **Key Decisions:**
 - Soloist ist Community-Alternative neben librespot im öffentlichen Repo
 - Kein Key im Repo, keine Key-Verteilung — reines BYOK (Spotify's eigenes Modell)
 - Fake-libpulse statt PulseAudio-Capture — kein Systemprozess-Overhead, kein Binary-Patch für Audio
 - Lifetime-Patch ist ein optionaler Komfort (ASCII-Replace), kein harter Blocker
 - Drei Plattformen: x86_64, arm64, arm32 (kein macOS/Windows — dort bleibt librespot)
+- **Bounded Audio Facade statt unbounded /stream** — Track-Boundaries im Ring-Buffer, per-Track EOF
+- **Phase 72/76 Code wird entfernt** — browseSession, D-15/D-16/D-17, Watchdogs, Seeding (~530 LOC)
+- **Fallback:** Falls Boundary-Jitter zu groß → Spotty-Split (Soloist nur Auth+Events, Audio via librespot)
 
 **Phases:**
 
-- [ ] **Phase 71: Soloist Foundation** — Soloist.pm Backend-Modul (Download/Version-Check/Lifecycle), Fake-libpulse.so Build-Pipeline (3 Architekturen), Helper.pm Backend-Auswahl (librespot vs soloist), BYOK Key-Management (Settings UI, mode 0600 Datei)
-  - **Plans:** 4 plans (Wave 1: 71-01, 71-04 parallel · Wave 2: 71-02, 71-03 parallel)
-  - [ ] 71-01-PLAN.md — Soloist.pm Backend-Modul (Tracer): Arch-Map, Auto-Download, Version-Check, spak.key mode 0600
-  - [ ] 71-02-PLAN.md — DaemonManager Backend-Dispatch + D-09 Voraussetzungs-Gate
-  - [ ] 71-03-PLAN.md — Settings UI: Backend-Dropdown, conditional spak-Key-Feld, Format-Validierung, i18n
-  - [ ] 71-04-PLAN.md — Fake-libpulse CI Build-Pipeline (glibc cross-gcc, 3 Architekturen)
-- [ ] **Phase 72: Soloist Browse Playback** — ProtocolHandler soloist://-Modus, `--single-track` Integration, Audio-Pipeline (S32LE → FLAC/PCM via custom-convert.conf), FD-basiertes Streaming an LMS StreamServer
-- [ ] **Phase 73: Soloist Connect Mode** — WebSocket API Integration (Events → LMS Player State), Connect Transfer-Playback, Daemon-Lifecycle pro Player, Sync-Group Support
-- [ ] **Phase 74: Soloist Polish** — Lifetime-Patcher (optional, Settings-Toggle), 24-Bit FLAC (Enum-Patch), Quality-Dropdown (OGG/FLAC/Lossless), Per-Player Backend-Auswahl, Diagnostics
-  **Note:** Patches (Lifetime, 24-Bit) müssen als Pattern-Scanner implementiert werden, nicht als statische Offsets — Instruction Encoding unterscheidet sich zwischen x86_64/arm64/arm32. Alle 3 Binaries runterladen und validieren.
-- [ ] **Phase 75: Soloist UAT + Release** — E2E-Tests (Browse, Connect, Sync Groups, Format-Switching), Plattform-Tests (x86_64, arm64, arm32), TROUBLESHOOTING, CHANGELOG, v4.0.0 Release
+<details>
+<summary>✅ Completed Foundation (Phases 71, 74, 75)</summary>
+
+- [x] **Phase 71: Soloist Foundation** — Soloist.pm Backend-Modul (Download/Version-Check/Lifecycle), Fake-libpulse.so Build-Pipeline (3 Architekturen), DaemonManager Backend-Dispatch, BYOK Key-Management (Settings UI, mode 0600 Datei)
+  - [x] 71-01-PLAN.md — Soloist.pm Backend-Modul: Arch-Map, Auto-Download, Version-Check, spak.key mode 0600
+  - [x] 71-02-PLAN.md — DaemonManager Backend-Dispatch + D-09 Voraussetzungs-Gate
+  - [x] 71-03-PLAN.md — Settings UI: Backend-Dropdown, conditional spak-Key-Feld, Format-Validierung, i18n
+  - [x] 71-04-PLAN.md — Fake-libpulse CI Build-Pipeline (glibc cross-gcc, 3 Architekturen)
+- [x] **Phase 74: spoton-helper Binary** — Helper Build-Pipeline, Lifetime-Patcher, Version-Check, Archive-Validierung
+- [x] **Phase 75: API Unification (SpClient)** — ProtobufLite.pm, Login5.pm, SpClient.pm, rootlist/collection parsers
+
+</details>
+
+<details>
+<summary>⚠️ SUPERSEDED (Phases 72, 73-Browse, 76) — Code wird in Phase 78 entfernt</summary>
+
+- [~] **Phase 72: Soloist Browse Playback (SUPERSEDED)** — Unbounded `/stream` Ansatz. Architekturell gescheitert: zwei Sequenzer gegen einen unbounded Stream erzeugt Phantom-Progress, Stutter, kein Auto-Advance. Ersetzt durch Phase 77 (Bounded Facade).
+- [~] **Phase 73: Soloist Connect Mode (TEILWEISE SUPERSEDED)** — WS-Integration (Events, _onTrackChanged, _onDeviceChanged, _onPlaybackState) BLEIBT. Browse State Machine (browseSession, _emitAllowed Gate, _onBrowseTrackChanged, waitForBrowseReady, startBrowseTrack, _maybeSeedBrowseQueue) wird in Phase 78 ENTFERNT.
+- [~] **Phase 76: Connect Stabilization (SUPERSEDED)** — D-15/D-16/D-17 Gates, browseAdvanceTs Grace, _prefetchWatchdog Browse-Pfade, stale-claim Guards. Kompensatorischer Code der die Grundprobleme nicht löst. Wird komplett in Phase 78 entfernt.
+
+Zu entfernende LOC (Phase 78):
+- `SoloistWS.pm`: ~300 LOC (browseSession SM, _emitAllowed, _onBrowseTrackChanged, waitForBrowseReady, startBrowseTrack, _maybeSeedBrowseQueue, endBrowseSession)
+- `Plugin.pm`: ~100 LOC (_prefetchWatchdog Browse-Pfade, _pauseGuardCheck)
+- `Connect.pm`: ~50 LOC (D-16 stale-claim, browse forwarding in _onPause)
+- `ProtocolHandler.pm`: ~80 LOC (D-17 gate in getNextTrack, Browse re-entry guard)
+
+</details>
+
+### Phase 77: Bounded Audio Facade (spoton-helper, C/Rust)
+
+**Goal:** Fake-libpulse und spoton-helper so erweitern, dass `/stream` als bounded per-Track HTTP-Response serviert wird — Track-Boundary-Marker im Ring-Buffer, Socket close = echtes EOF bei Track-Grenze. LMS bekommt denselben Vertrag wie librespot `--single-track`.
+
+**Spike 1 — Boundary Observability (kein Code-Change in LMS)**
+Fake-libpulse instrumentieren: bei jedem `track_changed`/`playback_changed`/seek den Ring-Write-Offset loggen, ebenso pa_stream Lifecycle (create/cork/uncork/drain/flush/close). Album mit natürlichen Übergängen, manuellem Skip und Seek abspielen.
+Exit-Kriterium: Boundary-Offset mit Jitter < ~50ms (≈8.8 KB bei S32LE/44100Hz) ableitbar.
+
+**Spike 2 — Bounded Endpoint Prototyp**
+`GET /stream/track?uri=X&start=Y` implementieren: serviert Ring-Buffer-Daten bis zum nächsten Boundary-Marker, dann Socket close. Validierung per curl: Byte-Counts, sauberer Close bei Boundary, kontiguöses Audio über zwei Requests (PCM diff gegen Referenz), Rapid-Skip-Verhalten, Pause-Semantik.
+
+**Implementation:**
+- Track-Boundary-Marker-Datenstruktur im Ring-Buffer (Owntone `INPUT_FLAG_*` Pattern)
+- Ring-Buffer Write-Offset wird bei WS `track_changed` + pa_stream Lifecycle markiert
+- HTTP-Thread serviert bis Marker, dann close (chunked Transfer-Encoding, kein Content-Length nötig)
+- URI-Mismatch: Daemon play-Command + Ring-Flush + serve ab neuem Marker
+- `start=N` mapped auf Daemon seek-Command + Flush-to-post-seek Marker
+
+**Depends on:** Phase 71, 74 (spoton-helper Infrastruktur)
+
+### Phase 78: Browse + Connect Reintegration (Perl)
+
+**Goal:** ProtocolHandler auf bounded Endpoint umstellen, kompensatorischen Browse-Code entfernen, bestehenden Connect.pm gegen bounded Endpoint verifizieren. Gleicher Audio-Vertrag für Soloist wie für librespot.
+
+**Plans:** 4 plans
+
+Plans:
+- [ ] 78-01-PLAN.md — Spike-Baseline committen + Browse auf bounded Endpoint (Tracer: canDirectStream /stream/track-URL, gate-freies getNextTrack, D-02 Boundary auf 'stopped', t/29+t/31)
+- [ ] 78-02-PLAN.md — Connect.pm Browse-Koexistenz: Echo-Guard (Pitfall 1) + Pause/Seek-Forwarding auf bounded Kriterium (Pitfall 4/5)
+- [ ] 78-03-PLAN.md — browseSession-Maschinerie entfernen (~470 LOC SoloistWS.pm) + Browse-SM-Tests löschen (D-06/D-07)
+- [ ] 78-04-PLAN.md — Connect D-04: spoton://track:ID backend-dispatched, Soloist-Ownership-Kriterium (Pitfall 2), Watchdog-Guards (Pitfall 3), t/37
+
+**Tasks:**
+1. ProtocolHandler.pm: `canDirectStream` für Soloist Browse zeigt auf `http://host:PORT/stream/track?uri=X&start=Y` (bounded). Kein `waitForBrowseReady`, kein Gate — Track-Request = bounded HTTP wie librespot
+2. custom-convert.conf: `soc` Profil für Soloist Browse über bounded Endpoint (gleiche Pipeline wie `son`)
+3. **Entfernen (Phase 72/76 Code):**
+   - `SoloistWS.pm`: browseSession, _emitAllowed, _onBrowseTrackChanged, waitForBrowseReady, startBrowseTrack, _maybeSeedBrowseQueue, endBrowseSession, browseAdvanceTs, browseAdvancePending, browseSeededUri, browseTrackConfirmed
+   - `Plugin.pm`: _prefetchWatchdog Browse-Pfade, _pauseGuardCheck Browse-spezifische Logik
+   - `Connect.pm`: D-16 stale-claim Guard, browseSession-aware Pfade in _onPause
+   - `ProtocolHandler.pm`: D-17 gate in getNextTrack, browseAdvancePending re-entry guard, _translatedConnectUrls Browse-Pfade
+4. Connect.pm: bestehende spottyconnect Event-Handler gegen bounded Endpoint verifizieren — keine Neuimplementierung, da Connect.pm + ProtocolHandler das Spotty-Pattern bereits implementieren
+5. Tests: betroffene Tests in t/ anpassen (t/29, t/32, t/37 etc.)
+
+**Depends on:** Phase 77
+
+### Phase 74b: Soloist Polish
+
+**Goal:** Lifetime-Patcher (optional, Settings-Toggle), 24-Bit FLAC (Enum-Patch falls machbar), Quality-Dropdown (OGG/FLAC/Lossless), Per-Player Backend-Auswahl, Diagnostics.
+**Note:** Patches (Lifetime, 24-Bit) müssen als Pattern-Scanner implementiert werden — Instruction Encoding unterscheidet sich zwischen x86_64/arm64/arm32.
+**Depends on:** Phase 78
+
+### Phase 79: Soloist E2E UAT + v4.0 Release
+
+**Goal:** Vollständige E2E-Validierung beider Playback-Pfade (Browse + Connect) auf dem bounded Endpoint, Edge Cases, Release.
+
+**UAT Checklist:**
+- [ ] Browse: Auto-Advance via EOF, korrekte Elapsed/Duration, Seek, Skip fwd/back
+- [ ] Browse: Gapless-Verhalten bei natürlichen Übergängen
+- [ ] Browse: Mixed Playlist (Spotify + lokale Dateien) — Handoff an Boundary
+- [ ] Connect: Transfer von Spotify App, Pause/Resume, Seek, Skip
+- [ ] Connect: Transfer weg und zurück (position preserving)
+- [ ] Connect: App-initiated Skip (track_changed → streamUrl swap)
+- [ ] Edge Cases: Rapid-Skip-Storm (Audio-Key-Throttle KE), Context End, Daemon Crash mid-serve
+- [ ] Edge Cases: LMS Restart mid-Track, squeezelite Reconnect
+- [ ] Plattform: x86_64, arm64, arm32 (Binary + Fake-libpulse)
+- [ ] Windows: File::Spec Pfade, kein cfg(unix) in Helper (librespot bleibt dort Backend)
+- [ ] Release: CHANGELOG, TROUBLESHOOTING, Version Bump, v4.0.0
+
+**Fallback-Gate:** Falls Phase 77 Spike 1 zeigt, dass Boundary-Jitter > 50ms → Spotty-Split evaluieren (Soloist nur Auth+Events, Audio via librespot mit Soloist-Credentials).
+
+**Depends on:** Phase 78, Phase 74b
 
 **Risks:**
 - Spotify kann Soloist-API-Terms ändern oder Keys revoken
@@ -489,6 +601,8 @@ Items discovered during development — not assigned to a milestone.
 - Soloist ist Linux-only (kein macOS/Windows)
 - spak-Key ist account-gebunden — User-Tracking möglich
 - Dynamisches Linking gegen glibc — ältere Distros könnten Probleme haben
+- **NEU:** Boundary-Jitter in fake-libpulse könnte zu groß sein für saubere Track-Segmentierung
+- **NEU:** Soloist self-cork/warmup Latenz bei erstem Track einer Session (einmalig, akzeptabel — kein Retry-Loop mehr)
 
 **References:**
 - Spotify Docs: developer.spotify.com/documentation/soloist
@@ -496,6 +610,9 @@ Items discovered during development — not assigned to a milestone.
 - GitHub: github.com/spotify/soloist
 - Soloist Auth: developer.spotify.com/documentation/soloist/concepts/authentication
 - WebSocket API: developer.spotify.com/documentation/soloist/reference/websocket-api
+- Architecture Review: `.planning/debug/browse-architecture-review.md`
+- Playback Comparison Research: `.planning/research/playback-architecture-comparison.md`
+- Spotty v4.4.9 Connect Reference: scratchpad Repos (session-local)
 
 ## Future — v5.0 Library Integration
 
@@ -513,4 +630,4 @@ Items discovered during development — not assigned to a milestone.
 
 ---
 *Roadmap created: 2026-05-26*
-*Last updated: 2026-08-24 — v2.3 deferred, v4.0 Soloist active, v5.0 Library future*
+*Last updated: 2026-08-31 — v4.0 Soloist: Architecture Reboot (Bounded Audio Facade), Phases 72/76 superseded, Phases 77-79 new*
