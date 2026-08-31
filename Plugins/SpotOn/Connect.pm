@@ -117,6 +117,22 @@ sub _isDeadHistoryUrl {
     return ($meta && $meta->{spotifyUri}) ? 1 : 0;
 }
 
+# _isLiveConnectStream($client)
+# D-16: returns true iff the player has a playing song whose URL is a
+# spoton://connect-* stream — i.e. a live (or at least not-yet-replaced)
+# Connect session. Uses track->url first, then streamUrl fallback
+# (Phase 44 pattern: on a direct-streamed session streamUrl becomes the
+# http://…/stream proxy URL, so streamUrl-only would false-negative).
+sub _isLiveConnectStream {
+    my ($client) = @_;
+    return 0 unless $client;
+    $client = $client->master if $client->can('master');
+    my $song = $client->playingSong();
+    return 0 unless $song;
+    my $url = $song->track->url || $song->streamUrl || '';
+    return ($url =~ m{spoton://connect-}) ? 1 : 0;
+}
+
 # shutdown($class)
 # Cleanly unsubscribes all event handlers.
 # Daemon shutdown is handled by Unified::DaemonManager via Plugin.pm shutdownPlugin().
@@ -445,6 +461,15 @@ sub _onNewSong {
     return if !defined $client;
     $client = $client->master;
 
+    # D-16: extract the new song's URL once, using the Phase-44-safe pattern
+    # (track->url first, then streamUrl fallback). Phase 44 lesson (§935-940):
+    # track->url is the original spoton://connect-* URL; streamUrl becomes the
+    # http://…/stream proxy URL after canDirectStream resolves it — a
+    # streamUrl-only check false-negatives on live direct-streamed sessions.
+    # Shared by WR-06, CON-17, and the D-16 stale-claim release below.
+    my $song = $client->playingSong();
+    my $url  = $song ? ($song->track->url || $song->streamUrl || '') : '';
+
     # WR-06: a new song has started that is NOT a soloist Browse
     # spoton://track|episode: URL while a browse session is still marked
     # active on the daemon side (e.g. the user navigated to a non-Spotify
@@ -454,9 +479,7 @@ sub _onNewSong {
     # reaching its own track end while the user has moved on elsewhere would
     # fire an unrequested skip into the user's current playlist.
     if (my $browseWs = _soloistBrowseWs($client)) {
-        my $song = $client->playingSong();
-        my $newSongUrl = $song ? ($song->track->url || $song->streamUrl || '') : '';
-        unless ($newSongUrl =~ m{^spoton://(?:track|episode):}) {
+        unless ($url =~ m{^spoton://(?:track|episode):}) {
             main::INFOLOG && $log->is_info && $log->info(
                 "New song without Browse URL — ending soloist browse session for " . $client->id
             );
@@ -464,8 +487,14 @@ sub _onNewSong {
         }
     }
 
-    # CON-17: Apply stored progress for Connect sessions
-    if (__PACKAGE__->isSpotifyConnect($client)) {
+    # CON-17: Apply stored progress for Connect sessions.
+    # D-16 fix: the old predicate was `isSpotifyConnect($client)` alone, which
+    # tested the same condition as the release block below ($_ activeConnectPlayer
+    # eq $client->id) — making the release block dead code. Now requires BOTH the
+    # ownership claim AND an actual connect-* URL on the playing song. Progress
+    # application only makes sense on a real Connect stream, not on a dormant
+    # claim-set-but-Browse-playing state.
+    if (__PACKAGE__->isSpotifyConnect($client) && $url =~ m{spoton://connect-}) {
         if (my $progress = $client->pluginData('progress')) {
             $client->pluginData(progress => 0);
 
@@ -473,7 +502,6 @@ sub _onNewSong {
                 # Stream-mode: binary streams from current position. Adjust
                 # startOffset so songTime reports the correct position without
                 # triggering _JumpToTime → _Stop + _Stream.
-                my $song = $client->playingSong();
                 if ($song) {
                     my $elapsed = $client->songElapsedSeconds() || 0;
                     $song->startOffset(int($progress) - $elapsed);
@@ -491,15 +519,25 @@ sub _onNewSong {
         return;
     }
 
-    # If Connect flag was set but we're no longer in a Connect URL, clear state
+    # D-16: Stale-claim release — now reachable when the ownership claim is set
+    # but the new song is NOT a Connect stream (e.g. Browse play on a player
+    # holding a dormant restored-session claim). The old code had an identical
+    # predicate to the CON-17 branch above (both tested isSpotifyConnect alone),
+    # making this block dead code — the resume handler's own comment (§935-937)
+    # assumed this release worked, but it never executed.
+    # D-16: URL check uses the Phase-44-safe track->url-first extraction ($url,
+    # computed above) — the old §497 used streamUrl alone, which would falsely
+    # read as "not Connect" on a live direct-streamed session (streamUrl becomes
+    # the http://…/stream proxy URL) and release a LIVE session's claim.
     if ($_activeConnectPlayer && $_activeConnectPlayer eq $client->id) {
-        my $song = $client->playingSong();
-        my $url  = $song ? ($song->streamUrl || '') : '';
         unless ($url =~ m{spoton://connect-}) {
             main::INFOLOG && $log->is_info && $log->info(
-                "New song without Connect URL — clearing active Connect state for " . $client->id
+                "D-16: new song without Connect URL — releasing stale Connect claim for " . $client->id
             );
             $_activeConnectPlayer = undef;
+            # D-16: belt-and-braces with Task 1 — a stale claim implies a
+            # stale pending flag.
+            $client->pluginData(pendingConnect => 0);
 
             # GH #151: session over because the user started other playback —
             # discard the saved power state WITHOUT powering off (the player
@@ -589,6 +627,35 @@ sub _onPause {
     }
 
     return unless __PACKAGE__->isSpotifyConnect($client);
+
+    # D-16 stale-claim guard (RC-2): the ownership claim is set but this
+    # pause/stop does NOT belong to a live Connect session. This is the
+    # hijack vector: a Browse 'playlist play' internally stops/pauses the
+    # previous state BEFORE getNextTrack arms browseSession, so
+    # _soloistBrowseWs() above returns undef and the pause falls through
+    # to the isSpotifyConnect gate — true via the dormant claim — and
+    # would forward /control/pause to the daemon, pausing the very session
+    # the Browse play is trying to start.
+    # Guards: (a) no live connect-* song URL on the player — protects live
+    # sessions including direct-streamed ones (track->url stays
+    # spoton://connect-*); (b) pendingConnect is not set — protects the
+    # legitimate start window where the claim exists before the connect-*
+    # song does; (c) connectStartTime grace has expired — also protects
+    # the start window.
+    if (!_isLiveConnectStream($client)
+        && !$client->pluginData('pendingConnect')
+        && Time::HiRes::time() - ($client->pluginData('connectStartTime') || 0) >= CONNECT_START_GRACE)
+    {
+        main::INFOLOG && $log->is_info && $log->info(sprintf(
+            "D-16: stale Connect claim on %s — no live connect stream, no pending start, "
+            . "grace expired (%.1fs ago). Releasing claim, NOT forwarding pause to daemon.",
+            $client->id,
+            Time::HiRes::time() - ($client->pluginData('connectStartTime') || 0)
+        ));
+        $_activeConnectPlayer = undef;
+        $client->pluginData(pendingConnect => 0);
+        return;
+    }
 
     # Echo suppression: _connectEvent's ['pause', 0/1] triggers a playlist
     # notification without source-marking. Suppress within 1s of our last
@@ -1097,10 +1164,22 @@ sub _connectEvent {
         # restored/dormant session — NOT a fresh user transfer (see constant
         # comment for the captured event sequence). Suppress the playlist
         # play (no self-starting audio), but keep the session visible and
-        # manually resumable: metadata is still fetched, the ownership claim
-        # ($_activeConnectPlayer / pendingConnect, set above) stays, and a
-        # later play tap in the Spotify app arrives as 'resume' whose
-        # not-on-Connect-stream branch re-enters via playlist play normally.
+        # manually resumable: metadata is still fetched, and a later play
+        # tap in the Spotify app arrives as 'resume' whose not-on-Connect-
+        # stream branch re-enters via playlist play normally.
+        #
+        # D-16 (RC-2 stale-claim hygiene): the ownership claim
+        # $_activeConnectPlayer deliberately STAYS (the dormant session
+        # remains identifiable and manually resumable), but pendingConnect
+        # must NOT — it is strictly the start-event-precedes-playlist-play
+        # window flag (used by the change/seek handlers' || pendingConnect
+        # exceptions), and leaking it lets those handlers manipulate
+        # whatever the player is actually doing (metadata bleed, KE
+        # connect-metadata-bleed) for the lifetime of the dormant session.
+        # The non-suppressed path clears it at the playlist-play site
+        # (line after $playReq->execute); the resume re-entry path clears
+        # it likewise. This suppressed branch must clear it too.
+        #
         # The isPlaying exception preserves daemon-crash recovery: if the
         # player was already audibly playing when the daemon respawned,
         # resuming the stream is not a "self-start".
@@ -1123,6 +1202,10 @@ sub _connectEvent {
                 . " track=" . ($trackId || 'none')
                 . " daemonUptime=" . sprintf('%.2f', $daemonUptime)
             ) if $diagMode;
+
+            # D-16: clear the start-window flag — the playlist play was
+            # suppressed, so there is no pending start to protect.
+            $client->pluginData(pendingConnect => 0);
 
             return;
         }

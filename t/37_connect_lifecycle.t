@@ -119,4 +119,46 @@ my @clear_sites = $connect =~ /(connectSessionPaused => 0)/g;
 cmp_ok(scalar(@clear_sites), '>=', 4,
     'GH #158: pause state cleared on start/resume/unpause/session-end paths');
 
+# ------------------------------------------------------------
+# Phase 76-10: RC-2 stale-claim lifecycle (D-16)
+# ------------------------------------------------------------
+
+# 1. Restart-gate suppressed branch contains a pendingConnect clear.
+# The RESTART_START_GRACE block logs "start_suppressed" and must clear
+# pendingConnect before its return — a leaked flag lets change/seek handlers
+# hijack subsequent Browse playback (metadata-bleed vector).
+like($connect,
+    qr/start_suppressed.*?pendingConnect\s*=>\s*0/s,
+    'D-16: restart-gate suppressed branch clears pendingConnect before return');
+
+# 2. _onNewSong CON-17 branch predicate includes a connect- URL match.
+# The old predicate was isSpotifyConnect alone (identical to the release block
+# below, making it dead code). Now requires BOTH the ownership claim AND a
+# connect-* URL on the playing song.
+like($connect,
+    qr/isSpotifyConnect\(\$client\)\s*&&\s*\$url\s*=~\s*m\{spoton:\/\/connect-\}/,
+    'D-16: CON-17 branch requires both isSpotifyConnect and connect-* URL');
+
+# 3. _onPause contains the stale-claim guard: _isLiveConnectStream appears
+# inside _onPause between the isSpotifyConnect gate and the forwarding calls.
+my ($on_pause_block) = $connect =~ /(sub _onPause \{.*?\nsub )/s;
+ok($on_pause_block, 'D-16: _onPause block parseable');
+if ($on_pause_block) {
+    like($on_pause_block,
+        qr/isSpotifyConnect\(\$client\).*?_isLiveConnectStream\(\$client\).*?_sendControlCommand/s,
+        'D-16: stale-claim guard (_isLiveConnectStream) sits between isSpotifyConnect gate and forwarding');
+}
+
+# 4. _isLiveConnectStream uses track->url before streamUrl (Phase 44 pin).
+my ($helper_block) = $connect =~ /(sub _isLiveConnectStream \{.*?\})/s;
+ok($helper_block, 'D-16: _isLiveConnectStream helper exists');
+if ($helper_block) {
+    like($helper_block,
+        qr/track->url\s*\|\|\s*.*?streamUrl/s,
+        'D-16: _isLiveConnectStream uses track->url before streamUrl (Phase 44 pattern)');
+    like($helper_block,
+        qr/spoton:\/\/connect-/,
+        'D-16: _isLiveConnectStream checks for connect- URL pattern');
+}
+
 done_testing();
