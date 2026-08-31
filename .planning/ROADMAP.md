@@ -15,7 +15,7 @@
 - ✅ **v2.2 Session Health** — Phase 36 (shipped 2026-06-30)
 - ✅ **v3.0 Auth Overhaul** — Phases 49-53 (shipped 2026-07-17)
 - ⏸️ **v2.3 Library Integration** — Phase 37 shipped (CTX-01), Phases 38-41 deferred to v5.0
-- 🔄 **v4.0 Soloist Integration** — Phases 71-77 (active)
+- 🔄 **v4.0 Soloist Integration** — Phases 71-75 (active)
 - 📋 **v5.0 Library Integration** — Phases TBD (future, v2.3 Requirements carried forward)
 
 ## Phases
@@ -300,15 +300,8 @@
 | 64. PassthroughMixer | v3.x | 2/2 | Complete | — |
 | 65-67. ZeroConf + Auth Revert | v3.x | 13/16 | Complete | — |
 | 70. JiveLite Pagination | v3.x | 5/5 | Complete | 2026-08-22 |
-| 71. Soloist Foundation | v4.0 | 4/4 | Complete | 2026-08-26 |
-| 72. Soloist Browse Playback | v4.0 | 3/3 | Complete | 2026-08-26 |
-| 73. Soloist Connect Mode | v4.0 | 6/6 | Complete | 2026-08-27 |
-| 74. spoton-helper Binary | v4.0 | 0/? | In Progress|  |
-| 75. API Unification | v4.0 | 0/? | In Progress|  |
-| 76. Soloist UX Polish | v4.0 | 0/? | Not started | — |
-| 77. Soloist UAT + Release | v4.0 | 0/? | Not started | — |
-| 38-41 (4 phases) | v2.3→v5.0 | 0/? | Deferred | — |
-| 62. Browse + Connect Queue | — | 0/? | Backlog | — |
+| 38-41 (4 phases) | v2.3 | 0/? | Not started | — |
+| 62. Browse + Connect Queue | — | 0/? | Not started | — |
 
 ### Phase 61: Community Bugfixes (HomeExtra, Status Page, Connect Volume)
 
@@ -470,102 +463,27 @@ Items discovered during development — not assigned to a milestone.
 | **24-Bit FLAC Patch** | TEILWEISE | 6 Enum-Downgrade-Gates gefunden (cmp 6/mov 5), 5 davon sicher patchbar (Gate 4 crasht). Aber: Patch allein reicht nicht — Soloist muss `supported_audio_quality=HIFI_24` in DeviceCapabilities announcen UND Spotify muss die Quality-Stufe serverseitig zuweisen. A/B-Test zeigt identische CDN-Dateigrößen (~4.5 MB OGG). Needs deeper analysis in Phase 74. |
 
 **Key Decisions:**
-
 - Soloist ist Community-Alternative neben librespot im öffentlichen Repo
 - Kein Key im Repo, keine Key-Verteilung — reines BYOK (Spotify's eigenes Modell)
 - Fake-libpulse statt PulseAudio-Capture — kein Systemprozess-Overhead, kein Binary-Patch für Audio
 - Lifetime-Patch ist ein optionaler Komfort (ASCII-Replace), kein harter Blocker
 - Drei Plattformen: x86_64, arm64, arm32 (kein macOS/Windows — dort bleibt librespot)
 
-**Architecture (Spike 008+009, 2026-08-28):**
-
-Ein-Host-Modell — spclient.spotify.com deckt ALLE Browse/Library-Features:
-
-- **spclient.spotify.com**: Metadata (JSON), Search, Liked Songs, Saved Albums, Followed Artists, Recently Played, Playlists
-- **Auth**: ZeroConf-Credentials → login5 (librespot CID, kein HashCash, kein client-token) → Bearer Token
-- **api-partner.spotify.com**: NICHT nötig (CID-geblockt für librespot, aber alle Features auf spclient verfügbar)
-- **spoton-helper** (Rust): Daemon-Management, Audio-Shim, Binary-Patching (kein HashCash-Solver nötig)
-- **Kein PKCE, kein sp_dc, kein Browser** für Soloist-Backend.
-- **Kritischer Stolperstein**: collection/v2/paging braucht Content-Type `application/vnd.collection-v2.spotify.proto`
-- **Final Proof**: Soloist-Backend läuft komplett ohne librespot-Binary.
-
 **Phases:**
 
-- [x] **Phase 71: Soloist Foundation** — Soloist.pm Backend-Modul (Download/Version-Check/Lifecycle), Fake-libpulse.so Build-Pipeline (3 Architekturen), Helper.pm Backend-Auswahl (librespot vs soloist), BYOK Key-Management (Settings UI, mode 0600 Datei) (completed 2026-08-26)
+- [ ] **Phase 71: Soloist Foundation** — Soloist.pm Backend-Modul (Download/Version-Check/Lifecycle), Fake-libpulse.so Build-Pipeline (3 Architekturen), Helper.pm Backend-Auswahl (librespot vs soloist), BYOK Key-Management (Settings UI, mode 0600 Datei)
   - **Plans:** 4 plans (Wave 1: 71-01, 71-04 parallel · Wave 2: 71-02, 71-03 parallel)
-  - [x] 71-01-PLAN.md — Soloist.pm Backend-Modul (Tracer): Arch-Map, Auto-Download, Version-Check, spak.key mode 0600
-  - [x] 71-02-PLAN.md — DaemonManager Backend-Dispatch + D-09 Voraussetzungs-Gate
-  - [x] 71-03-PLAN.md — Settings UI: Backend-Dropdown, conditional spak-Key-Feld, Format-Validierung, i18n
-  - [x] 71-04-PLAN.md — Fake-libpulse CI Build-Pipeline (glibc cross-gcc, 3 Architekturen)
-- [x] **Phase 72: Soloist Browse Playback** — ProtocolHandler Runtime-Backend-Dispatch (sol/son), `--single-track` Integration via generiertem Launcher-Wrapper, Audio-Pipeline (S32LE → FLAC32/PCM via custom-convert.conf), FD-basiertes Streaming an LMS StreamServer (completed 2026-08-26)
-  - **Plans:** 3 plans (Wave 1: 72-01 · Wave 2: 72-02 · Gap Closure: 72-03)
-  - [x] 72-01-PLAN.md — Tracer: sol-Transcoder-Pfad end-to-end (Launcher-Wrapper, sol-Convert-Rules, ProtocolHandler-Dispatch, D-06 Retry, Tests)
-  - [x] 72-02-PLAN.md — Settings D-07 Reorg: Backend als Top-Level-Sektion, conditional librespot/soloist-Felder, Pairing-Status, i18n (11 Sprachen)
-  - [x] 72-03-PLAN.md — Gap Closure: CR-01 spoton://→spotify: URI-Translation im Launcher + argv-Capture-Regressionstest, WR-01 -k-argv Trade-off dokumentiert + test-pinned
-- [x] **Phase 73: Soloist Connect Mode** — WebSocket API Integration (Events → LMS Player State), Connect Transfer-Playback, Daemon-Lifecycle pro Player, Sync-Group Support. **Prerequisite:** persistenter Daemon löst auch das Browse-Session-Lock-Problem (data-dir Lock blockiert Gapless/Crossfade bei Per-Track-Spawning — Tracks werden übersprungen oder zu früh gewechselt)
-  - **Plans:** 6 plans (Wave 1: 73-01 Tracer · Wave 2: 73-02 · Wave 3: 73-03 · Wave 4: 73-04 · Gap Closure Wave 1: 73-05 ∥ 73-06)
-  - [x] 73-01-PLAN.md — Tracer: fake-libpulse HTTP-Server (Ring, f32→S16LE) + SoloistDaemon.pm + SoloistWS.pm + DaemonManager-Lifecycle + Connect-Transfer end-to-end (D-01/D-02/D-04/D-05/D-07)
-  - [x] 73-02-PLAN.md — Command-Richtung LMS→Soloist (Connect.pm WS-Dispatch), Reconnect-Resync, Repeat-Matrix, Build-Expiry-Härtung (rc=10), Tests t/31 + t/32 (D-05/D-06)
-  - [x] 73-03-PLAN.md — Browse über den persistenten Daemon (Modell B): Wave-0-Spike (Track-Ende/Autoplay/Queue-Echo), play/add_to_queue-Seeding, Event-getriebener Playlist-Advance, Seek via WS, t/29-Rewrite (D-03)
-  - [x] 73-04-PLAN.md — Phase-72-Rückbau (Launcher/sol-Rules/sox), Sync-Group-Tests, Settings-Daemon-Status + Pairing-Howto (App-Tap) + i18n 11 Sprachen, CHANGELOG (D-01/D-02/D-03)
-  - [x] 73-05-PLAN.md — Gap Closure: SoloistWS Wire-Format-Fixes (UTF-8 Character-Frames, numerisches position_ms) + Pause-aware Position-Baseline + Resume-Gating (UAT Gaps 1+2, D-05/D-06)
-  - [x] 73-06-PLAN.md — Gap Closure: fake-libpulse pa_stream_flush als echter Ring-Flush + Host-Test (UAT Gap 3, D-04)
-- [x] **Phase 74: spoton-helper Binary** — Eigenständiges Rust-Binary, fokussiert auf die von Phase 73 NICHT abgedeckten Aufgaben: `patch` (Lifetime-Timestamp + FLAC24-Enum als Pattern-Scanner) und `check` (Binary-Validierung/Capability-Manifest). CI-Build für x86_64, arm64, arm32 via cross-rs. Kein HashCash-Solver nötig (login5 mit librespot-CID ist challenge-frei). Kein `token`-Modus nötig — login5-Minting läuft in Perl (siehe Phase 75). (completed 2026-08-28)
-  **Bereits erledigt in Phase 73 (NICHT mehr Teil von 74):**
-
-  - ~~`daemon` (Soloist-Lifecycle, ersetzt Shell-Launcher)~~ → umgesetzt als Perl-Modul `Unified/SoloistDaemon.pm` + `DaemonManager` (per-Player-Lifecycle, WS-Control + HTTP-Audio Ports, Crash-Backoff). Der Shell-Launcher-Wrapper aus Phase 72 wurde in 73-04 bereits entfernt.
-  - ~~`audio` (fake-libpulse Rust-Port oder .so Companion)~~ → läuft als C-`libpulse.so.0` mit In-Process-HTTP-Server (f32→S16LE Ring, `GET /stream`), CI-cross-kompiliert für 3 Architekturen (Phase 71 Build-Pipeline, Phase 73 HTTP-Modus). Ein Rust-Port ist optional und aktuell nicht geplant.
-  **Note:** Patches als Pattern-Scanner, nicht statische Offsets — Instruction Encoding unterscheidet sich zwischen Architekturen. FLAC24 nur TEILWEISE validiert (Spike: 5/6 Enum-Gates patchbar, Gate 4 crasht; zusätzlich Server-seitige Quality-Zuweisung ungeklärt — A/B-Test zeigte identische CDN-Größen; siehe v4.0 Spike Results "24-Bit FLAC Patch").
-  **Spike Basis:** Spike 008 (KDF/Credential-Analyse — `cached`-Datei entschlüsselbar, Format ist login5-StoredCredential, kein Klartext-Token) + Spike 009 (spclient Token-Flow + collection/v2 Schema verifiziert)
-  **Plans:** 4 plans (Wave 1: 74-01 Tracer · Wave 2: 74-02 ∥ 74-03 · Wave 3: 74-04)
-
-  Plans:
-
-  - [x] 74-01-PLAN.md — Tracer: crate scaffold + clap dispatch + `check` D-08 JSON manifest end-to-end + synthetic fixture harness + 3-arch cross config (D-01/D-07/D-08)
-  - [x] 74-02-PLAN.md — Patch engine: version-locked per-arch pattern table, fail-closed safety envelope (count-assert + stage/verify/atomic-rename), Lifetime + FLAC24 5/6 gates, compliance-boundary decision + `.sha256` baseline (D-03/D-04/D-05/D-06/D-07)
-  - [x] 74-03-PLAN.md — `protobuf` subcommand: collection/v2 stdin↔stdout decode/encode via pure-Rust codegen (no protoc), package-legitimacy gate, untrusted-input hardening (D-02)
-  - [x] 74-04-PLAN.md — CI `build-spoton-helper` job (3 musl targets, zip fold-in) + Soloist.pm auto-patch wiring (idempotent, fail-open) + t/33 test + CHANGELOG (D-03/D-09)
-
-- [x] **Phase 75: API Unification (spclient-Modell)** — SpClient.pm als neue API-Schicht für spclient.spotify.com. Metadata (JSON via Accept Header), Collection/v2 (Protobuf, CT `application/vnd.collection-v2.spotify.proto`), Context-Resolve (JSON, inkl. Liked Songs ohne Paging), Recently-Played (Protobuf), Playlists + Rootlist (JSON/Protobuf). login5 Token-Minting in Perl (librespot CID `65b708...`, kein HashCash, kein client-token — Varint-Parser S-01 beachten). Token-Routing: login5 bevorzugt, PKCE als Fallback. Minimaler Protobuf-Decoder in Perl für collection/v2 + recently-played + rootlist (Optionen: Regex-URI-Extraktion, Mini-Decoder ~50 LOC, oder spoton-helper als Protobuf→JSON-Konverter). Kein HashSource/api-partner/Pathfinder nötig — sp_dc/WebPlayer bleibt optionales Legacy. (completed 2026-08-29)
-  **Set-Mapping (verifiziert, Spike 009):** `collection`=Saved Albums, `artist`=Followed Artists, `show`=Saved Shows, `ylpin`=Pinned Playlists, `listenlater`=Saved Episodes. Liked Songs via context-resolve `spotify:user:{id}:collection`. Multi-Type-Search bleibt Web-API-Fallback (context-resolve liefert nur Track-URIs).
-  **Depends on:** Keine harte Abhängigkeit (login5 Token-Minting in Perl machbar). Optional beschleunigt durch Phase 74 (spoton-helper als Protobuf-Konverter), aber nicht erforderlich.
-  **Stolpersteine:** Siehe Spike 009 RESULTS.md S-01 bis S-11 (u.a. base62→hex ID-Konversion S-02, Accept-Header zwingend S-03, collection Content-Type S-06, Set-Namen S-07, Protobuf-only bei recently-played/rootlist S-09/S-10)
-  **Plans:** 7 plans (Wave 1: 75-01 Tracer · Wave 2: 75-02 ∥ 75-03 · Wave 3: 75-04 · Wave 4: 75-05 · Wave 5: 75-06 · Wave 1 gap closure: 75-07)
-
-  Plans:
-
-  - [x] 75-01-PLAN.md — Tracer: ProtobufLite + Login5 + SpClient-Skelett, getTrack end-to-end über Router/Fallback (D-01/D-03/D-04/D-06/D-07/D-09)
-  - [x] 75-02-PLAN.md — Metadata-Familie: Album/Artist/Show/Episode + Search-Router (context-resolve Track-Search, Web-API-Fallback für Multi-Type, S-04/S-05)
-  - [x] 75-03-PLAN.md — D-02 Rückbau: protobuf-Subcommand, build.rs-Codegen + 2 Crates aus spoton-helper entfernt; .proto-Dateien bleiben als Schema-Doku
-  - [x] 75-04-PLAN.md — Collection-Familie: collection/v2 Sets (S-06/S-07), Liked Songs via context-resolve (kein Paging), Recently Played (Protobuf S-09)
-  - [x] 75-05-PLAN.md — Playlist-Familie: Rootlist (Protobuf S-10, Folder-Flattening) + playlist/v2 Items mit Slice-Enrichment
-  - [x] 75-06-PLAN.md — Unification: ~70 Call-Sites auf SpClient-Facade, Passthrough-Delegationen, UAT-Smoke-Script, CHANGELOG (D-08)
-  - [x] 75-07-PLAN.md — Gap Closure: CR-01 Pagination-Offset-Desync (filter-before-slice + Stub-Substitution), WR-01 Unguarded $meta, WR-02 _noCache + Write-Invalidation, WR-03 Unbounded Pagination-Loop, WR-04 playlistId-Validierung (D-07/D-08/D-09)
-
-- [ ] **Phase 76: Connect Stabilization + FLAC24 Integration** — Die Bugs und fehlenden Integrationen, die ein nutzbares v4.0 blockieren. Stand nach Code-Abschluss (alle 8 Pläne; Live-Verifikation läuft als EIN konsolidierter UAT-Durchlauf über `76-UAT-CHECKLIST.md`, beide Backends, D-11): (1) **Connect-Mode-Bugs — code-gefixt:** #159 BUFFERING-Hänger nach Connect-Deselect (409-Contract Rust + Perl-Eject, 76-02), #158 Gruppen-Restart-Loop bei pause→skip→play (connectSessionPaused-Gate, 76-05), #131 Sync-Group-Stutter (`--buffer-latency-ms 5000` für Sync-Master, 76-02), #128 Progress-Bar-Lag beim Handoff (Relay-Start-Position-Resync, 76-02), #151 Power-Restore nach Session-Ende (76-05), Auto-Play nach LMS-Restart unterdrückt (Daemon-Spawn-Provenance-Gate, 76-05). **#149 (Idle-Guard) und #150 (Audio-Key-Timeout) waren bereits per Quick Task 260817-ana code-gefixt** (released in v3.5.1/v3.5.2) — offen ist nur die Live-Verifikation (AP-Drop-Szenario: kein Daemon-Restart mitten im Playback, Playback überlebt AP-Reconnect) im Phase-76-UAT. **Window 5 (~8s Reconnect-Lücke beim Track-Wechsel): FIXED** — 5 live gemessene Skip-Läufe gegen die finale Pipeline reconnecten in 0.13–0.88s statt 8s (76-07-SUMMARY, t0–t4-Instrumentierung shipped); nur Ohr-Check + PCM-only-Direct-Pfad als UAT-Re-Check offen (WINDOWS-Ledger #6). (2) **FLAC24/Audio-Pipeline — gebaut:** fake-libpulse S32LE-Ring, `soc flc` sox-Regel, samplesize(32)-Hints (76-01); resolveSoloistFormat() + canDirectStream-Gating + `smp` MP3-Regel (76-04); Format-Dropdown blendet OGG bei Soloist aus (76-08). **spoton-helper-Patch-Status (verifiziert, RESEARCH Pitfall 6):** das Wiring ist seit 74-04 komplett (`_autoPatch` im Download-Aktivierungspfad, fail-open, t/33-gedeckt) — öffentliche Builds tragen aber eine LEERE Pattern-Tabelle, weil die CI-Secrets `SPOTON_PRIVATE_PATTERNS_TOKEN`/`SPOTON_PRIVATE_PATTERNS_REPO` nicht konfiguriert sind. Der FLAC24-Enum-Patch-Effekt ist damit unverifizierbar und explizit AUS den Phase-76-Erfolgskriterien genommen → Phase-77-UAT, sobald eine private Pattern-Quelle existiert. Die fake-libpulse-S32-Kette liefert 24-bit-Container-Qualität unabhängig vom Enum-Patch. (3) **Phase-73/75-Live-Verifikation:** Windows 1-4 (Transfer, Control-Loop, Build-Expiry, Browse/Sync) + SpClient-Smoke sind in `76-UAT-CHECKLIST.md` konsolidiert, inkl. librespot-Regressionsmatrix (D-14). (4) **Browse/Playback-Control — code-gefixt:** #161 playlist-type auf flachen Tracklisten (76-03), #94 Browse-Kontextmenü-Parität via TrackInfo (76-03), #135 Connect-Queue "Up Next" on-demand (76-06), Window 6 search()-Offset-Guard gefixt + regressionsgepinnt (76-03).
-  **Depends on:** Phase 74 (spoton-helper `patch`), Phase 75 (SpClient)
-  **Plans:** 11 plans (Wave 1: 76-01 ∥ 76-02 ∥ 76-03 · Wave 2: 76-04 ∥ 76-05 ∥ 76-06 · Wave 3: 76-07 · Wave 4: 76-08 · Wave 5: 76-09 ∥ 76-10 · Wave 6: 76-11) — Extension 76-09..76-11 (2026-08-31): Browse-Stutter Root-Cause-Fixes aus Debug-Session `soloist-browse-stutter` (D-15/D-16/D-17; RC-3 underflow_cb bereits committed als 2372d49)
-
-  Plans:
-
-  - [ ] 76-01-PLAN.md — FLAC24 tracer: fake-libpulse S32LE (5 gekoppelte Stellen + Host-Tests + Rebuild), `soc flc` sox-Regel ($SAMPLESIZE$-basiert), samplesize(32)-Hints (D-04/D-05/D-08)
-  - [ ] 76-02-PLAN.md — librespot Connect: #159 /control 409 statt 204 (Rust+Perl Eject), #131 --buffer-latency-ms 5000 für Sync-Master, #128 Relay-Start-Position-Resync
-  - [ ] 76-03-PLAN.md — Browse/UX: #161 type playlist (Recently/Liked/Top Tracks), Window 6 search()-Offset-Guard-Fix + Regressionstests, #94 Kontextmenü-Parität via TrackInfo
-  - [ ] 76-04-PLAN.md — resolveSoloistFormat() (D-06, Sync-Aggregation, ogg→auto) + ProtocolHandler-Gating (pcm direkt / flac+mp3 Transcode) + `smp` MP3-Typ/Regel
-  - [ ] 76-05-PLAN.md — Connect-Lifecycle: Auto-Play-Gate nach LMS-Restart (Live-Repro), #151 Power-Restore, #158 Gruppen-Restart-Loop (Diag-Log-Analyse + Fix)
-  - [ ] 76-06-PLAN.md — #135 Up Next: Client.pm getQueue (on-demand, zentrale Throttle, kein Polling) + OPML-Feed + i18n (11 Sprachen)
-  - [ ] 76-07-PLAN.md — Window 5: 8s-Reconnect-Gap Debug (instrumentierte Timeline t0-t4) + Fix oder Known-Issue-Doku (D-12/D-13 Soft-Blocker)
-  - [ ] 76-08-PLAN.md — D-07 Format-Dropdown (OGG bei Soloist ausgeblendet), D-03 ROADMAP-Bereinigung + Patch-Status-Doku, D-11 UAT-Checkliste (beide Backends), CHANGELOG
-  - [ ] 76-09-PLAN.md — RC-1/D-15: Pitfall-4 False Positive in _onBrowseTrackChanged (expected==actual Equality-Branch, TDD via t/31)
-  - [ ] 76-10-PLAN.md — RC-2/D-16: Session-Restore-Hijack — pendingConnect-Leak im Restart-Gate, unerreichbarer Stale-Claim-Release in _onNewSong, Stale-Claim-Guard in _onPause
-  - [ ] 76-11-PLAN.md — RC-4/D-17: Stream-Handoff-Gate — getNextTrack successCb erst nach zweistufigem Soloist-Readiness-Signal (fail-open 30s), UAT-Szenario + CHANGELOG
-
-- [ ] **Phase 77: Soloist UX Polish + Release** — UX-Polish und Release-Vorbereitung für v4.0. Quality-Dropdown (OGG/FLAC/Lossless), Per-Player Backend-Auswahl (librespot vs soloist per Player-Pref), Soloist-spezifische Diagnostics im Status-Dashboard. Danach Release-Prep: E2E-Tests (Browse, Connect, Sync Groups, Format-Switching), Plattform-Tests (x86_64, arm64, arm32), TROUBLESHOOTING, CHANGELOG, v4.0.0 Release.
-  **Final Proof:** Soloist-Backend funktioniert komplett ohne librespot-Binary — nur spoton-helper (`patch`/`check`) + `fake-libpulse.so` + Soloist + Perl (SoloistDaemon + SpClient). Kein librespot-Prozess, keine librespot-Credentials-Abhängigkeit. Browse/Library über spclient (Ein-Host-Modell), sp_dc/PKCE für den Soloist-Pfad nicht nötig.
-  **Depends on:** Phase 74, 75, 76
+  - [ ] 71-01-PLAN.md — Soloist.pm Backend-Modul (Tracer): Arch-Map, Auto-Download, Version-Check, spak.key mode 0600
+  - [ ] 71-02-PLAN.md — DaemonManager Backend-Dispatch + D-09 Voraussetzungs-Gate
+  - [ ] 71-03-PLAN.md — Settings UI: Backend-Dropdown, conditional spak-Key-Feld, Format-Validierung, i18n
+  - [ ] 71-04-PLAN.md — Fake-libpulse CI Build-Pipeline (glibc cross-gcc, 3 Architekturen)
+- [ ] **Phase 72: Soloist Browse Playback** — ProtocolHandler soloist://-Modus, `--single-track` Integration, Audio-Pipeline (S32LE → FLAC/PCM via custom-convert.conf), FD-basiertes Streaming an LMS StreamServer
+- [ ] **Phase 73: Soloist Connect Mode** — WebSocket API Integration (Events → LMS Player State), Connect Transfer-Playback, Daemon-Lifecycle pro Player, Sync-Group Support
+- [ ] **Phase 74: Soloist Polish** — Lifetime-Patcher (optional, Settings-Toggle), 24-Bit FLAC (Enum-Patch), Quality-Dropdown (OGG/FLAC/Lossless), Per-Player Backend-Auswahl, Diagnostics
+  **Note:** Patches (Lifetime, 24-Bit) müssen als Pattern-Scanner implementiert werden, nicht als statische Offsets — Instruction Encoding unterscheidet sich zwischen x86_64/arm64/arm32. Alle 3 Binaries runterladen und validieren.
+- [ ] **Phase 75: Soloist UAT + Release** — E2E-Tests (Browse, Connect, Sync Groups, Format-Switching), Plattform-Tests (x86_64, arm64, arm32), TROUBLESHOOTING, CHANGELOG, v4.0.0 Release
 
 **Risks:**
-
 - Spotify kann Soloist-API-Terms ändern oder Keys revoken
 - Build-Expiry-Mechanismus kann serverseitig verschärft werden
 - Soloist ist Linux-only (kein macOS/Windows)
@@ -573,7 +491,6 @@ Ein-Host-Modell — spclient.spotify.com deckt ALLE Browse/Library-Features:
 - Dynamisches Linking gegen glibc — ältere Distros könnten Probleme haben
 
 **References:**
-
 - Spotify Docs: developer.spotify.com/documentation/soloist
 - Downloads: developer.spotify.com/documentation/soloist/reference/downloads-and-updates
 - GitHub: github.com/spotify/soloist
@@ -589,7 +506,6 @@ Ein-Host-Modell — spclient.spotify.com deckt ALLE Browse/Library-Features:
 **Phases:** TBD — to be broken down when milestone becomes active.
 
 **Key Decisions (from v2.3 research):**
-
 - Importer follows OnlineLibraryBase pattern (Spotty, Qobuz, TIDAL, Deezer)
 - me/tracks returns full objects — no individual entity fetches needed
 - Incremental sync via added_at early-exit

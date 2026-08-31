@@ -130,7 +130,12 @@ sub _isLiveConnectStream {
     my $song = $client->playingSong();
     return 0 unless $song;
     my $url = $song->track->url || $song->streamUrl || '';
-    return ($url =~ m{spoton://connect-}) ? 1 : 0;
+    return 0 unless $url =~ m{spoton://connect-};
+    # WR-01: dead-history connect URLs survive in restored playlists —
+    # same distinction the unpause guard (§697-706) and resume handler
+    # (§1011-1018) already apply.
+    return 0 if !$song->pluginData('info') && _isDeadHistoryUrl($url);
+    return 1;
 }
 
 # shutdown($class)
@@ -1060,6 +1065,15 @@ sub _connectEvent {
                     . ($client->pluginData('connectPrevPower') ? 'on' : 'off') . " (GH #151)"
                 );
             }
+
+            # CR-01: re-establish ownership — 'resume' is the only entry path
+            # after a D-16 stale-claim release; 'start' will not fire for a
+            # restored session that already has a current track.
+            if ($_activeConnectPlayer && $_activeConnectPlayer ne $client->id) {
+                main::INFOLOG && $log->is_info && $log->info(
+                    "Player switch on resume re-entry: " . $_activeConnectPlayer . " -> " . $client->id);
+            }
+            $_activeConnectPlayer = $client->id;
 
             # Suppress transitional pause/stop events (same as 'start' handler):
             # newTrack prevents _onPause from forwarding the LMS stop-before-play

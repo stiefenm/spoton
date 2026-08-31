@@ -2,20 +2,20 @@
 gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: Soloist Integration
-current_phase: 76
-current_phase_name: Connect Stabilization + FLAC24 Integration
+current_phase: 71
+current_phase_name: Soloist Foundation
 status: executing
-stopped_at: Phase 76 context gathered
-last_updated: "2026-08-29T19:58:41.451Z"
-last_activity: 2026-08-29
-last_activity_desc: Phase 76 execution started
-state_head: d56a4b88dfeb71ebd665ee417f102b4b5c607317
+stopped_at: Phase 71 context gathered
+last_updated: "2026-08-24T17:53:21.963Z"
+last_activity: 2026-08-24
+last_activity_desc: Phase 71 execution started
+state_head: b13de4af5e4e8d49322b09359efe4634a2d2268b
 progress:
   total_phases: 14
-  completed_phases: 4
-  total_plans: 32
-  completed_plans: 24
-  percent: 29
+  completed_phases: 0
+  total_plans: 4
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State: SpotOn
@@ -30,26 +30,24 @@ See: .planning/PROJECT.md (updated 2026-06-30)
 
 **Core Value:** Reliable Spotify playback and Connect integration on LMS — Browse, stream, and control via Spotify app, without 429 bursts, zombie daemons, or audio glitches.
 
-**Current Focus:** Phase 76 — Connect Stabilization + FLAC24 Integration
+**Current Focus:** Phase 71 — Soloist Foundation
 
 ## Current Position
 
-Phase: 76 (Connect Stabilization + FLAC24 Integration) — EXECUTING
-Plan: 1 of 8
-Status: Executing Phase 76
-Last activity: 2026-08-29 — Phase 76 execution started
+Phase: 71 (Soloist Foundation) — EXECUTING
+Plan: 1 of 4
+Status: Executing Phase 71
+Last activity: 2026-08-24 — Phase 71 execution started
 
 ## Progress Bar
 
 ```
-v4.0 Soloist Integration: [██████████░░░░░░░░░░░░░░░░░░] 3/7 phases (71-77)
-Phase 71: [x] Soloist Foundation (BYOK, Fake-libpulse, Helper Backend-Switch)
-Phase 72: [x] Soloist Browse Playback (--single-track, Audio Pipeline)
-Phase 73: [x] Soloist Connect Mode (WebSocket API, Transfer-Playback)
-Phase 74: [ ] spoton-helper Binary (Rust: token+daemon+patch+audio)
-Phase 75: [ ] API Unification (Drei-Host-Modell, SpClient.pm, HashSource)
-Phase 76: [ ] Soloist UX Polish (Quality, Per-Player, Pairing, Diagnostics)
-Phase 77: [ ] Soloist UAT + Release (Final Proof: kein librespot nötig)
+v4.0 Soloist Integration: [░░░░░░░░░░░░░░░░░░░░] 0/5 phases (71-75)
+Phase 71: [ ] Soloist Foundation (BYOK, Fake-libpulse, Helper Backend-Switch)
+Phase 72: [ ] Soloist Browse Playback (--single-track, Audio Pipeline)
+Phase 73: [ ] Soloist Connect Mode (WebSocket API, Transfer-Playback)
+Phase 74: [ ] Soloist Polish (Lifetime, 24-Bit, Quality, Per-Player Backend)
+Phase 75: [ ] Soloist UAT + Release (E2E, Platform Tests, v4.0.0)
 ```
 
 <details>
@@ -101,26 +99,6 @@ Phase 77: [ ] Soloist UAT + Release (Final Proof: kein librespot nötig)
 | Phase 70 P02 | ~20min | 2 tasks | 1 files |
 | Phase 70 P03 | ~15min | 3 tasks | 2 files |
 | Phase 70 P05 | 4m | 1 tasks | 1 files |
-| Phase 72 P01 | ~13min | 3 tasks | 11 files |
-| Phase 72 P02 | ~15min | 2 tasks | 4 files |
-| Phase 72 P03 | ~10min | 2 tasks | 2 files |
-| Phase 73 P01 | ~35min | 3 tasks | 24 files |
-| Phase 73 P02 | ~10min | 3 tasks | 7 files |
-| Phase 73 P03 | ~35min | 3 tasks | 6 files |
-| Phase 73 P04 | ~40min | 3 tasks | 13 files |
-| Phase 73 P05 | 35min | 2 tasks | 3 files |
-| Phase 73 P06 | 20min | 2 tasks | 2 files |
-| Phase 74 P01 | 20min | 3 tasks | 11 files |
-| Phase 74 P02 | 8min | 2 tasks | 3 files |
-| Phase 74 P03 | 25min | 2 tasks | 16 files |
-| Phase 74 P04 | 20min | 3 tasks | 7 files |
-| Phase 75 P01 | 20min | 3 tasks | 7 files |
-| Phase 75 P02 | ~30min | 3 tasks | 2 files |
-| Phase 75 P03 | 10min | 2 tasks | 6 files |
-| Phase 75 P04 | ~35min | 3 tasks | 2 files |
-| Phase 75-api-unification-spclient-modell P05 | 12min | 2 tasks | 2 files |
-| Phase 75 P06 | ~15min | 3 tasks | 10 files |
-| Phase 75 P07 | 35min | 3 tasks | 2 files |
 
 ## Deferred Items
 
@@ -262,59 +240,6 @@ Items carried forward from previous milestones:
 - [Phase 70]: [Phase 70][70-03] _multiTypeSearch (overview aggregator) left untouched -- confirmed via git diff, no hunk touches it during search feed conversion
 - [Phase 70]: [Phase 70][70-03] _albumFeed offset==0 branch only converts to _fetchPages when quantity exceeds embedded getAlbum seed tracks AND album has more -- preserves zero-extra-API-call short-circuit for typical browse loads
 - [Phase 70]: [Phase 70][70-03] SpotOnAddToPlaylist error path kept as NO_RESULTS textarea (not _authRequiredItem) -- matches its pre-existing distinct error convention
-- [Phase 72]: [Phase 72][72-01] Launcher wrapper (not findbin token/symlink) generated at cachedir/spoton/soloist/spoton-soloist -- only mechanism that can set LD_LIBRARY_PATH, keep the spak-key off argv, and resolve a cachedir-resident binary from a static convert-rule token
-- [Phase 72]: [Phase 72][72-01] D-06 retry/skip implemented at the wrapper (shell) level, not via LMS's BROWSE_404_RETRY logic -- that logic is HTTP-status-driven and has no equivalent on the pipe-based transcoder path
-- [Phase 72]: [Phase 72][72-01] FLAC target declared --bps=32 (not 24) -- Soloist emits S32LE and flac cannot down-convert; true 24-bit deferred to Phase 74 HiFi enum patch
-- [Phase 72]: [Phase 72][72-02] Two duplicate-id #librespot-fields divs (Account Player Auth block + Global Binary/Bitrate/Streaming/Normalization block) toggled together via querySelectorAll, not one contiguous div -- the two D-07 librespot-only groups are not DOM-adjacent once Backend is promoted above Account
-- [Phase 72]: [Phase 72][72-02] helperMissing (librespot binary-missing warning) suppressed when backend=soloist -- D-07 hides librespot-specific state under Soloist
-- [Phase 72]: [Phase 72][72-02] Pairing-status block (paired/not-paired + exact --pair command) nested inside the existing spak-key WRAPPER rather than a new titled WRAPPER -- no dedicated pairing-block title string in the plan's new-strings list
-- [Phase 72]: [Phase 72][72-03] WR-01 resolved via the verification gap's sanctioned documented-trade-off branch (not a code fix) -- soloist 1.3.7.489's --help and binary strings confirm -k/--api-key is the only key mechanism, no env/stdin alternative exists
-- [Phase 72]: [Phase 72][72-03] Translation loop uses argc/argi/a variable names to avoid colliding with the D-06 retry loop's n/rc/start/now/elapsed in the same launcher heredoc
-- [Phase 73]: [Phase 73][73-01] Vendored Protocol::WebSocket 0.26 verbatim from the real LMS 9.2 install tree (unifying its CPAN/+lib/ split layout) into Plugins/SpotOn/Vendor/ -- ensureWsLib() prefers an LMS-bundled copy (push, not unshift) so Soloist Connect works on LMS 8.0+ with no version gate (D-08)
-- [Phase 73]: [Phase 73][73-01] SoloistDaemon is a separate lifecycle class parallel to Daemon.pm rather than an extension of it -- structural differences (two ports, no credentials.json gate, per-player dirs, LD_LIBRARY_PATH env) outweigh code reuse; _streamAlivePoll's librespot-only blocks are isa-gated instead of duplicating the poll loop
-- [Phase 73]: [Phase 73][73-01] resolvePassthroughForClient short-circuits to 0 for backend=soloist as the first statement -- Phase 73 is S16LE-PCM-only end to end via fake-libpulse HTTP mode, sox/OGG formats land in Phase 74
-- [Phase 73]: [Phase 73][73-02] _sendControlCommand resolves the backend via DaemonManager->helperForClient + isa('...::SoloistDaemon') rather than a prefs read -- the object owning the WS connection is the single source of truth for which transport is live
-- [Phase 73]: [Phase 73][73-02] Exit-code-10 (Pitfall 7 build expiry) permanently parks the soloist daemon via a 'never'-TTL cache flag instead of feeding CRASH_BACKOFF; Soloist::_versionCheck's success path self-heals the flag
-- [Phase 73]: [Phase 73][73-03] Wave-0 spike filed DEFERRED — no paired daemon/Spotify app reachable in this environment; browse advance/correction implemented against RESEARCH-default assumptions, live spike tracked as mandatory UAT (WINDOWS.md)
-- [Phase 73]: [Phase 73][73-03] Pitfall-4 corrective play() retargets to browseCurrentUri (never the next LMS entry) — only the seeded-match advance branch is ever allowed to move the LMS playlist pointer
-- [Phase 73]: [Phase 73][73-03] Soloist Browse now serves through the SAME daemon /stream endpoint Connect uses (not a per-track URL) — D-03 Modell B
-- [Phase 73]: [Phase 73][73-04] Settings.pm's isPaired()/launcherPath() calls fixed inline during Task 1 (Rule 3) to keep prove -l t/ green, not deferred to Task 3 which replaces them fully
-- [Phase 73]: [Phase 73][73-04] Sync-group pinning found no gap in DaemonManager.pm/SoloistDaemon.pm -- Pattern 7's librespot-to-soloist 1:1 transfer confirmed via tests against the real module, zero production code changed
-- [Phase 73]: [Phase 73][73-04] WS auth state shown via daemon-status color coding, not a 5th new i18n key; actual 11-language set verified as CS/DA/DE/EN/ES/FR/IT/NL/NO/PL/SV (PL not FI) against strings.txt before translating
-- [Phase 73]: SoloistWS.pm D-05/D-06 gap closure: utf8::encode bridge for octet-mode from_json, int() coercion for numeric sendCommand params, sessionPaused-gated resume emission with frozen extrapolation while paused
-- [Phase 74]: spoton-helper Cross.toml scoped to exactly the 3 target arches (x86_64/aarch64/armv7 musl) the plan named, not the 6-target librespot-spoton superset
-- [Phase 74]: tests/fixture.rs uses a minimal hand-rolled Drop-based TempDir instead of an external tempdir crate, keeping spoton-helper's dependency surface at exactly clap/serde_json/sha2/anyhow/thiserror
-- [Phase 74]: Patch patterns: empty public stub table + private build-time injection from stiefenm/spoton-private (Task 1, option b) — no plaintext byte-patterns in public source
-- [Phase 74]: run_core testable-core / thin-wrapper split lets unit tests drive the full safety envelope with a TEST-ONLY pattern table while patch::run keeps its Plan-01 signature
-- [Phase 74]: protobuf_cmd.rs: no new crate for JSON mapping — hand-rolled struct->serde_json::Value conversion instead of adding protobuf-json-mapping, to avoid a second package-manager install requiring its own supply-chain checkpoint
-- [Phase 74]: build.rs lists all 12 vendored proto files as .input()s, not just the 4 schema roots — protobuf-codegen .pure() emits super::<module> refs for imported types rather than inlining them
-- [Phase 74]: Helper CI artifacts use helper-<arch> prefix (never spoton-helper-<arch>) to avoid colliding with librespot's spoton-* fold-in glob
-- [Phase 74]: build-spoton-helper runs unconditionally on tag/workflow_dispatch, no detect-changes gate (compiles in seconds, must never be stale)
-- [Phase 74]: Private pattern injection is a guarded CI step keyed on repo secrets that do not yet exist -- shipped binary presently always keeps the public empty patterns.rs table
-- [Phase 74]: _autoPatch in Soloist.pm is unconditionally fail-open: any incomplete/failed patch logs a warning and Soloist continues unpatched, never blocking playback
-- [Phase 75]: [Phase 75][75-01] parse_fields collects every field occurrence into an arrayref (never overwrite) -- fixes RESEARCH.md's last-item-wins sample so collection/v2 repeated items decode completely
-- [Phase 75]: [Phase 75][75-01] SpClient.pm runtime-require's Login5/Credentials/Client (never compile-time use) -- extends D-03's no-compile-time-coupling guarantee to all three collaborators, not just Client.pm
-- [Phase 75]: [Phase 75][75-01] D-07a single 401 remint-retry implemented exactly as user-approved: one retry with a fresh token, second 401 falls back to Client.pm immediately
-- [Phase 75]: [Phase 75][75-02] _spFacade's normalize callback receives (rawResult, $cb) rather than returning a value -- lets the same D-06/D-07 helper serve sync normalizers (getAlbum/getArtist/getShow/getEpisode) and async ones that fan out enrichment (getAlbumTracks/getShowEpisodes)
-- [Phase 75]: [Phase 75][75-02] getAlbum's tracks.items always empty (S-04) -- getAlbumTracks owns all per-track enrichment via metadata/4/track
-- [Phase 75]: [Phase 75][75-02] search() context-resolve routing checks the hardcoded 20-result ceiling before any HTTP call, then re-checks against the actual returned URI count -- avoids wasted calls for offsets that can never be satisfied
-- [Phase 75]: [Phase 75][75-02] getShow/getShowEpisodes/getEpisode mirror the verified album/track pattern for the spike-unverified metadata/4/show and metadata/4/episode paths -- D-07's 4xx/5xx fallback is the accepted mitigation, live verification deferred to mandatory phase UAT
-- [Phase 75]: [Phase 75][75-03] No CI workflow change needed -- build-spoton-helper job has no protobuf-specific step; cross build naturally builds fewer crates now that protobuf/protobuf-codegen are removed (D-02)
-- [Phase 75]: [Phase 75][75-03] proto/README.md documents collection2v2.proto as the field-number reference for collection/v2 paging (ProtobufLite.pm's parse_fields consumers); other 11 files documented as the same kind of reference for their endpoints, all retained as documentation-only per D-02
-- [Phase 75]: [Phase 75][75-04] getSavedTracks has NO play-all-specific shortcut -- play-all reuses the same method via _fetchAllPages, and the cached complete URI list already makes every page cheap regardless of mode
-- [Phase 75]: [Phase 75][75-04] getSavedShows probes the FIRST slice item's metadata/4/show fetch before enriching the rest -- a fallback-classified probe error routes the WHOLE call to Client.pm in one shot, avoiding N per-item fallback roundtrips
-- [Phase 75]: [Phase 75][75-04] getFollowedArtists emulates the Web-API cursor contract (after=last-artist-id) by resolving position in the cached collection/v2 list, matching exactly what _fetchAllFollowedArtists consumes
-- [Phase 75]: [Phase 75][75-04] _enrichCollectionSlice is distinct from 75-02's _enrichMeta because it must re-pair each result with its original added_at, which _enrichMeta's filter-undefs shape would lose
-- [Phase 75]: [Phase 75][75-04] getRecentlyPlayed pairs lastPlayedTime by the ORIGINAL request uri, not the enriched track's returned uri, to guard against relinked/canonicalized track uris
-- [Phase 75]: [Phase 75][75-05] PlaylistMetadata.link takes precedence over row_id for rootlist URI derivation, with row_id as a dual-purpose fallback (already-full URI, or bare id to derive one from) -- the proto documents row_id only as string with no format guarantee across decorate-param variants
-- [Phase 75]: [Phase 75][75-05] ROOTLIST_MAX_DEPTH=10 bounds _flattenRootlistFolder recursion (T-75-16/V5), proven against a synthetic 20-level-deep nested-folder fixture
-- [Phase 75]: [Phase 75][75-05] _playlistEnvelope caches the FULL playlist/v2 response (not per-page) at 300s, matching 75-04's full-fetch-then-slice convention rather than a new caching shape
-- [Phase 75]: [Phase 75][75-06] getLimit passthrough reads through to Client.pm's probe-detected limits -- ALL getLimit call sites switch to SpClient, which transparently delegates (probe cleanup deferred to Phase 76/77)
-- [Phase 75]: [Phase 75][75-06] Connect.pm's D-08 split is call-level not file-level -- only _fetchTrackMetadata's getTrack call switches; the four player-control calls stay on Client.pm
-- [Phase 75]: [Phase 75][75-06] Smoke script routes the Bearer token through a curl -K config file (not -H argv) in addition to the plan's stdin body passthrough, closing an argv/ps exposure gap for the token
-- [Phase 75]: [Phase 75][75-07] getRecentlyPlayed's inline enrichment loop deliberately untouched -- no offset-based pagination caller, out of CR-01 scope
-- [Phase 75]: [Phase 75][75-07] search()'s pre-existing offset-guard scope issue left unfixed (not in Task 1's action list) -- logged to WINDOWS.md #6 rather than silently fixed or dropped
-- [Phase 75]: [Phase 75][75-07] _collectionAll's _noCache is bypass-on-demand (skip read, still refresh cache), never a cache-disable -- matches Plugin.pm:2088's call shape
 
 ### Blockers/Concerns
 
@@ -324,7 +249,6 @@ Items carried forward from previous milestones:
 - ~~Forum #160 (CJS): "Default Adjustment for Remote Streams" stacks with SpotOn ReplayGain~~ FIXED in v2.3.12: trackGain() implemented (GH #108)
 - ~~Wait for urknall's response to auth architecture reply (#175)~~ RESOLVED: urknall #176 confirmed PKCE-first, provided edge cases and Keymaster audit guidance
 - Auth architecture research completed — details not in this repo.
-- Soloist skip: ~8s audio-reconnect gap after flush-disconnect (root cause unknown) -- see WINDOWS.md entry #5, .planning/quick/260827-of9-.../260827-of9-SUMMARY.md. Follow-up requested by user: build automated audio-level test rig for Connect edge cases instead of manual CDP+listening.
 
 ### Quick Tasks Completed
 
@@ -340,15 +264,13 @@ Items carried forward from previous milestones:
 | 260817-ana | Fix #149 + #150: Daemon resilience on AP drops (idle guard + key timeout) | 2026-08-17 | 4ba5247 | [260817-ana](./quick/260817-ana-daemon-resilience-ap-drops/) |
 | 260818-qaw | Fix #155: Auto-retry on 429 in Client.pm | 2026-08-18 | a3a972a | [260818-qaw](./quick/260818-qaw-fix-155-auto-retry-on-429-in-client-pm/) |
 | 260818-v1l | Fix #155 follow-up: 429 deferral + rate-limited UX + logging | 2026-08-18 | 60a5ffb | [260818-v1l](./quick/260818-v1l-fix-155-rate-limited-local-visibility/) |
-| 260827-jqa | Fix position drift on Connect device transfer-away/back (deactivating guard + re-sync seek) | 2026-08-27 | f0c9bf7 | [260827-jqa](./quick/260827-jqa-fix-position-drift-on-connect-device-tra/) |
-| 12 | Fix Soloist Connect skip ~30s delay (skipInitiated + playlist-play-on-skip + flush-disconnect); live-verified: LMS metadata switches in ~1.16s, but audio-level ~8s reconnect gap found and deferred | 2026-08-27 | 6c40526 | — |
 
 ## Session Continuity
 
-**Resume file:** .planning/phases/76-connect-stabilization-flac24-integration/76-CONTEXT.md
+**Resume file:** .planning/phases/71-soloist-foundation/71-CONTEXT.md
 
-**Last session:** 2026-08-29T17:34:45.121Z
-**Stopped at:** Phase 76 context gathered
+**Last session:** 2026-08-24T16:57:12.271Z
+**Stopped at:** Phase 71 context gathered
 
 **Completed this session (2026-08-24):**
 
