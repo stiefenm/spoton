@@ -812,8 +812,17 @@ sub getNextTrack {
                     # The browse session was torn down before audio started
                     # (a Pitfall-4 queue-exhausted defense or an LMS stop)
                     # -- handing the stream over would play nothing.
-                    $errorCb->('PROBLEM_OPENING',
-                        'Soloist browse session ended before audio started');
+                    # WR-02/WR-03: only invoke errorCb when the song is still
+                    # the controller's current streaming song. A handover or
+                    # user stop has already moved on — errorCb would paint a
+                    # spurious PROBLEM_OPENING and re-enter startBrowseTrack
+                    # mid-takeover.
+                    my $controller = $client && $client->controller;
+                    my $streamingSong = $controller && $controller->streamingSong;
+                    if ($streamingSong && $streamingSong == $song) {
+                        $errorCb->('PROBLEM_OPENING',
+                            'Soloist browse session ended before audio started');
+                    }
                     return;
                 }
 

@@ -869,6 +869,12 @@ sub _onPlaybackChanged {
 		if ($status eq 'stopped' && !defined $self->browseSeededUri) {
 			my $client = Slim::Player::Client::getClient($self->mac);
 
+			# CR-01: when a gate is pending, endBrowseSession's 'ended'
+			# resolution drives LMS's own error-advance via errorCb
+			# synchronously. The manual playlist index +1 below must NOT
+			# also fire, or one failed track skips two.
+			my $hadPendingGate = $self->browseReadyCb ? 1 : 0;
+
 			# WR-06: verify LMS is still actually on the browse track this WS
 			# believes is current BEFORE advancing -- if the user has already
 			# moved elsewhere (playlist jump, different selection) while this
@@ -884,7 +890,7 @@ sub _onPlaybackChanged {
 				. ($self->mac // '?') . ")"
 			);
 			$self->endBrowseSession('track_end');
-			if ($client && $stillOnBrowseTrack && _hasNextPlaylistEntry($client)) {
+			if (!$hadPendingGate && $client && $stillOnBrowseTrack && _hasNextPlaylistEntry($client)) {
 				my $req = Slim::Control::Request->new($client->id, ['playlist', 'index', '+1']);
 				$req->source('PLUGIN_SPOTON_SOLOIST_BROWSE');
 				$req->execute();
@@ -1162,13 +1168,17 @@ sub endBrowseSession {
 	$self->browseAdvancePending(0);
 	$self->browseTrackConfirmed(0);
 
+	# WR-01: pause BEFORE resolve — the 'ended' resolution can
+	# synchronously re-enter startBrowseTrack (via errorCb → LMS
+	# _NextIfMore); sending pause after would cork the re-entrantly
+	# started next track.
+	$self->sendCommand('pause') unless $_BROWSE_END_SKIP_PAUSE{$reason // ''};
+
 	# D-17: the session was torn down (queue-end defense, LMS stop,
 	# handover) -- a pending readiness gate resolves 'ended' so the caller
 	# can error out cleanly instead of handing over a stream that would
 	# play nothing.
 	$self->_resolveBrowseReady('ended');
-
-	$self->sendCommand('pause') unless $_BROWSE_END_SKIP_PAUSE{$reason // ''};
 }
 
 # ---------------------------------------------------------------------
