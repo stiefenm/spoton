@@ -117,6 +117,22 @@ sub _isDeadHistoryUrl {
     return ($meta && $meta->{spotifyUri}) ? 1 : 0;
 }
 
+# _isLiveConnectStream($client)
+# D-16: returns true iff the player has a playing song whose URL is a
+# spoton://connect-* stream — i.e. a live (or at least not-yet-replaced)
+# Connect session. Uses track->url first, then streamUrl fallback
+# (Phase 44 pattern: on a direct-streamed session streamUrl becomes the
+# http://…/stream proxy URL, so streamUrl-only would false-negative).
+sub _isLiveConnectStream {
+    my ($client) = @_;
+    return 0 unless $client;
+    $client = $client->master if $client->can('master');
+    my $song = $client->playingSong();
+    return 0 unless $song;
+    my $url = $song->track->url || $song->streamUrl || '';
+    return ($url =~ m{spoton://connect-}) ? 1 : 0;
+}
+
 # shutdown($class)
 # Cleanly unsubscribes all event handlers.
 # Daemon shutdown is handled by Unified::DaemonManager via Plugin.pm shutdownPlugin().
@@ -611,6 +627,35 @@ sub _onPause {
     }
 
     return unless __PACKAGE__->isSpotifyConnect($client);
+
+    # D-16 stale-claim guard (RC-2): the ownership claim is set but this
+    # pause/stop does NOT belong to a live Connect session. This is the
+    # hijack vector: a Browse 'playlist play' internally stops/pauses the
+    # previous state BEFORE getNextTrack arms browseSession, so
+    # _soloistBrowseWs() above returns undef and the pause falls through
+    # to the isSpotifyConnect gate — true via the dormant claim — and
+    # would forward /control/pause to the daemon, pausing the very session
+    # the Browse play is trying to start.
+    # Guards: (a) no live connect-* song URL on the player — protects live
+    # sessions including direct-streamed ones (track->url stays
+    # spoton://connect-*); (b) pendingConnect is not set — protects the
+    # legitimate start window where the claim exists before the connect-*
+    # song does; (c) connectStartTime grace has expired — also protects
+    # the start window.
+    if (!_isLiveConnectStream($client)
+        && !$client->pluginData('pendingConnect')
+        && Time::HiRes::time() - ($client->pluginData('connectStartTime') || 0) >= CONNECT_START_GRACE)
+    {
+        main::INFOLOG && $log->is_info && $log->info(sprintf(
+            "D-16: stale Connect claim on %s — no live connect stream, no pending start, "
+            . "grace expired (%.1fs ago). Releasing claim, NOT forwarding pause to daemon.",
+            $client->id,
+            Time::HiRes::time() - ($client->pluginData('connectStartTime') || 0)
+        ));
+        $_activeConnectPlayer = undef;
+        $client->pluginData(pendingConnect => 0);
+        return;
+    }
 
     # Echo suppression: _connectEvent's ['pause', 0/1] triggers a playlist
     # notification without source-marking. Suppress within 1s of our last
