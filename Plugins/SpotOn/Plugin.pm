@@ -4038,12 +4038,30 @@ sub _prefetchWatchdog {
     return unless $url =~ m{^spoton://(?!connect-)};
     return unless Slim::Player::Source::playmode($client) eq 'play';
 
+    # Guard 1: playmode 'play' includes BUFFERING — after an LMS restart
+    # with squeezelite still connected, STMt play-point data refers to the
+    # previous stream (or is jiffies-extrapolation garbage) until the new
+    # track reaches PLAYING. isPlaying(1) is false during BUFFERING.
+    unless ($client->isPlaying(1)) {
+        Slim::Utils::Timers::setTimer($client, Time::HiRes::time() + 2, \&_prefetchWatchdog);
+        return;
+    }
+
     my $duration = $song->duration || 0;
     return unless $duration > 0;
 
     my $rawElapsed = $client->songElapsedSeconds() || 0;
     my $startOffset = $song->startOffset || 0;
     my $elapsed = $rawElapsed + $startOffset;
+
+    # Guard 2: the 2s poll cadence catches a real near-end hang within
+    # ~3s of crossing duration-3, so elapsed > duration+30 cannot come
+    # from real playback of this track.
+    if ($elapsed > $duration + 30) {
+        $log->warn("Prefetch watchdog: implausible elapsed ${elapsed}s for ${duration}s track — ignoring stale play point");
+        Slim::Utils::Timers::setTimer($client, Time::HiRes::time() + 2, \&_prefetchWatchdog);
+        return;
+    }
 
     if ($elapsed >= $duration - 3) {
         my $id = $client->id;
