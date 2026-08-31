@@ -122,6 +122,53 @@ Alle Bugs und fehlenden Integrationen fixen, die ein nutzbares v4.0 blockieren. 
 
 </specifics>
 
+<extension_scope>
+## Extension Scope (Plans 9+) — Browse Stutter Root Cause Fix
+
+**Added:** 2026-08-31, based on debug session `soloist-browse-stutter`
+
+### Root Causes Found (Debug Session 2026-08-30/31)
+
+**RC-1: Pitfall 4 false positive in `_onBrowseTrackChanged`**
+- `SoloistWS.pm` line ~710-718: fires "unexpected uri" even when expected == actual URI
+- Log evidence: `browse track_changed unexpected uri spotify:track:X (expected spotify:track:X) -- correcting`
+- Causes: spurious track changes, premature browse session end
+- When the track is the last in LMS queue: `endBrowseSession('queue_end')` → Soloist pauses → audio stops after ~1s
+
+**RC-2: Session-Restore interference with Browse**
+- After daemon restart, Soloist restores previous Spotify session and "becomes active device"
+- This triggers Browse flow (getNextTrack → startBrowseTrack) for the restored track
+- But the restored track's `track_changed` event hits Pitfall 4 → immediate pause
+- Subsequent `playlist play` commands are then intercepted by Connect handlers instead of Browse
+
+**RC-3: fake-libpulse underflow_cb gap (FIXED, committed)**
+- `underflow_cb` was never invoked — now fires correctly on ring-empty edge
+- Soloist ignores it (does not resume writing) — but fix is correct PA-API behavior, kept
+
+**RC-4: Soloist startup latency (10-215s worker thread stalls)**
+- Soloist's internal decoder threads take 10-215s to start producing audio (per-thread strace evidence)
+- LMS StreamingController._RetryOrNext reconnects after ~10s of premature stream end
+- This collision creates the cyclic stutter pattern when Pitfall 4 doesn't kill it first
+
+### Extension Decisions
+
+- **D-15:** Fix Pitfall 4 expected==actual comparison in `_onBrowseTrackChanged`. The "unexpected" classification logic has a bug — must only fire when URIs genuinely differ. — **Reversibility:** reversible
+- **D-16:** Add Browse session-state reset on daemon restart. When Soloist reconnects after restart, clear stale Browse state so the next `playlist play` goes through Browse, not Connect. — **Reversibility:** reversible
+- **D-17:** Consider stream-handoff gate: delay handing the `/stream` URL to squeezelite until Soloist reports "playing" via WS. This would prevent the 1s-burst-then-stall pattern caused by Soloist's startup latency (RC-4). Evaluate feasibility — must not break Connect or librespot. — **Reversibility:** reversible
+- **D-18:** FLAC24 transcode architecture (soc flc rule) remains DEFERRED — separate from the stutter fix. — **Reversibility:** n/a
+
+### Extension Canonical Refs
+
+- `Plugins/SpotOn/Unified/SoloistWS.pm` §662-737 — `_onBrowseTrackChanged()`: Pitfall 4 logic, `browseExpectedUri` comparison
+- `Plugins/SpotOn/Unified/SoloistWS.pm` §988-1030 — `startBrowseTrack()` / `endBrowseSession()`
+- `Plugins/SpotOn/Unified/SoloistWS.pm` §568 — `_onDeviceChanged()`: re-activation position sync
+- `Plugins/SpotOn/ProtocolHandler.pm` §775 — `getNextTrack()`: Browse dispatch
+- `Plugins/SpotOn/Connect.pm` §642-651 — `_onPause()`: unpause/pause forwarding that hijacks Browse
+- `.planning/debug/soloist-browse-stutter.md` — Full debug session with evidence trail
+- `Plugins/SpotOn/Bin/fake-libpulse/fake-libpulse.c` — underflow_cb fix already applied
+
+</extension_scope>
+
 <deferred>
 ## Deferred Ideas
 
@@ -131,6 +178,7 @@ Alle Bugs und fehlenden Integrationen fixen, die ein nutzbares v4.0 blockieren. 
 - **Automatisiertes Audio-Level-Test-Rig** — Geparkt. Manuelles UAT für Phase 76, Rig ggf. in späterer Phase.
 - **Probe-Logik entfernen** (Client.pm `probeEndpointLimits()`) — Phase 75 Deferred, ggf. Phase 76 Cleanup oder Phase 77
 - **WebPlayer.pm / Pathfinder entfernen** — Phase 75 Deferred, nach UAT-Bestätigung
+- **FLAC24 Transcode-Architektur** — `soc flc` Regel + Prefetch-Kollision. Separates Problem, nicht Teil des Stutter-Fix (D-18).
 
 </deferred>
 
