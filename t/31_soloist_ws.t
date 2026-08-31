@@ -75,10 +75,23 @@ sub client { return bless {}, 'Slim::Utils::Prefs' }
 1;
 END
 
+# D-17 (RC-4, Phase 76 extension): upgraded from a no-op stub to a recording
+# stub so confirm-window and timeout behavior are testable. setTimer records
+# (obj, time, coderef, args); killTimers removes every entry matching
+# (obj, coderef) -- mirroring the real Slim::Utils::Timers per-object/
+# per-function kill semantics. Tests fire recorded timers manually via the
+# fire_timer() helper below (defined after the module loads).
 write_stub($stub_dir, 'Slim::Utils::Timers', <<'END');
 package Slim::Utils::Timers;
-sub killTimers { }
-sub setTimer   { }
+our @TIMERS;
+sub setTimer {
+    my ($obj, $time, $coderef, @args) = @_;
+    push @TIMERS, { obj => $obj, time => $time, coderef => $coderef, args => \@args };
+}
+sub killTimers {
+    my ($obj, $coderef) = @_;
+    @TIMERS = grep { !($_->{obj} == $obj && $_->{coderef} == $coderef) } @TIMERS;
+}
 1;
 END
 
@@ -1324,6 +1337,230 @@ sub new_ws {
         [ [ 'spottyconnect', 'seek', '80.000', '' ] ],
         "position_sync with speed=0 and a position far from baseline emits seek (app-side seek while paused)"
     );
+}
+
+# ============================================================
+# D-17 (RC-4, Phase 76 extension): waitForBrowseReady -- two-stage stream-
+# handoff readiness gate. Stage A = track_changed confirming the expected
+# uri (equality or seeded branch); Stage B = position_sync speed!=0 after
+# confirmation, OR a playback_changed 'playing' that survives a short
+# confirm window without an immediately following 'paused' (self-cork blip,
+# live evidence: playing -> paused within ~20ms of the initial burst).
+# Fail-open on timeout / WS loss; 'ended' on session end; supersede
+# semantics on double registration.
+# ============================================================
+
+# Timer helpers for the recording Slim::Utils::Timers stub above.
+sub pending_timers {
+    my ($ws, $name) = @_;
+    my $code = Plugins::SpotOn::Unified::SoloistWS->can($name) or return 0;
+    return scalar grep { $_->{obj} == $ws && $_->{coderef} == $code } @Slim::Utils::Timers::TIMERS;
+}
+
+sub fire_timer {
+    my ($ws, $name) = @_;
+    my $code = Plugins::SpotOn::Unified::SoloistWS->can($name) or return 0;
+    for my $i (0 .. $#Slim::Utils::Timers::TIMERS) {
+        my $t = $Slim::Utils::Timers::TIMERS[$i];
+        next unless $t->{obj} == $ws && $t->{coderef} == $code;
+        splice(@Slim::Utils::Timers::TIMERS, $i, 1);
+        $t->{coderef}->($t->{obj}, @{ $t->{args} });
+        return 1;
+    }
+    return 0;
+}
+
+# Fresh browse-session ws with a connected fake client and a registered
+# readiness callback recorder.
+sub new_gated_browse_ws {
+    my ($uri) = @_;
+    @Slim::Utils::Timers::TIMERS = ();
+    my $ws         = new_ws();
+    my $fakeClient = Test::FakeWsClient->new;
+    $ws->_client($fakeClient);
+    $ws->connected(1);
+    $ws->startBrowseTrack($uri, undef);
+    $fakeClient->{writes} = [];    # clear the startBrowseTrack play write
+    return ($ws, $fakeClient);
+}
+
+# Stale-frame rejection + two-stage resolution via position_sync (speed!=0)
+{
+    my ($ws) = new_gated_browse_ws('spotify:track:abc');
+
+    my @resolved;
+    $ws->waitForBrowseReady(sub { push @resolved, $_[0] });
+
+    is(pending_timers($ws, '_browseReadyTimeoutTimer'), 1,
+        "D-17: registration arms exactly one timeout timer");
+
+    # A position_sync with speed=1 BEFORE any confirmation could be a stale
+    # frame from the PREVIOUS track -- must NOT resolve the gate.
+    $ws->_onMessage('{"type":"position_sync","position_ms":5000,"speed":1}');
+    is(scalar @resolved, 0,
+        "D-17: position_sync speed=1 BEFORE confirmation does not resolve (stale-frame rejection)");
+
+    # Stage A: track_changed confirming the current uri (D-15 equality branch)
+    $ws->_onMessage('{"type":"track_changed","item":{"uri":"spotify:track:abc"}}');
+    is($ws->browseTrackConfirmed, 1,
+        "D-17: equality-branch track_changed sets browseTrackConfirmed");
+    is(scalar @resolved, 0,
+        "D-17: Stage A confirmation alone does not resolve (Stage B still required)");
+
+    # Stage B: first position_sync with speed != 0 after confirmation
+    $ws->_onMessage('{"type":"position_sync","position_ms":6000,"speed":1}');
+    is_deeply(\@resolved, ['ready'],
+        "D-17: confirmation + position_sync speed=1 resolves 'ready' exactly once");
+    is($ws->browseReadyCb, undef,
+        "D-17: pending cb cleared after resolution");
+    is(pending_timers($ws, '_browseReadyTimeoutTimer'), 0,
+        "D-17: timeout timer killed after resolution");
+}
+
+# Seeded-match branch also counts as Stage A confirmation
+{
+    my ($ws) = new_gated_browse_ws('spotify:track:abc');
+    @Slim::Control::Request::EXECUTED = ();
+    $ws->browseSeededUri('spotify:track:def');
+
+    my @resolved;
+    $ws->waitForBrowseReady(sub { push @resolved, $_[0] });
+
+    $ws->_onMessage('{"type":"track_changed","item":{"uri":"spotify:track:def"}}');
+    is($ws->browseTrackConfirmed, 1,
+        "D-17: seeded-match track_changed sets browseTrackConfirmed");
+
+    $ws->_onMessage('{"type":"position_sync","position_ms":1000,"speed":1}');
+    is_deeply(\@resolved, ['ready'],
+        "D-17: seeded-match confirmation + position_sync speed=1 resolves 'ready'");
+}
+
+# Supersede: a second registration silently discards the first WITHOUT
+# invoking it (LMS has superseded the earlier getNextTrack).
+{
+    my ($ws) = new_gated_browse_ws('spotify:track:abc');
+
+    my (@cb1, @cb2);
+    $ws->waitForBrowseReady(sub { push @cb1, $_[0] });
+    $ws->waitForBrowseReady(sub { push @cb2, $_[0] });
+
+    is(pending_timers($ws, '_browseReadyTimeoutTimer'), 1,
+        "D-17: supersede leaves exactly one timeout timer");
+
+    $ws->_onMessage('{"type":"track_changed","item":{"uri":"spotify:track:abc"}}');
+    $ws->_onMessage('{"type":"position_sync","position_ms":6000,"speed":1}');
+
+    is(scalar @cb1, 0, "D-17: superseded cb1 is never invoked");
+    is_deeply(\@cb2, ['ready'], "D-17: only cb2 resolves, with 'ready'");
+}
+
+# Stage B via playback_changed: 'playing' arms the confirm window; firing
+# the confirm timer resolves 'ready'.
+{
+    my ($ws) = new_gated_browse_ws('spotify:track:abc');
+
+    my @resolved;
+    $ws->waitForBrowseReady(sub { push @resolved, $_[0] });
+    $ws->_onMessage('{"type":"track_changed","item":{"uri":"spotify:track:abc"}}');
+
+    $ws->_onMessage('{"type":"playback_changed","status":"playing"}');
+    is(scalar @resolved, 0,
+        "D-17: 'playing' alone does not resolve -- confirm window armed instead");
+    is(pending_timers($ws, '_browseReadyConfirmTimer'), 1,
+        "D-17: 'playing' after confirmation arms the confirm timer");
+
+    ok(fire_timer($ws, '_browseReadyConfirmTimer'), "D-17: confirm timer fires");
+    is_deeply(\@resolved, ['ready'],
+        "D-17: a 'playing' surviving the confirm window resolves 'ready'");
+    is(pending_timers($ws, '_browseReadyTimeoutTimer'), 0,
+        "D-17: timeout timer killed after confirm-window resolution");
+}
+
+# Self-cork blip: 'paused' arriving before the confirm window fires disarms
+# it -- no resolution; the timeout later resolves fail-open.
+{
+    my ($ws) = new_gated_browse_ws('spotify:track:abc');
+
+    my @resolved;
+    $ws->waitForBrowseReady(sub { push @resolved, $_[0] });
+    $ws->_onMessage('{"type":"track_changed","item":{"uri":"spotify:track:abc"}}');
+
+    $ws->_onMessage('{"type":"playback_changed","status":"playing"}');
+    $ws->_onMessage('{"type":"playback_changed","status":"paused"}');
+
+    is(pending_timers($ws, '_browseReadyConfirmTimer'), 0,
+        "D-17: 'paused' before the confirm window fires disarms it (self-cork blip)");
+    is(scalar @resolved, 0, "D-17: a playing->paused blip does not resolve");
+
+    ok(fire_timer($ws, '_browseReadyTimeoutTimer'), "D-17: timeout timer still pending after blip");
+    is_deeply(\@resolved, ['timeout'],
+        "D-17: timeout after a blip resolves 'timeout' (fail-open)");
+}
+
+# Timeout fail-open + at-most-once: after 'timeout' resolution, subsequent
+# readiness signals never re-invoke the cb.
+{
+    my ($ws) = new_gated_browse_ws('spotify:track:abc');
+
+    my @resolved;
+    $ws->waitForBrowseReady(sub { push @resolved, $_[0] });
+
+    ok(fire_timer($ws, '_browseReadyTimeoutTimer'), "D-17: timeout timer fires");
+    is_deeply(\@resolved, ['timeout'], "D-17: timeout resolves 'timeout' (fail-open)");
+
+    $ws->_onMessage('{"type":"track_changed","item":{"uri":"spotify:track:abc"}}');
+    $ws->_onMessage('{"type":"position_sync","position_ms":6000,"speed":1}');
+    is(scalar @resolved, 1, "D-17: cb is invoked at most once per registration");
+}
+
+# endBrowseSession resolves a pending cb with 'ended'.
+{
+    my ($ws) = new_gated_browse_ws('spotify:track:abc');
+
+    my @resolved;
+    $ws->waitForBrowseReady(sub { push @resolved, $_[0] });
+
+    $ws->endBrowseSession('queue_end');
+    is_deeply(\@resolved, ['ended'],
+        "D-17: endBrowseSession resolves a pending cb with 'ended'");
+    is(pending_timers($ws, '_browseReadyTimeoutTimer'), 0,
+        "D-17: no dangling timeout timer after 'ended'");
+    is(pending_timers($ws, '_browseReadyConfirmTimer'), 0,
+        "D-17: no dangling confirm timer after 'ended'");
+}
+
+# _onClosed (WS/daemon loss) resolves a pending cb with 'timeout' semantics
+# (fail-open -- the alive-poll owns process recovery; the gate must never
+# strand the player).
+{
+    my ($ws) = new_gated_browse_ws('spotify:track:abc');
+
+    my @resolved;
+    $ws->waitForBrowseReady(sub { push @resolved, $_[0] });
+
+    $ws->_sockOpen(1);    # simulate an established socket so _onClosed runs
+    $ws->_onClosed;
+    is_deeply(\@resolved, ['timeout'],
+        "D-17: _onClosed resolves a pending cb with 'timeout' (fail-open)");
+}
+
+# startBrowseTrack begins each new browse start unconfirmed and discards a
+# stale pending cb WITHOUT invoking it.
+{
+    my ($ws) = new_gated_browse_ws('spotify:track:abc');
+
+    my @resolved;
+    $ws->waitForBrowseReady(sub { push @resolved, $_[0] });
+    $ws->_onMessage('{"type":"track_changed","item":{"uri":"spotify:track:abc"}}');
+    is($ws->browseTrackConfirmed, 1, "D-17: setup -- first start confirmed");
+
+    $ws->startBrowseTrack('spotify:track:def', undef);
+    is($ws->browseTrackConfirmed, 0,
+        "D-17: startBrowseTrack resets browseTrackConfirmed (new start begins unconfirmed)");
+    is($ws->browseReadyCb, undef,
+        "D-17: startBrowseTrack discards a stale pending cb");
+    is(scalar @resolved, 0,
+        "D-17: the discarded stale cb was never invoked");
 }
 
 done_testing();
