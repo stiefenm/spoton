@@ -41,11 +41,6 @@ use constant CONNECT_START_GRACE => 12;
 # it. All captured re-announcements arrived at daemon uptime < 1s.
 use constant RESTART_START_GRACE => 5;
 
-# Seconds; CR-02 — suppress the un-sourced pause/stop notification LMS fires
-# internally during a soloist-browse advance/start (mirrors CONNECT_START_GRACE
-# for the Connect path).
-use constant BROWSE_ADVANCE_GRACE => 3;
-
 # Volume debounce: merge rapid volume events into one (0.5s window)
 use constant VOLUME_DEBOUNCE => 0.5;
 
@@ -184,13 +179,38 @@ sub _finishNewTrack {
     $client->pluginData(newTrack => 0);
 }
 
+# _currentSpotonTrackUrl($client)
+# Returns the current song URL if it matches ^spoton://(?:track|episode):,
+# or '' otherwise.  Uses track->url first (authoritative spoton:// URI),
+# then streamUrl fallback — during a track transition only streamingSong
+# carries the new URL, so check streamingSong before playingSong (Phase 44
+# pattern).  Shared by _soloistBrowseWs, the echo/confirmation guard in
+# _connectEvent, and plan 78-04's ownership criterion.
+sub _currentSpotonTrackUrl {
+    my ($client) = @_;
+    return '' unless $client;
+    $client = $client->master if $client->can('master');
+
+    # Check streamingSong first (carries the new URL during a transition),
+    # then fall back to playingSong (stable after the transition completes).
+    for my $accessor (qw(streamingSong playingSong)) {
+        my $song = $client->controller->$accessor();
+        next unless $song;
+        my $url = $song->track->url || '';
+        return $url if $url =~ m{^spoton://(?:track|episode):};
+    }
+    return '';
+}
+
 # _soloistBrowseWs($client)
-# 73-03 Task 3 (D-03, Modell B): returns the SoloistWS instance for this
-# client when its registered helper is a SoloistDaemon currently running a
-# browse-managed session (ws->browseSession true), else undef. Used by
-# _onPause/_onSeek to forward LMS-originated pause/unpause/seek to the
-# daemon during soloist Browse -- a browse session is NOT a Connect session
-# (isSpotifyConnect() is false), so it needs its own forwarding branch.
+# Phase 78-02: bounded-model criterion.  Returns the SoloistWS instance
+# when the player is in a Soloist Browse session (NOT Connect): the
+# registered helper is a SoloistDaemon, WS is connected, the player does
+# not hold an active Connect claim, and the current song is a
+# spoton://track: or spoton://episode: URL.  Used by _onPause/_onSeek to
+# forward LMS-originated transport commands to the daemon during bounded
+# Browse playback — a browse session is not a Connect session
+# (isSpotifyConnect is false), so it needs its own forwarding branch.
 sub _soloistBrowseWs {
     my ($client) = @_;
     return unless $client;
@@ -201,7 +221,15 @@ sub _soloistBrowseWs {
     return unless $helper && $helper->isa('Plugins::SpotOn::Unified::SoloistDaemon');
 
     my $ws = $helper->_ws;
-    return unless $ws && $ws->browseSession;
+    return unless $ws && $ws->connected;
+
+    # A Connect session uses the Connect forwarding path below, not this one.
+    return if __PACKAGE__->isSpotifyConnect($client);
+
+    # The current song must be a spoton://track: or spoton://episode: URL —
+    # the player is streaming bounded Soloist audio.
+    my $url = _currentSpotonTrackUrl($client);
+    return unless $url =~ m{^spoton://(?:track|episode):};
 
     return $ws;
 }
@@ -209,11 +237,9 @@ sub _soloistBrowseWs {
 # _soloistConnectWs($client)
 # 260827-of9 (~30s Connect-skip audio delay): returns the SoloistWS instance
 # for this client when its registered helper is a SoloistDaemon, else undef.
-# Unlike _soloistBrowseWs above, this does NOT require an active
-# browseSession -- the `change` handler needs to read/consume skipInitiated
-# during a Connect session, and a browse session and a Connect session are
-# mutually exclusive per player (D-08), so there is no risk of this reaching
-# into a browse-managed WS by mistake.
+# Unlike _soloistBrowseWs above, this does NOT require the bounded-model
+# criterion — the 'change' handler needs to read/consume skipInitiated
+# during a Connect session.
 sub _soloistConnectWs {
     my ($client) = @_;
     return unless $client;
@@ -475,23 +501,6 @@ sub _onNewSong {
     my $song = $client->playingSong();
     my $url  = $song ? ($song->track->url || $song->streamUrl || '') : '';
 
-    # WR-06: a new song has started that is NOT a soloist Browse
-    # spoton://track|episode: URL while a browse session is still marked
-    # active on the daemon side (e.g. the user navigated to a non-Spotify
-    # playlist entry) -- end it from the LMS side. Without this hook,
-    # browseSession could stay stuck set: a later app-driven transfer-in
-    # would be mis-routed into the stale browse state machine, and Soloist
-    # reaching its own track end while the user has moved on elsewhere would
-    # fire an unrequested skip into the user's current playlist.
-    if (my $browseWs = _soloistBrowseWs($client)) {
-        unless ($url =~ m{^spoton://(?:track|episode):}) {
-            main::INFOLOG && $log->is_info && $log->info(
-                "New song without Browse URL — ending soloist browse session for " . $client->id
-            );
-            $browseWs->endBrowseSession('lms_newsong');
-        }
-    }
-
     # CON-17: Apply stored progress for Connect sessions.
     # D-16 fix: the old predicate was `isSpotifyConnect($client)` alone, which
     # tested the same condition as the release block below ($_ activeConnectPlayer
@@ -572,61 +581,40 @@ sub _onPause {
     return if !defined $client;
     $client = $client->master;
 
-    # 73-03 Task 3 (D-03, Modell B): a soloist Browse session is NOT a
-    # Connect session -- isSpotifyConnect() below would be false and this
-    # pause/unpause would otherwise be dropped on the floor. Checked BEFORE
-    # the isSpotifyConnect guard so browse forwarding isn't shadowed by it.
+    # Phase 78-02: bounded-model Browse forwarding.  A Soloist Browse
+    # session is NOT a Connect session (isSpotifyConnect is false), so LMS
+    # pause/unpause must be forwarded to the daemon via WS here — otherwise
+    # the daemon keeps decoding, the ring fills, and fake-libpulse's 2s
+    # POLLOUT timeout closes the bounded HTTP connection (Pitfall 4).
+    # Checked BEFORE the isSpotifyConnect guard so browse forwarding is not
+    # shadowed by it.
+    #
+    # NOTE (interim correctness): LMS's internal stop of the previous
+    # playlist entry during a normal advance arrives here as an un-sourced
+    # pause; forwarding a WS 'pause' at a track boundary is harmless in the
+    # bounded model because getNextTrack's subsequent WS 'play uri' (or the
+    # daemon's own advance) supersedes it — no grace window needed.
     if (my $browseWs = _soloistBrowseWs($client)) {
-        # Echo hygiene: skip our own browse-advance/correction requests
-        # (source-marked PLUGIN_SPOTON_SOLOIST_BROWSE) the same way the
-        # top-of-function guard already skips __PACKAGE__-sourced ones.
-        return if $request->source && $request->source eq 'PLUGIN_SPOTON_SOLOIST_BROWSE';
-
         if ($isUnpause) {
             main::INFOLOG && $log->is_info && $log->info(
-                "Soloist browse: forwarding unpause to daemon via WS play"
+                "Soloist browse: forwarding unpause to daemon via WS play (resume)"
             );
             $browseWs->sendCommand('play');
         }
+        elsif ($request->isCommand([['playlist'], ['stop']])) {
+            # LMS stop — the daemon must stop decoding so the ring does not
+            # run drop-oldest against a closed/blocked socket.  No session
+            # teardown in the bounded model (no browseSession state machine).
+            main::INFOLOG && $log->is_info && $log->info(
+                "Soloist browse: forwarding LMS stop to daemon via WS pause"
+            );
+            $browseWs->sendCommand('pause');
+        }
         else {
-            # CR-02: LMS internally stops the PREVIOUS playlist item during a
-            # seeded browse advance (['playlist','index','+1'], or a fresh
-            # startBrowseTrack's initial play) -- that internal stop arrives
-            # as this same un-sourced pause notification (the source marker
-            # on the advance request itself doesn't cover it). Suppress
-            # forwarding within a short grace window after our own
-            # advance/start request, mirroring the Connect path's own
-            # connectStartTime grace period above.
-            my $advTs = $browseWs->can('browseAdvanceTs') ? ($browseWs->browseAdvanceTs || 0) : 0;
-            if (Time::HiRes::time() - $advTs < BROWSE_ADVANCE_GRACE) {
-                main::INFOLOG && $log->is_info && $log->info(
-                    "Soloist browse: suppressing pause/stop within browse-advance grace period"
-                );
-                return;
-            }
-
-            if ($request->isCommand([['playlist'], ['stop']])) {
-                # WR-06: a genuine LMS-side stop (user stop, playlist clear,
-                # power-off, starting non-Spotify playback -- NOT our own
-                # advance echo, already suppressed above) -- end the browse
-                # session from the LMS side. Without this, browseSession
-                # stays set forever: a later app-driven transfer-in arrives
-                # as device_changed/track_changed and gets mis-routed into
-                # the (stale) browse state machine, and Soloist reaching its
-                # own track end while the user has moved on to something else
-                # would fire an unrequested skip into the user's current
-                # playlist.
-                main::INFOLOG && $log->is_info && $log->info(
-                    "Soloist browse: LMS stop -- ending browse session"
-                );
-                $browseWs->endBrowseSession('lms_stop');
-            }
-            else {
-                main::INFOLOG && $log->is_info && $log->info(
-                    "Soloist browse: forwarding pause to daemon via WS pause"
-                );
-                $browseWs->sendCommand('pause');
-            }
+            main::INFOLOG && $log->is_info && $log->info(
+                "Soloist browse: forwarding pause to daemon via WS pause"
+            );
+            $browseWs->sendCommand('pause');
         }
         return;
     }
@@ -634,13 +622,11 @@ sub _onPause {
     return unless __PACKAGE__->isSpotifyConnect($client);
 
     # D-16 stale-claim guard (RC-2): the ownership claim is set but this
-    # pause/stop does NOT belong to a live Connect session. This is the
-    # hijack vector: a Browse 'playlist play' internally stops/pauses the
-    # previous state BEFORE getNextTrack arms browseSession, so
-    # _soloistBrowseWs() above returns undef and the pause falls through
-    # to the isSpotifyConnect gate — true via the dormant claim — and
-    # would forward /control/pause to the daemon, pausing the very session
-    # the Browse play is trying to start.
+    # pause/stop does NOT belong to a live Connect session.  Without this
+    # guard a Browse 'playlist play' (which internally stops the previous
+    # item) would fall through to the isSpotifyConnect gate — true via the
+    # dormant claim — and forward /control/pause to the daemon, pausing
+    # the very session the Browse play is trying to start.
     # Guards: (a) no live connect-* song URL on the player — protects live
     # sessions including direct-streamed ones (track->url stays
     # spoton://connect-*); (b) pendingConnect is not set — protects the
@@ -771,15 +757,16 @@ sub _onSeek {
     return if !defined $client;
     $client = $client->master;
 
-    # 73-03 Task 3 (D-03, Modell B): soloist Browse seek forwarding -- same
-    # GH #129 rationale as the Connect path below (getSeekData returns undef
-    # for a soloist Browse URL too, so LMS never restarts the stream and
-    # songTime still holds the OLD position here). Separate timer key
-    # (_bufferedBrowseSeek is a distinct coderef from _bufferedSeek) so the
-    # Connect and browse debounces cannot collide.
+    # Phase 78-02: bounded-model Browse seek forwarding.  LMS now DOES
+    # restart the stream for Soloist Browse (getSeekData returns
+    # timeOffset); the WS seek runs in parallel so the daemon flushes and
+    # repositions while LMS is rebuilding the connection.  Documented race
+    # (RESEARCH Pitfall 5): if the new GET arrives before the daemon flush,
+    # a brief burst of pre-seek audio may be heard before the
+    # flush-disconnect closes the stale connection and LMS retries.
+    # Separate timer key (_bufferedBrowseSeek is a distinct coderef from
+    # _bufferedSeek) so the Connect and browse debounces cannot collide.
     if (my $browseWs = _soloistBrowseWs($client)) {
-        return if $request->source && $request->source eq 'PLUGIN_SPOTON_SOLOIST_BROWSE';
-
         my $position   = _seekPositionFromRequest($client, $request);
         my $positionMs = int($position * 1000);
 
@@ -802,8 +789,8 @@ sub _onSeek {
 }
 
 # _bufferedBrowseSeek($client, $positionMs)
-# 73-03 Task 3: debounced soloist-browse seek forward -- re-checks the
-# browse session is still active (it may have ended during the debounce
+# Phase 78-02: debounced soloist-browse seek forward — re-checks the
+# bounded criterion (the player may have stopped during the debounce
 # window) before sending.
 sub _bufferedBrowseSeek {
     my ($client, $positionMs) = @_;
