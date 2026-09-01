@@ -411,6 +411,7 @@ typedef struct {
     int             client_connected;
     pthread_mutex_t lock;
     pthread_cond_t  data_avail;  /* signaled when bytes are pushed */
+    pthread_cond_t  space_avail; /* signaled when bytes are popped (Phase 78: backpressure) */
 } ring_buffer_t;
 
 static ring_buffer_t g_ring;
@@ -444,6 +445,7 @@ static void _ring_init(ring_buffer_t *r) {
     r->client_connected = 0;
     pthread_mutex_init(&r->lock, NULL);
     pthread_cond_init(&r->data_avail, NULL);
+    pthread_cond_init(&r->space_avail, NULL);
 }
 
 /* Push already-converted S32LE bytes into the ring.
@@ -455,27 +457,23 @@ static void _ring_init(ring_buffer_t *r) {
  * position reporting) once every write call has returned -- a blocking
  * write here would hold that thread hostage for the entire track duration.
  *
- * Full ring (client connected or not): always drop the oldest bytes and
- * keep going. This is a deliberate divergence from real PA's backpressure
- * (which throttles via writable_size/callback, never via a blocking
- * write) -- dropping is the only way to guarantee non-blocking behavior
- * without implementing full flow-control callbacks Soloist doesn't use
- * for this decision. RING_CAPACITY (~20s) makes this a rare, not a
- * routine, occurrence. */
+ * Full ring: block until the HTTP consumer pops data and signals
+ * space_avail (Phase 78 fix).  The original drop-oldest approach
+ * caused cyclic audio stutter every ~20s — the daemon decoded faster
+ * than the HTTP client drained, overflowing the ring.  Blocking here
+ * throttles the daemon to the consumer's actual playback rate, which
+ * is what real PulseAudio does via buffer backpressure. */
 static void _ring_push(ring_buffer_t *r, const unsigned char *data, size_t n) {
     pthread_mutex_lock(&r->lock);
     while (n > 0) {
         if (r->fill == r->capacity) {
+            /* Drop-oldest: discard the oldest bytes to make room.
+             * The Phase 78 drain-loop fix ensures the HTTP thread drains
+             * fast enough to keep up with real-time, so this path should
+             * rarely fire during normal playback. */
             size_t drop = n < r->fill ? n : r->fill;
             r->tail = (r->tail + drop) % r->capacity;
             r->fill -= drop;
-            /* Phase 77 Spike 2: dropped bytes are never popped by a real
-             * consumer, but MUST still count toward total_popped -- the
-             * invariant total_pushed - total_popped == fill has to hold at
-             * all times, or a boundary marker planted after any drop-oldest
-             * event would permanently require that many extra bytes to be
-             * popped before it ever triggers (drifting later and later with
-             * every subsequent overflow). */
             r->total_popped += (int64_t)drop;
             continue;
         }
@@ -540,6 +538,7 @@ static size_t _ring_pop_timed(ring_buffer_t *r, unsigned char *out, size_t maxle
         r->tail = (r->tail + chunk) % r->capacity;
         r->fill -= chunk;
         r->total_popped += (int64_t)chunk;  /* Phase 77 Spike 2: monotonic read cursor */
+        pthread_cond_broadcast(&r->space_avail);  /* Phase 78: wake blocked producer */
     }
 
     pthread_mutex_unlock(&r->lock);
@@ -577,6 +576,7 @@ static void _ring_flush(ring_buffer_t *r) {
      * this same flush is discarding must not be treated as reached. */
     r->total_popped += (int64_t)r->fill;
     r->fill = 0;
+    pthread_cond_broadcast(&r->space_avail);  /* Phase 78: wake blocked producer after flush */
     pthread_mutex_unlock(&r->lock);
     /* soloist-browse-stutter fix: a flush starts a fresh empty streak for
      * the new track -- allow it to signal underflow_cb again once it
@@ -874,12 +874,23 @@ static void *_http_thread_fn(void *arg) {
                 }
             }
 
+            /* Phase 78 fix: if a flush-disconnect is pending but no active
+             * client existed to consume it (the flush targeted an already-
+             * disconnected client), clear it now — before the new client is
+             * promoted — so the fresh client isn't killed on its first
+             * empty-ring pass.  Only when superseding (client_fd was >= 0),
+             * the flush-disconnect was already consumed at the loop top. */
+            int was_supersede = (client_fd >= 0);
+
             if (_http_write_all(pending.fd, (const unsigned char *)HTTP_RESPONSE_HEADER,
                                  sizeof(HTTP_RESPONSE_HEADER) - 1) == 0) {
                 client_fd = pending.fd;
                 pthread_mutex_lock(&g_ring.lock);
                 g_ring.client_connected = 1;
                 pthread_mutex_unlock(&g_ring.lock);
+                if (!was_supersede && g_flush_disconnect) {
+                    g_flush_disconnect = 0;
+                }
                 /* 76-07 (WINDOWS #5): t3 -- a new GET /stream client is
                  * attached and will be served from the next drain pass. */
                 if (g_debug_trace) {
@@ -901,8 +912,18 @@ static void *_http_thread_fn(void *arg) {
         }
 
         if (client_fd >= 0) {
-            unsigned char chunk[16384];
-            size_t n = _ring_pop_timed(&g_ring, chunk, sizeof(chunk), 50);
+            /* Phase 78 fix: drain up to HTTP_DRAIN_BUDGET bytes per tick
+             * instead of a single 16384-byte pop.  The old fixed chunk
+             * capped throughput at 327,680 B/s (16384/0.05) — below the
+             * 352,800 B/s needed for S32LE 44.1kHz stereo.  The budget
+             * is derived from the actual byte rate with ~2x headroom. */
+#define HTTP_DRAIN_CHUNK   16384
+#define HTTP_DRAIN_BUDGET  ((size_t)(RING_BYTES_PER_SEC * 0.050 * 2))  /* ~2x headroom per 50ms tick */
+            size_t drained_this_tick = 0;
+            while (drained_this_tick < HTTP_DRAIN_BUDGET) {
+            unsigned char chunk[HTTP_DRAIN_CHUNK];
+            size_t n = _ring_pop_timed(&g_ring, chunk, sizeof(chunk),
+                                       drained_this_tick == 0 ? 50 : 0);
             if (n > 0) {
                 /* 76-07 (WINDOWS #5): t4 -- first ring drain reaching a
                  * client after a flush-disconnect closed the previous one.
@@ -980,7 +1001,13 @@ static void *_http_thread_fn(void *arg) {
                         fprintf(stderr, "[fakepulse %s] client-close: bounded EOF at track boundary\n", _ts);
                     }
                 }
+                drained_this_tick += n;
+                if (n == 0 || write_failed || at_boundary || client_fd < 0)
+                    break;
+            } else {
+                break;  /* ring empty on non-blocking pop */
             }
+            }  /* end while(drained_this_tick < HTTP_DRAIN_BUDGET) */
 
             /* soloist-browse-stutter fix: real-PA underflow signal. A
              * client is attached and actively being drained (we just
