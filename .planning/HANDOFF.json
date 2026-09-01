@@ -1,0 +1,31 @@
+{
+  "version": "1.0",
+  "timestamp": "2026-09-01T13:08:42.784Z",
+  "phase": "77",
+  "phase_name": "Bounded Audio Facade (spoton-helper, C/Rust)",
+  "phase_dir": ".planning/phases/77-bounded-audio-facade-spoton-helper-c-rust",
+  "plan": 0,
+  "task": 0,
+  "total_tasks": 0,
+  "status": "paused",
+  "completed_tasks": [],
+  "remaining_tasks": [],
+  "blockers": [],
+  "async_jobs": [],
+  "human_actions_pending": [],
+  "decisions": [
+    {"decision": "All 5 CR items (CR-1 atomic + CR-S1..S4) in Phase 77 Wave 0", "rationale": "Clean foundation before hardening", "phase": "77"},
+    {"decision": "Seek via WS command + ring flush, C-side waits", "rationale": "Simplest model, no Perl-side coordination", "phase": "77"},
+    {"decision": "Last-wins + flush for rapid-skip", "rationale": "Matches existing g_flush_disconnect pattern", "phase": "77"},
+    {"decision": "URI-mismatch = play-command + flush", "rationale": "Same mechanism as seek, implement once", "phase": "77"},
+    {"decision": "Host-tests + live-UAT, CI rebuild at end", "rationale": "Binary rebuild prerequisite for Phase 78", "phase": "77"}
+  ],
+  "uncommitted_files": [],
+  "next_action": "/gsd-plan-phase 77",
+  "context_notes": "Spikes 1+2 already done. Phase 77 is hardening + cleanup, not greenfield. Session did code review, 4 phase validations, milestone audit, and Phase 77 context.",
+  "semantic_changes": [
+    {"type": "status_change", "summary": "Phases 71/73/75/76 promoted to nyquist_compliant", "claim_before": "validation status: draft", "claim_after": "validation status: validated, nyquist_compliant: true", "vault_impact": []},
+    {"type": "new_concept", "summary": "Phase 77 CONTEXT.md created with 13 decisions", "claim_before": null, "claim_after": "Phase 77 context gathered, ready for planning", "vault_impact": []},
+    {"type": "status_change", "summary": "v4.0 milestone audit completed", "claim_before": "no audit", "claim_after": "gaps_found: 3/10 complete, 3 superseded, 3 not started", "vault_impact": []}
+  ]
+}
