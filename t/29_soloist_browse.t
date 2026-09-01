@@ -282,24 +282,35 @@ my $pkg = 'Plugins::SpotOn::ProtocolHandler';
     sub _ws         { return $_[0]->{ws}; }
 }
 
-# Fake SoloistWS double -- only the fields ProtocolHandler.pm's soloist
-# browse paths read (connected/browseAdvancePending/browseSession) plus a
-# recorder for startBrowseTrack (getNextTrack dispatch coverage).
+# D-07 (Phase 78): rewritten FakeSoloistWs for the bounded model --
+# browse-state fields removed (browseSession, browseAdvancePending,
+# startBrowseTrack); replaced by lastTrackId accessor and sendCommand
+# recorder that ProtocolHandler's gate-free getNextTrack uses.
 {
     package Test::FakeSoloistWs;
     sub new {
         my ($class, %args) = @_;
-        return bless { connected => 1, browseSession => 0, browseAdvancePending => 0, started => [], %args }, $class;
+        return bless {
+            connected    => 1,
+            lastTrackId  => undef,
+            sent         => [],
+            send_success => 1,
+            %args,
+        }, $class;
     }
-    sub connected             { return $_[0]->{connected}; }
-    sub browseSession         { my $self = shift; $self->{browseSession} = shift if @_; return $self->{browseSession}; }
-    sub browseAdvancePending  { my $self = shift; $self->{browseAdvancePending} = shift if @_; return $self->{browseAdvancePending}; }
-    sub startBrowseTrack      { my ($self, $uri, $client) = @_; push @{ $self->{started} }, $uri; return 1; }
+    sub connected   { return $_[0]->{connected}; }
+    sub lastTrackId { my $self = shift; $self->{lastTrackId} = shift if @_; return $self->{lastTrackId}; }
+    sub sendCommand {
+        my ($self, $cmd, %p) = @_;
+        push @{ $self->{sent} }, [$cmd, \%p];
+        return $self->{send_success};
+    }
+    sub can { return 1; }
 }
 
 # ============================================================
-# backend = 'soloist' (D-03, Modell B): daemon alive, unsynced player --
-# canDirectStream returns the daemon's HTTP /stream URL directly.
+# backend = 'soloist' (D-03, Phase 78): daemon alive, unsynced player --
+# canDirectStream returns the bounded per-track URL.
 # ============================================================
 {
     reset_backend('soloist');
@@ -315,19 +326,17 @@ my $pkg = 'Plugins::SpotOn::ProtocolHandler';
 
     my $client = MockClient->new(synced => 0);
     my $result = $pkg->canDirectStream($client, 'spoton://track:abc123');
-    like($result, qr{^http://127\.0\.0\.1:39755/stream$},
-        "canDirectStream() returns the daemon /stream URL for an unsynced soloist browse client (D-03)");
+    is($result, 'http://127.0.0.1:39755/stream/track?uri=spotify:track:abc123&start=0',
+        "canDirectStream() returns the bounded per-track URL for an unsynced soloist browse client (D-03, Phase 78)");
 
-    ok($pkg->canSeek($client), "canSeek() truthy when backend=soloist (D-03 lifts the Phase-72 hard 0)");
+    ok($pkg->canSeek($client), "canSeek() truthy when backend=soloist");
 
     my $streamObj = $pkg->new({ url => 'spoton://track:abc123', client => $client });
     ok(defined $streamObj, "new({url => spoton://track:..., unsynced}) is defined when backend=soloist");
-    # 28293d4 (Browse-stutter debug session): new() is only called when
-    # canDirectStream() returned 0, so the spoton:// URL ALWAYS needs
-    # substitution to the daemon's /stream endpoint -- synced or not
-    # (covers proxy mode and the 76-04 transcode path).
-    like($streamObj->{url}, qr{^http://127\.0\.0\.1:39755/stream$},
-        "new() substitutes the daemon /stream URL for an unsynced soloist browse client too (28293d4)");
+    # new() is only called when canDirectStream() returned 0, so the
+    # spoton:// URL ALWAYS needs substitution to the bounded endpoint.
+    like($streamObj->{url}, qr{^http://127\.0\.0\.1:39755/stream/track\?uri=spotify:track:abc123&start=0$},
+        "new() substitutes the bounded URL for an unsynced soloist browse client too (D-03 proxy)");
 }
 
 # ============================================================
@@ -346,8 +355,8 @@ my $pkg = 'Plugins::SpotOn::ProtocolHandler';
 
     my $streamObj = $pkg->new({ url => 'spoton://track:abc123', client => $client });
     ok(defined $streamObj, "new({url => spoton://track:..., synced}) is defined when backend=soloist");
-    like($streamObj->{url}, qr{^http://127\.0\.0\.1:39755/stream$},
-        "new() substitutes the daemon /stream URL for a synced soloist browse client (D-03 sync-group proxy)");
+    like($streamObj->{url}, qr{^http://127\.0\.0\.1:39755/stream/track\?uri=spotify:track:abc123&start=0$},
+        "new() substitutes the bounded URL for a synced soloist browse client (D-03 sync-group proxy)");
 }
 
 # ============================================================
@@ -408,14 +417,30 @@ my $pkg = 'Plugins::SpotOn::ProtocolHandler';
 # ============================================================
 {
     package MockTrack;
-    sub new { return bless { url => $_[1] }, $_[0]; }
-    sub url { return $_[0]->{url}; }
+    sub new        { return bless { url => $_[1], _ss => undef, _sr => undef, _ch => undef }, $_[0]; }
+    sub url        { return $_[0]->{url}; }
+    sub can        { return 1; }
+    sub samplesize { my $self = shift; $self->{_ss} = shift if @_; return $self->{_ss}; }
+    sub samplerate { my $self = shift; $self->{_sr} = shift if @_; return $self->{_sr}; }
+    sub channels   { my $self = shift; $self->{_ch} = shift if @_; return $self->{_ch}; }
 }
 {
     package MockSong;
-    sub new    { my ($class, %args) = @_; return bless { %args }, $class; }
-    sub master { return $_[0]->{master}; }
-    sub track  { return $_[0]->{track}; }
+    sub new      { my ($class, %args) = @_; return bless { %args, _duration => undef, _startOffset => undef, _seekdata => undef, _streamUrl => undef }, $class; }
+    sub master   { return $_[0]->{master}; }
+    sub track    { return $_[0]->{track}; }
+    sub duration { my $self = shift; $self->{_duration} = shift if @_; return $self->{_duration}; }
+    sub startOffset { my $self = shift; $self->{_startOffset} = shift if @_; return $self->{_startOffset}; }
+    sub seekdata { my $self = shift; $self->{_seekdata} = shift if @_; return $self->{_seekdata}; }
+    sub streamUrl { my $self = shift; $self->{_streamUrl} = shift if @_; return $self->{_streamUrl}; }
+    sub currentTrack { return $_[0]->{track}; }
+}
+
+# Controllable Connect stub -- default isSpotifyConnect returns false.
+{
+    package Plugins::SpotOn::Connect;
+    our $_IS_CONNECT = 0;
+    sub isSpotifyConnect { return $_IS_CONNECT; }
 }
 
 # --- soloist browse: resolved pcm -> direct URL, resolved flac/mp3 -> 0 ---
@@ -427,8 +452,8 @@ my $pkg = 'Plugins::SpotOn::ProtocolHandler';
 
     local $Plugins::SpotOn::Unified::DaemonManager::RESOLVED = 'pcm';
     like($pkg->canDirectStream($client, 'spoton://track:abc123'),
-        qr{^http://127\.0\.0\.1:39755/stream$},
-        "soloist browse: resolved 'pcm' keeps the direct /stream URL (D-06)");
+        qr{^http://127\.0\.0\.1:39755/stream/track\?uri=spotify:track:abc123&start=0$},
+        "soloist browse: resolved 'pcm' keeps the bounded URL (D-06, Phase 78)");
 
     $Plugins::SpotOn::Unified::DaemonManager::RESOLVED = 'flac';
     is($pkg->canDirectStream($client, 'spoton://track:abc123'), 0,
@@ -513,6 +538,129 @@ my $pkg = 'Plugins::SpotOn::ProtocolHandler';
     $Plugins::SpotOn::Unified::DaemonManager::PASSTHROUGH = 1;
     is($pkg->formatOverride($connectSong), 'son',
         "formatOverride: librespot passthrough -> 'son' (unchanged, D-14)");
+}
+
+# ============================================================
+# D-07 (Phase 78): getFormatForURL for the bounded URL form
+# ============================================================
+{
+    is($pkg->getFormatForURL('http://127.0.0.1:39755/stream/track?uri=spotify:track:abc123&start=0'), 'pcm',
+        "getFormatForURL: bounded URL matches the existing m{:\\d+/stream\\b} regex -> 'pcm' (soc pcm * * covers it)");
+}
+
+# ============================================================
+# D-03 (Phase 78): canDirectStreamSong seek offset substitution
+# ============================================================
+{
+    reset_backend('soloist');
+    $Plugins::SpotOn::Unified::DaemonManager::HELPER =
+        Plugins::SpotOn::Unified::SoloistDaemon->new(alive => 1, port => 39755);
+
+    my $client = MockClient->new(synced => 0);
+    my $track  = MockTrack->new('spoton://track:abc123');
+    my $song   = MockSong->new(master => $client, track => $track);
+    $song->seekdata({ timeOffset => 42 });
+
+    my $directUrl = $pkg->canDirectStream($client, 'spoton://track:abc123');
+    is($directUrl, 'http://127.0.0.1:39755/stream/track?uri=spotify:track:abc123&start=0',
+        "canDirectStream: initial URL has start=0 (seekdata applied by canDirectStreamSong)");
+
+    # Now run through canDirectStreamSong which applies the seek
+    my $seekUrl = $pkg->canDirectStreamSong($client, $song);
+    like($seekUrl, qr{&start=42$},
+        "canDirectStreamSong: seek offset replaces start=0 with start=42");
+    is($song->startOffset, 42,
+        "canDirectStreamSong: song->startOffset set to 42");
+}
+
+# ============================================================
+# D-03 (Phase 78): getNextTrack — gate-free dispatch with sendCommand
+# ============================================================
+{
+    reset_backend('soloist');
+    my $ws = Test::FakeSoloistWs->new(connected => 1);
+    $Plugins::SpotOn::Unified::DaemonManager::HELPER =
+        Plugins::SpotOn::Unified::SoloistDaemon->new(alive => 1, port => 39755, ws => $ws);
+    local $Plugins::SpotOn::Connect::_IS_CONNECT = 0;
+
+    my $client = MockClient->new(synced => 0);
+    my $track  = MockTrack->new('spoton://track:abc123');
+    my $song   = MockSong->new(master => $client, track => $track);
+
+    my ($success_called, $error_called, $error_type);
+    $pkg->getNextTrack($song, sub { $success_called = 1 }, sub { $error_called = 1; $error_type = $_[0]; });
+
+    ok($success_called, "getNextTrack: successCb called synchronously (no deferred gate)");
+    ok(!$error_called,  "getNextTrack: errorCb NOT called");
+    is_deeply($ws->{sent}, [['play', { uri => 'spotify:track:abc123' }]],
+        "getNextTrack: sends play command with uri to daemon via sendCommand recorder");
+}
+
+# ============================================================
+# D-03 (Phase 78): getNextTrack — lastTrackId match skips play command
+# ============================================================
+{
+    reset_backend('soloist');
+    my $ws = Test::FakeSoloistWs->new(connected => 1, lastTrackId => 'abc123');
+    $Plugins::SpotOn::Unified::DaemonManager::HELPER =
+        Plugins::SpotOn::Unified::SoloistDaemon->new(alive => 1, port => 39755, ws => $ws);
+    local $Plugins::SpotOn::Connect::_IS_CONNECT = 0;
+
+    my $client = MockClient->new(synced => 0);
+    my $track  = MockTrack->new('spoton://track:abc123');
+    my $song   = MockSong->new(master => $client, track => $track);
+
+    my ($success_called, $error_called);
+    $pkg->getNextTrack($song, sub { $success_called = 1 }, sub { $error_called = 1; });
+
+    ok($success_called, "getNextTrack: successCb called even with lastTrackId match (EOF-advance no-op)");
+    is_deeply($ws->{sent}, [],
+        "getNextTrack: NO play command sent when lastTrackId matches (daemon already on this track)");
+}
+
+# ============================================================
+# D-03 (Phase 78): getNextTrack — isSpotifyConnect skips play command
+# ============================================================
+{
+    reset_backend('soloist');
+    my $ws = Test::FakeSoloistWs->new(connected => 1);
+    $Plugins::SpotOn::Unified::DaemonManager::HELPER =
+        Plugins::SpotOn::Unified::SoloistDaemon->new(alive => 1, port => 39755, ws => $ws);
+    local $Plugins::SpotOn::Connect::_IS_CONNECT = 1;
+
+    my $client = MockClient->new(synced => 0);
+    my $track  = MockTrack->new('spoton://track:abc123');
+    my $song   = MockSong->new(master => $client, track => $track);
+
+    my ($success_called, $error_called);
+    $pkg->getNextTrack($song, sub { $success_called = 1 }, sub { $error_called = 1; });
+
+    ok($success_called, "getNextTrack: successCb called when isSpotifyConnect (Connect ownership)");
+    is_deeply($ws->{sent}, [],
+        "getNextTrack: NO play command sent during Connect session (daemon owns sequencing)");
+}
+
+# ============================================================
+# D-03 (Phase 78): getNextTrack — sendCommand failure invokes errorCb
+# ============================================================
+{
+    reset_backend('soloist');
+    my $ws = Test::FakeSoloistWs->new(connected => 1, send_success => 0);
+    $Plugins::SpotOn::Unified::DaemonManager::HELPER =
+        Plugins::SpotOn::Unified::SoloistDaemon->new(alive => 1, port => 39755, ws => $ws);
+    local $Plugins::SpotOn::Connect::_IS_CONNECT = 0;
+
+    my $client = MockClient->new(synced => 0);
+    my $track  = MockTrack->new('spoton://track:abc123');
+    my $song   = MockSong->new(master => $client, track => $track);
+
+    my ($success_called, $error_called, $error_type);
+    $pkg->getNextTrack($song, sub { $success_called = 1 }, sub { $error_called = 1; $error_type = $_[0]; });
+
+    ok(!$success_called, "getNextTrack: successCb NOT called when sendCommand fails");
+    ok($error_called,    "getNextTrack: errorCb called when sendCommand fails");
+    is($error_type, 'PROBLEM_OPENING',
+        "getNextTrack: error type is 'PROBLEM_OPENING' on send failure");
 }
 
 done_testing();

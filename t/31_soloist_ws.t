@@ -1563,4 +1563,74 @@ sub new_gated_browse_ws {
         "D-17: the discarded stale cb was never invoked");
 }
 
+# ============================================================
+# D-02 (Phase 78): _signalBoundary trigger matrix
+# track_changed -> fires; raw 'stopped' -> fires;
+# 'paused' -> does NOT fire; 'stopped' during deactivation -> does NOT fire
+# ============================================================
+{
+    # Override _signalBoundary with a counter (no actual I/O in tests).
+    my $boundary_count = 0;
+    no warnings 'redefine';
+    local *Plugins::SpotOn::Unified::SoloistWS::_signalBoundary = sub {
+        $boundary_count++;
+    };
+
+    # --- track_changed fires boundary ---
+    {
+        local $Slim::Utils::Prefs::FAKE_VALUES{enableSpotifyConnect} = 1;
+        @Slim::Player::Client::EXECUTED = ();
+        $boundary_count = 0;
+        my $ws = new_ws();
+        $ws->_onMessage('{"type":"device_changed","is_active":true}');
+        $ws->_onMessage('{"type":"track_changed","item":{"uri":"spotify:track:abc"}}');
+        is($boundary_count, 1,
+            "D-02: _signalBoundary fires on track_changed");
+    }
+
+    # --- raw 'stopped' fires boundary ---
+    {
+        local $Slim::Utils::Prefs::FAKE_VALUES{enableSpotifyConnect} = 1;
+        @Slim::Player::Client::EXECUTED = ();
+        $boundary_count = 0;
+        my $ws = new_ws();
+        $ws->_onMessage('{"type":"device_changed","is_active":true}');
+        $ws->_onMessage('{"type":"track_changed","item":{"uri":"spotify:track:abc"}}');
+        $boundary_count = 0;  # reset after track_changed's boundary
+        $ws->_onMessage('{"type":"playback_changed","status":"stopped"}');
+        is($boundary_count, 1,
+            "D-02: _signalBoundary fires on raw 'stopped' status");
+    }
+
+    # --- raw 'paused' does NOT fire boundary ---
+    {
+        local $Slim::Utils::Prefs::FAKE_VALUES{enableSpotifyConnect} = 1;
+        @Slim::Player::Client::EXECUTED = ();
+        $boundary_count = 0;
+        my $ws = new_ws();
+        $ws->_onMessage('{"type":"device_changed","is_active":true}');
+        $ws->_onMessage('{"type":"track_changed","item":{"uri":"spotify:track:abc"}}');
+        $boundary_count = 0;  # reset after track_changed's boundary
+        $ws->_onMessage('{"type":"playback_changed","status":"paused"}');
+        is($boundary_count, 0,
+            "D-02: _signalBoundary does NOT fire on 'paused' (pause is not track end)");
+    }
+
+    # --- 'stopped' during deactivation does NOT fire boundary ---
+    {
+        local $Slim::Utils::Prefs::FAKE_VALUES{enableSpotifyConnect} = 1;
+        @Slim::Player::Client::EXECUTED = ();
+        $boundary_count = 0;
+        my $ws = new_ws();
+        $ws->_onMessage('{"type":"device_changed","is_active":true}');
+        $ws->_onMessage('{"type":"track_changed","item":{"uri":"spotify:track:abc"}}');
+        # Deactivate (transfer away)
+        $ws->_onMessage('{"type":"device_changed","is_active":false}');
+        $boundary_count = 0;  # reset
+        $ws->_onMessage('{"type":"playback_changed","status":"stopped"}');
+        is($boundary_count, 0,
+            "D-02: _signalBoundary does NOT fire on 'stopped' during deactivation");
+    }
+}
+
 done_testing();
