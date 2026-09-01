@@ -120,27 +120,93 @@ cmp_ok(scalar(@clear_sites), '>=', 4,
     'GH #158: pause state cleared on start/resume/unpause/session-end paths');
 
 # ------------------------------------------------------------
-# Phase 76-10: RC-2 stale-claim lifecycle (D-16)
+# Phase 78-04: D-04 dual-backend dispatch (spoton://track: for
+# Soloist, spoton://connect-%u for librespot)
 # ------------------------------------------------------------
 
-# 1. Restart-gate suppressed branch contains a pendingConnect clear.
-# The RESTART_START_GRACE block logs "start_suppressed" and must clear
-# pendingConnect before its return — a leaked flag lets change/seek handlers
-# hijack subsequent Browse playback (metadata-bleed vector).
+# Gate 1: 'start' block dispatches spoton://track: in a SoloistDaemon
+# isa-branch AND still contains the literal spoton://connect-%u sprintf
+# (librespot branch).
+my ($start_d04_block) = $connect =~ /(# -+\n\s+# Start:.*?)(?=# -+\n\s+# Change:)/s;
+ok($start_d04_block, 'D-04 start: handler block parseable');
+if ($start_d04_block) {
+    like($start_d04_block,
+        qr/SoloistDaemon.*?spoton:\/\/track:/s,
+        'D-04 start: Soloist branch dispatches spoton://track: URL');
+    like($start_d04_block,
+        qr/spoton:\/\/connect-%u/,
+        'D-04 start: librespot branch still uses spoton://connect-%u');
+}
+
+# Gate 2: 'change' block has dual-backend dispatch; the Soloist branch
+# contains no skipInitiated reference (D-05 flush-disconnect delivers EOF).
+my ($change_d04_block) = $connect =~ /(# -+\n\s+# Change:.*?)(?=# -+\n\s+# Stop:)/s;
+ok($change_d04_block, 'D-04 change: handler block parseable');
+if ($change_d04_block) {
+    like($change_d04_block,
+        qr/SoloistDaemon.*?spoton:\/\/track:/s,
+        'D-04 change: Soloist branch dispatches spoton://track: URL');
+    like($change_d04_block,
+        qr/spoton:\/\/connect-%u/,
+        'D-04 change: librespot branch still uses spoton://connect-%u');
+    # Extract the Soloist-specific change block: from SoloistDaemon to the
+    # 'return;' that ends it, before the librespot code.  Check that the
+    # Soloist branch does not USE skipInitiated in code (comments mentioning
+    # it for rationale are fine -- strip comments before checking).
+    my ($soloist_change) = $change_d04_block =~
+        /(SoloistDaemon.*?spoton:\/\/track:.*?return;)/s;
+    if ($soloist_change) {
+        # Strip comment lines for the assertion: we care about code, not docs.
+        (my $soloist_code = $soloist_change) =~ s/^\s*#.*$//gm;
+        unlike($soloist_code, qr/skipInitiated/,
+            'D-04 change: Soloist branch code does not reference skipInitiated');
+    }
+}
+
+# ------------------------------------------------------------
+# Phase 78-04: Ownership criterion (_isSoloistOwnedSong)
+# replaces D-16 URL-criterion tests
+# ------------------------------------------------------------
+
+# 1. _isSoloistOwnedSong helper exists and uses lastTrackId.
+like($connect,
+    qr/sub _isSoloistOwnedSong\b/,
+    'ownership: _isSoloistOwnedSong helper defined');
+my ($ownership_block) = $connect =~ /(sub _isSoloistOwnedSong \{.*?\n\})/s;
+ok($ownership_block, 'ownership: _isSoloistOwnedSong block parseable');
+if ($ownership_block) {
+    like($ownership_block,
+        qr/lastTrackId/,
+        'ownership: _isSoloistOwnedSong references lastTrackId');
+    like($ownership_block,
+        qr/SoloistDaemon/,
+        'ownership: _isSoloistOwnedSong checks for SoloistDaemon');
+}
+
+# 2. D-16 release block references _isSoloistOwnedSong (no longer keys on
+# URL-scheme test alone).
+like($connect,
+    qr/_isSoloistOwnedSong\(\$client\)/,
+    'ownership: _isSoloistOwnedSong is called with $client');
+
+# 3. _isLiveConnectStream is extended to check Soloist ownership.
+my ($live_connect_block) = $connect =~ /(sub _isLiveConnectStream \{.*?\n\})/s;
+ok($live_connect_block, 'ownership: _isLiveConnectStream block parseable');
+if ($live_connect_block) {
+    like($live_connect_block,
+        qr/_isSoloistOwnedSong/,
+        'ownership: _isLiveConnectStream checks _isSoloistOwnedSong for Soloist path');
+    like($live_connect_block,
+        qr/spoton:\/\/connect-/,
+        'ownership: _isLiveConnectStream still checks connect- URL for librespot path');
+}
+
+# 4. Restart-gate suppressed branch still clears pendingConnect (unchanged).
 like($connect,
     qr/start_suppressed.*?pendingConnect\s*=>\s*0/s,
     'D-16: restart-gate suppressed branch clears pendingConnect before return');
 
-# 2. _onNewSong CON-17 branch predicate includes a connect- URL match.
-# The old predicate was isSpotifyConnect alone (identical to the release block
-# below, making it dead code). Now requires BOTH the ownership claim AND a
-# connect-* URL on the playing song.
-like($connect,
-    qr/isSpotifyConnect\(\$client\)\s*&&\s*\$url\s*=~\s*m\{spoton:\/\/connect-\}/,
-    'D-16: CON-17 branch requires both isSpotifyConnect and connect-* URL');
-
-# 3. _onPause contains the stale-claim guard: _isLiveConnectStream appears
-# inside _onPause between the isSpotifyConnect gate and the forwarding calls.
+# 5. _onPause D-16 stale-claim guard still uses _isLiveConnectStream.
 my ($on_pause_block) = $connect =~ /(sub _onPause \{.*?\nsub )/s;
 ok($on_pause_block, 'D-16: _onPause block parseable');
 if ($on_pause_block) {
@@ -149,16 +215,56 @@ if ($on_pause_block) {
         'D-16: stale-claim guard (_isLiveConnectStream) sits between isSpotifyConnect gate and forwarding');
 }
 
-# 4. _isLiveConnectStream uses track->url before streamUrl (Phase 44 pin).
-my ($helper_block) = $connect =~ /(sub _isLiveConnectStream \{.*?\})/s;
-ok($helper_block, 'D-16: _isLiveConnectStream helper exists');
-if ($helper_block) {
-    like($helper_block,
-        qr/track->url\s*\|\|\s*.*?streamUrl/s,
-        'D-16: _isLiveConnectStream uses track->url before streamUrl (Phase 44 pattern)');
-    like($helper_block,
-        qr/spoton:\/\/connect-/,
-        'D-16: _isLiveConnectStream checks for connect- URL pattern');
+# ------------------------------------------------------------
+# Phase 78-04: Watchdog Connect guards (Plugin.pm)
+#
+# Each of the five watchdog subs must contain at least one
+# isSpotifyConnect reference; _onNewSongWatchdog must contain
+# two (main body + deferred-timer closure).
+# ------------------------------------------------------------
+
+my $plugin_file = "$project_dir/Plugins/SpotOn/Plugin.pm";
+SKIP: {
+    skip 'Plugin.pm not present', 7 unless -f $plugin_file;
+    my $plugin = slurp($plugin_file);
+
+    # Extract each watchdog sub by name (greedy up to next ^sub or end).
+    my ($newsong_wd)  = $plugin =~ /(sub _onNewSongWatchdog \{.*?)(?=\nsub )/s;
+    my ($modechange)  = $plugin =~ /(sub _onModeChange \{.*?)(?=\nsub )/s;
+    my ($pauseguard)  = $plugin =~ /(sub _pauseGuardCheck \{.*?)(?=\nsub )/s;
+    my ($prefetch_wd) = $plugin =~ /(sub _prefetchWatchdog \{.*?)(?=\nsub )/s;
+    my ($hang_check)  = $plugin =~ /(sub _prefetchHangCheck \{.*?)(?=\n(?:sub |1;))/s;
+
+    ok($newsong_wd,  'watchdog: _onNewSongWatchdog extracted');
+    ok($modechange,  'watchdog: _onModeChange extracted');
+    ok($pauseguard,  'watchdog: _pauseGuardCheck extracted');
+    ok($prefetch_wd, 'watchdog: _prefetchWatchdog extracted');
+    ok($hang_check,  'watchdog: _prefetchHangCheck extracted');
+
+    # Each sub must reference isSpotifyConnect (the Connect guard).
+    for my $pair (
+        [$newsong_wd,  '_onNewSongWatchdog'],
+        [$modechange,  '_onModeChange'],
+        [$pauseguard,  '_pauseGuardCheck'],
+        [$prefetch_wd, '_prefetchWatchdog'],
+        [$hang_check,  '_prefetchHangCheck'],
+    ) {
+        my ($body, $name) = @$pair;
+        SKIP: {
+            skip "$name not extracted", 1 unless $body;
+            like($body, qr/isSpotifyConnect/,
+                "watchdog: $name contains isSpotifyConnect guard");
+        }
+    }
+
+    # _onNewSongWatchdog must contain TWO isSpotifyConnect references:
+    # one in the main body and one in the deferred-timer closure.
+    SKIP: {
+        skip '_onNewSongWatchdog not extracted', 1 unless $newsong_wd;
+        my @matches = $newsong_wd =~ /(isSpotifyConnect)/g;
+        cmp_ok(scalar(@matches), '>=', 2,
+            'watchdog: _onNewSongWatchdog contains isSpotifyConnect at least twice (body + closure)');
+    }
 }
 
 
