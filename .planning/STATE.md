@@ -2,18 +2,18 @@
 gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: Soloist Integration
-current_phase: 78
-current_phase_name: Browse + Connect Reintegration (Perl)
-status: executing
-stopped_at: Phase 77 context gathered
-last_updated: "2026-09-01T13:08:08.607Z"
+current_phase: 77
+current_phase_name: Bounded Audio Facade (spoton-helper, C/Rust)
+status: planning
+stopped_at: Session resumed — proceeding to /gsd-plan-phase 77
+last_updated: "2026-09-01T19:18:52.998Z"
 last_activity: 2026-09-01
-last_activity_desc: Phase 78 execution started
-state_head: 1d0106aab0c8a87926fa291b1d53b223251f9465
+last_activity_desc: Session resumed, routing to Phase 77 planning
+state_head: 57eb87a0893e56619dd38d1c9eec68d5acc2b1a0
 progress:
   total_phases: 5
   completed_phases: 2
-  total_plans: 19
+  total_plans: 25
   completed_plans: 19
   percent: 40
 ---
@@ -30,14 +30,14 @@ See: .planning/PROJECT.md (updated 2026-06-30)
 
 **Core Value:** Reliable Spotify playback and Connect integration on LMS — Browse, stream, and control via Spotify app, without 429 bursts, zombie daemons, or audio glitches.
 
-**Current Focus:** Phase 78 — Browse + Connect Reintegration (Perl)
+**Current Focus:** Phase 77 — Bounded Audio Facade (spoton-helper, C/Rust)
 
 ## Current Position
 
-Phase: 78 (Browse + Connect Reintegration (Perl)) — EXECUTING
-Plan: 1 of 4
-Status: Executing Phase 78
-Last activity: 2026-09-01 — Phase 78 execution started
+Phase: 77 (Bounded Audio Facade (spoton-helper, C/Rust)) — READY TO EXECUTE
+Plan: 0 of ? (no plans yet — 77-CONTEXT.md gathered)
+Status: Session resumed, routing to /gsd-plan-phase 77
+Last activity: 2026-09-01 — Phase 77 context gathered; Phase 78 waves 1-4 executed, UAT partial (3 major failures)
 
 ## Progress Bar
 
@@ -267,10 +267,19 @@ Items carried forward from previous milestones:
 
 ## Session Continuity
 
-**Resume file:** .planning/phases/77-bounded-audio-facade-spoton-helper-c-rust/77-CONTEXT.md
+**Resume file:** .planning/phases/77-bounded-audio-facade-spoton-helper-c-rust/.continue-here.md
 
-**Last session:** 2026-09-01T13:08:08.423Z
-**Stopped at:** Phase 77 context gathered
+**Last session:** 2026-09-01
+**Stopped at:** Session resumed — proceeding to /gsd-plan-phase 77 (HANDOFF.json consumed)
+
+**Open from Phase 78 (UAT partial — 3 major failures, see 78-UAT.md):**
+
+- Browse seek: flush-disconnect closes the HTTP client on seek-initiated flush (Phase 77 D-02 scope)
+- Connect transfer: resume event carries position (0.000) as trackId — SoloistWS.pm/Connect.pm
+- Browse→Connect coexistence: same resume-parameter root cause
+- Debug session: .planning/debug/browse-connect-gating.md
+
+**Completed prior session (2026-08-24):**
 
 **Completed this session (2026-08-24):**
 
