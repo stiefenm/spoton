@@ -668,6 +668,16 @@ sub _onTrackChanged {
 		"SoloistWS: track_changed raw event (" . ($self->mac // '?') . "): " . ($uri // 'no uri')
 	);
 
+	# Phase 77 Spike 2 (Bounded Endpoint Prototype): plant a boundary marker
+	# in fake-libpulse's ring buffer at the CURRENT write position, before
+	# any of this method's downstream classification/return logic below.
+	# track_changed is the ONLY track-boundary signal available (Spike 1
+	# finding, .planning/quick/260831-boundary-spike-instrument/SUMMARY.md
+	# -- Soloist's PA lifecycle is silent across track transitions, one
+	# pa_stream reused for the whole session) -- fire on every event,
+	# valid URI or not, so a marker is never missed.
+	$self->_signalBoundary;
+
 	return unless defined $uri;
 	# T-22-01 discipline: validate before any id reaches an LMS command.
 	return unless $uri =~ /^spotify:(?:track|episode):([A-Za-z0-9]+)$/;
@@ -703,6 +713,47 @@ sub _onTrackChanged {
 	}
 	else {
 		$self->_emit('change', $newId, $prevId);
+	}
+}
+
+# _signalBoundary($self) -- Phase 77 Spike 2 (Bounded Endpoint Prototype).
+#
+# Fire-and-forget loopback POST to fake-libpulse's /boundary control
+# endpoint, on the SAME daemon process's HTTP stream port (127.0.0.1-only
+# surface -- the streaming port itself is LAN-exposed for LMS players, but
+# this control request only ever originates from this process, same as the
+# WS control connection in connect() above). Plants a marker at the ring
+# buffer's current write position so the bounded HTTP serve loop can close
+# the socket there (= real EOF for LMS auto-advance).
+#
+# Synchronous, eval-guarded, short-timeout -- same discipline as connect()'s
+# blocking IO::Socket::INET probe (sub-5ms on localhost per RESEARCH Pattern
+# 2). Silently no-ops if the daemon or its HTTP stream port aren't resolved
+# yet (e.g. still starting up): a missed boundary just means that one track
+# won't get a bounded EOF, not a crash -- acceptable fail-open behavior for
+# this prototype.
+sub _signalBoundary {
+	my $self = shift;
+
+	my $daemon = $self->daemon or return;
+	my $httpPort = $daemon->_streamPort or return;
+
+	eval {
+		my $sock = IO::Socket::INET->new(
+			PeerAddr => '127.0.0.1',
+			PeerPort => $httpPort,
+			Proto    => 'tcp',
+			Timeout  => 1,
+		);
+		if ($sock) {
+			print $sock "POST /boundary HTTP/1.0\r\nConnection: close\r\n\r\n";
+			close($sock);
+		}
+	};
+	if ($@) {
+		main::DEBUGLOG && $log->is_debug && $log->debug(
+			"SoloistWS: boundary signal failed (" . ($self->mac // '?') . "): $@"
+		);
 	}
 }
 

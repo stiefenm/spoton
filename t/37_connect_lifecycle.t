@@ -161,4 +161,41 @@ if ($helper_block) {
         'D-16: _isLiveConnectStream checks for connect- URL pattern');
 }
 
+
+# ------------------------------------------------------------
+# browse-stale-metadata-elapsed: _fetchTrackMetadata callback must not
+# bleed a Connect track's title/duration onto a Browse song that took
+# over playingSong() while the async getTrack() API call was in flight
+# (e.g. a session-restore fetch racing a `playlist play spoton://track:`
+# issued right after an LMS restart).
+# ------------------------------------------------------------
+
+my ($fetch_block) = $connect =~ /(sub _fetchTrackMetadata \{.*?\n1;)/s;
+ok($fetch_block, 'metadata-bleed: _fetchTrackMetadata block parseable');
+if ($fetch_block) {
+    # Guard exists: bail out unless playingSong is still a Connect stream.
+    like($fetch_block,
+        qr/\$songUrl\s*=~\s*m\{spoton:\/\/connect-\}/,
+        'metadata-bleed: guard checks playingSong URL is still spoton://connect-*');
+
+    # Guard sits AFTER playingSong() is fetched but BEFORE the title is
+    # read from $trackInfo (i.e. before any mutation of $song/duration/title).
+    like($fetch_block,
+        qr/playingSong\(\).*?songUrl\s*=~\s*m\{spoton:\/\/connect-\}.*?my\s+\$title\s*=\s*\$trackInfo->\{name\}/s,
+        'metadata-bleed: guard runs before title/duration are read from the (possibly stale) response');
+
+    # Discard path still satisfies H7 (every exit path clears newTrack) and
+    # nudges clients to re-query the now-correct metadata.
+    my ($discard_block) = $fetch_block =~ /(unless\s*\(\$songUrl\s*=~\s*m\{spoton:\/\/connect-\}\)\s*\{.*?\n\s*\})/s;
+    ok($discard_block, 'metadata-bleed: discard branch parseable');
+    if ($discard_block) {
+        like($discard_block, qr/notifyFromArray/,
+            'metadata-bleed: discard branch still fires newmetadata notify');
+        like($discard_block, qr/_finishNewTrack\(\$client\)/,
+            'metadata-bleed: discard branch still clears newTrack flag (H7)');
+        unlike($discard_block, qr/\$song->duration/,
+            'metadata-bleed: discard branch does not touch $song->duration');
+    }
+}
+
 done_testing();

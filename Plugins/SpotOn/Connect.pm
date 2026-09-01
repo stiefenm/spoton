@@ -1629,6 +1629,29 @@ sub _fetchTrackMetadata {
             return;
         }
 
+        # browse-stale-metadata-elapsed: this callback resolves after an
+        # async Spotify API round-trip -- by then playback may already have
+        # moved on from Connect entirely (most commonly a Browse `playlist
+        # play` racing a session-restore fetch right after an LMS restart).
+        # The stale-API-protection check above only catches a wrong TRACK
+        # within Connect (event vs API mismatch); it does not catch playback
+        # having left Connect mode altogether. Same guard idiom as
+        # _restorePowerAfterConnect (GH #151): only a spoton://connect-*
+        # song is a valid target for Connect metadata. Without this, a late
+        # callback overwrites the CURRENT (Browse) song's title/duration
+        # with the stale Connect track's data.
+        my $songUrl = ($song->track && $song->track->url) || $song->streamUrl || '';
+        unless ($songUrl =~ m{spoton://connect-}) {
+            main::INFOLOG && $log->is_info && $log->info(
+                "_fetchTrackMetadata: playingSong is no longer a Connect stream ($songUrl)"
+                . " -- discarding stale metadata for track=$trackId"
+            );
+            # Let clients re-query the (correct) current metadata instead.
+            Slim::Control::Request::notifyFromArray($client, ['newmetadata']);
+            _finishNewTrack($client);
+            return;
+        }
+
         my $title    = $trackInfo->{name};
         my $artist   = join(', ', map { $_->{name} } @{ $trackInfo->{artists} || [] });
         my $album    = ($trackInfo->{album} || {})->{name} || '';

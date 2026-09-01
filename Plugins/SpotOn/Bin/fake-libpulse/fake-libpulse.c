@@ -366,12 +366,48 @@ static int g_awaiting_first_drain = 0;
  * worker thread), read by the separate HTTP server thread. */
 static volatile int g_flush_disconnect = 0;
 
+/* Phase 77 Spike 2 (Bounded Endpoint Prototype): forward declaration, same
+ * reason as g_debug_trace's forward declaration above -- the BOUNDARY()
+ * macro (real definition further below, next to the other trace macros)
+ * is used inside _http_thread_fn's POST /boundary handling and bounded-
+ * serving logic, both of which precede that definition in file order. */
+static int g_boundary_spike;
+
+/* Phase 77 Spike 2: moved up from next to the other trace macros (it's
+ * needed inside _http_thread_fn, defined below, which precedes that
+ * location in file order -- same forward-reference reasoning as
+ * g_boundary_spike above). Boundary-relevant events only, low frequency.
+ * Activated by SPOTON_BOUNDARY_SPIKE=1 env var. Logs pa_stream lifecycle
+ * events (Spike 1) and boundary plant/reach events (Spike 2) with
+ * bytes_written/total_pushed/total_popped + ring_fill for correlating
+ * with WS track_changed timestamps in server.log. */
+#define BOUNDARY(fmt, ...) \
+    do { \
+        if (g_boundary_spike) { \
+            char _ts[32]; \
+            _trace_ts(_ts, sizeof(_ts)); \
+            fprintf(stderr, "[fakepulse BOUNDARY ts=%s] " fmt "\n", _ts, ##__VA_ARGS__); \
+        } \
+    } while (0)
+
+/* Phase 77 Spike 2: boundary marker. When >= 0, the HTTP serve loop
+ * closes the client connection once total_popped reaches this value.
+ * Planted by POST /boundary (the HTTP thread itself, on receiving the
+ * control request), consumed by the same thread's serve loop -- single
+ * thread reads AND writes this, so no lock is needed for correctness of
+ * the plant/consume protocol itself; volatile only guards against the
+ * compiler caching the value across the poll()/read() calls in between.
+ * -1 = no boundary planted (serve indefinitely, existing behavior). */
+static volatile int64_t g_boundary_at_pushed = -1;
+
 typedef struct {
     unsigned char  *buf;
     size_t          capacity;
     size_t          head;   /* next write offset */
     size_t          tail;   /* next read offset */
     size_t          fill;   /* bytes currently held */
+    int64_t         total_pushed;  /* cumulative S32LE bytes pushed (monotonic, Phase 77 Spike 2) */
+    int64_t         total_popped;  /* cumulative S32LE bytes popped (monotonic, Phase 77 Spike 2) */
     int             client_connected;
     pthread_mutex_t lock;
     pthread_cond_t  data_avail;  /* signaled when bytes are pushed */
@@ -403,6 +439,8 @@ static void _ring_init(ring_buffer_t *r) {
     r->buf = malloc(RING_CAPACITY);
     r->capacity = RING_CAPACITY;
     r->head = r->tail = r->fill = 0;
+    r->total_pushed = 0;  /* Phase 77 Spike 2: monotonic, never reset by flush */
+    r->total_popped = 0;
     r->client_connected = 0;
     pthread_mutex_init(&r->lock, NULL);
     pthread_cond_init(&r->data_avail, NULL);
@@ -431,6 +469,14 @@ static void _ring_push(ring_buffer_t *r, const unsigned char *data, size_t n) {
             size_t drop = n < r->fill ? n : r->fill;
             r->tail = (r->tail + drop) % r->capacity;
             r->fill -= drop;
+            /* Phase 77 Spike 2: dropped bytes are never popped by a real
+             * consumer, but MUST still count toward total_popped -- the
+             * invariant total_pushed - total_popped == fill has to hold at
+             * all times, or a boundary marker planted after any drop-oldest
+             * event would permanently require that many extra bytes to be
+             * popped before it ever triggers (drifting later and later with
+             * every subsequent overflow). */
+            r->total_popped += (int64_t)drop;
             continue;
         }
 
@@ -446,6 +492,7 @@ static void _ring_push(ring_buffer_t *r, const unsigned char *data, size_t n) {
 
         r->head = (r->head + chunk) % r->capacity;
         r->fill += chunk;
+        r->total_pushed += (int64_t)chunk;  /* Phase 77 Spike 2: monotonic write cursor */
         data += chunk;
         n -= chunk;
 
@@ -492,6 +539,7 @@ static size_t _ring_pop_timed(ring_buffer_t *r, unsigned char *out, size_t maxle
 
         r->tail = (r->tail + chunk) % r->capacity;
         r->fill -= chunk;
+        r->total_popped += (int64_t)chunk;  /* Phase 77 Spike 2: monotonic read cursor */
     }
 
     pthread_mutex_unlock(&r->lock);
@@ -516,6 +564,18 @@ static size_t _ring_pop_timed(ring_buffer_t *r, unsigned char *out, size_t maxle
 static void _ring_flush(ring_buffer_t *r) {
     pthread_mutex_lock(&r->lock);
     r->tail = r->head;
+    /* Phase 77 Spike 2: the discarded `fill` bytes are never popped by a
+     * real consumer, but total_popped MUST still advance by that amount --
+     * the invariant total_pushed - total_popped == fill has to hold at all
+     * times, or a boundary marker planted after ANY later flush would
+     * permanently need that many extra (unrelated) bytes popped before it
+     * ever triggers, drifting further behind with every subsequent skip
+     * over a long session. This is a counter-bookkeeping advance only
+     * (never reset backward, and never applied to total_pushed) -- it does
+     * not itself touch g_boundary_at_pushed; the caller (pa_stream_flush)
+     * invalidates that separately, since a marker planted by a boundary
+     * this same flush is discarding must not be treated as reached. */
+    r->total_popped += (int64_t)r->fill;
     r->fill = 0;
     pthread_mutex_unlock(&r->lock);
     /* soloist-browse-stutter fix: a flush starts a fresh empty streak for
@@ -699,6 +759,12 @@ static void *_http_thread_fn(void *arg) {
             pthread_mutex_unlock(&g_ring.lock);
             g_flush_disconnect = 0;
             g_awaiting_first_drain = 1;   /* 76-07: arm the t4 (first-drain) stamp */
+            /* Phase 77 Spike 2: an app-side skip flushes the ring (see
+             * pa_stream_flush below), which invalidates any bytes a
+             * previously-planted boundary marker was counting toward --
+             * drop it so a stale marker can't spuriously close whatever
+             * client reconnects next. */
+            g_boundary_at_pushed = -1;
             if (g_debug_trace) {
                 char _ts[32];
                 _trace_ts(_ts, sizeof(_ts));
@@ -758,6 +824,35 @@ static void *_http_thread_fn(void *arg) {
                     pending.buf[pending.len] = '\0';
                 }
             }
+        }
+
+        /* Phase 77 Spike 2 (Bounded Endpoint Prototype): POST /boundary is a
+         * control request, not a streaming client -- plant the marker and
+         * respond WITHOUT running the GET /stream takeover logic below,
+         * which would otherwise close the currently-attached streaming
+         * client for what is really just an out-of-band signal from
+         * SoloistWS.pm on WS track_changed. Checked ahead of the takeover
+         * block so it can never touch client_fd. */
+        if (pending.fd >= 0 && _pending_head_complete(&pending)
+            && strstr(pending.buf, "POST") != NULL && strstr(pending.buf, "/boundary") != NULL)
+        {
+            pthread_mutex_lock(&g_ring.lock);
+            g_boundary_at_pushed = g_ring.total_pushed;
+            size_t ring_fill_now = g_ring.fill;
+            pthread_mutex_unlock(&g_ring.lock);
+
+            static const char boundary_resp[] =
+                "HTTP/1.0 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+            _http_write_all(pending.fd, (const unsigned char *)boundary_resp,
+                             sizeof(boundary_resp) - 1);
+            close(pending.fd);
+            pending.fd = -1;
+            pending.len = 0;
+
+            BOUNDARY("boundary_planted: total_pushed=%lld ring_fill=%zu",
+                     (long long)g_boundary_at_pushed, ring_fill_now);
+
+            continue; /* back to the top of the for(;;) -- skip GET /stream takeover */
         }
 
         if (pending.fd >= 0
@@ -821,7 +916,45 @@ static void *_http_thread_fn(void *arg) {
                         fprintf(stderr, "[fakepulse %s] first-drain: %zu bytes to fd=%d after flush-disconnect\n", _ts, n, client_fd);
                     }
                 }
-                if (_http_write_all(client_fd, chunk, n) != 0) {
+                /* Phase 77 Spike 2 (Bounded Endpoint Prototype): if a
+                 * boundary marker is armed, cap how much of THIS popped
+                 * chunk actually gets written -- bytes at/after the marker
+                 * belong to the next track and must not cross the socket
+                 * that's about to be closed as that track's EOF.
+                 *
+                 * Known prototype limitation: _ring_pop_timed() already
+                 * removed the full `n` bytes from the ring before this
+                 * check runs, so any bytes beyond the boundary within this
+                 * SAME chunk (up to sizeof(chunk)-1 = 16383 bytes, ~46ms of
+                 * S32LE 44100Hz stereo audio) are dropped rather than
+                 * carried over to the next connection. Acceptable for the
+                 * spike (bounded, single-chunk, and the ring's ~20s of
+                 * lookahead means the next GET reconnects well before this
+                 * matters audibly) -- a production version would need a
+                 * small carry-over buffer instead of a hard pop-then-trim. */
+                size_t write_n = n;
+                int at_boundary = 0;
+                int64_t boundary = g_boundary_at_pushed;
+                int64_t popped_after = 0;
+                if (boundary >= 0) {
+                    pthread_mutex_lock(&g_ring.lock);
+                    popped_after = g_ring.total_popped;  /* already includes this pop */
+                    pthread_mutex_unlock(&g_ring.lock);
+                    int64_t popped_before = popped_after - (int64_t)n;
+
+                    if (popped_after >= boundary) {
+                        int64_t usable = boundary - popped_before;
+                        write_n = (usable > 0) ? (size_t)usable : 0;
+                        at_boundary = 1;
+                    }
+                }
+
+                int write_failed = 0;
+                if (write_n > 0 && _http_write_all(client_fd, chunk, write_n) != 0) {
+                    write_failed = 1;
+                }
+
+                if (write_failed) {
                     close(client_fd);
                     client_fd = -1;
                     pthread_mutex_lock(&g_ring.lock);
@@ -831,6 +964,20 @@ static void *_http_thread_fn(void *arg) {
                         char _ts[32];
                         _trace_ts(_ts, sizeof(_ts));
                         fprintf(stderr, "[fakepulse %s] client-close: write error/disconnect\n", _ts);
+                    }
+                } else if (at_boundary) {
+                    BOUNDARY("boundary_reached: closing client fd=%d wrote=%zu total_popped=%lld boundary=%lld",
+                             client_fd, write_n, (long long)popped_after, (long long)boundary);
+                    close(client_fd);
+                    client_fd = -1;
+                    pthread_mutex_lock(&g_ring.lock);
+                    g_ring.client_connected = 0;
+                    pthread_mutex_unlock(&g_ring.lock);
+                    g_boundary_at_pushed = -1;
+                    if (g_debug_trace) {
+                        char _ts[32];
+                        _trace_ts(_ts, sizeof(_ts));
+                        fprintf(stderr, "[fakepulse %s] client-close: bounded EOF at track boundary\n", _ts);
                     }
                 }
             }
@@ -976,6 +1123,7 @@ static void _http_start_server(const char *portFilePath) {
  * unconditionally by SoloistDaemon.pm) maps to level 1 when TRACE is
  * unset, so existing behavior/tooling is unaffected. */
 static int g_debug_trace = 0;
+static int g_boundary_spike = 0;
 static int g_init_done = 0;
 
 static void _trace_ts(char *buf, size_t buflen) {
@@ -1011,6 +1159,12 @@ static long _gettid(void) {
             fprintf(stderr, "[fakepulse T2 %s tid=%ld] " fmt "\n", _ts, _gettid(), ##__VA_ARGS__); \
         } \
     } while (0)
+
+/* pa_stream_write throttled summary state (Phase 77 Spike 1) */
+static struct timeval g_boundary_last_write_summary;
+static int g_boundary_write_summary_set = 0;
+static int g_boundary_write_count = 0;
+static int64_t g_boundary_write_bytes_since = 0;
 
 static const char *_context_state_name(pa_context_state_t s) {
     switch (s) {
@@ -1148,12 +1302,18 @@ __attribute__((constructor))
 static void _fake_libpulse_init(void) {
     signal(SIGPIPE, SIG_IGN);
     g_flush_disconnect = 0;
+    g_boundary_at_pushed = -1;  /* Phase 77 Spike 2: explicit reset, matching g_flush_disconnect */
 
     const char *traceEnv = getenv("SPOTON_FAKEPULSE_TRACE");
     if (traceEnv && *traceEnv) {
         g_debug_trace = atoi(traceEnv);
     } else if (getenv("SPOTON_FAKEPULSE_DEBUG") != NULL) {
         g_debug_trace = 1;
+    }
+
+    const char *boundaryEnv = getenv("SPOTON_BOUNDARY_SPIKE");
+    if (boundaryEnv && *boundaryEnv && atoi(boundaryEnv) > 0) {
+        g_boundary_spike = 1;
     }
 
     /* Guard: skip init in the crashpad-handler child process. Soloist
@@ -1176,6 +1336,7 @@ static void _fake_libpulse_init(void) {
     }
     g_init_done = 1;
     if (g_debug_trace) fprintf(stderr, "[fakepulse] constructor: loaded (trace level=%d)\n", g_debug_trace);
+    if (g_boundary_spike) fprintf(stderr, "[fakepulse] constructor: BOUNDARY SPIKE mode active\n");
     if (g_debug_trace >= 2) _log_symbol_surface();
 
     const char *portFileEnv = getenv("SPOTON_SOLOIST_HTTP_PORT_FILE");
@@ -1615,7 +1776,11 @@ pa_stream *pa_stream_new(pa_context *c, const char *name, const pa_sample_spec *
            ss ? ss->format : -1, ss ? ss->rate : 0, ss ? ss->channels : 0);
     (void)name;
     (void)map;
-    return _stream_new(c, ss);
+    pa_stream *s = _stream_new(c, ss);
+    BOUNDARY("stream_new: stream=%p index=%u format=%d rate=%u channels=%u",
+             (void *)s, s ? s->index : 0, ss ? ss->format : -1,
+             ss ? ss->rate : 0, ss ? ss->channels : 0);
+    return s;
 }
 
 pa_stream *pa_stream_new_with_proplist(pa_context *c, const char *name, const pa_sample_spec *ss, const pa_channel_map *map, pa_proplist *p) {
@@ -1625,13 +1790,17 @@ pa_stream *pa_stream_new_with_proplist(pa_context *c, const char *name, const pa
     (void)name;
     (void)map;
     (void)p;
-    return _stream_new(c, ss);
+    pa_stream *s = _stream_new(c, ss);
+    BOUNDARY("stream_new_proplist: stream=%p index=%u format=%d rate=%u channels=%u",
+             (void *)s, s ? s->index : 0, ss ? ss->format : -1,
+             ss ? ss->rate : 0, ss ? ss->channels : 0);
+    return s;
 }
 
 void pa_stream_unref(pa_stream *s) {
     TRACE2("pa_stream_unref(stream=%p)", (void *)s);
-    /* soloist-browse-stutter fix: never leave g_active_stream dangling
-     * once the stream it points to is freed. */
+    BOUNDARY("stream_unref: stream=%p bytes_written=%lld",
+             (void *)s, s ? (long long)s->bytes_written : -1LL);
     if (g_active_stream == s) {
         g_active_stream = NULL;
     }
@@ -1709,12 +1878,18 @@ int pa_stream_connect_playback(pa_stream *s, const char *dev, const pa_buffer_at
      * read_index doesn't go negative from leftover fill. */
     if (g_http_mode) {
         _ring_flush(&g_ring);
+        /* Phase 77 Spike 2: a fresh session start invalidates any marker
+         * left over from a prior session -- same reasoning as the
+         * pa_stream_flush()/g_flush_disconnect sites. */
+        g_boundary_at_pushed = -1;
         /* soloist-browse-stutter fix: track this as the stream whose
          * underflow_cb the HTTP drain thread should invoke on a ring-empty
          * edge -- see g_active_stream's doc comment above g_ring. */
         g_active_stream = s;
     }
     gettimeofday(&s->connect_time, NULL);
+    BOUNDARY("connect_playback: stream=%p index=%u bytes_written=0 ring_fill=%zu",
+             (void *)s, s->index, g_http_mode ? g_ring.fill : (size_t)0);
     _stream_set_state(s, PA_STREAM_READY);
     /* started_cb now fires on the first pa_stream_write() call (see
      * pa_stream_write), not here at connect time -- real PulseAudio's
@@ -1729,6 +1904,9 @@ int pa_stream_connect_playback(pa_stream *s, const char *dev, const pa_buffer_at
 int pa_stream_disconnect(pa_stream *s) {
     if (g_debug_trace) fprintf(stderr, "[fakepulse] pa_stream_disconnect(stream=%p)\n", (void *)s);
     TRACE2("pa_stream_disconnect(stream=%p)", (void *)s);
+    BOUNDARY("stream_disconnect: stream=%p bytes_written=%lld ring_fill=%zu",
+             (void *)s, s ? (long long)s->bytes_written : -1LL,
+             g_http_mode ? g_ring.fill : (size_t)0);
     if (!s) {
         return -1;
     }
@@ -1753,13 +1931,14 @@ pa_operation *pa_stream_cork(pa_stream *s, int b, pa_stream_success_cb_t cb, voi
         int before = s->corked;
         s->corked = b ? 1 : 0;
         if (g_debug_trace) fprintf(stderr, "[fakepulse] pa_stream_cork(stream=%p, b=%d)\n", (void *)s, b);
-        /* Timestamped transition (DIAG, fakepulse-timing-buffer): the
-         * user's key open question is what condition Soloist waits on to
-         * uncork -- knowing the exact wall-clock moment of every cork(0)/
-         * cork(1) call, correlated against the TIMING trace above and an
-         * external strace capture, is the load-bearing data point here. */
         TRACE2("pa_stream_cork(stream=%p, requested=%d) corked %d -> %d, cb=%p",
                (void *)s, b, before, s->corked, (void *)cb);
+        if (before != s->corked) {
+            BOUNDARY("cork: stream=%p %d->%d bytes_written=%lld ring_fill=%zu",
+                     (void *)s, before, s->corked,
+                     (long long)s->bytes_written,
+                     g_http_mode ? g_ring.fill : (size_t)0);
+        }
     }
     if (cb) {
         cb(s, 1, userdata);
@@ -1777,12 +1956,23 @@ pa_operation *pa_stream_flush(pa_stream *s, pa_stream_success_cb_t cb, void *use
         fprintf(stderr, "[fakepulse %s] pa_stream_flush(stream=%p)\n", _ts, (void *)s);
     }
     TRACE2("pa_stream_flush(stream=%p, cb=%p)", (void *)s, (void *)cb);
+    if (s) {
+        BOUNDARY("flush: stream=%p bytes_written=%lld ring_fill=%zu corked=%d",
+                 (void *)s, (long long)s->bytes_written,
+                 g_http_mode ? g_ring.fill : (size_t)0, s->corked);
+    }
     if (s && g_http_mode) {
         /* HTTP mode only (D-04): the non-HTTP path forwards bytes to the
          * output FD synchronously, so there is nothing buffered to flush
          * there -- keep that path's existing no-op behavior unchanged. */
         _ring_flush(&g_ring);
         _stream_refresh_timing(s, "flush");
+        /* Phase 77 Spike 2: the flush just discarded whatever audio a
+         * planted boundary marker was counting toward -- invalidate it
+         * here too (belt-and-suspenders alongside the g_flush_disconnect
+         * consumption site in _http_thread_fn, which races this call on a
+         * different thread). */
+        g_boundary_at_pushed = -1;
         /* 260827-of9: Soloist calls pa_stream_flush() on an app-side skip
          * (confirmed via trace) -- signal the HTTP thread to drop the
          * currently connected client so LMS reconnects fresh rather than
@@ -1903,6 +2093,40 @@ int pa_stream_write(pa_stream *s, const void *data, size_t nbytes,
     }
 
     s->bytes_written += (int64_t)nbytes;
+
+    if (g_boundary_spike) {
+        g_boundary_write_count++;
+        g_boundary_write_bytes_since += (int64_t)nbytes;
+        struct timeval now;
+        gettimeofday(&now, NULL);
+        int emit = 0;
+        if (!g_boundary_write_summary_set) {
+            g_boundary_write_summary_set = 1;
+            g_boundary_last_write_summary = now;
+            emit = 1;
+        } else {
+            long ms = (now.tv_sec - g_boundary_last_write_summary.tv_sec) * 1000
+                    + (now.tv_usec - g_boundary_last_write_summary.tv_usec) / 1000;
+            if (ms >= 1000) {
+                emit = 1;
+                g_boundary_last_write_summary = now;
+            }
+        }
+        if (emit) {
+            pthread_mutex_lock(&g_ring.lock);
+            size_t fill = g_ring.fill;
+            pthread_mutex_unlock(&g_ring.lock);
+            char _ts[32];
+            _trace_ts(_ts, sizeof(_ts));
+            fprintf(stderr, "[fakepulse BOUNDARY ts=%s] write_summary: "
+                    "bytes_written=%lld ring_fill=%zu calls=%d bytes_since=%lld corked=%d\n",
+                    _ts, (long long)s->bytes_written, fill,
+                    g_boundary_write_count, (long long)g_boundary_write_bytes_since,
+                    s->corked);
+            g_boundary_write_count = 0;
+            g_boundary_write_bytes_since = 0;
+        }
+    }
 
     if (free_cb) {
         free_cb((void *)data);
@@ -2531,6 +2755,147 @@ int main(void) {
                         failures++;
                     }
                 }
+            }
+        }
+    }
+
+    /* Phase 77 Spike 2 (Bounded Endpoint Prototype) regression: POST
+     * /boundary plants a marker at the ring's CURRENT write position;
+     * the serve loop must close the attached client with a real EOF
+     * (read() == 0) exactly there -- audio produced strictly BEFORE the
+     * marker reaches the client, nothing produced AFTER it does. A fresh
+     * connection opened afterward must then stream normally again (the
+     * one-shot marker must not linger or corrupt ring state for the next
+     * client). */
+    {
+        pthread_mutex_lock(&g_ring.lock);
+        /* Keep the total_pushed - total_popped == fill invariant intact
+         * across this raw reset (same reasoning as the _ring_flush fix
+         * above) -- otherwise any leftover fill from an earlier test block
+         * would leak into this test's boundary math as a phantom gap. */
+        g_ring.total_popped += (int64_t)g_ring.fill;
+        g_ring.head = g_ring.tail = g_ring.fill = 0;
+        g_ring.client_connected = 0;
+        pthread_mutex_unlock(&g_ring.lock);
+        g_boundary_at_pushed = -1;
+
+        static const char getReq[] = "GET /stream HTTP/1.0\r\n\r\n";
+        int bfd = _test_connect_loopback(port);
+        if (bfd < 0) {
+            fprintf(stderr, "FAIL: could not connect client for boundary test\n");
+            failures++;
+        } else if (write(bfd, getReq, sizeof(getReq) - 1) < 0
+                   || _test_read_header(bfd, 3000) != 0) {
+            fprintf(stderr, "FAIL: could not attach streaming client for boundary test\n");
+            failures++;
+            close(bfd);
+        } else {
+            /* Pre-boundary pattern: must be fully served before the marker. */
+            float pre[4] = { 0.5f, -0.5f, 0.25f, -0.25f };
+            int32_t expected_pre[4] = { 1073741824, -1073741824, 536870912, -536870912 };
+            pa_stream_write(s, pre, sizeof(pre), NULL, 0, 0);
+
+            unsigned char got_pre[16];
+            if (_test_read_bytes(bfd, got_pre, sizeof(got_pre), 3000) != 0
+                || memcmp(got_pre, expected_pre, sizeof(expected_pre)) != 0) {
+                fprintf(stderr, "FAIL: boundary test pre-pattern never arrived or mismatched\n");
+                failures++;
+            }
+
+            /* Plant the marker over a SEPARATE control connection -- POST
+             * /boundary must not disturb the already-attached streaming
+             * client (bfd stays open, untouched, until it hits the marker). */
+            int ctrl = _test_connect_loopback(port);
+            int ctrl_ok = 0;
+            if (ctrl >= 0) {
+                static const char postReq[] =
+                    "POST /boundary HTTP/1.0\r\nConnection: close\r\n\r\n";
+                if (write(ctrl, postReq, sizeof(postReq) - 1) >= 0) {
+                    char resp[128];
+                    size_t rlen = 0;
+                    struct timeval cs, cn;
+                    gettimeofday(&cs, NULL);
+                    while (rlen < sizeof(resp) - 1) {
+                        struct pollfd pfd; pfd.fd = ctrl; pfd.events = POLLIN;
+                        if (poll(&pfd, 1, 200) > 0) {
+                            ssize_t n = read(ctrl, resp + rlen, sizeof(resp) - 1 - rlen);
+                            if (n <= 0) break;
+                            rlen += (size_t)n;
+                        }
+                        gettimeofday(&cn, NULL);
+                        if ((cn.tv_sec - cs.tv_sec) * 1000 >= 2000) break;
+                    }
+                    resp[rlen] = '\0';
+                    ctrl_ok = (strncmp(resp, "HTTP/1.0 200 OK", 15) == 0);
+                }
+                close(ctrl);
+            }
+            if (!ctrl_ok) {
+                fprintf(stderr, "FAIL: POST /boundary did not return 200 OK\n");
+                failures++;
+            }
+
+            /* Next-track precursor: produced AFTER the marker was planted.
+             * Known prototype limitation (see the write_n comment in
+             * _http_thread_fn): this chunk is popped-and-discarded by the
+             * same drain cycle that closes bfd at the boundary, so it does
+             * NOT survive for a later client -- verified as "0 bytes leak
+             * to bfd" below, not as "arrives intact somewhere else". */
+            float afterMarker[4] = { 1.0f, -1.0f, 0.0f, 0.0f };
+            pa_stream_write(s, afterMarker, sizeof(afterMarker), NULL, 0, 0);
+
+            int got_eof = 0;
+            unsigned char leftover[64];
+            size_t leftover_n = 0;
+            for (int i = 0; i < 100 && !got_eof; i++) {
+                struct pollfd pfd; pfd.fd = bfd; pfd.events = POLLIN;
+                if (poll(&pfd, 1, 10) > 0) {
+                    ssize_t n = read(bfd, leftover + leftover_n, sizeof(leftover) - leftover_n);
+                    if (n == 0) {
+                        got_eof = 1;
+                    } else if (n < 0 && errno != EAGAIN && errno != EINTR) {
+                        got_eof = 1;
+                    } else if (n > 0) {
+                        leftover_n += (size_t)n;
+                    }
+                }
+            }
+            close(bfd);
+
+            if (!got_eof) {
+                fprintf(stderr, "FAIL: boundary-closed client never reached real EOF within 1s\n");
+                failures++;
+            } else if (leftover_n != 0) {
+                fprintf(stderr, "FAIL: boundary-closed client leaked %zu post-boundary byte(s)\n", leftover_n);
+                failures++;
+            } else {
+                printf("ok: POST /boundary closes the client with a real EOF exactly at the marker (0 bytes leaked)\n");
+            }
+
+            /* Fresh connection afterward must stream normally again -- the
+             * one-shot marker must not linger past its own consumption. */
+            float postClose[4] = { 0.125f, -0.125f, 0.0f, 1.0f };
+            int32_t expected_postClose[4] = { 268435456, -268435456, 0, 2147483647 };
+            pa_stream_write(s, postClose, sizeof(postClose), NULL, 0, 0);
+
+            int nfd = _test_connect_loopback(port);
+            if (nfd < 0) {
+                fprintf(stderr, "FAIL: could not open fresh client after boundary EOF\n");
+                failures++;
+            } else {
+                unsigned char got_post[16];
+                if (write(nfd, getReq, sizeof(getReq) - 1) < 0
+                    || _test_read_header(nfd, 3000) != 0
+                    || _test_read_bytes(nfd, got_post, sizeof(got_post), 3000) != 0) {
+                    fprintf(stderr, "FAIL: fresh client after boundary EOF did not stream normally\n");
+                    failures++;
+                } else if (memcmp(got_post, expected_postClose, sizeof(expected_postClose)) != 0) {
+                    fprintf(stderr, "FAIL: fresh client after boundary EOF received wrong bytes\n");
+                    failures++;
+                } else {
+                    printf("ok: fresh client after boundary EOF streams normally again\n");
+                }
+                close(nfd);
             }
         }
     }
