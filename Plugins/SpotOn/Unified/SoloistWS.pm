@@ -888,6 +888,14 @@ sub _onPlaybackChanged {
 		return;
 	}
 
+	# D-02 (Phase 78): natural track/session end plants a boundary marker
+	# so the bounded serve closes with a clean EOF instead of leaving the
+	# connection open into LMS's ~10s retry timeout. ONLY 'stopped' --
+	# 'paused' is NOT a track end (Pause != EOF). Hangs on the RAW
+	# $msg->{status}, never the collapsed Paused+Stopped _emit('stop')
+	# translation below.
+	$self->_signalBoundary if $status eq 'stopped';
+
 	if ($self->browseSession) {
 		# D-17 Stage B via playback_changed: a bare 'playing' is NOT
 		# sufficient evidence of audio production -- live captures show it
