@@ -112,12 +112,47 @@ sub _isDeadHistoryUrl {
     return ($meta && $meta->{spotifyUri}) ? 1 : 0;
 }
 
+# _isSoloistOwnedSong($client)
+# Phase 78-04: Soloist ownership criterion.  Returns true iff the client's
+# registered helper is a SoloistDaemon with a connected WS and a defined
+# lastTrackId, AND the current song URL (via _currentSpotonTrackUrl) matches
+# spoton://track:<lastTrackId> or spoton://episode:<lastTrackId>.  This
+# replaces the m{spoton://connect-} live-URL semantic for Soloist Connect
+# sessions — under D-04 Connect tracks use spoton://track:ID URLs, so the
+# old URL-scheme test no longer discriminates Browse from Connect.
+#
+# Accepted edge case (documented inline per plan): a user manually
+# Browse-playing the EXACT track the daemon is announcing while a Connect
+# claim is set will not release the claim until the next differing track.
+sub _isSoloistOwnedSong {
+    my ($client) = @_;
+    return 0 unless $client;
+    $client = $client->master if $client->can('master');
+
+    require Plugins::SpotOn::Unified::DaemonManager;
+    my $helper = Plugins::SpotOn::Unified::DaemonManager->helperForClient($client->id);
+    return 0 unless $helper && $helper->isa('Plugins::SpotOn::Unified::SoloistDaemon');
+
+    my $ws = $helper->_ws;
+    return 0 unless $ws && $ws->connected;
+
+    my $lastId = $ws->lastTrackId;
+    return 0 unless defined $lastId && $lastId ne '';
+
+    my $currentUrl = _currentSpotonTrackUrl($client);
+    return 0 unless $currentUrl;
+
+    # Match spoton://track:<id> or spoton://episode:<id>
+    return ($currentUrl =~ m{^spoton://(?:track|episode):\Q$lastId\E$}) ? 1 : 0;
+}
+
 # _isLiveConnectStream($client)
 # D-16: returns true iff the player has a playing song whose URL is a
-# spoton://connect-* stream — i.e. a live (or at least not-yet-replaced)
-# Connect session. Uses track->url first, then streamUrl fallback
-# (Phase 44 pattern: on a direct-streamed session streamUrl becomes the
-# http://…/stream proxy URL, so streamUrl-only would false-negative).
+# spoton://connect-* stream (librespot Connect) OR a Soloist-owned
+# spoton://track: song (Soloist Connect under D-04).  Uses track->url
+# first, then streamUrl fallback (Phase 44 pattern: on a direct-streamed
+# session streamUrl becomes the http://…/stream proxy URL, so
+# streamUrl-only would false-negative).
 sub _isLiveConnectStream {
     my ($client) = @_;
     return 0 unless $client;
@@ -125,12 +160,24 @@ sub _isLiveConnectStream {
     my $song = $client->playingSong();
     return 0 unless $song;
     my $url = $song->track->url || $song->streamUrl || '';
-    return 0 unless $url =~ m{spoton://connect-};
-    # WR-01: dead-history connect URLs survive in restored playlists —
-    # same distinction the unpause guard (§697-706) and resume handler
-    # (§1011-1018) already apply.
-    return 0 if !$song->pluginData('info') && _isDeadHistoryUrl($url);
-    return 1;
+
+    # librespot path: spoton://connect-* URL (unchanged)
+    if ($url =~ m{spoton://connect-}) {
+        # WR-01: dead-history connect URLs survive in restored playlists —
+        # same distinction the unpause guard (§697-706) and resume handler
+        # (§1011-1018) already apply.
+        return 0 if !$song->pluginData('info') && _isDeadHistoryUrl($url);
+        return 1;
+    }
+
+    # Soloist path (D-04): spoton://track:ID entries — a Soloist Connect
+    # session has no connect- URL anymore, so check ownership via the
+    # daemon's lastTrackId.
+    if (__PACKAGE__->isSpotifyConnect($client) && _isSoloistOwnedSong($client)) {
+        return 1;
+    }
+
+    return 0;
 }
 
 # shutdown($class)
@@ -505,10 +552,12 @@ sub _onNewSong {
     # D-16 fix: the old predicate was `isSpotifyConnect($client)` alone, which
     # tested the same condition as the release block below ($_ activeConnectPlayer
     # eq $client->id) — making the release block dead code. Now requires BOTH the
-    # ownership claim AND an actual connect-* URL on the playing song. Progress
-    # application only makes sense on a real Connect stream, not on a dormant
-    # claim-set-but-Browse-playing state.
-    if (__PACKAGE__->isSpotifyConnect($client) && $url =~ m{spoton://connect-}) {
+    # ownership claim AND an actual connect-* URL (librespot) or Soloist-owned
+    # song (D-04).  Progress application only makes sense on a real Connect
+    # stream, not on a dormant claim-set-but-Browse-playing state.
+    if (__PACKAGE__->isSpotifyConnect($client)
+        && ($url =~ m{spoton://connect-} || _isSoloistOwnedSong($client)))
+    {
         if (my $progress = $client->pluginData('progress')) {
             $client->pluginData(progress => 0);
 
@@ -533,18 +582,17 @@ sub _onNewSong {
         return;
     }
 
-    # D-16: Stale-claim release — now reachable when the ownership claim is set
-    # but the new song is NOT a Connect stream (e.g. Browse play on a player
-    # holding a dormant restored-session claim). The old code had an identical
-    # predicate to the CON-17 branch above (both tested isSpotifyConnect alone),
-    # making this block dead code — the resume handler's own comment (§935-937)
-    # assumed this release worked, but it never executed.
-    # D-16: URL check uses the Phase-44-safe track->url-first extraction ($url,
-    # computed above) — the old §497 used streamUrl alone, which would falsely
-    # read as "not Connect" on a live direct-streamed session (streamUrl becomes
-    # the http://…/stream proxy URL) and release a LIVE session's claim.
+    # D-16: Stale-claim release — re-keyed for D-04.  Release the Connect
+    # claim when the new song is NOT a live Connect stream: for librespot
+    # that means no connect- URL; for Soloist that means not owned by the
+    # daemon (_isSoloistOwnedSong).  Under D-04 every Soloist Connect track
+    # fires a newsong with a track: URL — this re-key prevents the claim
+    # from being released on each track transition (Pitfall 2).
+    # Accepted edge (inline per plan): a user manually Browse-playing the
+    # exact track the daemon announces will not release the claim until
+    # the next differing track.
     if ($_activeConnectPlayer && $_activeConnectPlayer eq $client->id) {
-        unless ($url =~ m{spoton://connect-}) {
+        unless ($url =~ m{spoton://connect-} || _isSoloistOwnedSong($client)) {
             main::INFOLOG && $log->is_info && $log->info(
                 "D-16: new song without Connect URL — releasing stale Connect claim for " . $client->id
             );
@@ -1004,10 +1052,13 @@ sub _connectEvent {
         # pluginData('info') is set by _fetchTrackMetadata for live sessions.
         # _isDeadHistoryUrl alone is insufficient: live tracks also get spotifyUri
         # cached during playback, so we must check pluginData to avoid false positives.
+        # Phase 78-04: Soloist Connect sessions use spoton://track:ID URLs,
+        # so also check _isSoloistOwnedSong as "on Connect stream".
         my $hasLiveMetadata = $song && $song->pluginData('info');
         my $isDeadHistory = $currentUrl =~ m{spoton://connect-} ? _isDeadHistoryUrl($currentUrl) : 0;
-        my $actuallyInConnect = ($currentUrl =~ m{spoton://connect-})
-                             && ($hasLiveMetadata || !$isDeadHistory);
+        my $actuallyInConnect = (($currentUrl =~ m{spoton://connect-})
+                             && ($hasLiveMetadata || !$isDeadHistory))
+                             || _isSoloistOwnedSong($client);
 
         $log->warn("[DIAG] resume_check: streamUrl=" . ($currentUrl || 'undef')
             . " trackUrl=" . ($song ? ($song->track->url || 'undef') : 'no_song')
@@ -1273,10 +1324,14 @@ sub _connectEvent {
         # GH #158: a fresh session start supersedes any remembered pause state
         $client->pluginData(connectSessionPaused => 0);
 
-        # D-08 mutual exclusion: stop any Browse playback on this player
+        # D-08 mutual exclusion: stop any Browse playback on this player.
+        # Phase 78-04: do not stop a Soloist-owned Connect session (the
+        # Connect re-start is re-announcing the same daemon session).
         my $song = $client->playingSong();
         my $currentUrl = $song ? ($song->streamUrl || '') : '';
-        if ($currentUrl =~ m{^spoton://} && $currentUrl !~ m{spoton://connect-}) {
+        if ($currentUrl =~ m{^spoton://} && $currentUrl !~ m{spoton://connect-}
+            && !_isSoloistOwnedSong($client))
+        {
             main::INFOLOG && $log->is_info && $log->info(
                 "D-08: Connect start stopping Browse playback on " . $client->id
             );
@@ -1678,7 +1733,9 @@ sub _restorePowerAfterConnect {
 
     my $song = $client->playingSong();
     my $url  = $song ? ($song->track->url || $song->streamUrl || '') : '';
-    if ($client->isPlaying && $url !~ m{spoton://connect-}) {
+    # Phase 78-04: also accept a Soloist-owned song as "Connect stream"
+    # so GH-#151 power restore works at Soloist session end.
+    if ($client->isPlaying && $url !~ m{spoton://connect-} && !_isSoloistOwnedSong($client)) {
         main::INFOLOG && $log->is_info && $log->info(
             "Session end: " . $client->id . " is playing something else — skipping power-off (GH #151)"
         );
