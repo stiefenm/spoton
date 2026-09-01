@@ -1081,10 +1081,21 @@ sub _connectEvent {
                 $client->pluginData(eventTrackUri => "spotify:track:$trackId");
             }
 
-            my $ts      = int(Time::HiRes::time() * 1000);
+            # D-04 backend dispatch: Soloist Connect uses spoton://track:ID
+            # entries (same audio contract as Browse); librespot keeps the
+            # repeating-stream spoton://connect-<ts> URL (Windows constraint).
+            my $playUrl;
+            require Plugins::SpotOn::Unified::DaemonManager;
+            my $resumeHelper = Plugins::SpotOn::Unified::DaemonManager->helperForClient($client->id);
+            if ($resumeHelper && $resumeHelper->isa('Plugins::SpotOn::Unified::SoloistDaemon') && $trackId) {
+                $playUrl = "spoton://track:$trackId";
+            } else {
+                # librespot path: repeating-stream with unique timestamp URL
+                my $ts = int(Time::HiRes::time() * 1000);
+                $playUrl = sprintf("spoton://connect-%u", $ts);
+            }
             my $playReq = Slim::Control::Request->new($client->id, [
-                'playlist', 'play',
-                sprintf("spoton://connect-%u", $ts)
+                'playlist', 'play', $playUrl
             ]);
             $playReq->source(__PACKAGE__);
             $playReq->execute();
@@ -1099,6 +1110,7 @@ sub _connectEvent {
                 . " track=" . ($trackId || 'none')
                 . " position=" . ($position || 'none')
                 . " actuallyInConnect=0 reEntering=1"
+                . " url=$playUrl"
                 . " elapsed=" . sprintf('%.3f', Time::HiRes::time() - $diagTs)
             ) if $diagMode;
 
@@ -1287,12 +1299,24 @@ sub _connectEvent {
             $client->pluginData(eventTrackUri => "spotify:track:$trackId");
         }
 
-        # The spoton://connect-<ts> URL signals Connect mode to ProtocolHandler.pm
-        # which returns 'soc' from formatOverride() and provides canDirectStream URL.
-        my $ts      = int(Time::HiRes::time() * 1000);
+        # D-04 backend dispatch: Soloist Connect uses spoton://track:ID
+        # entries (same audio contract as Browse); librespot keeps the
+        # repeating-stream spoton://connect-<ts> URL (Windows constraint).
+        # $trackId is already in scope from _p2 above.
+        my $startPlayUrl;
+        {
+            require Plugins::SpotOn::Unified::DaemonManager;
+            my $startHelper = Plugins::SpotOn::Unified::DaemonManager->helperForClient($client->id);
+            if ($startHelper && $startHelper->isa('Plugins::SpotOn::Unified::SoloistDaemon') && $trackId) {
+                $startPlayUrl = "spoton://track:$trackId";
+            } else {
+                # librespot path: repeating-stream with unique timestamp URL
+                my $ts = int(Time::HiRes::time() * 1000);
+                $startPlayUrl = sprintf("spoton://connect-%u", $ts);
+            }
+        }
         my $playReq = Slim::Control::Request->new($client->id, [
-            'playlist', 'play',
-            sprintf("spoton://connect-%u", $ts)
+            'playlist', 'play', $startPlayUrl
         ]);
         $playReq->source(__PACKAGE__);
         $playReq->execute();
@@ -1306,6 +1330,7 @@ sub _connectEvent {
 
         $log->warn("[DIAG] [$diagTs] start: player=" . $client->id
             . " track=" . ($trackId || 'none')
+            . " url=$startPlayUrl"
             . " elapsed=" . sprintf('%.3f', Time::HiRes::time() - $diagTs)
         ) if $diagMode;
 
@@ -1390,7 +1415,42 @@ sub _connectEvent {
             $playReq->execute();
         }
 
-        # Fetch metadata for the new track (D-13)
+        # D-04 backend dispatch (change handler): Soloist Connect dispatches
+        # a new spoton://track:$newTrackId entry for EVERY track change.
+        # D-05 makes the daemon's flush-disconnect itself the EOF, so the
+        # skipInitiated reconnect special-path is bypassed for Soloist.
+        # librespot 'change' handling stays byte-identical below this block.
+        {
+            require Plugins::SpotOn::Unified::DaemonManager;
+            my $changeHelper = Plugins::SpotOn::Unified::DaemonManager->helperForClient($client->id);
+            if ($changeHelper && $changeHelper->isa('Plugins::SpotOn::Unified::SoloistDaemon') && $newTrackId) {
+                $client->pluginData(eventTrackUri => "spotify:track:$newTrackId");
+                _fetchTrackMetadata($client, $newTrackId);
+
+                # Every Soloist 'change' dispatches a new playlist entry —
+                # flush-disconnect (D-05) delivers the EOF for the previous
+                # track; this playlist play starts the next one.
+                my $changePlayUrl = "spoton://track:$newTrackId";
+                $client->pluginData(connectSessionPaused => 0);
+                $client->pluginData(connectStartTime => Time::HiRes::time());
+                my $changePlayReq = Slim::Control::Request->new($client->id, [
+                    'playlist', 'play', $changePlayUrl
+                ]);
+                $changePlayReq->source(__PACKAGE__);
+                $changePlayReq->execute();
+
+                $log->warn("[DIAG] [$diagTs] change: player=" . $client->id
+                    . " prev=" . ($prevTrackId || 'none')
+                    . " new=" . ($newTrackId || 'none')
+                    . " url=$changePlayUrl backend=soloist"
+                    . " elapsed=" . sprintf('%.3f', Time::HiRes::time() - $diagTs)
+                ) if $diagMode;
+
+                return;
+            }
+        }
+
+        # Fetch metadata for the new track (D-13) — librespot path
         if ($newTrackId) {
             $client->pluginData(eventTrackUri => "spotify:track:$newTrackId");
             _fetchTrackMetadata($client, $newTrackId);
@@ -1554,10 +1614,29 @@ sub _connectEvent {
                 return;
             }
             $client->pluginData(connectStartTime => Time::HiRes::time());
-            my $ts      = int(Time::HiRes::time() * 1000);
+
+            # D-04 backend dispatch: Soloist Connect uses spoton://track:ID
+            # entries; librespot keeps the repeating-stream URL.
+            my $readyPlayUrl;
+            {
+                require Plugins::SpotOn::Unified::DaemonManager;
+                my $readyHelper = Plugins::SpotOn::Unified::DaemonManager->helperForClient($client->id);
+                if ($readyHelper && $readyHelper->isa('Plugins::SpotOn::Unified::SoloistDaemon')) {
+                    # Derive trackId from eventTrackUri (last announced track)
+                    my $readyTrackUri = $client->pluginData('eventTrackUri') || '';
+                    if ($readyTrackUri =~ m{^spotify:(?:track|episode):([A-Za-z0-9]+)$}) {
+                        $readyPlayUrl = "spoton://track:$1";
+                    }
+                }
+                unless ($readyPlayUrl) {
+                    # librespot path (or Soloist fallback if no trackId available):
+                    # repeating-stream with unique timestamp URL
+                    my $ts = int(Time::HiRes::time() * 1000);
+                    $readyPlayUrl = sprintf("spoton://connect-%u", $ts);
+                }
+            }
             my $playReq = Slim::Control::Request->new($client->id, [
-                'playlist', 'play',
-                sprintf("spoton://connect-%u", $ts)
+                'playlist', 'play', $readyPlayUrl
             ]);
             $playReq->source(__PACKAGE__);
             $playReq->execute();
