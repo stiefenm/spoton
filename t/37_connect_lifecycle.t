@@ -22,8 +22,9 @@ use Cwd qw(abs_path);
 my $test_dir    = dirname(abs_path($0));
 my $project_dir = dirname($test_dir);
 
-my $connect_file = "$project_dir/Plugins/SpotOn/Connect.pm";
-my $ws_file      = "$project_dir/Plugins/SpotOn/Unified/SoloistWS.pm";
+my $connect_file  = "$project_dir/Plugins/SpotOn/Connect.pm";
+my $ws_file       = "$project_dir/Plugins/SpotOn/Unified/SoloistWS.pm";
+my $handler_file  = "$project_dir/Plugins/SpotOn/ProtocolHandler.pm";
 
 plan skip_all => 'Connect.pm not present in this checkout' unless -f $connect_file;
 
@@ -38,6 +39,7 @@ sub slurp {
 
 my $connect = slurp($connect_file);
 my $ws      = -f $ws_file ? slurp($ws_file) : '';
+my $handler = -f $handler_file ? slurp($handler_file) : '';
 
 # ------------------------------------------------------------
 # Task 1: restart-autoplay gate
@@ -305,52 +307,64 @@ if ($fetch_block) {
 }
 
 # ------------------------------------------------------------
-# Phase 78-02: echo/confirmation guard in _connectEvent start/change
-#
-# When the Soloist daemon echoes a track_changed for a track that LMS
-# itself started (Browse play -> WS play -> track_changed -> spottyconnect
-# start), the echo guard must no-op: no playlist play, no claim.  The
-# guard compares the announced track against _currentSpotonTrackUrl.
+# KE: browse-connect-gating -- explicit soloistBrowseActive flag replaces
+# the 78-02/78-04 per-event echo guards (trackId/URL matching against
+# _currentSpotonTrackUrl), which raced against LMS song state that had not
+# necessarily settled by the time the daemon's event arrived (debug session
+# .planning/debug/resolved/browse-connect-gating.md). Discrimination now
+# happens UPSTREAM in SoloistWS.pm: while soloistBrowseActive is set,
+# _emit() never dispatches a spottyconnect request to Connect.pm at all.
 # ------------------------------------------------------------
 
-# Gate 1: 'start' handler echo guard precedes D-08 stop dispatch and
-# playlist play dispatch.  Use the comment block "# Start:" as anchor
-# to skip the earlier pendingConnect-setup `$cmd eq 'start'` block.
-my ($start_block) = $connect =~ /(# -+\n\s+# Start:.*?)(?=# -+\n\s+# Change:)/s;
-ok($start_block, 'echo guard: start handler block parseable');
-if ($start_block) {
-    # The echo guard must appear (via _currentSpotonTrackUrl call) BEFORE
-    # the D-08 mutual-exclusion stop dispatch and BEFORE playlist play.
-    like($start_block,
-        qr/_currentSpotonTrackUrl.*?D-08.*?'playlist',\s*'play'/s,
-        'echo guard: _currentSpotonTrackUrl check precedes D-08 stop and playlist play in start handler');
+# Gate 1: the OLD per-event echo guards are gone from Connect.pm --
+# _connectEvent must not derive Browse/Connect discrimination from
+# _currentSpotonTrackUrl any more (that helper is still used elsewhere, by
+# _isSoloistOwnedSong -- a different, non-racy concern: identifying the
+# CURRENTLY PLAYING song once a Connect session is already active).
+unlike($connect,
+    qr/_currentSpotonTrackUrl\(\$client\)\s*\n\s*if\s*\(\$currentUrl\s*=~/s,
+    'browse gate: no trackId/URL echo-matching guard remains in _connectEvent');
+unlike($connect,
+    qr/\$cmd eq 'change'\s*\|\|\s*\$cmd eq 'resume'/,
+    'browse gate: no top-of-_connectEvent change/resume broad-drop gate remains');
 
-    # The guard must be scoped to the Soloist backend (SoloistDaemon isa-check).
-    like($start_block,
-        qr/SoloistDaemon.*?_currentSpotonTrackUrl/s,
-        'echo guard: start handler guard is scoped to SoloistDaemon backend');
+# Gate 2: SoloistWS.pm owns the new explicit-flag gate.
+SKIP: {
+    skip 'SoloistWS.pm not present', 6 unless $ws;
+
+    like($ws, qr/soloistBrowseActive/,
+        'browse gate (SoloistWS): soloistBrowseActive accessor declared');
+
+    my ($emit_block) = $ws =~ /(sub _emit \{.*?\n\})/s;
+    ok($emit_block, 'browse gate (SoloistWS): _emit block parseable');
+    if ($emit_block) {
+        like($emit_block,
+            qr/return unless \$self->_emitAllowed;.*?soloistBrowseActive.*?return/s,
+            'browse gate (SoloistWS): _emit suppresses dispatch while soloistBrowseActive is set');
+    }
+
+    my ($device_changed_block) = $ws =~ /(sub _onDeviceChanged \{.*?\n\})/s;
+    ok($device_changed_block, 'browse gate (SoloistWS): _onDeviceChanged block parseable');
+    if ($device_changed_block) {
+        # The clear must happen in the is_active TRUE branch, before any
+        # _emit/_emitStart call in that branch.
+        like($device_changed_block,
+            qr/if\s*\(\$msg->\{is_active\}\)\s*\{.*?soloistBrowseActive\(0\).*?_emitStart/s,
+            'browse gate (SoloistWS): is_active=true branch clears soloistBrowseActive before emitting');
+    }
 }
 
-# Gate 2: 'change' handler echo guard is present before metadata handling.
-my ($change_block) = $connect =~ /(# -+\n\s+# Change:.*?)(?=# -+\n\s+# Stop:)/s;
-ok($change_block, 'echo guard: change handler block parseable');
-if ($change_block) {
-    like($change_block,
-        qr/_currentSpotonTrackUrl/,
-        'echo guard: change handler contains _currentSpotonTrackUrl check');
+# Gate 3: ProtocolHandler::getNextTrack sets the flag at the WS 'play'
+# dispatch site -- the ONLY place it is ever set to 1.
+SKIP: {
+    skip 'ProtocolHandler.pm not present', 1 unless $handler;
 
-    # The guard must precede the _fetchTrackMetadata call.
-    like($change_block,
-        qr/_currentSpotonTrackUrl.*?_fetchTrackMetadata/s,
-        'echo guard: change handler guard precedes metadata handling');
-
-    # Backend scoping: SoloistDaemon isa-check in the guard.
-    like($change_block,
-        qr/SoloistDaemon.*?_currentSpotonTrackUrl/s,
-        'echo guard: change handler guard is scoped to SoloistDaemon backend');
+    like($handler,
+        qr/soloistBrowseActive\(1\).*?sendCommand\('play',\s*uri\s*=>/s,
+        'browse gate (ProtocolHandler): soloistBrowseActive(1) set immediately before the WS play dispatch');
 }
 
-# Gate 3: existing tests still pass (regression net) — covered by the
+# Gate 4: existing tests still pass (regression net) — covered by the
 # assertions above and the unchanged tests below.
 
 done_testing();

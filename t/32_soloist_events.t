@@ -565,16 +565,14 @@ for my $type (qw(context_changed options_changed queue_changed)) {
     is($ws->skipInitiated, 0, "gapless track_changed (sessionPaused was 0) does NOT set skipInitiated");
 }
 
-# --- D-06 Phase 78: emission is ungated by browse state ---
-# After the browse state machine was removed (78-03), track_changed on a
-# non-Connect Soloist player always translates to a spottyconnect emission
-# (the old emit gate no longer exists -- echo discrimination moved to
-# Connect.pm in plan 78-02).
+# --- D-06 Phase 78: emission is ungated when Browse is NOT active ---
+# track_changed on a non-Connect Soloist player translates to a
+# spottyconnect emission as long as soloistBrowseActive is not set.
 {
     my $ws = new_ws(lastTrackId => 'tid1', sessionStarted => 1);
     my $got = run_fixtures($ws, '{"type":"track_changed","item":{"uri":"spotify:track:tid2"}}');
     is_deeply($got, [ [ 'spottyconnect', 'change', 'tid2', 'tid1' ] ],
-        "track_changed always emits (D-06 removal, no browse emit gate)");
+        "track_changed emits normally when soloistBrowseActive is not set");
 }
 
 # --- Test 5: normal pause->resume unaffected by deactivation guard ---
@@ -589,6 +587,77 @@ for my $type (qw(context_changed options_changed queue_changed)) {
     my $got = run_fixtures($ws, '{"type":"playback_changed","status":"playing"}');
     is_deeply($got, [ [ 'spottyconnect', 'resume', 'tid1', '30.000' ] ],
         "normal pause->resume cycle (deactivating=0) still emits 'resume' with position");
+}
+
+# ============================================================
+# KE: browse-connect-gating -- explicit soloistBrowseActive gate.
+#
+# ProtocolHandler::getNextTrack sets soloistBrowseActive(1) right before
+# its WS 'play uri=...' dispatch for a Browse-commanded track (t/29 pins
+# that half). While set, EVERY daemon event -- echo of that command,
+# internal auto-advance within the queue Browse seeded, pause/resume
+# forwarding echoes, position drift -- must be suppressed here at the
+# source, before it ever reaches Connect.pm. Only a genuine
+# device_changed(is_active:true) clears it.
+# ============================================================
+
+# --- track_changed (the WS-play echo AND any subsequent auto-advance)
+# emits nothing while soloistBrowseActive is set. ---
+{
+    my $ws = new_ws(soloistBrowseActive => 1);
+    my $got = run_fixtures($ws, '{"type":"track_changed","item":{"uri":"spotify:track:tid1"}}');
+    is_deeply($got, [], "track_changed emits nothing while soloistBrowseActive is set (first-track echo)");
+    is($ws->lastTrackId, 'tid1', "lastTrackId is still updated even while the emission is suppressed");
+}
+{
+    my $ws = new_ws(lastTrackId => 'tid1', sessionStarted => 1, soloistBrowseActive => 1);
+    my $got = run_fixtures($ws, '{"type":"track_changed","item":{"uri":"spotify:track:tid2"}}');
+    is_deeply($got, [], "track_changed emits nothing while soloistBrowseActive is set (album auto-advance)");
+}
+
+# --- playback_changed (pause/resume forwarding echoes) and position_sync
+# also stay silent while Browse owns the session. ---
+{
+    my $ws = new_ws(lastTrackId => 'tid1', lastPositionMs => 30000, sessionPaused => 1, soloistBrowseActive => 1);
+    my $got = run_fixtures($ws, '{"type":"playback_changed","status":"playing"}');
+    is_deeply($got, [], "playback_changed resume emits nothing while soloistBrowseActive is set");
+}
+{
+    my $ws = new_ws(lastPositionMs => 10000, lastPositionTs => Time::HiRes::time(), soloistBrowseActive => 1);
+    my $got = run_fixtures($ws, '{"type":"position_sync","position_ms":15000}');
+    is_deeply($got, [], "position_sync seek emits nothing while soloistBrowseActive is set");
+}
+
+# --- device_changed(is_active:true) is the ONLY thing that clears the
+# gate -- a genuine transfer-in during active Browse still gets through,
+# and the flag is cleared as an observable side effect. ---
+{
+    my $ws = new_ws(lastTrackId => 'tid9', soloistBrowseActive => 1);
+    my $got = run_fixtures($ws, '{"type":"device_changed","is_active":true}');
+    is_deeply($got, [ [ 'spottyconnect', 'start', 'tid9', '' ] ],
+        "device_changed is_active=true still emits 'start' even while soloistBrowseActive was set "
+        . "(genuine Connect transfer interrupts Browse)");
+    is($ws->soloistBrowseActive, 0,
+        "device_changed is_active=true clears soloistBrowseActive as a side effect");
+}
+
+# --- ...and once cleared, subsequent events flow through normally again. ---
+{
+    my $ws = new_ws(lastTrackId => 'tid9', sessionStarted => 1, soloistBrowseActive => 0);
+    my $got = run_fixtures($ws, '{"type":"track_changed","item":{"uri":"spotify:track:tid10"}}');
+    is_deeply($got, [ [ 'spottyconnect', 'change', 'tid10', 'tid9' ] ],
+        "track_changed emits normally once soloistBrowseActive is cleared");
+}
+
+# --- device_changed(is_active:false) does NOT clear the gate -- it is not
+# the authoritative "genuine transfer" signal Browse needs to yield to,
+# and Browse's own local commands never toggle is_active in the first
+# place, so a stray false ping while Browse owns the session should stay
+# suppressed rather than reactivate the (irrelevant) session-end path. ---
+{
+    my $ws = new_ws(sessionActive => 1, soloistBrowseActive => 1);
+    my $got = run_fixtures($ws, '{"type":"device_changed","is_active":false}');
+    is_deeply($got, [], "device_changed is_active=false emits nothing while soloistBrowseActive is set");
 }
 
 done_testing();

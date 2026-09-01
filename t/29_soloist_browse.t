@@ -299,6 +299,9 @@ my $pkg = 'Plugins::SpotOn::ProtocolHandler';
     }
     sub connected   { return $_[0]->{connected}; }
     sub lastTrackId { my $self = shift; $self->{lastTrackId} = shift if @_; return $self->{lastTrackId}; }
+    # KE: browse-connect-gating -- ProtocolHandler::getNextTrack sets this
+    # right before dispatching the WS 'play' command.
+    sub soloistBrowseActive { my $self = shift; $self->{soloistBrowseActive} = shift if @_; return $self->{soloistBrowseActive}; }
     sub sendCommand {
         my ($self, $cmd, %p) = @_;
         push @{ $self->{sent} }, [$cmd, \%p];
@@ -593,6 +596,8 @@ my $pkg = 'Plugins::SpotOn::ProtocolHandler';
     ok(!$error_called,  "getNextTrack: errorCb NOT called");
     is_deeply($ws->{sent}, [['play', { uri => 'spotify:track:abc123' }]],
         "getNextTrack: sends play command with uri to daemon via sendCommand recorder");
+    is($ws->soloistBrowseActive, 1,
+        "getNextTrack: sets soloistBrowseActive(1) before the WS play dispatch (KE: browse-connect-gating)");
 }
 
 # ============================================================
@@ -600,7 +605,7 @@ my $pkg = 'Plugins::SpotOn::ProtocolHandler';
 # ============================================================
 {
     reset_backend('soloist');
-    my $ws = Test::FakeSoloistWs->new(connected => 1, lastTrackId => 'abc123');
+    my $ws = Test::FakeSoloistWs->new(connected => 1, lastTrackId => 'abc123', soloistBrowseActive => 1);
     $Plugins::SpotOn::Unified::DaemonManager::HELPER =
         Plugins::SpotOn::Unified::SoloistDaemon->new(alive => 1, port => 39755, ws => $ws);
     local $Plugins::SpotOn::Connect::_IS_CONNECT = 0;
@@ -612,17 +617,20 @@ my $pkg = 'Plugins::SpotOn::ProtocolHandler';
     my ($success_called, $error_called);
     $pkg->getNextTrack($song, sub { $success_called = 1 }, sub { $error_called = 1; });
 
-    ok($success_called, "getNextTrack: successCb called even with lastTrackId match (EOF-advance no-op)");
-    is_deeply($ws->{sent}, [],
-        "getNextTrack: NO play command sent when lastTrackId matches (daemon already on this track)");
+    ok($success_called, "getNextTrack: successCb called even with lastTrackId match");
+    is_deeply($ws->{sent}, [['play', {}]],
+        "getNextTrack: resume (play without URI) sent when lastTrackId matches");
+    is($ws->soloistBrowseActive, 1,
+        "getNextTrack: EOF-advance skip branch leaves soloistBrowseActive untouched (album auto-advance stays gated)");
 }
 
 # ============================================================
-# D-03 (Phase 78): getNextTrack — isSpotifyConnect skips play command
+# D-03 (Phase 78): getNextTrack — Connect with matching lastTrackId skips play
+# (genuine Connect: track_changed fires before getNextTrack, so lastTrackId matches)
 # ============================================================
 {
     reset_backend('soloist');
-    my $ws = Test::FakeSoloistWs->new(connected => 1);
+    my $ws = Test::FakeSoloistWs->new(connected => 1, lastTrackId => 'abc123');
     $Plugins::SpotOn::Unified::DaemonManager::HELPER =
         Plugins::SpotOn::Unified::SoloistDaemon->new(alive => 1, port => 39755, ws => $ws);
     local $Plugins::SpotOn::Connect::_IS_CONNECT = 1;
@@ -634,9 +642,11 @@ my $pkg = 'Plugins::SpotOn::ProtocolHandler';
     my ($success_called, $error_called);
     $pkg->getNextTrack($song, sub { $success_called = 1 }, sub { $error_called = 1; });
 
-    ok($success_called, "getNextTrack: successCb called when isSpotifyConnect (Connect ownership)");
-    is_deeply($ws->{sent}, [],
-        "getNextTrack: NO play command sent during Connect session (daemon owns sequencing)");
+    ok($success_called, "getNextTrack: successCb called when lastTrackId matches");
+    is_deeply($ws->{sent}, [['play', {}]],
+        "getNextTrack: resume sent when lastTrackId matches (daemon may be paused)");
+    ok($ws->soloistBrowseActive,
+        "getNextTrack: soloistBrowseActive set even on lastTrackId match (Browse claims ownership)");
 }
 
 # ============================================================

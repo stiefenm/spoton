@@ -64,6 +64,8 @@ __PACKAGE__->mk_accessor( rw => qw(
 	skipInitiated
 	deactivating
 	reconnectDelay
+	pendingPlayConfirm
+	soloistBrowseActive
 	_sock
 	_client
 	_sockOpen
@@ -115,6 +117,31 @@ __PACKAGE__->mk_accessor( weak => qw( daemon ) );
 #                        checks THIS flag, not `connected`, so a socket that
 #                        never completes the handshake still gets cleaned up
 #                        and reconnected.
+# soloistBrowseActive:   KE: browse-connect-gating (replaces the 78-02/78-04
+#                        per-event echo guards, which raced against LMS
+#                        state that had not yet settled -- see debug session
+#                        .planning/debug/resolved/browse-connect-gating.md).
+#                        Explicit state, not derived: set(1) ONLY by
+#                        ProtocolHandler::getNextTrack right before it sends
+#                        a WS 'play uri=...' command for a Browse-commanded
+#                        track (never true for a genuine Connect echo -- a
+#                        Connect-issued playlist play always targets a track
+#                        the daemon already reports via lastTrackId, so
+#                        getNextTrack's EOF-advance skip fires instead and
+#                        never touches this flag). Stays true across a whole
+#                        Browse session (album auto-advance never re-sends
+#                        WS play -- the daemon's own queue advances and
+#                        getNextTrack just confirms via lastTrackId). Cleared
+#                        ONLY by _onDeviceChanged(is_active:true) below -- the
+#                        authoritative Spotify-Connect-protocol signal for a
+#                        genuine App-initiated transfer TO this device
+#                        (73-RESEARCH.md "Transfer ZU Soloist"), never fired
+#                        by Browse's own local WS play/pause commands. While
+#                        true, _emit() below suppresses EVERY daemon->
+#                        Connect.pm translation -- each one is either an echo
+#                        of our own command or an internal auto-advance
+#                        within the queue Browse seeded, never a genuine
+#                        Connect event.
 
 my $prefs = preferences('plugin.spoton');
 my $log   = logger('plugin.spoton');
@@ -335,6 +362,11 @@ sub sendCommand {
 	# terse daemon error response was actually reacting to.
 	$self->lastCommand($command);
 
+	# D-01: arm pendingPlayConfirm so the next track_changed skips
+	# _signalBoundary (the first track_changed after a play is a
+	# confirmation, not a track transition — no boundary to plant).
+	$self->pendingPlayConfirm(1) if $command eq 'play';
+
 	$client->write(to_json({ type => 'command', command => $command, %params }));
 	return 1;
 }
@@ -511,6 +543,20 @@ sub _onDeviceChanged {
 		# transfer-away must not leak into this new active period.
 		$self->deactivating(0);
 
+		# KE: browse-connect-gating -- device_changed(is_active:true) is the
+		# authoritative Connect-protocol signal for a genuine App-initiated
+		# transfer to this device (never fired by Browse's own local play/
+		# pause commands). Clear the browse gate BEFORE any emission below
+		# so this genuine transfer is never swallowed by the browse
+		# suppression in _emit().
+		if ($self->soloistBrowseActive) {
+			main::INFOLOG && $log->is_info && $log->info(
+				"SoloistWS: genuine Connect transfer-in -- clearing soloistBrowseActive ("
+				. ($self->mac // '?') . ")"
+			);
+			$self->soloistBrowseActive(0);
+		}
+
 		# 260827-jqa (Fix B): capture BEFORE _emitStart, which sets this flag
 		# to 1 as a side effect -- reading it afterward would make the seek
 		# below fire on first activation too.
@@ -570,9 +616,18 @@ sub _onTrackChanged {
 	# track_changed is the ONLY track-boundary signal available (Spike 1
 	# finding, .planning/quick/260831-boundary-spike-instrument/SUMMARY.md
 	# -- Soloist's PA lifecycle is silent across track transitions, one
-	# pa_stream reused for the whole session) -- fire on every event,
-	# valid URI or not, so a marker is never missed.
-	$self->_signalBoundary;
+	# pa_stream reused for the whole session).
+	# D-01: the FIRST track_changed after a WS 'play' command is a
+	# confirmation, not a track transition — skip the boundary so the
+	# first track serves unbounded.
+	if ($self->pendingPlayConfirm) {
+		$self->pendingPlayConfirm(0);
+		main::INFOLOG && $log->is_info && $log->info(
+			"SoloistWS: skipping boundary for play-confirm track_changed (" . ($self->mac // '?') . ")"
+		);
+	} else {
+		$self->_signalBoundary;
+	}
 
 	return unless defined $uri;
 	# T-22-01 discipline: validate before any id reaches an LMS command.
@@ -856,6 +911,21 @@ sub _emit {
 	my ($self, $cmd, $p2, $p3) = @_;
 
 	return unless $self->_emitAllowed;
+
+	# KE: browse-connect-gating -- while Browse is actively driving this
+	# daemon session (soloistBrowseActive), every daemon event is either an
+	# echo of our own command or an internal auto-advance within the queue
+	# Browse seeded -- never a genuine Connect event. Suppress at the
+	# source instead of trying to discriminate downstream in Connect.pm
+	# against LMS song state that has not necessarily settled yet (the
+	# race that made the 78-02/78-04 per-event echo guards unreliable).
+	if ($self->soloistBrowseActive) {
+		main::INFOLOG && $log->is_info && $log->info(
+			"SoloistWS: suppressing spottyconnect '$cmd' -- Soloist Browse session active ("
+			. ($self->mac // '?') . ")"
+		);
+		return;
+	}
 
 	my $client = Slim::Player::Client::getClient($self->mac);
 	return unless $client;

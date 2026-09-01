@@ -772,22 +772,35 @@ sub getNextTrack {
             return;
         }
 
-        # Connect-Ownership OR daemon already on this track (lastTrackId):
-        # do NOT send a play command -- the daemon is already sequencing/
-        # playing this track (natural EOF-advance path: track_changed
-        # already moved the daemon to this track and updated lastTrackId;
-        # sending play would restart audio).
+        # Clean slate on Browse entry: clear stale Connect claim so
+        # _soloistBrowseWs and _onPause use the Browse path, not Connect.
+        my $wasConnect = Plugins::SpotOn::Connect->isSpotifyConnect($client);
+        if ($wasConnect) {
+            Plugins::SpotOn::Connect->_releaseConnectClaim($client) if Plugins::SpotOn::Connect->can('_releaseConnectClaim');
+        }
+
         my $daemonCurrent = $ws->can('lastTrackId') ? ($ws->lastTrackId // '') : '';
-        if (Plugins::SpotOn::Connect->isSpotifyConnect($client) || $daemonCurrent eq $id) {
+
+        # Daemon already on this track: skip play (would restart audio).
+        # Covers both EOF-advance (Browse) and Connect (daemon sequencing).
+        if ($daemonCurrent eq $id) {
             main::INFOLOG && $log->is_info && $log->info(
-                "getNextTrack: soloist browse -- skipping play (Connect=${\Plugins::SpotOn::Connect->isSpotifyConnect($client)}"
-                . " lastTrackId=$daemonCurrent id=$id, mac=" . ($client ? $client->id : '?') . ")"
+                "getNextTrack: soloist browse -- resume (lastTrackId match,"
+                . " id=$id, mac=" . ($client ? $client->id : '?') . ")"
             );
+            $ws->soloistBrowseActive(1) if $ws->can('soloistBrowseActive');
+            # Resume (play without URI): safe if daemon is already playing
+            # (no-op), resumes if paused, and arms pendingPlayConfirm to
+            # suppress the transitional _onPause from LMS's stream swap.
+            $ws->sendCommand('play');
         }
         else {
             main::INFOLOG && $log->is_info && $log->info(
-                "getNextTrack: soloist browse -- play spotify:$type:$id (mac=" . ($client ? $client->id : '?') . ")"
+                "getNextTrack: soloist browse -- play spotify:$type:$id"
+                . " (wasConnect=$wasConnect"
+                . " mac=" . ($client ? $client->id : '?') . ")"
             );
+            $ws->soloistBrowseActive(1) if $ws->can('soloistBrowseActive');
             $ws->sendCommand('play', uri => "spotify:$type:$id")
                 or do { $errorCb->('PROBLEM_OPENING', 'Soloist daemon send failed'); return; };
         }
