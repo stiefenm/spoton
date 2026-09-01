@@ -360,6 +360,26 @@ sub reset_calls {
 1;
 END
 
+# Phase 76-06 gap fill (GH-135): stub for _upNextFeed's on-demand queue
+# fetch. Controllable per-test via $next_queue_data/$next_queue_err.
+write_stub($stub_dir, 'Plugins::SpotOn::API::Client', <<'END');
+package Plugins::SpotOn::API::Client;
+our $next_queue_data = undef;
+our $next_queue_err  = undef;
+our @get_queue_calls = ();
+sub getQueue {
+    my ($class, $accountId, $cb) = @_;
+    push @get_queue_calls, $accountId;
+    $cb->($next_queue_data, $next_queue_err);
+}
+sub reset_queue_calls {
+    $next_queue_data = undef;
+    $next_queue_err  = undef;
+    @get_queue_calls = ();
+}
+1;
+END
+
 # ============================================================
 # main:: constants (LMS constants needed by ProtocolHandler/Plugin)
 # ============================================================
@@ -415,6 +435,7 @@ require_ok('Plugins::SpotOn::ProtocolHandler')
     sub new { my ($cls, $id) = @_; $id //= 'player1'; bless \$id, $cls }
     sub id  { ${$_[0]} }
     sub can { 0 }  # no master(), currentSongForUrl(), etc.
+    sub playingSong { return undef }  # CTX-14: _trackItem -> _bitrateForClient reads this unconditionally
 }
 
 # ============================================================
@@ -704,5 +725,128 @@ ok( !defined(&Plugins::SpotOn::ProtocolHandler::trackInfoURL),
 
     Plugins::SpotOn::API::SpClient::reset_calls();
 }
+
+# ============================================================
+# Phase 76-03 gap fill (Nyquist validation): GH-94 browse context menu
+# parity. Prior coverage (this file, pre-76) only exercised trackInfoMenu's
+# provider items (Artist/Album/Like); it never asserted the routing change
+# itself -- that _trackItem's `info` itemAction dispatches through the
+# TrackInfo framework (['spotoninfo','items']) instead of a hand-rolled
+# item list, so browse More and Now Playing More share one menu source.
+# ============================================================
+
+# Test 14: _trackItem's `info` itemAction routes through the CLI backend
+# that calls Slim::Menu::TrackInfo->menu() (_trackInfoItemsCLI), carrying
+# the spoton:// url as a fixedParam -- NOT a hand-rolled duplicate list.
+{
+    my $client = MockClient->new('player-test14');
+    my $track  = {
+        name        => 'GH94 Song',
+        artists     => [ { name => 'GH94 Artist', id => 'art94' } ],
+        album       => { name => 'GH94 Album', id => 'alb94', images => [] },
+        duration_ms => 123000,
+        uri         => 'spotify:track:GH94TRACKID',
+    };
+
+    my $item = Plugins::SpotOn::Plugin::_trackItem($client, $track);
+
+    ok( exists $item->{itemActions}{info},
+        'CTX-14: _trackItem carries an info itemAction' );
+    is_deeply( $item->{itemActions}{info}{command}, ['spotoninfo', 'items'],
+        'CTX-14: info itemAction dispatches the spotoninfo/items CLI command (GH-94 routing)' );
+    is( $item->{itemActions}{info}{fixedParams}{url}, 'spoton://track:GH94TRACKID',
+        'CTX-14: info itemAction carries the item\'s own spoton:// url as fixedParams' );
+}
+
+# Test 15: the CLI backend (_trackInfoItemsCLI) is wired to the
+# ['spotoninfo','items'] request slot in initPlugin's addDispatch table --
+# same command name Test 14 pins on the item side, closing the loop
+# between item construction and command registration.
+{
+    my $plugin_src_file = "$project_dir/Plugins/SpotOn/Plugin.pm";
+    open(my $pfh, '<', $plugin_src_file) or die "Cannot read $plugin_src_file: $!";
+    local $/;
+    my $plugin_src = <$pfh>;
+    close($pfh);
+
+    like( $plugin_src, qr/addDispatch\(\s*\[\s*'spotoninfo',\s*'items'[^\]]*\][^;]*?_trackInfoItemsCLI/s,
+        'CTX-15: spotoninfo/items CLI command is registered against _trackInfoItemsCLI' );
+}
+
+# ============================================================
+# Phase 76-06 gap fill (Nyquist validation): GH-135 Up Next OPML feed.
+# Prior coverage was i18n (t/02) + syntax only -- this drives the real
+# _upNextFeed() with a stubbed API::Client->getQueue and asserts the
+# rendered OPML item shape for the populated, empty, and rate-limited
+# cases.
+# ============================================================
+
+require Plugins::SpotOn::API::Client;
+
+# Test 16: populated queue -- currently_playing renders first (NOW_PLAYING
+# prefixed), followed by each queued track in order.
+{
+    Plugins::SpotOn::API::Client::reset_queue_calls();
+    $Plugins::SpotOn::API::Client::next_queue_data = {
+        currently_playing => { name => 'Now Song', artists => [{ name => 'Now Artist' }], uri => 'spotify:track:NOW1' },
+        queue => [
+            { name => 'Next Song A', artists => [{ name => 'Artist A' }], uri => 'spotify:track:NEXTA' },
+            { name => 'Next Song B', artists => [{ name => 'Artist B' }], uri => 'spotify:track:NEXTB' },
+        ],
+    };
+
+    my $client = MockClient->new('player-upnext1');
+    my $result;
+    Plugins::SpotOn::Plugin::_upNextFeed($client, sub { $result = shift }, {});
+
+    is( scalar(@Plugins::SpotOn::API::Client::get_queue_calls), 1,
+        'CTX-16: _upNextFeed calls API::Client->getQueue exactly once (on-demand, GH-135)' );
+    is( scalar @{ $result->{items} }, 3,
+        'CTX-16: populated queue renders 3 items (now playing + 2 queued)' );
+    like( $result->{items}[0]{name}, qr/Now Song/,
+        'CTX-16: first item is the currently-playing track' );
+    like( $result->{items}[1]{name}, qr/Next Song A/,
+        'CTX-16: second item is the first queued track, in order' );
+    like( $result->{items}[2]{name}, qr/Next Song B/,
+        'CTX-16: third item is the second queued track, in order' );
+}
+
+# Test 17: no active session (empty/malformed payload) -- renders exactly
+# one textarea item with the empty-state string, not an error.
+{
+    Plugins::SpotOn::API::Client::reset_queue_calls();
+    $Plugins::SpotOn::API::Client::next_queue_data = { currently_playing => undef, queue => [] };
+
+    my $client = MockClient->new('player-upnext2');
+    my $result;
+    Plugins::SpotOn::Plugin::_upNextFeed($client, sub { $result = shift }, {});
+
+    is( scalar @{ $result->{items} }, 1,
+        'CTX-17: no active session renders exactly one item' );
+    is( $result->{items}[0]{type}, 'textarea',
+        'CTX-17: empty-state item type is textarea' );
+    is( $result->{items}[0]{name}, 'PLUGIN_SPOTON_UP_NEXT_EMPTY',
+        'CTX-17: empty-state item uses the dedicated empty-state string' );
+}
+
+# Test 18: malformed payload (T-76-14 -- untrusted API response) does not
+# die and still renders the empty state.
+{
+    Plugins::SpotOn::API::Client::reset_queue_calls();
+    $Plugins::SpotOn::API::Client::next_queue_data = { currently_playing => 'not-a-hash', queue => 'not-an-array' };
+
+    my $client = MockClient->new('player-upnext3');
+    my $result;
+    eval {
+        Plugins::SpotOn::Plugin::_upNextFeed($client, sub { $result = shift }, {});
+        1;
+    } or fail("CTX-18: _upNextFeed died on a malformed queue payload: $@");
+    is( scalar @{ $result->{items} }, 1,
+        'CTX-18: malformed payload still renders exactly one (empty-state) item, not a crash' );
+    is( $result->{items}[0]{type}, 'textarea',
+        'CTX-18: malformed payload renders the textarea empty-state, not partial/garbage items' );
+}
+
+Plugins::SpotOn::API::Client::reset_queue_calls();
 
 done_testing();
