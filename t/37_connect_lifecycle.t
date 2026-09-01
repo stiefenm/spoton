@@ -198,4 +198,53 @@ if ($fetch_block) {
     }
 }
 
+# ------------------------------------------------------------
+# Phase 78-02: echo/confirmation guard in _connectEvent start/change
+#
+# When the Soloist daemon echoes a track_changed for a track that LMS
+# itself started (Browse play -> WS play -> track_changed -> spottyconnect
+# start), the echo guard must no-op: no playlist play, no claim.  The
+# guard compares the announced track against _currentSpotonTrackUrl.
+# ------------------------------------------------------------
+
+# Gate 1: 'start' handler echo guard precedes D-08 stop dispatch and
+# playlist play dispatch.  Use the comment block "# Start:" as anchor
+# to skip the earlier pendingConnect-setup `$cmd eq 'start'` block.
+my ($start_block) = $connect =~ /(# -+\n\s+# Start:.*?)(?=# -+\n\s+# Change:)/s;
+ok($start_block, 'echo guard: start handler block parseable');
+if ($start_block) {
+    # The echo guard must appear (via _currentSpotonTrackUrl call) BEFORE
+    # the D-08 mutual-exclusion stop dispatch and BEFORE playlist play.
+    like($start_block,
+        qr/_currentSpotonTrackUrl.*?D-08.*?'playlist',\s*'play'/s,
+        'echo guard: _currentSpotonTrackUrl check precedes D-08 stop and playlist play in start handler');
+
+    # The guard must be scoped to the Soloist backend (SoloistDaemon isa-check).
+    like($start_block,
+        qr/SoloistDaemon.*?_currentSpotonTrackUrl/s,
+        'echo guard: start handler guard is scoped to SoloistDaemon backend');
+}
+
+# Gate 2: 'change' handler echo guard is present before metadata handling.
+my ($change_block) = $connect =~ /(# -+\n\s+# Change:.*?)(?=# -+\n\s+# Stop:)/s;
+ok($change_block, 'echo guard: change handler block parseable');
+if ($change_block) {
+    like($change_block,
+        qr/_currentSpotonTrackUrl/,
+        'echo guard: change handler contains _currentSpotonTrackUrl check');
+
+    # The guard must precede the _fetchTrackMetadata call.
+    like($change_block,
+        qr/_currentSpotonTrackUrl.*?_fetchTrackMetadata/s,
+        'echo guard: change handler guard precedes metadata handling');
+
+    # Backend scoping: SoloistDaemon isa-check in the guard.
+    like($change_block,
+        qr/SoloistDaemon.*?_currentSpotonTrackUrl/s,
+        'echo guard: change handler guard is scoped to SoloistDaemon backend');
+}
+
+# Gate 3: existing tests still pass (regression net) — covered by the
+# assertions above and the unchanged tests below.
+
 done_testing();
