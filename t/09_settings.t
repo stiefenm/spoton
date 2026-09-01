@@ -211,6 +211,20 @@ sub details { return { osArch => 'x86_64' } }
 1;
 END
 
+# Stub: JSON::XS (real module unavailable in this sandbox; Plugin.pm's
+# `use JSON::XS qw(encode_json)` is only reached when Settings.pm's
+# backend=='soloist' soloistPlayers block requires Plugin.pm — exercised by
+# the SOLO-BYOK backend-whitelist tests below).
+write_stub($stub_dir, 'JSON::XS', <<'END');
+package JSON::XS;
+use parent 'Exporter';
+our @EXPORT_OK = qw(encode_json decode_json);
+use JSON::PP ();
+sub encode_json { JSON::PP::encode_json($_[0]) }
+sub decode_json { JSON::PP::decode_json($_[0]) }
+1;
+END
+
 # Stub: JSON::XS::VersionOneAndTwo
 write_stub($stub_dir, 'JSON::XS::VersionOneAndTwo', <<'END');
 package JSON::XS::VersionOneAndTwo;
@@ -527,6 +541,7 @@ BEGIN {
     *main::WEBUI       = sub () { 0 };
     *main::SCANNER     = sub () { 0 };
     *main::INFOLOG     = sub () { 0 };
+    *main::DEBUGLOG    = sub () { 0 };
     *main::ISWINDOWS   = sub () { 0 };
     *main::ISMAC       = sub () { 0 };
     *main::PERFMON     = sub () { 0 };
@@ -1364,6 +1379,98 @@ SKIP: {
         ok($src =~ /sub _collectAuthHealth\b/,
             'Status.pm defines _collectAuthHealth (moved from Settings.pm)');
     }
+}
+
+# ============================================================
+# Gap SOLO-BYOK (71-03): backend pref whitelist, spak-key format
+# validation, and the storeKey()/clearKey() wiring were only exercised
+# indirectly (perl -c / grep in the plan's own verify block). These tests
+# drive Settings->handler() end-to-end against the real Soloist module
+# (unshifted onto @INC above) and assert on-disk/pref state, not just that
+# the handler ran without dying.
+# ============================================================
+SKIP: {
+    skip "Settings.pm/Soloist.pm module required for backend/spak-key save tests", 11
+        unless eval { require Plugins::SpotOn::Settings; require Plugins::SpotOn::Soloist; 1 };
+
+    my $prefs = Slim::Utils::Prefs::preferences('plugin.spoton');
+
+    # --- (a) backend pref whitelist ---
+    Plugins::SpotOn::Settings->handler(
+        undef, { saveSettings => 1, pref_backend => 'soloist' },
+        sub { }, undef, undef
+    );
+    is($prefs->get('backend'), 'soloist',
+        'SOLO-BYOK: valid pref_backend "soloist" is persisted');
+
+    Plugins::SpotOn::Settings->handler(
+        undef, { saveSettings => 1, pref_backend => 'evil; rm -rf /' },
+        sub { }, undef, undef
+    );
+    is($prefs->get('backend'), 'librespot',
+        'SOLO-BYOK: invalid/tampered pref_backend value falls back to "librespot" (T-71-05)');
+
+    Plugins::SpotOn::Settings->handler(
+        undef, { saveSettings => 1, pref_backend => 'LIBRESPOT' },
+        sub { }, undef, undef
+    );
+    is($prefs->get('backend'), 'librespot',
+        'SOLO-BYOK: case-mismatched pref_backend value is rejected, not case-normalized');
+
+    # --- (b) spak-key format validation ---
+    Plugins::SpotOn::Soloist::clearKey() if Plugins::SpotOn::Soloist::hasKey();
+
+    Plugins::SpotOn::Settings->handler(
+        undef, { saveSettings => 1, pref_soloistKey => 'short' },
+        sub { }, undef, undef
+    );
+    ok(!Plugins::SpotOn::Soloist::hasKey(),
+        'SOLO-BYOK: spak-key shorter than the 16-char minimum is rejected, not stored');
+
+    Plugins::SpotOn::Settings->handler(
+        undef, { saveSettings => 1, pref_soloistKey => "abcd1234\nrm -rf /" },
+        sub { }, undef, undef
+    );
+    ok(!Plugins::SpotOn::Soloist::hasKey(),
+        'SOLO-BYOK: spak-key containing a newline/shell metacharacter is rejected, not stored');
+
+    # --- (c) valid key triggers storeKey() and is persisted to disk ---
+    my $valid_key = 'abcDEF123_-.abcDEF123';    # 22 chars, allowed charset
+    Plugins::SpotOn::Settings->handler(
+        undef, { saveSettings => 1, pref_soloistKey => $valid_key },
+        sub { }, undef, undef
+    );
+    ok(Plugins::SpotOn::Soloist::hasKey(),
+        'SOLO-BYOK: valid spak-key triggers storeKey() and hasKey() reflects it');
+
+    my $keyPath = Plugins::SpotOn::Soloist::keyPath();
+    ok(-f $keyPath, 'SOLO-BYOK: valid spak-key is actually written to keyPath() on disk');
+
+    open(my $kfh, '<', $keyPath) or die "cannot read $keyPath: $!";
+    my $on_disk = do { local $/; <$kfh> };
+    close($kfh);
+    is($on_disk, $valid_key, 'SOLO-BYOK: on-disk spak-key content matches the submitted value exactly');
+
+    # --- masked-preview resubmit must not clear the just-stored key ---
+    Plugins::SpotOn::Settings->handler(
+        undef, { saveSettings => 1, pref_soloistKey => Plugins::SpotOn::Settings::SOLOIST_KEY_MASKED_PREVIEW() },
+        sub { }, undef, undef
+    );
+    ok(Plugins::SpotOn::Soloist::hasKey(),
+        'SOLO-BYOK: resubmitting the masked placeholder does not clear the stored key');
+
+    # --- empty submission clears an existing key (WR-03) ---
+    Plugins::SpotOn::Settings->handler(
+        undef, { saveSettings => 1, pref_soloistKey => '' },
+        sub { }, undef, undef
+    );
+    ok(!Plugins::SpotOn::Soloist::hasKey(),
+        'SOLO-BYOK: empty pref_soloistKey submission clears a previously stored key');
+    ok(!-f $keyPath,
+        'SOLO-BYOK: clearing the key also removes the on-disk keyPath() file');
+
+    # cleanup for any later tests reusing this same $cache_dir
+    Plugins::SpotOn::Soloist::clearKey() if Plugins::SpotOn::Soloist::hasKey();
 }
 
 done_testing();

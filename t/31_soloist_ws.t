@@ -949,4 +949,54 @@ sub new_ws {
     }
 }
 
+# ============================================================
+# 73-VALIDATION gap closure: sessionPaused is documented (73-05-SUMMARY.md)
+# as derived from THREE independent signals -- playback_changed status,
+# playback_state snapshot status, and position_sync speed. The existing
+# tests above pin (1) playback_changed and (3) position_sync directly
+# setting sessionPaused, but (2) a raw playback_state snapshot's own
+# status field driving sessionPaused (independent of any preceding
+# playback_changed) was never asserted on its own -- only observed
+# indirectly through the frozen-extrapolation seek-suppression behavior.
+# This closes that gap with a direct assertion on the accessor value, plus
+# a convergence check that a later signal can flip it back.
+# ============================================================
+{
+    local $Slim::Utils::Prefs::FAKE_VALUES{enableSpotifyConnect} = 1;
+
+    my $ws = new_ws();
+    $ws->sessionActive(1);
+    $ws->lastTrackId('convtrack');
+    $ws->lastPositionMs(1000);
+    $ws->lastPositionTs(Time::HiRes::time());
+
+    is($ws->sessionPaused, 0, "sessionPaused starts false on a fresh SoloistWS instance");
+
+    # Signal 2 (playback_state snapshot status) sets sessionPaused=1 with
+    # NO preceding playback_changed('paused') -- this is the un-pinned case.
+    $ws->_onMessage('{"type":"playback_state","item":{"uri":"spotify:track:convtrack"},"position":{"position_ms":1000,"speed":0,"timestamp_ms":1},"is_active":true,"status":"paused"}');
+    is($ws->sessionPaused, 1,
+        "playback_state snapshot status='paused' alone sets sessionPaused (signal 2 of 3, previously unpinned)");
+
+    # The SAME signal source (playback_state) flips it back to 0 on the next
+    # snapshot reporting status='playing' -- proves convergence is live, not
+    # a one-shot latch.
+    $ws->_onMessage('{"type":"playback_state","item":{"uri":"spotify:track:convtrack"},"position":{"position_ms":1000,"speed":1,"timestamp_ms":1},"is_active":true,"status":"playing"}');
+    is($ws->sessionPaused, 0,
+        "playback_state snapshot status='playing' clears sessionPaused (same signal source, both directions)");
+
+    # Cross-signal convergence: position_sync (signal 3) can re-assert pause
+    # after playback_state (signal 2) last cleared it -- all three signals
+    # write the SAME accessor, none is authoritative-but-stale.
+    $ws->_onMessage('{"type":"position_sync","position_ms":1000,"speed":0}');
+    is($ws->sessionPaused, 1,
+        "position_sync speed=0 (signal 3) re-asserts sessionPaused after playback_state (signal 2) last cleared it");
+
+    # And playback_changed (signal 1) can clear what position_sync just set --
+    # closes the loop across all three signal sources on one instance.
+    $ws->_onMessage('{"type":"playback_changed","status":"playing"}');
+    is($ws->sessionPaused, 0,
+        "playback_changed status='playing' (signal 1) clears sessionPaused after position_sync (signal 3) last set it");
+}
+
 done_testing();
