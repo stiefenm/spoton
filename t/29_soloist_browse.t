@@ -282,10 +282,9 @@ my $pkg = 'Plugins::SpotOn::ProtocolHandler';
     sub _ws         { return $_[0]->{ws}; }
 }
 
-# D-07 (Phase 78): rewritten FakeSoloistWs for the bounded model --
-# browse-state fields removed (browseSession, browseAdvancePending,
-# startBrowseTrack); replaced by lastTrackId accessor and sendCommand
-# recorder that ProtocolHandler's gate-free getNextTrack uses.
+# D-07 (Phase 78): FakeSoloistWs for the bounded model -- lastTrackId
+# accessor and sendCommand recorder for ProtocolHandler's gate-free
+# getNextTrack.
 {
     package Test::FakeSoloistWs;
     sub new {

@@ -565,6 +565,18 @@ for my $type (qw(context_changed options_changed queue_changed)) {
     is($ws->skipInitiated, 0, "gapless track_changed (sessionPaused was 0) does NOT set skipInitiated");
 }
 
+# --- D-06 Phase 78: emission is ungated by browse state ---
+# After the browse state machine was removed (78-03), track_changed on a
+# non-Connect Soloist player always translates to a spottyconnect emission
+# (the old emit gate no longer exists -- echo discrimination moved to
+# Connect.pm in plan 78-02).
+{
+    my $ws = new_ws(lastTrackId => 'tid1', sessionStarted => 1);
+    my $got = run_fixtures($ws, '{"type":"track_changed","item":{"uri":"spotify:track:tid2"}}');
+    is_deeply($got, [ [ 'spottyconnect', 'change', 'tid2', 'tid1' ] ],
+        "track_changed always emits (D-06 removal, no browse emit gate)");
+}
+
 # --- Test 5: normal pause->resume unaffected by deactivation guard ---
 {
     my $ws = new_ws(
