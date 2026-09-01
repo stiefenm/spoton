@@ -3940,6 +3940,11 @@ sub _onNewSongWatchdog {
             my $s = $c->playingSong() || return;
             my $u = $s->track->url || '';
             return unless $u =~ m{^spoton://(?!connect-)};
+            # Pitfall 3: under D-04, spoton://track: URLs match both Browse
+            # and Connect.  The URL gate no longer encodes Browse-vs-Connect;
+            # guard against watchdog arming on a Connect session.
+            require Plugins::SpotOn::Connect;
+            return if Plugins::SpotOn::Connect->isSpotifyConnect($c);
             my $d = $s->duration || 0;
             $log->warn("[DIAG] Watchdog: deferred newsong url=$u duration=${d}s") if $prefs->get('diagnosticMode');
             return unless $d > 0;
@@ -3950,6 +3955,10 @@ sub _onNewSongWatchdog {
     my $url = $song->track->url || '';
 
     return unless $url =~ m{^spoton://(?!connect-)};
+    # Pitfall 3: under D-04, spoton://track: URLs match both Browse
+    # and Connect.  Guard against watchdog arming on a Connect session.
+    require Plugins::SpotOn::Connect;
+    return if Plugins::SpotOn::Connect->isSpotifyConnect($client);
 
     my $duration = $song->duration || 0;
 
@@ -3971,6 +3980,10 @@ sub _onModeChange {
     my $song = $client->playingSong();
     my $url = $song ? ($song->track->url || '') : 'none';
     return unless $url =~ m{^spoton://(?!connect-)};
+    # Pitfall 3: under D-04, spoton://track: URLs match both Browse
+    # and Connect.  Guard against pause-guard on a Connect session.
+    require Plugins::SpotOn::Connect;
+    return if Plugins::SpotOn::Connect->isSpotifyConnect($client);
     my $mode = Slim::Player::Source::playmode($client) || '?';
 
     if ($mode eq 'pause' && !$_pauseRequestedAt{_reapplying}) {
@@ -4008,7 +4021,13 @@ sub _pauseGuardCheck {
 
     my $song = $client->playingSong();
     my $url = $song ? ($song->track->url || '') : '';
-    unless ($url =~ m{^spoton://(?!connect-)}) {
+    # Pitfall 3: under D-04, spoton://track: URLs match both Browse and
+    # Connect.  Integrate the Connect check into the cleanup gate so the
+    # pending-state delete still runs when the URL is wrong or Connect.
+    require Plugins::SpotOn::Connect;
+    unless ($url =~ m{^spoton://(?!connect-)}
+            && !Plugins::SpotOn::Connect->isSpotifyConnect($client))
+    {
         delete $_pauseRequestedAt{$id};
         return;
     }
@@ -4036,6 +4055,10 @@ sub _prefetchWatchdog {
     my $song = $client->playingSong() || return;
     my $url = $song->track->url || '';
     return unless $url =~ m{^spoton://(?!connect-)};
+    # Pitfall 3: under D-04, spoton://track: URLs match both Browse
+    # and Connect.  Guard against watchdog arming on a Connect session.
+    require Plugins::SpotOn::Connect;
+    return if Plugins::SpotOn::Connect->isSpotifyConnect($client);
     return unless Slim::Player::Source::playmode($client) eq 'play';
 
     # Guard 1: playmode 'play' includes BUFFERING — after an LMS restart
@@ -4088,6 +4111,14 @@ sub _prefetchHangCheck {
     my $id = $client->id;
 
     my $triggerUrl = delete $_watchdogTriggerUrl{$id} || return;
+
+    # Pitfall 3: _prefetchHangCheck has no URL gate — it fires from a
+    # timer armed by _prefetchWatchdog.  Guard against the race where the
+    # session becomes Connect between _prefetchWatchdog arming the timer
+    # and this callback firing (trigger state already consumed above so
+    # the pending state is cleaned up regardless).
+    require Plugins::SpotOn::Connect;
+    return if Plugins::SpotOn::Connect->isSpotifyConnect($client);
 
     my $song = $client->playingSong();
     my $currentUrl = $song ? ($song->track->url || '') : '';
