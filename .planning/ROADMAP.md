@@ -527,6 +527,14 @@ Zu entfernende LOC (Phase 78):
 
 ### Phase 77: Bounded Audio Facade (spoton-helper, C/Rust)
 
+**Pre-Cleanup (Code Review Findings):**
+
+- [ ] **CR-1: `g_ring_underrun_fired` Data Race (fake-libpulse.c)** — Non-atomic flag mit zwei Writer-Threads ohne Synchronisation. Auf ARM (Pi) ist das weak-memory-ordering Fenster real: HTTP-Thread liest stale Wert → underflow_cb dauerhaft unterdrückt → stiller Playback-Stall. Fix: `atomic_int` (C11) oder `volatile` + Memory Barriers. Erfordert Binary-Rebuild über CI.
+- [ ] **CR-S1: Seek-Detection Copy-Paste (Connect.pm:800-814 + 868-882)** — Identische `$elapsedMs`/`$expectedMs`/`$deltaSec`/`SEEK_THRESHOLD` Berechnung in `_onPositionSync` und `_onPlaybackState`. Tolerance-Änderung muss an zwei Stellen erfolgen. Extract als `_detectSeek($old, $new)` Helper.
+- [ ] **CR-S2: `_hasLogin5Creds` 17× Guard-Pattern (SpClient.pm)** — 17 Call-Sites mit identischem 4-Zeilen-Stanza (log, require Client.pm, delegate). Guard-Macro oder Wrapper evaluieren, aber niedrige Priorität da jede Methode den early-return braucht.
+- [ ] **CR-S3: `_pollWsPort`/`_pollHttpPort` Duplikation (SoloistDaemon.pm:288-408)** — Gleiche Poll-Struktur (read port from file, check attempts, reschedule). Merge möglich aber unterschiedliche Fehlerbehandlung + tmpfile-Cleanup. Vorsichtig evaluieren.
+- [ ] **CR-S4: Inline Slice Pattern (SpClient.pm)** — `getAlbumTracks`, `getShowEpisodes`, `search` duplizieren `_sliceAsPage` Logik. Auf bestehenden Helper umstellen.
+
 **Goal:** Fake-libpulse und spoton-helper so erweitern, dass `/stream` als bounded per-Track HTTP-Response serviert wird — Track-Boundary-Marker im Ring-Buffer, Socket close = echtes EOF bei Track-Grenze. LMS bekommt denselben Vertrag wie librespot `--single-track`.
 
 **Spike 1 — Boundary Observability (kein Code-Change in LMS)**

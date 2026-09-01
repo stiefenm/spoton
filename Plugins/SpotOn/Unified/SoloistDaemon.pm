@@ -252,6 +252,7 @@ sub start {
 	my $spawnError = $@;
 
 	delete $ENV{SPOTON_SOLOIST_HTTP_PORT_FILE};
+	delete $ENV{SPOTON_FAKEPULSE_DEBUG};
 	delete $ENV{PIPEWIRE_RUNTIME_DIR};
 	delete $ENV{PIPEWIRE_REMOTE};
 	if (defined $savedLdPreload)     { $ENV{LD_PRELOAD} = $savedLdPreload; }
@@ -430,6 +431,7 @@ sub ensureHttpPort {
 					unlink $tmpfile;
 					main::INFOLOG && $log->is_info && $log->info(
 						"SpotOn Soloist daemon HTTP stream port announced on demand: $port (mac=" . $self->mac . ")");
+					undef $poll;
 					return $cb->($port);
 				}
 			}
@@ -438,6 +440,7 @@ sub ensureHttpPort {
 			Slim::Utils::Timers::setTimer(undef, Time::HiRes::time() + PORT_POLL_INTERVAL, $poll);
 		} else {
 			$log->warn("SpotOn Soloist daemon HTTP stream port not available on demand (mac=" . $self->mac . ")");
+			undef $poll;
 			$cb->(undef);
 		}
 	};

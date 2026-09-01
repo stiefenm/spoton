@@ -688,7 +688,7 @@ sub _signalBoundary {
 			PeerAddr => '127.0.0.1',
 			PeerPort => $httpPort,
 			Proto    => 'tcp',
-			Timeout  => 1,
+			Timeout  => 0.1,
 		);
 		if ($sock) {
 			print $sock "POST /boundary HTTP/1.0\r\nConnection: close\r\n\r\n";
