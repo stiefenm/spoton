@@ -1159,6 +1159,37 @@ sub _connectEvent {
     if ($cmd eq 'start') {
         my $trackId = $request->getParam('_p2');
 
+        # Phase 78-02: echo/confirmation guard (Soloist backend only).
+        # When LMS initiates a Browse play (getNextTrack -> WS 'play' ->
+        # daemon track_changed -> spottyconnect 'start'), the daemon echoes
+        # the track LMS is already playing.  Without this guard, Connect.pm
+        # would issue a 'playlist play' that replaces the user's Browse
+        # playlist with a single Connect entry (RESEARCH Pitfall 1).
+        # Guard: if the announced trackId matches the current LMS song URL
+        # (spoton://track:<id> or spoton://episode:<id>), this is an echo —
+        # no-op (no claim, no dispatch).  The !isSpotifyConnect condition
+        # keeps genuine Connect re-announcements (transfer-back, Spirc
+        # reconnect) flowing to the existing handlers below.
+        # NOTE: in waves 2-3 Connect still uses spoton://connect- URLs, so
+        # this guard fires only for the Browse echo; after plan 78-04 (D-04)
+        # it also discriminates Browse from Connect for track-URL entries.
+        if ($trackId) {
+            require Plugins::SpotOn::Unified::DaemonManager;
+            my $helper = Plugins::SpotOn::Unified::DaemonManager->helperForClient($client->id);
+            if ($helper && $helper->isa('Plugins::SpotOn::Unified::SoloistDaemon')
+                && !__PACKAGE__->isSpotifyConnect($client))
+            {
+                my $currentUrl = _currentSpotonTrackUrl($client);
+                if ($currentUrl =~ m{^spoton://(?:track|episode):\Q$trackId\E$}) {
+                    main::INFOLOG && $log->is_info && $log->info(
+                        "[DIAG] echo guard: start event for $trackId matches current song $currentUrl — "
+                        . "no-op (Browse echo, not a Connect transfer)"
+                    );
+                    return;
+                }
+            }
+        }
+
         # ROADMAP Phase 76 (auto-play after LMS restart): provenance gate.
         # A 'start' arriving within RESTART_START_GRACE of the daemon's own
         # (re)spawn while the LMS player is idle is a re-announcement of a
@@ -1297,6 +1328,28 @@ sub _connectEvent {
 
         my $newTrackId  = $request->getParam('_p2');
         my $prevTrackId = $request->getParam('_p3');
+
+        # Phase 78-02: echo/confirmation guard (Soloist backend only).
+        # Same rationale as the 'start' guard above: a daemon track_changed
+        # echo for the track LMS is already playing must not trigger metadata
+        # overwrites or stream reconnects.  Returns before any metadata
+        # handling or streamUrl manipulation.
+        if ($newTrackId) {
+            require Plugins::SpotOn::Unified::DaemonManager;
+            my $helper = Plugins::SpotOn::Unified::DaemonManager->helperForClient($client->id);
+            if ($helper && $helper->isa('Plugins::SpotOn::Unified::SoloistDaemon')
+                && !__PACKAGE__->isSpotifyConnect($client))
+            {
+                my $currentUrl = _currentSpotonTrackUrl($client);
+                if ($currentUrl =~ m{^spoton://(?:track|episode):\Q$newTrackId\E$}) {
+                    main::INFOLOG && $log->is_info && $log->info(
+                        "[DIAG] echo guard: change event for $newTrackId matches current song $currentUrl — "
+                        . "no-op (Browse echo, not a Connect track change)"
+                    );
+                    return;
+                }
+            }
+        }
 
         # Clear echo suppression — track change is authoritative
         $client->pluginData(connectPauseTs => 0);
