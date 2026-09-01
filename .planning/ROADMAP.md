@@ -537,6 +537,24 @@ Zu entfernende LOC (Phase 78):
 
 **Goal:** Fake-libpulse und spoton-helper so erweitern, dass `/stream` als bounded per-Track HTTP-Response serviert wird — Track-Boundary-Marker im Ring-Buffer, Socket close = echtes EOF bei Track-Grenze. LMS bekommt denselben Vertrag wie librespot `--single-track`.
 
+**Plans:** 6 plans
+
+Plans:
+**Wave 1** *(parallel — D-01 pre-cleanup + tracer)*
+
+- [ ] 77-01-PLAN.md — C: CR-1 atomic fix + Tracer `POST /seek-arm` (armed flush hält Client, Drain-Gate, Host-Tests 9→11)
+- [ ] 77-02-PLAN.md — Perl: CR-S1 `_detectSeek` (SoloistWS.pm) + CR-S3 Poll-Scaffold (SoloistDaemon.pm, erste t/30-Poll-Coverage)
+- [ ] 77-03-PLAN.md — Perl: CR-S4 `_sliceAsPage`-Konvergenz + CR-S2 `_delegateToClient` Wrapper (SpClient.pm)
+
+**Wave 2** *(blocked on 77-01)*
+
+- [ ] 77-04-PLAN.md — D-02/D-05: arm-then-command Dispatch in getNextTrack (ProtocolHandler.pm), debounced Browse-Seek-Pfad getrennt (Connect.pm)
+- [ ] 77-05-PLAN.md — C Edge-Cases: D-04 rapid-skip last-wins, Takeover-mid-armed-window, double-seek (Host-Tests 11→14)
+
+**Wave 3** *(blocked on Wave 2)*
+
+- [ ] 77-06-PLAN.md — Live-UAT Checkpoint (78-UAT Test 10 + D-08 Crash-EOF), post-UAT Cleanup, D-09 CI-Rebuild (3 Architekturen)
+
 **Spike 1 — Boundary Observability (kein Code-Change in LMS)**
 Fake-libpulse instrumentieren: bei jedem `track_changed`/`playback_changed`/seek den Ring-Write-Offset loggen, ebenso pa_stream Lifecycle (create/cork/uncork/drain/flush/close). Album mit natürlichen Übergängen, manuellem Skip und Seek abspielen.
 Exit-Kriterium: Boundary-Offset mit Jitter < ~50ms (≈8.8 KB bei S32LE/44100Hz) ableitbar.
