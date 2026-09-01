@@ -48,39 +48,6 @@ use constant SEEK_THRESHOLD => 3;
 # up and no reconnect ever scheduled.
 use constant HANDSHAKE_TIMEOUT => 5;
 
-# 73-03 Task 2 (D-03, RESEARCH Pattern 6, Modell B): seconds of remaining
-# track duration at which the browse session seeds the next LMS-Spotify
-# playlist entry into Soloist's own queue via add_to_queue. Chosen well
-# inside the Task-1-DEFERRED-default takeover-gap assumption (<500ms) so
-# the seed always lands long before the track actually ends.
-use constant BROWSE_SEED_LEAD_SECONDS => 15;
-
-# D-17 (RC-4, Phase 76 extension, .planning/debug/soloist-browse-stutter.md):
-# stream-handoff readiness gate. Soloist's internal decoder/worker threads
-# take 10-215s+ to start producing audio after a play command (five
-# fake-libpulse-side mechanisms tested and refuted across two debug
-# sessions -- the latency is Soloist-internal, not fixable from the PA-API
-# surface). LMS's StreamingController::_RetryOrNext reconnects after ~10s
-# of premature stream end, resetting position to 0 on every retry -- the
-# collision produces the cyclic Browse stutter. getNextTrack defers the
-# stream handoff behind this gate until Soloist demonstrably produces
-# audio.
-#
-# BROWSE_READY_TIMEOUT tradeoff: Soloist's observed worst case is 215s+,
-# but an indefinite buffering spinner is worse UX than fail-open reverting
-# to today's retry behavior -- 30s bounds the common case (healthy starts
-# resolve in <1s) while stalls longer than this degrade gracefully to the
-# pre-gate behavior with a diagnosable log line.
-use constant BROWSE_READY_TIMEOUT => 30;
-
-# Seconds a playback_changed 'playing' must survive without an immediately
-# following 'paused'/'stopped' before it counts as genuine audio
-# production. Live captures show Soloist self-corking ('playing' ->
-# 'paused') within ~20ms of its initial burst (evidence entry 20:28:
-# playing 23.244 -> paused 23.264, real audio only at 33.575) -- a bare
-# 'playing' is NOT sufficient.
-use constant BROWSE_READY_CONFIRM => 1;
-
 __PACKAGE__->mk_accessor( rw => qw(
 	mac
 	port
@@ -96,13 +63,6 @@ __PACKAGE__->mk_accessor( rw => qw(
 	sessionStarted
 	skipInitiated
 	deactivating
-	browseSession
-	browseCurrentUri
-	browseSeededUri
-	browseAdvancePending
-	browseAdvanceTs
-	browseReadyCb
-	browseTrackConfirmed
 	reconnectDelay
 	_sock
 	_client
@@ -115,49 +75,6 @@ __PACKAGE__->mk_accessor( rw => qw(
 # the reference natively on every store, so no manual weaken() call is
 # needed at all.
 __PACKAGE__->mk_accessor( weak => qw( daemon ) );
-# 73-03 Task 2: browseSession activates Model B (RESEARCH Pattern 6) -- a
-# browse-managed session and a Connect session are mutually exclusive per
-# player (the browseSession emit gate below, established in 73-01, is what
-# enforces that mutual exclusion for spottyconnect translation).
-# browseCurrentUri:      the spotify:track:/episode: URI LMS believes is
-#                        currently playing (set by startBrowseTrack, and
-#                        again on a successful seeded-match advance).
-# browseSeededUri:       the URI queued ahead via add_to_queue for the
-#                        current track, if any; cleared once track_changed
-#                        confirms the transition (or a new track starts).
-# browseAdvancePending:  set right before the source-marked
-#                        ['playlist','index','+1'] request is executed on a
-#                        seeded-match advance -- ProtocolHandler::getNextTrack
-#                        reads+clears this to skip re-issuing `play` for a
-#                        track Soloist is already playing (re-entry guard,
-#                        T-73-11).
-# browseAdvanceTs:       wallclock time of the last browse-advance/start
-#                        request this module issued to LMS (CR-02) -- LMS
-#                        internally stops the PREVIOUS playlist item during a
-#                        playlist jump (or the very first play), generating
-#                        an un-sourced stop/pause notification. The source
-#                        marker on the ['playlist','index','+1'] request
-#                        itself doesn't catch that internal notification, so
-#                        Connect.pm's _onPause browse branch instead checks
-#                        this timestamp (short grace window) before
-#                        forwarding a pause to the daemon -- mirroring the
-#                        Connect path's own connectStartTime grace period.
-# browseReadyCb:         D-17 (RC-4): the single pending waitForBrowseReady
-#                        callback, or undef. Registered by ProtocolHandler::
-#                        getNextTrack after a fresh startBrowseTrack;
-#                        resolved exactly once via _resolveBrowseReady with
-#                        'ready'/'timeout'/'ended'. A second registration
-#                        silently discards the first WITHOUT invoking it
-#                        (LMS has superseded the earlier getNextTrack --
-#                        invoking a stale successCb could resurrect an
-#                        abandoned Song).
-# browseTrackConfirmed:  D-17 Stage A: true once a track_changed has
-#                        confirmed the expected uri (equality branch or
-#                        seeded-match branch) for the CURRENT browse start.
-#                        Gates Stage B so a stale position_sync frame from
-#                        the previous track can never resolve the gate.
-#                        Reset by startBrowseTrack (each new browse start
-#                        begins unconfirmed).
 # sessionStarted:        true once _emitStart has fired; prevents redundant
 #                        'start' on device re-activation mid-session.
 # skipInitiated:         260827-of9 (~30s Connect-skip audio delay): true
@@ -219,8 +136,6 @@ sub new {
 	$self->sessionStarted(0);
 	$self->skipInitiated(0);
 	$self->deactivating(0);
-	$self->browseSession(0);
-	$self->browseTrackConfirmed(0);
 	$self->reconnectDelay(RECONNECT_DELAY_MIN);
 
 	return $self;
@@ -342,12 +257,6 @@ sub _onClosed {
 	$self->_client(undef);
 	$self->connected(0);
 	$self->_sockOpen(0);
-
-	# D-17 fail-open: WS/daemon loss must never strand a player mid-gate --
-	# resolve a pending readiness callback with 'timeout' semantics so the
-	# caller proceeds exactly as it would today (the alive-poll owns process
-	# recovery, not this gate).
-	$self->_resolveBrowseReady('timeout');
 
 	$self->_scheduleReconnect;
 }
@@ -630,19 +539,6 @@ sub _onDeviceChanged {
 		}
 	}
 	else {
-		# 73-03: is_active:false while a browse session is running means the
-		# Spotify app stole the device (transfer-in) -- end the browse
-		# session (D-08 spirit: a browse session and a Connect session are
-		# mutually exclusive per player) so the incoming Connect flow is not
-		# fighting a live browse advance/seed state.
-		if ($self->browseSession) {
-			main::INFOLOG && $log->is_info && $log->info(
-				"SoloistWS: device_changed(is_active:false) during browse session -- app took over, handing off to Connect ("
-				. ($self->mac // '?') . ")"
-			);
-			$self->endBrowseSession('handover');
-		}
-
 		# 260827-jqa (Fix A -- deactivation guard): set BEFORE sessionActive/
 		# _emit('stop') below so _onPlaybackChanged can immediately suppress
 		# any bogus stopped->playing blip the daemon sends mid-transfer-away.
@@ -682,12 +578,6 @@ sub _onTrackChanged {
 	# T-22-01 discipline: validate before any id reaches an LMS command.
 	return unless $uri =~ /^spotify:(?:track|episode):([A-Za-z0-9]+)$/;
 	my $newId = $1;
-
-	# 73-03: browse-session events never reach the Connect translation --
-	# route to the Model-B advance/correction state machine instead.
-	if ($self->browseSession) {
-		return $self->_onBrowseTrackChanged($uri);
-	}
 
 	my $prevId = $self->lastTrackId;
 
@@ -757,117 +647,6 @@ sub _signalBoundary {
 	}
 }
 
-# _onBrowseTrackChanged($self, $uri) -- 73-03 Task 2 (D-03, RESEARCH Pattern
-# 6 Modell B, Pitfall 4): the advance/correction state machine for a
-# track_changed arriving during a browse session.
-#
-# Three-way classification (D-15, .planning/debug/soloist-browse-stutter.md):
-#   1. Seeded match ($uri eq browseSeededUri): expected gapless transition --
-#      advance the LMS playlist pointer to match.
-#   2. Current-track confirmation ($uri eq browseCurrentUri): the daemon
-#      confirming SpotOn's own `play` command (startBrowseTrack §992, or a
-#      prior corrective play §715) or re-announcing the current track after
-#      an internal flush/session-restore.  No-op: no WS command, no pointer
-#      movement, pending seeds preserved.
-#   3. Otherwise: Pitfall-4 defense -- rogue/autoplay URI; correct or pause.
-#
-# Ordering constraint: the seeded-match check MUST stay first.  If
-# browseCurrentUri and browseSeededUri were ever equal (track repeated twice
-# in a playlist), the seeded advance takes priority -- the LMS pointer needs
-# to move forward, not silently absorb the event as a confirmation.
-sub _onBrowseTrackChanged {
-	my ($self, $uri) = @_;
-
-	my $client = Slim::Player::Client::getClient($self->mac);
-	unless ($client) {
-		main::DEBUGLOG && $log->is_debug && $log->debug(
-			"SoloistWS: browse track_changed but no client for " . ($self->mac // '?')
-		);
-		return;
-	}
-
-	my $seeded = $self->browseSeededUri;
-
-	if (defined $seeded && $uri eq $seeded) {
-		# Expected gapless transition: Soloist advanced into the queue entry
-		# we seeded ahead of time. Advance the REAL LMS playlist to match --
-		# source-marked so Connect.pm/other subscribers can recognize this as
-		# our own request (T-73-11 re-entry guard: browseAdvancePending tells
-		# ProtocolHandler::getNextTrack that Soloist is already playing this
-		# track, so it must not re-issue `play`).
-		main::INFOLOG && $log->is_info && $log->info(
-			"SoloistWS: browse track_changed matched seeded uri $uri -- advancing LMS playlist ("
-			. ($self->mac // '?') . ")"
-		);
-
-		$self->browseAdvancePending(1);
-		$self->browseCurrentUri($uri);
-		$self->browseSeededUri(undef);
-		# D-17 Stage A: the daemon is provably on the track LMS expects --
-		# a pending readiness gate may now accept Stage-B audio signals.
-		$self->browseTrackConfirmed(1);
-		# CR-02: LMS internally stops the previous playlist item during this
-		# jump, generating an un-sourced stop/pause notification -- record
-		# the timestamp so Connect.pm's _onPause browse branch can suppress
-		# forwarding that internal event as a real pause (see browseAdvanceTs).
-		$self->browseAdvanceTs(Time::HiRes::time());
-
-		my $req = Slim::Control::Request->new($client->id, ['playlist', 'index', '+1']);
-		$req->source('PLUGIN_SPOTON_SOLOIST_BROWSE');
-		$req->execute();
-		return;
-	}
-
-	# D-15 (RC-1, Phase 76 extension): current-track confirmation -- the
-	# daemon is confirming SpotOn's own play command (startBrowseTrack §992,
-	# or a prior corrective play) or re-announcing the current track after
-	# an internal flush/session-restore.  This is NOT an unexpected URI:
-	# do NOT send any WS command (no corrective play, no pause), do NOT
-	# clear browseSeededUri (a pending seed describes the upcoming gapless
-	# transition and must survive), and do NOT touch browseAdvancePending
-	# or the LMS playlist pointer.
-	if ($uri eq ($self->browseCurrentUri // '')) {
-		main::INFOLOG && $log->is_info && $log->info(
-			"SoloistWS: browse track_changed confirmed current uri $uri -- no-op (D-15, mac="
-			. ($self->mac // '?') . ")"
-		);
-		# D-17 Stage A: same confirmation semantics as the seeded-match
-		# branch above -- the daemon announced exactly the track LMS asked
-		# for (startBrowseTrack's own play command echoing back).
-		$self->browseTrackConfirmed(1);
-		return;
-	}
-
-	# Pitfall 4: an unrequested/unexpected URI -- Soloist autoplay (or
-	# session drift) started something LMS never asked for. NEVER let this
-	# free-run: if LMS's playlist still has content ahead, force Soloist
-	# back onto the track LMS currently expects (browseCurrentUri) without
-	# touching the LMS playlist pointer (only the seeded-match branch above
-	# is allowed to move it); if LMS's queue is exhausted, there is nothing
-	# left to correct back to -- pause and end the session cleanly.
-	if (_hasNextPlaylistEntry($client)) {
-		my $expected = $self->browseCurrentUri;
-		$log->warn(sprintf(
-			"SoloistWS: browse track_changed unexpected uri %s (expected %s) -- correcting (Pitfall 4, mac=%s)",
-			$uri, ($expected // '?'), ($self->mac // '?')
-		));
-		$self->browseSeededUri(undef);
-		# D-17: the daemon is on a rogue track -- position_sync frames from
-		# it must not resolve a pending readiness gate. The corrective play
-		# below re-announces the expected uri, which re-confirms via the
-		# equality branch.
-		$self->browseTrackConfirmed(0);
-		$self->sendCommand('play', uri => $expected) if defined $expected;
-	}
-	else {
-		$log->warn(
-			"SoloistWS: browse track_changed unexpected uri $uri with no next LMS track -- pausing, ending session (Pitfall 4, mac="
-			. ($self->mac // '?') . ")"
-		);
-		$self->endBrowseSession('queue_end');
-	}
-}
-
 sub _onPlaybackChanged {
 	my ($self, $msg) = @_;
 
@@ -895,74 +674,6 @@ sub _onPlaybackChanged {
 	# $msg->{status}, never the collapsed Paused+Stopped _emit('stop')
 	# translation below.
 	$self->_signalBoundary if $status eq 'stopped';
-
-	if ($self->browseSession) {
-		# D-17 Stage B via playback_changed: a bare 'playing' is NOT
-		# sufficient evidence of audio production -- live captures show it
-		# flipping to 'paused' (self-cork) within ~20ms of the initial
-		# burst. 'playing' after Stage-A confirmation arms a short confirm
-		# window; a 'paused'/'stopped' arriving before it fires disarms it
-		# (blip). Only a 'playing' that survives the window resolves the
-		# pending readiness gate.
-		if ($status eq 'playing') {
-			if ($self->browseTrackConfirmed && $self->browseReadyCb) {
-				Slim::Utils::Timers::killTimers($self, \&_browseReadyConfirmTimer);
-				Slim::Utils::Timers::setTimer($self,
-					Time::HiRes::time() + BROWSE_READY_CONFIRM,
-					\&_browseReadyConfirmTimer);
-			}
-		}
-		elsif ($status eq 'paused' || $status eq 'stopped') {
-			Slim::Utils::Timers::killTimers($self, \&_browseReadyConfirmTimer);
-		}
-
-		# Task-1-DEFERRED default: a 'stopped' status with no seed sent means
-		# Soloist reached the natural end of the track it was asked to play
-		# (no queued follow-up). End the browse session WITHOUT sending
-		# pause (Soloist already stopped on its own) and let LMS advance its
-		# own playlist normally -- getNextTrack decides what happens next
-		# (a fresh startBrowseTrack for another Spotify entry, or native
-		# playback of a non-Spotify entry). A mid-track 'paused' status
-		# during a browse session needs no handling here -- LMS-originated
-		# pause/unpause forwarding is Connect.pm's job (Task 3).
-		if ($status eq 'stopped' && !defined $self->browseSeededUri) {
-			my $client = Slim::Player::Client::getClient($self->mac);
-
-			# CR-01: when a gate is pending, endBrowseSession's 'ended'
-			# resolution drives LMS's own error-advance via errorCb
-			# synchronously. The manual playlist index +1 below must NOT
-			# also fire, or one failed track skips two.
-			my $hadPendingGate = $self->browseReadyCb ? 1 : 0;
-
-			# WR-06: verify LMS is still actually on the browse track this WS
-			# believes is current BEFORE advancing -- if the user has already
-			# moved elsewhere (playlist jump, different selection) while this
-			# stop event was in flight, advancing would otherwise fire an
-			# unrequested skip into the user's CURRENT (unrelated) playlist.
-			my $expected = $self->browseCurrentUri;
-			my $stillOnBrowseTrack = defined $expected
-				&& defined _clientCurrentSpotifyUri($client)
-				&& _clientCurrentSpotifyUri($client) eq $expected;
-
-			main::INFOLOG && $log->is_info && $log->info(
-				"SoloistWS: browse track ended with no seed -- ending session, advancing LMS normally ("
-				. ($self->mac // '?') . ")"
-			);
-			$self->endBrowseSession('track_end');
-			if (!$hadPendingGate && $client && $stillOnBrowseTrack && _hasNextPlaylistEntry($client)) {
-				my $req = Slim::Control::Request->new($client->id, ['playlist', 'index', '+1']);
-				$req->source('PLUGIN_SPOTON_SOLOIST_BROWSE');
-				$req->execute();
-			}
-			elsif ($client && !$stillOnBrowseTrack) {
-				main::INFOLOG && $log->is_info && $log->info(
-					"SoloistWS: browse track ended but LMS has already moved on -- skipping advance (WR-06, mac="
-					. ($self->mac // '?') . ")"
-				);
-			}
-		}
-		return;   # browse-session events never reach the Connect translation
-	}
 
 	if ($status eq 'playing') {
 		# 73-05 (D-06 gap 1): resume must only be emitted for a REAL
@@ -1021,20 +732,6 @@ sub _onPositionSync {
 	my $posMs = $msg->{position_ms};
 	return unless defined $posMs;
 
-	$self->_maybeSeedBrowseQueue($posMs) if $self->browseSession;
-
-	# D-17 Stage B via position_sync: after Stage-A confirmation, the first
-	# frame with speed != 0 proves Soloist is genuinely advancing through
-	# the confirmed track -- resolve a pending readiness gate. Frames
-	# arriving BEFORE confirmation are ignored (stale-frame protection: a
-	# position_sync from the PREVIOUS track could arrive between our play
-	# command and Soloist's internal switch).
-	if ($self->browseSession && $self->browseTrackConfirmed
-		&& $msg->{speed} && $self->browseReadyCb)
-	{
-		$self->_resolveBrowseReady('ready');
-	}
-
 	# 73-05 (D-06, Pitfall 5): speed 0 is the daemon's own signal that
 	# playback is currently paused -- update sessionPaused directly from
 	# this field so a position_sync frame alone (with no preceding
@@ -1060,277 +757,6 @@ sub _onPositionSync {
 
 	$self->lastPositionMs($posMs);
 	$self->lastPositionTs($now);
-}
-
-# _maybeSeedBrowseQueue($self, $posMs) -- 73-03 Task 2 (D-03, RESEARCH
-# Pattern 6 Modell B): fires on every position_sync while a browse session
-# is active. Once <BROWSE_SEED_LEAD_SECONDS remain in the current track and
-# no seed has been sent yet, look up the client's NEXT LMS playlist entry;
-# if (and only if) it is a spoton://track|episode: URL, queue it ahead via
-# add_to_queue so Soloist can transition into it gaplessly. A non-Spotify
-# next entry (radio/local) or end-of-playlist sends no seed -- Soloist will
-# stop naturally at track end (Task-1-DEFERRED default), which
-# _onPlaybackChanged's 'stopped'-with-no-seed branch above turns into a
-# normal LMS-driven advance.
-sub _maybeSeedBrowseQueue {
-	my ($self, $posMs) = @_;
-
-	return if defined $self->browseSeededUri;   # already seeded this track
-
-	my $client = Slim::Player::Client::getClient($self->mac);
-	return unless $client;
-
-	my $song = $client->can('playingSong') ? $client->playingSong : undef;
-	my $durationSec = ($song && $song->can('duration')) ? ($song->duration || 0) : 0;
-	return unless $durationSec > 0;
-
-	my $remaining = $durationSec - ($posMs / 1000);
-	return unless $remaining < BROWSE_SEED_LEAD_SECONDS;
-
-	my $nextUri = _nextBrowseSpotifyUri($client);
-	unless (defined $nextUri) {
-		main::DEBUGLOG && $log->is_debug && $log->debug(
-			"SoloistWS: browse seeding -- next LMS entry is not a Spotify track/episode (or end of playlist), no seed sent ("
-			. ($self->mac // '?') . ")"
-		);
-		return;
-	}
-
-	main::INFOLOG && $log->is_info && $log->info(
-		"SoloistWS: browse seeding queue with $nextUri (remaining=" . sprintf('%.1f', $remaining) . "s, mac="
-		. ($self->mac // '?') . ")"
-	);
-	$self->browseSeededUri($nextUri) if $self->sendCommand('add_to_queue', uri => $nextUri);
-}
-
-# _hasNextPlaylistEntry($client) -- true if the LMS playlist has an entry
-# (of ANY type -- Spotify or not) after the currently streaming index.
-sub _hasNextPlaylistEntry {
-	my ($client) = @_;
-	return 0 unless $client;
-
-	my $idx = Slim::Player::Source::streamingSongIndex($client);
-	return 0 unless defined $idx;
-
-	my $total = Slim::Player::Playlist::count($client);
-	return 0 unless defined $total;
-
-	return (($idx + 1) < $total) ? 1 : 0;
-}
-
-# _nextBrowseSpotifyUri($client) -- the spotify:track:/episode: URI for the
-# LMS playlist entry after the currently streaming index, or undef if that
-# entry does not exist or is not a spoton:// Browse URL (radio, local file,
-# end of playlist).
-sub _nextBrowseSpotifyUri {
-	my ($client) = @_;
-	return undef unless _hasNextPlaylistEntry($client);
-
-	my $idx   = Slim::Player::Source::streamingSongIndex($client);
-	my $track = Slim::Player::Playlist::track($client, $idx + 1);
-	return undef unless $track;
-
-	my $url = (blessed($track) && $track->can('url')) ? $track->url : $track;
-	return undef unless defined $url;
-	return undef unless $url =~ m{^spoton://(track|episode):([A-Za-z0-9]+)$};
-	return "spotify:$1:$2";
-}
-
-# _clientCurrentSpotifyUri($client) -- WR-06: the spotify:track:/episode:
-# URI for the URL the client is CURRENTLY streaming, or undef if that isn't
-# a spoton:// Browse URL right now. Used to verify LMS hasn't already moved
-# off the browse track before firing an advance request.
-sub _clientCurrentSpotifyUri {
-	my ($client) = @_;
-	return undef unless $client;
-
-	my $song = $client->can('playingSong') ? $client->playingSong : undef;
-	return undef unless $song;
-
-	my $track = $song->can('track') ? $song->track : undef;
-	my $url = ($track && $track->can('url')) ? $track->url : ($song->can('streamUrl') ? $song->streamUrl : undef);
-	return undef unless defined $url;
-	return undef unless $url =~ m{^spoton://(track|episode):([A-Za-z0-9]+)$};
-	return "spotify:$1:$2";
-}
-
-# startBrowseTrack($self, $uri, $client) -- 73-03 Task 2 (D-03, RESEARCH
-# Pattern 6 Modell B): begins a browse-managed session for a single
-# spotify:track:/episode: URI. Called from ProtocolHandler::getNextTrack.
-# Entering a browse session EXPLICITLY suppresses Connect-event translation
-# via the browseSession emit gate (73-01) -- a browse session and a Connect
-# session are mutually exclusive per player.
-sub startBrowseTrack {
-	my ($self, $uri, $client) = @_;
-
-	return 0 unless defined $uri && $uri =~ /^spotify:(?:track|episode):[A-Za-z0-9]+$/;
-
-	$self->browseSession(1);
-	$self->browseCurrentUri($uri);
-	$self->browseSeededUri(undef);
-	$self->browseAdvancePending(0);
-	# D-17: each new browse start begins unconfirmed; a stale pending
-	# readiness cb from an abandoned earlier start is discarded WITHOUT
-	# invoking it (the getNextTrack that registered it has been superseded
-	# by this new start -- invoking it could resurrect an abandoned Song).
-	$self->browseTrackConfirmed(0);
-	if ($self->browseReadyCb) {
-		$self->browseReadyCb(undef);
-		$self->_clearBrowseReadyTimers;
-	}
-	# CR-02: a fresh browse play also triggers an internal stop of the
-	# previous item -- today that pause is immediately overridden by this
-	# same play, but it is a race, not a guarantee. Same grace timestamp as
-	# the seeded-advance path above.
-	$self->browseAdvanceTs(Time::HiRes::time());
-
-	main::INFOLOG && $log->is_info && $log->info(
-		"SoloistWS: startBrowseTrack($uri) for " . ($self->mac // '?')
-	);
-
-	my $sent = $self->sendCommand('play', uri => $uri);
-	unless ($sent) {
-		# WR-03: the send failed (not connected / pre-handshake drop / write
-		# error) -- roll back the browse state set above. Without this,
-		# browseSession stays 1 (suppressing all Connect translation via
-		# _emitAllowed) while LMS proceeds to open /stream and play silence,
-		# a stuck state that persists until some other path ends the session.
-		$log->warn("SoloistWS: startBrowseTrack($uri) send failed for " . ($self->mac // '?') . " -- rolling back browse state");
-		$self->browseSession(0);
-		$self->browseCurrentUri(undef);
-		$self->browseAdvanceTs(0);
-	}
-	return $sent;
-}
-
-# Reasons that skip the `pause` send in endBrowseSession(): 'track_end'
-# (Soloist already stopped on its own -- Task-1-DEFERRED default) and
-# 'handover' (an active Connect session is taking over transport; pausing
-# here would fight it). Every other reason (e.g. 'queue_end', the Pitfall-4
-# no-next-track correction branch) sends pause -- there is no other session
-# about to take over from the ended browse session in those cases.
-my %_BROWSE_END_SKIP_PAUSE = (handover => 1, track_end => 1);
-
-# endBrowseSession($self, $reason) -- clears all browse state.
-sub endBrowseSession {
-	my ($self, $reason) = @_;
-
-	return unless $self->browseSession;
-
-	main::INFOLOG && $log->is_info && $log->info(
-		"SoloistWS: endBrowseSession('" . ($reason // '') . "') for " . ($self->mac // '?')
-	);
-
-	$self->browseSession(0);
-	$self->browseCurrentUri(undef);
-	$self->browseSeededUri(undef);
-	$self->browseAdvancePending(0);
-	$self->browseTrackConfirmed(0);
-
-	# WR-01: pause BEFORE resolve — the 'ended' resolution can
-	# synchronously re-enter startBrowseTrack (via errorCb → LMS
-	# _NextIfMore); sending pause after would cork the re-entrantly
-	# started next track.
-	$self->sendCommand('pause') unless $_BROWSE_END_SKIP_PAUSE{$reason // ''};
-
-	# D-17: the session was torn down (queue-end defense, LMS stop,
-	# handover) -- a pending readiness gate resolves 'ended' so the caller
-	# can error out cleanly instead of handing over a stream that would
-	# play nothing.
-	$self->_resolveBrowseReady('ended');
-}
-
-# ---------------------------------------------------------------------
-# D-17 (RC-4, Phase 76 extension): waitForBrowseReady -- two-stage stream-
-# handoff readiness gate (see BROWSE_READY_TIMEOUT above for the full
-# mechanism rationale).
-#
-#   Stage A: a track_changed confirming the expected uri (the D-15
-#            equality branch or the seeded-match branch) sets
-#            browseTrackConfirmed.
-#   Stage B: after Stage A, EITHER the first position_sync with
-#            speed != 0, OR a playback_changed 'playing' that survives
-#            BROWSE_READY_CONFIRM seconds without an immediately
-#            following 'paused'/'stopped' (self-cork blip).
-#
-# Resolution statuses handed to the callback (invoked at most once per
-# registration, all state cleared through the _resolveBrowseReady choke
-# point):
-#   'ready'   -- Soloist demonstrably produces audio; proceed.
-#   'timeout' -- gate timed out or the WS/daemon connection was lost;
-#                FAIL-OPEN: the caller proceeds exactly as it would
-#                without the gate (worst case equals today's behavior,
-#                never worse).
-#   'ended'   -- the browse session was torn down before audio started;
-#                the caller should error out rather than hand over a
-#                stream that would play nothing.
-#
-# Timers are keyed on $self via Slim::Utils::Timers with DISTINCT
-# coderefs for confirm vs timeout so killTimers cannot collide
-# (mirroring the _bufferedBrowseSeek/_bufferedSeek precedent in
-# Connect.pm).
-# ---------------------------------------------------------------------
-
-sub waitForBrowseReady {
-	my ($self, $cb, $timeout) = @_;
-
-	return 0 unless ref($cb) eq 'CODE';
-	$timeout ||= BROWSE_READY_TIMEOUT;
-
-	# Supersede: a second registration silently discards the first WITHOUT
-	# invoking it -- LMS has superseded the earlier getNextTrack (user
-	# skip, prefetch churn); invoking a stale successCb could resurrect an
-	# abandoned Song.
-	if ($self->browseReadyCb) {
-		main::DEBUGLOG && $log->is_debug && $log->debug(
-			"SoloistWS: waitForBrowseReady superseding an earlier pending gate ("
-			. ($self->mac // '?') . ")"
-		);
-	}
-
-	$self->browseReadyCb($cb);
-	$self->_clearBrowseReadyTimers;
-	Slim::Utils::Timers::setTimer($self,
-		Time::HiRes::time() + $timeout, \&_browseReadyTimeoutTimer);
-	return 1;
-}
-
-# _resolveBrowseReady($self, $status) -- single choke point: kills both
-# timers, clears all readiness state, and invokes the pending cb exactly
-# once. No-op when no cb is pending.
-sub _resolveBrowseReady {
-	my ($self, $status) = @_;
-
-	my $cb = $self->browseReadyCb or return;
-
-	# Clear state BEFORE the cb runs so a re-entrant registration from
-	# inside the callback is never clobbered afterward.
-	$self->browseReadyCb(undef);
-	$self->_clearBrowseReadyTimers;
-
-	main::INFOLOG && $log->is_info && $log->info(
-		"SoloistWS: browse-ready gate resolved '$status' (D-17, mac="
-		. ($self->mac // '?') . ")"
-	);
-
-	$cb->($status);
-}
-
-sub _clearBrowseReadyTimers {
-	my $self = shift;
-	Slim::Utils::Timers::killTimers($self, \&_browseReadyConfirmTimer);
-	Slim::Utils::Timers::killTimers($self, \&_browseReadyTimeoutTimer);
-}
-
-# Timer targets -- distinct coderefs so killTimers cannot collide.
-sub _browseReadyTimeoutTimer {
-	my $self = shift;
-	$self->_resolveBrowseReady('timeout');
-}
-
-sub _browseReadyConfirmTimer {
-	my $self = shift;
-	$self->_resolveBrowseReady('ready');
 }
 
 # Snapshot on connect / get_state response -- initial resync after a WS
@@ -1440,13 +866,10 @@ sub _emit {
 sub _emitAllowed {
 	my $self = shift;
 
-	# (b) browseSession reserves browse-managed sessions (73-03).
-	return 0 if $self->browseSession;
-
 	my $client = Slim::Player::Client::getClient($self->mac);
 	return 0 unless $client;
 
-	# (a) per-player Connect toggle -- soloist has no discovery-off flag, so
+	# Per-player Connect toggle -- soloist has no discovery-off flag, so
 	# the toggle is enforced here at the event boundary. The device stays
 	# VISIBLE in the Spotify app's picker regardless; only the LMS-side
 	# reaction is gated.
