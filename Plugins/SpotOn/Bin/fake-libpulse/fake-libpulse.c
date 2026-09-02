@@ -67,6 +67,7 @@
 #include <poll.h>
 #include <pthread.h>
 #include <signal.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -428,13 +429,20 @@ static ring_buffer_t g_ring;
  * pa_stream_write() -- with no underflow_cb ever firing, it has nothing
  * telling it to resume. Single-writer (Soloist's own thread, via
  * pa_stream_connect_playback/pa_stream_unref) / single-reader (HTTP
- * thread) -- same unlocked-global discipline already used by
- * g_flush_disconnect elsewhere in this file. g_ring_underrun_fired is
- * edge-triggered (reset whenever fresh data lands in the ring, in
- * _ring_push/_ring_flush) so the HTTP thread's 50ms poll loop signals a
- * stall exactly once per genuine empty streak, not on every tick. */
+ * thread) -- but unlike g_flush_disconnect (a coarse one-shot flag
+ * consumed once per cycle), this flag is set/reset from BOTH threads on
+ * every push/flush/drain, so plain `volatile int` leaves an ARM weak-
+ * memory-ordering window where a reset from one thread and a set from
+ * the other could race without a happens-before edge (CR-1, D-01).
+ * C11 `atomic_int` closes that window: plain `=` assignment and plain
+ * reads on an `_Atomic` int are seq_cst atomic operations, so every
+ * existing set/reset/read site below needs no syntax change, only the
+ * correct primitive. g_ring_underrun_fired is edge-triggered (reset
+ * whenever fresh data lands in the ring, in _ring_push/_ring_flush) so
+ * the HTTP thread's 50ms poll loop signals a stall exactly once per
+ * genuine empty streak, not on every tick. */
 static pa_stream *g_active_stream = NULL;
-static int g_ring_underrun_fired = 0;
+static atomic_int g_ring_underrun_fired = 0;
 
 static void _ring_init(ring_buffer_t *r) {
     r->buf = malloc(RING_CAPACITY);
@@ -2413,6 +2421,50 @@ static void _test_flush_cb(pa_stream *s, int success, void *userdata) {
     _test_flush_cb_count++;
 }
 
+/* CR-1 (D-01) hammer test support: counts underflow_cb invocations.
+ * Written from the HTTP server thread (the caller of underflow_cb),
+ * read from the main test thread's polling loop below -- volatile
+ * (rather than a lock) matches this file's existing convention for
+ * cross-thread single-writer/single-reader flags (g_flush_disconnect,
+ * g_boundary_at_pushed). */
+static void _test_underrun_cb(pa_stream *s, void *userdata) {
+    (void)s;
+    volatile int *counter = (volatile int *)userdata;
+    if (counter) {
+        (*counter)++;
+    }
+}
+
+/* CR-1 hammer thread context + body: repeatedly pushes a small chunk
+ * then, every 100th iteration, flushes -- both via real pa_stream_write/
+ * pa_stream_flush calls on the shared stream handle (not by poking
+ * ring globals directly), racing the HTTP drain thread's read/reset of
+ * g_ring_underrun_fired on purpose. This IS the CR-1 race: exercising
+ * it ~1000 times without a lost/stuck underflow edge is the regression
+ * guard. `done` is volatile for the same single-writer/single-reader
+ * reason as the underrun counter above -- the main thread's reconnect
+ * loop polls it to know when to stop. */
+typedef struct {
+    pa_stream *stream;
+    volatile int done;
+} test_hammer_ctx_t;
+
+static void *_test_hammer_thread_fn(void *arg) {
+    test_hammer_ctx_t *ctx = (test_hammer_ctx_t *)arg;
+    float chunk[4] = { 0.1f, -0.1f, 0.1f, -0.1f };
+    for (int i = 0; i < 1000; i++) {
+        pa_stream_write(ctx->stream, chunk, sizeof(chunk), NULL, 0, 0);
+        if ((i % 100) == 99) {
+            pa_operation *op = pa_stream_flush(ctx->stream, NULL, NULL);
+            if (op) {
+                pa_operation_unref(op);
+            }
+        }
+    }
+    ctx->done = 1;
+    return NULL;
+}
+
 int main(void) {
     int failures = 0;
 
@@ -2925,6 +2977,133 @@ int main(void) {
                 close(nfd);
             }
         }
+    }
+
+    /* CR-1 (D-01): g_ring_underrun_fired concurrency race under
+     * hammering push/flush cycles. Attaches a client, spawns a
+     * background thread that hammers pa_stream_write/pa_stream_flush
+     * ~1000 times (racing the flag's reset side against the HTTP
+     * thread's set side), while THIS thread drives the drain path by
+     * keeping a client attached throughout (each flush disconnects the
+     * currently attached client via the existing g_flush_disconnect
+     * path -- today's ordinary flush behavior, not a CR-1 concern --
+     * so this thread reconnects whenever that happens). After the
+     * hammer thread joins, one final empty->data->empty cycle confirms
+     * the underflow edge still fires -- a lost/stuck edge here is
+     * exactly the CR-1 failure mode this test guards against. */
+    {
+        pthread_mutex_lock(&g_ring.lock);
+        g_ring.total_popped += (int64_t)g_ring.fill;
+        g_ring.head = g_ring.tail = g_ring.fill = 0;
+        g_ring.client_connected = 0;
+        pthread_mutex_unlock(&g_ring.lock);
+        g_boundary_at_pushed = -1;
+
+        static volatile int hammer_underrun_count = 0;
+        hammer_underrun_count = 0;
+        pa_stream_set_underflow_callback(s, _test_underrun_cb, (void *)&hammer_underrun_count);
+
+        static const char hammerGetReq[] = "GET /stream HTTP/1.0\r\n\r\n";
+        int hfd = _test_connect_loopback(port);
+        int attach_ok = (hfd >= 0
+                          && write(hfd, hammerGetReq, sizeof(hammerGetReq) - 1) >= 0
+                          && _test_read_header(hfd, 3000) == 0);
+        if (!attach_ok) {
+            fprintf(stderr, "FAIL: could not attach initial client for CR-1 hammer test\n");
+            failures++;
+            if (hfd >= 0) close(hfd);
+        } else {
+            test_hammer_ctx_t ctx;
+            ctx.stream = s;
+            ctx.done = 0;
+
+            pthread_t hammerThread;
+            int spawnRc = pthread_create(&hammerThread, NULL, _test_hammer_thread_fn, &ctx);
+            if (spawnRc != 0) {
+                fprintf(stderr, "FAIL: could not spawn CR-1 hammer thread (rc=%d)\n", spawnRc);
+                failures++;
+                close(hfd);
+            } else {
+                unsigned char discard[4096];
+                while (!ctx.done) {
+                    if (hfd < 0) {
+                        hfd = _test_connect_loopback(port);
+                        if (hfd >= 0
+                            && (write(hfd, hammerGetReq, sizeof(hammerGetReq) - 1) < 0
+                                || _test_read_header(hfd, 500) != 0)) {
+                            close(hfd);
+                            hfd = -1;
+                        }
+                    } else {
+                        struct pollfd pfd; pfd.fd = hfd; pfd.events = POLLIN;
+                        if (poll(&pfd, 1, 20) > 0) {
+                            ssize_t n = read(hfd, discard, sizeof(discard));
+                            if (n <= 0) {
+                                close(hfd);
+                                hfd = -1;
+                            }
+                        }
+                    }
+                }
+                pthread_join(hammerThread, NULL);
+
+                /* Always force a FRESH connection for the final cycle,
+                 * even if `hfd` looked still-attached when the discard
+                 * loop above exited -- ctx.done can flip true immediately
+                 * after the hammer thread's LAST flush call, before the
+                 * HTTP thread's next 50ms tick has actually closed that
+                 * flush's target client. Reusing a client in that narrow
+                 * window is a real (observed) flake: it looks attached
+                 * but dies mid-read. A brand-new connect+GET always wins
+                 * this race -- the takeover path unconditionally closes
+                 * whatever old client-side fd bookkeeping was stale and
+                 * clears any leftover flush-disconnect flag before
+                 * promoting the new client (see the "Phase 78 fix"
+                 * comment on the GET /stream takeover branch above). */
+                if (hfd >= 0) {
+                    close(hfd);
+                    hfd = -1;
+                }
+                hfd = _test_connect_loopback(port);
+                attach_ok = (hfd >= 0
+                             && write(hfd, hammerGetReq, sizeof(hammerGetReq) - 1) >= 0
+                             && _test_read_header(hfd, 3000) == 0);
+
+                if (!attach_ok) {
+                    fprintf(stderr, "FAIL: could not (re)attach client for CR-1 final empty->data->empty cycle\n");
+                    failures++;
+                } else {
+                    int before_count = hammer_underrun_count;
+
+                    float finalChunk[4] = { 0.2f, -0.2f, 0.2f, -0.2f };
+                    pa_stream_write(s, finalChunk, sizeof(finalChunk), NULL, 0, 0);
+
+                    unsigned char finalBytes[16];
+                    int gotFinal = (_test_read_bytes(hfd, finalBytes, sizeof(finalBytes), 2000) == 0);
+
+                    int fired = 0;
+                    for (int i = 0; i < 100 && !fired; i++) {
+                        usleep(20000);
+                        fired = (hammer_underrun_count > before_count);
+                    }
+
+                    if (!gotFinal) {
+                        fprintf(stderr, "FAIL: CR-1 hammer test final chunk never reached the client\n");
+                        failures++;
+                    } else if (!fired) {
+                        fprintf(stderr, "FAIL: underflow_cb did not fire after CR-1 hammer loop + final "
+                                        "empty cycle (possible lost/stuck edge -- CR-1 regression)\n");
+                        failures++;
+                    } else {
+                        printf("ok: underrun_fired atomic under concurrent push/flush hammering\n");
+                    }
+                }
+
+                if (hfd >= 0) close(hfd);
+            }
+        }
+
+        pa_stream_set_underflow_callback(s, NULL, NULL);
     }
 
     /* Drop-oldest test: force client_connected=0 and an empty ring
