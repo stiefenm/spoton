@@ -367,6 +367,36 @@ static int g_awaiting_first_drain = 0;
  * worker thread), read by the separate HTTP server thread. */
 static volatile int g_flush_disconnect = 0;
 
+/* Phase 77 Task 2 (D-02/D-03, RESEARCH Pattern 1 "Seek-Armed Flush"):
+ * arms the "next flush is a same-track seek/mismatch reposition, NOT a
+ * skip" behavior. Incremented by POST /seek-arm (one arm per expected
+ * daemon flush -- seek per D-02, URI-mismatch play per D-05, both share
+ * this one mechanism), decremented by pa_stream_flush() when > 0 (which
+ * then skips g_flush_disconnect instead of setting it -- the attached
+ * client stays connected and simply waits for post-flush data, same as
+ * the existing 50ms drain-loop poll already does on any empty ring).
+ * A COUNTER, not a one-shot bool: back-to-back arms landing before the
+ * first flush arrives (rapid double-seek) are each honored in turn,
+ * rather than the second arm silently overwriting/losing the first.
+ * Saturates at 8 -- bounds a LAN-spam or stale-arm pile-up (T-77-03)
+ * without needing a real DoS-proof cap (arms are cheap, single-int
+ * increments). Also has a recovery path (77-REVIEWS.md HIGH): reset to
+ * 0 in the POST /boundary handler, since a track/session boundary is
+ * Perl's authoritative transition signal -- any arm still pending there
+ * is stale by definition (its flush would have preceded the transition
+ * if it was ever coming), and without this reset a leaked arm (daemon
+ * ignores the seek; WS drops between arm and command; play-from-stopped
+ * never flushes) would hold the drain-loop write gate below shut
+ * forever, making even a `stopped` -> POST /boundary EOF unreachable --
+ * strictly worse than the pre-Phase-77 disconnect-on-every-flush bug
+ * this mechanism fixes. atomic_int (not volatile), matching the CR-1
+ * precedent established earlier in this same Wave: this flag is
+ * written from both threads (HTTP thread on arm/boundary-reset/init,
+ * the flush-caller thread on consume), not just read-one/write-other
+ * like g_flush_disconnect. */
+static atomic_int g_seek_flush_armed = 0;
+#define SEEK_FLUSH_ARMED_MAX 8
+
 /* Phase 77 Spike 2 (Bounded Endpoint Prototype): forward declaration, same
  * reason as g_debug_trace's forward declaration above -- the BOUNDARY()
  * macro (real definition further below, next to the other trace macros)
@@ -849,6 +879,25 @@ static void *_http_thread_fn(void *arg) {
             size_t ring_fill_now = g_ring.fill;
             pthread_mutex_unlock(&g_ring.lock);
 
+            /* Phase 77 Task 2 (77-REVIEWS.md HIGH -- arm-counter recovery
+             * lifecycle): a track/session boundary is Perl's authoritative
+             * transition signal, so any seek-arm still pending here is
+             * stale by definition -- its flush would have preceded this
+             * boundary if it was ever coming. Reset unconditionally so a
+             * leaked arm (daemon ignored the seek; WS dropped between arm
+             * and command; play-from-stopped never flushed) can never
+             * wedge the drain-loop write gate shut past this transition.
+             * Deliberately NOT also cleared in the g_flush_disconnect
+             * consumption block below -- an arm landing near an unarmed
+             * disconnect may belong to an imminent armed flush for the
+             * NEXT track, and this boundary reset alone already
+             * guarantees recovery at every transition. Accepted
+             * trade-off: an armed seek racing a natural track boundary
+             * can have its arm cleared here, degrading that one flush to
+             * the pre-Phase-77 disconnect path -- the safe direction
+             * (LMS restarts the stream) versus a permanent wedge. */
+            g_seek_flush_armed = 0;
+
             static const char boundary_resp[] =
                 "HTTP/1.0 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
             _http_write_all(pending.fd, (const unsigned char *)boundary_resp,
@@ -857,8 +906,38 @@ static void *_http_thread_fn(void *arg) {
             pending.fd = -1;
             pending.len = 0;
 
-            BOUNDARY("boundary_planted: total_pushed=%lld ring_fill=%zu",
+            BOUNDARY("boundary_planted: total_pushed=%lld ring_fill=%zu seek_arm_reset",
                      (long long)g_boundary_at_pushed, ring_fill_now);
+
+            continue; /* back to the top of the for(;;) -- skip GET /stream takeover */
+        }
+
+        /* Phase 77 Task 2 (D-02/D-03, RESEARCH Pattern 1): POST /seek-arm
+         * is a sibling control request to POST /boundary above -- same
+         * bounded pending.buf/_pending_head_complete() parsing (T-77-02),
+         * same "respond and continue before the GET /stream takeover"
+         * shape so it can never touch client_fd. Parameterless bare
+         * trigger (RESEARCH V5 -- no body/query parsing, no new buffer or
+         * unbounded read path). Arms (increments, saturating at
+         * SEEK_FLUSH_ARMED_MAX) the "next flush is a same-track
+         * seek/mismatch reposition, not a skip" behavior consumed by
+         * pa_stream_flush() below. */
+        if (pending.fd >= 0 && _pending_head_complete(&pending)
+            && strstr(pending.buf, "POST") != NULL && strstr(pending.buf, "/seek-arm") != NULL)
+        {
+            if (g_seek_flush_armed < SEEK_FLUSH_ARMED_MAX) {
+                g_seek_flush_armed++;
+            }
+
+            static const char seek_arm_resp[] =
+                "HTTP/1.0 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+            _http_write_all(pending.fd, (const unsigned char *)seek_arm_resp,
+                             sizeof(seek_arm_resp) - 1);
+            close(pending.fd);
+            pending.fd = -1;
+            pending.len = 0;
+
+            BOUNDARY("seek_arm: armed=%d", (int)g_seek_flush_armed);
 
             continue; /* back to the top of the for(;;) -- skip GET /stream takeover */
         }
@@ -927,8 +1006,21 @@ static void *_http_thread_fn(void *arg) {
              * is derived from the actual byte rate with ~2x headroom. */
 #define HTTP_DRAIN_CHUNK   16384
 #define HTTP_DRAIN_BUDGET  ((size_t)(RING_BYTES_PER_SEC * 0.050 * 2))  /* ~2x headroom per 50ms tick */
+            /* Phase 77 Task 2 (D-02/D-03, RESEARCH Pattern 1 step 4 /
+             * Pitfall 3): while a seek-arm is pending, the ring may hold
+             * pre-seek bytes that must never cross the socket -- to
+             * whatever client is attached, including one that took over
+             * mid-armed-window (D-02's locked ProtocolHandler-driven
+             * seek-restart opens a fresh connection independently of the
+             * WS seek command). Skip popping ENTIRELY for this tick (do
+             * NOT pop-and-discard -- if a flush never arrives, per the
+             * boundary-reset recovery lifecycle above, the un-popped
+             * audio must still be there for whichever client eventually
+             * gets served). The outer poll() above already ticks every
+             * 50ms regardless, so control requests (including the
+             * flush-clearing POST /boundary) stay serviced normally. */
             size_t drained_this_tick = 0;
-            while (drained_this_tick < HTTP_DRAIN_BUDGET) {
+            while (g_seek_flush_armed <= 0 && drained_this_tick < HTTP_DRAIN_BUDGET) {
             unsigned char chunk[HTTP_DRAIN_CHUNK];
             size_t n = _ring_pop_timed(&g_ring, chunk, sizeof(chunk),
                                        drained_this_tick == 0 ? 50 : 0);
@@ -1338,6 +1430,7 @@ static void _fake_libpulse_init(void) {
     signal(SIGPIPE, SIG_IGN);
     g_flush_disconnect = 0;
     g_boundary_at_pushed = -1;  /* Phase 77 Spike 2: explicit reset, matching g_flush_disconnect */
+    g_seek_flush_armed = 0;  /* Phase 77 Task 2: explicit reset, same one-shot-flag lifecycle */
 
     const char *traceEnv = getenv("SPOTON_FAKEPULSE_TRACE");
     if (traceEnv && *traceEnv) {
@@ -2008,11 +2101,23 @@ pa_operation *pa_stream_flush(pa_stream *s, pa_stream_success_cb_t cb, void *use
          * consumption site in _http_thread_fn, which races this call on a
          * different thread). */
         g_boundary_at_pushed = -1;
-        /* 260827-of9: Soloist calls pa_stream_flush() on an app-side skip
-         * (confirmed via trace) -- signal the HTTP thread to drop the
+        /* 260827-of9 / Phase 77 Task 2 (D-02/D-03): if a seek-arm is
+         * pending, this flush is a same-track seek/mismatch reposition
+         * (D-02 seek, D-05 URI-mismatch play), NOT an app-side skip --
+         * consume one arm and do NOT disconnect. The attached client
+         * (old or freshly-taken-over, per the drain-loop write gate
+         * below) simply waits: the existing 50ms drain-loop poll already
+         * retries an empty ring, so post-flush pa_stream_write() calls
+         * refill it and the client keeps streaming uninterrupted.
+         * Otherwise (unarmed): unchanged skip/mismatch-without-a-prior-
+         * arm behavior (D-12) -- signal the HTTP thread to drop the
          * currently connected client so LMS reconnects fresh rather than
          * continuing to hold a connection whose ring was just emptied. */
-        g_flush_disconnect = 1;
+        if (g_seek_flush_armed > 0) {
+            g_seek_flush_armed--;
+        } else {
+            g_flush_disconnect = 1;
+        }
     }
     if (cb) {
         cb(s, 1, userdata);
@@ -2419,6 +2524,53 @@ static void _test_flush_cb(pa_stream *s, int success, void *userdata) {
     (void)success;
     (void)userdata;
     _test_flush_cb_count++;
+}
+
+/* Phase 77 Task 2 test helpers: mirrors the shim's own FLOAT32LE->S32LE
+ * conversion (see the PA_SAMPLE_FLOAT32LE branch in pa_stream_write
+ * above) so new byte-content assertions can be COMPUTED instead of
+ * hand-transcribed -- removes a class of test-authoring transcription
+ * error for the seek-armed-flush and leaked-arm host tests below. */
+static int32_t _test_f32_to_s32(float f) {
+    if (f > 1.0f) f = 1.0f;
+    if (f < -1.0f) f = -1.0f;
+    return (int32_t)lrint((double)f * 2147483647.0);
+}
+
+/* Sends a bare (parameterless) POST control request -- e.g. /seek-arm,
+ * /boundary -- over a fresh loopback connection and confirms a 200 OK
+ * response. Shared helper for the control-endpoint host tests below
+ * (the existing /boundary test above has its own inline copy of this
+ * same shape; left untouched, out of this task's scope). Returns 1 on
+ * a confirmed 200 OK, 0 otherwise. */
+static int _test_post_control(int port, const char *path) {
+    int fd = _test_connect_loopback(port);
+    if (fd < 0) {
+        return 0;
+    }
+    char req[128];
+    int reqLen = snprintf(req, sizeof(req), "POST %s HTTP/1.0\r\nConnection: close\r\n\r\n", path);
+    int ok = 0;
+    if (reqLen > 0 && write(fd, req, (size_t)reqLen) >= 0) {
+        char resp[128];
+        size_t rlen = 0;
+        struct timeval start, now;
+        gettimeofday(&start, NULL);
+        while (rlen < sizeof(resp) - 1) {
+            struct pollfd pfd; pfd.fd = fd; pfd.events = POLLIN;
+            if (poll(&pfd, 1, 200) > 0) {
+                ssize_t n = read(fd, resp + rlen, sizeof(resp) - 1 - rlen);
+                if (n <= 0) break;
+                rlen += (size_t)n;
+            }
+            gettimeofday(&now, NULL);
+            if ((now.tv_sec - start.tv_sec) * 1000 >= 2000) break;
+        }
+        resp[rlen] = '\0';
+        ok = (strncmp(resp, "HTTP/1.0 200 OK", 15) == 0);
+    }
+    close(fd);
+    return ok;
 }
 
 /* CR-1 (D-01) hammer test support: counts underflow_cb invocations.
@@ -3104,6 +3256,253 @@ int main(void) {
         }
 
         pa_stream_set_underflow_callback(s, NULL, NULL);
+    }
+
+    /* Seek-armed flush tracer (D-02/D-03, Task 2, RESEARCH Pattern 1):
+     * the single seek path proven end-to-end through the real HTTP
+     * thread and real pa_stream_flush -- arm -> pre-flush bytes
+     * withheld -> flush -> client stays attached -> only post-flush
+     * bytes served. Byte-content proof via memcmp (Pitfall 3), not
+     * merely connection-lifecycle. */
+    {
+        pthread_mutex_lock(&g_ring.lock);
+        g_ring.total_popped += (int64_t)g_ring.fill;
+        g_ring.head = g_ring.tail = g_ring.fill = 0;
+        g_ring.client_connected = 0;
+        pthread_mutex_unlock(&g_ring.lock);
+        g_boundary_at_pushed = -1;
+        g_seek_flush_armed = 0;
+
+        static const char getReq[] = "GET /stream HTTP/1.0\r\n\r\n";
+        int sfd = _test_connect_loopback(port);
+        if (sfd < 0) {
+            fprintf(stderr, "FAIL: could not connect client for seek-armed flush test\n");
+            failures++;
+        } else if (write(sfd, getReq, sizeof(getReq) - 1) < 0
+                   || _test_read_header(sfd, 3000) != 0) {
+            fprintf(stderr, "FAIL: could not attach streaming client for seek-armed flush test\n");
+            failures++;
+            close(sfd);
+        } else {
+            /* Confirm the client is genuinely attached and draining
+             * normally before arming anything. */
+            float attachPattern[2] = { 0.5f, -0.5f };
+            int32_t expected_attach[2];
+            expected_attach[0] = _test_f32_to_s32(attachPattern[0]);
+            expected_attach[1] = _test_f32_to_s32(attachPattern[1]);
+            pa_stream_write(s, attachPattern, sizeof(attachPattern), NULL, 0, 0);
+
+            unsigned char got_attach[8];
+            if (_test_read_bytes(sfd, got_attach, sizeof(got_attach), 3000) != 0
+                || memcmp(got_attach, expected_attach, sizeof(expected_attach)) != 0) {
+                fprintf(stderr, "FAIL: seek-armed flush test: initial attach pattern never arrived or mismatched\n");
+                failures++;
+                close(sfd);
+            } else if (!_test_post_control(port, "/seek-arm")) {
+                fprintf(stderr, "FAIL: POST /seek-arm did not return 200 OK\n");
+                failures++;
+                close(sfd);
+            } else {
+                /* PRE-flush pattern -- must NOT reach the client while
+                 * armed (drain gate holds). Confirm via a bounded
+                 * poll/read window that literally zero bytes arrive and
+                 * the socket does not see EOF either. */
+                float prePattern[2] = { 0.75f, -0.75f };
+                pa_stream_write(s, prePattern, sizeof(prePattern), NULL, 0, 0);
+
+                int preLeaked = 0;
+                int preEof = 0;
+                {
+                    unsigned char peek[64];
+                    struct timeval ps, pn;
+                    gettimeofday(&ps, NULL);
+                    for (;;) {
+                        struct pollfd pfd; pfd.fd = sfd; pfd.events = POLLIN;
+                        int rc = poll(&pfd, 1, 20);
+                        if (rc > 0) {
+                            ssize_t n = read(sfd, peek, sizeof(peek));
+                            if (n > 0) { preLeaked = 1; break; }
+                            if (n == 0) { preEof = 1; break; }
+                        }
+                        gettimeofday(&pn, NULL);
+                        if ((pn.tv_sec - ps.tv_sec) * 1000 >= 400) break;
+                    }
+                }
+
+                /* Flush on the real stream handle -- armed, so the
+                 * client must stay attached (no g_flush_disconnect). */
+                pa_operation *flushOp = pa_stream_flush(s, NULL, NULL);
+                if (flushOp) {
+                    pa_operation_unref(flushOp);
+                }
+
+                /* POST-flush pattern -- the ONLY bytes that must reach
+                 * the client. */
+                float postPattern[4] = { 0.125f, -0.125f, 0.0f, 1.0f };
+                int32_t expected_post[4];
+                for (int i = 0; i < 4; i++) {
+                    expected_post[i] = _test_f32_to_s32(postPattern[i]);
+                }
+                pa_stream_write(s, postPattern, sizeof(postPattern), NULL, 0, 0);
+
+                unsigned char got_post[16];
+                int gotPost = (_test_read_bytes(sfd, got_post, sizeof(got_post), 3000) == 0);
+
+                pthread_mutex_lock(&g_ring.lock);
+                int stillConnected = g_ring.client_connected;
+                pthread_mutex_unlock(&g_ring.lock);
+
+                if (preLeaked) {
+                    fprintf(stderr, "FAIL: seek-armed flush test: pre-flush bytes leaked to client before flush\n");
+                    failures++;
+                } else if (preEof) {
+                    fprintf(stderr, "FAIL: seek-armed flush test: client saw EOF while armed and waiting (before flush)\n");
+                    failures++;
+                } else if (!gotPost) {
+                    fprintf(stderr, "FAIL: seek-armed flush test: post-flush pattern never arrived\n");
+                    failures++;
+                } else if (memcmp(got_post, expected_post, sizeof(expected_post)) != 0) {
+                    fprintf(stderr, "FAIL: seek-armed flush test: post-flush bytes mismatch (pre-flush bytes interleaved?)\n");
+                    failures++;
+                } else if (!stillConnected) {
+                    fprintf(stderr, "FAIL: seek-armed flush test: client was disconnected (armed flush should not disconnect)\n");
+                    failures++;
+                } else {
+                    printf("ok: seek-armed flush keeps client attached and serves only post-flush bytes\n");
+                }
+
+                close(sfd);
+            }
+        }
+    }
+
+    /* Leaked arm recovery (D-11, 77-REVIEWS.md HIGH): an arm with NO
+     * flush ever following it must not wedge the drain gate shut past
+     * a track/session boundary -- POST /boundary resets the stale arm
+     * (see the reset in the boundary handler above) so the withheld
+     * bytes still drain and the client still reaches a clean EOF at
+     * the watermark, exactly as if no arm had ever been sent. */
+    {
+        pthread_mutex_lock(&g_ring.lock);
+        g_ring.total_popped += (int64_t)g_ring.fill;
+        g_ring.head = g_ring.tail = g_ring.fill = 0;
+        g_ring.client_connected = 0;
+        pthread_mutex_unlock(&g_ring.lock);
+        g_boundary_at_pushed = -1;
+        g_seek_flush_armed = 0;
+
+        static const char getReq2[] = "GET /stream HTTP/1.0\r\n\r\n";
+        int lfd = _test_connect_loopback(port);
+        if (lfd < 0) {
+            fprintf(stderr, "FAIL: could not connect client for leaked-arm boundary-reset test\n");
+            failures++;
+        } else if (write(lfd, getReq2, sizeof(getReq2) - 1) < 0
+                   || _test_read_header(lfd, 3000) != 0) {
+            fprintf(stderr, "FAIL: could not attach streaming client for leaked-arm boundary-reset test\n");
+            failures++;
+            close(lfd);
+        } else {
+            float attachPattern2[2] = { 0.5f, -0.5f };
+            int32_t expected_attach2[2];
+            expected_attach2[0] = _test_f32_to_s32(attachPattern2[0]);
+            expected_attach2[1] = _test_f32_to_s32(attachPattern2[1]);
+            pa_stream_write(s, attachPattern2, sizeof(attachPattern2), NULL, 0, 0);
+
+            unsigned char got_attach2[8];
+            if (_test_read_bytes(lfd, got_attach2, sizeof(got_attach2), 3000) != 0
+                || memcmp(got_attach2, expected_attach2, sizeof(expected_attach2)) != 0) {
+                fprintf(stderr, "FAIL: leaked-arm test: initial attach pattern never arrived or mismatched\n");
+                failures++;
+                close(lfd);
+            } else if (!_test_post_control(port, "/seek-arm")) {
+                fprintf(stderr, "FAIL: leaked-arm test: POST /seek-arm did not return 200 OK\n");
+                failures++;
+                close(lfd);
+            } else {
+                /* This pattern is deliberately never flushed -- the arm
+                 * leaks by design in this test, exercising the recovery
+                 * path rather than the normal flush-consumption path. */
+                float leakPattern[4] = { 0.6f, -0.6f, 0.4f, -0.4f };
+                int32_t expected_leak[4];
+                for (int i = 0; i < 4; i++) {
+                    expected_leak[i] = _test_f32_to_s32(leakPattern[i]);
+                }
+                pa_stream_write(s, leakPattern, sizeof(leakPattern), NULL, 0, 0);
+
+                int leaked = 0;
+                int sawEofWhileArmed = 0;
+                {
+                    unsigned char peek[64];
+                    struct timeval ps, pn;
+                    gettimeofday(&ps, NULL);
+                    for (;;) {
+                        struct pollfd pfd; pfd.fd = lfd; pfd.events = POLLIN;
+                        int rc = poll(&pfd, 1, 20);
+                        if (rc > 0) {
+                            ssize_t n = read(lfd, peek, sizeof(peek));
+                            if (n > 0) { leaked = 1; break; }
+                            if (n == 0) { sawEofWhileArmed = 1; break; }
+                        }
+                        gettimeofday(&pn, NULL);
+                        if ((pn.tv_sec - ps.tv_sec) * 1000 >= 400) break;
+                    }
+                }
+
+                /* Plant the boundary -- resets the leaked arm AND marks
+                 * the current write cursor as the EOF watermark. */
+                int boundary_ok = _test_post_control(port, "/boundary");
+
+                if (leaked) {
+                    fprintf(stderr, "FAIL: leaked-arm test: withheld bytes leaked to client before the boundary reset\n");
+                    failures++;
+                    close(lfd);
+                } else if (sawEofWhileArmed) {
+                    fprintf(stderr, "FAIL: leaked-arm test: client saw EOF while armed and waiting (before boundary reset)\n");
+                    failures++;
+                    close(lfd);
+                } else if (!boundary_ok) {
+                    fprintf(stderr, "FAIL: leaked-arm test: POST /boundary did not return 200 OK\n");
+                    failures++;
+                    close(lfd);
+                } else {
+                    /* Drain: the previously-withheld bytes must now
+                     * flow (arm cleared by the boundary reset) and the
+                     * client must reach a clean EOF exactly at the
+                     * watermark -- same read-to-EOF idiom as the
+                     * existing POST /boundary EOF test above. */
+                    int got_eof = 0;
+                    unsigned char received[64];
+                    size_t received_n = 0;
+                    for (int i = 0; i < 150 && !got_eof; i++) {
+                        struct pollfd pfd; pfd.fd = lfd; pfd.events = POLLIN;
+                        if (poll(&pfd, 1, 10) > 0) {
+                            ssize_t n = read(lfd, received + received_n, sizeof(received) - received_n);
+                            if (n == 0) {
+                                got_eof = 1;
+                            } else if (n < 0 && errno != EAGAIN && errno != EINTR) {
+                                got_eof = 1;
+                            } else if (n > 0) {
+                                received_n += (size_t)n;
+                            }
+                        }
+                    }
+
+                    if (!got_eof) {
+                        fprintf(stderr, "FAIL: leaked-arm test: client never reached EOF at the watermark (hung)\n");
+                        failures++;
+                    } else if (received_n != sizeof(expected_leak)
+                               || memcmp(received, expected_leak, sizeof(expected_leak)) != 0) {
+                        fprintf(stderr, "FAIL: leaked-arm test: received %zu byte(s) at watermark, expected exactly the withheld pattern\n",
+                                received_n);
+                        failures++;
+                    } else {
+                        printf("ok: leaked arm cleared by boundary and client closes at watermark\n");
+                    }
+
+                    close(lfd);
+                }
+            }
+        }
     }
 
     /* Drop-oldest test: force client_connected=0 and an empty ring
