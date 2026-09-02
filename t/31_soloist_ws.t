@@ -999,4 +999,106 @@ sub new_ws {
         "playback_changed status='playing' (signal 1) clears sessionPaused after position_sync (signal 3) last set it");
 }
 
+# ============================================================
+# CR-S1 (Phase 77 Plan 02): _detectSeek() extraction equivalence rows --
+# both call sites delegate to the same helper; behavior must be byte-for-
+# byte identical to pre-refactor (PATTERNS "CR-S1 helper extraction").
+# ============================================================
+
+# Test 1: position_sync drift >SEEK_THRESHOLD emits 'seek' via _detectSeek
+# (no sessionActive required at this call site -- matches pre-refactor).
+{
+    local $Slim::Utils::Prefs::FAKE_VALUES{enableSpotifyConnect} = 1;
+    @Slim::Player::Client::EXECUTED = ();
+    my $ws = new_ws();
+    $ws->lastPositionMs(10000);
+    $ws->lastPositionTs(Time::HiRes::time() - 1);    # expected ~11000ms
+
+    $ws->_onMessage('{"type":"position_sync","position_ms":20000}');
+
+    is_deeply(
+        \@Slim::Player::Client::EXECUTED,
+        [ [ 'spottyconnect', 'seek', '20.000', '' ] ],
+        "CR-S1: position_sync drift >SEEK_THRESHOLD emits seek via _detectSeek (no sessionActive needed)"
+    );
+}
+
+# Test 2: the same deviation arriving via playback_state WITH sessionActive
+# set still emits 'seek' -- same helper, same formatted position.
+{
+    local $Slim::Utils::Prefs::FAKE_VALUES{enableSpotifyConnect} = 1;
+    @Slim::Player::Client::EXECUTED = ();
+    my $ws = new_ws();
+    $ws->sessionActive(1);
+    $ws->lastPositionMs(10000);
+    $ws->lastPositionTs(Time::HiRes::time() - 1);    # expected ~11000ms
+
+    $ws->_onMessage('{"type":"playback_state","item":{"uri":"spotify:track:crs1"},"position":{"position_ms":20000},"is_active":true,"status":"playing"}');
+
+    is_deeply(
+        \@Slim::Player::Client::EXECUTED,
+        [ [ 'spottyconnect', 'seek', '20.000', '' ] ],
+        "CR-S1: playback_state drift >SEEK_THRESHOLD with sessionActive emits seek via _detectSeek (same helper as position_sync)"
+    );
+}
+
+# Test 3: guard divergence stays at the call sites, not inside _detectSeek --
+# playback_state drift WITHOUT sessionActive does NOT emit; position_sync
+# drift WITHOUT sessionActive DOES emit (no guard was added to that path).
+{
+    local $Slim::Utils::Prefs::FAKE_VALUES{enableSpotifyConnect} = 1;
+    @Slim::Player::Client::EXECUTED = ();
+    my $ws = new_ws();
+    # sessionActive intentionally left false/default.
+    $ws->lastPositionMs(10000);
+    $ws->lastPositionTs(Time::HiRes::time() - 1);
+
+    $ws->_onMessage('{"type":"playback_state","item":{"uri":"spotify:track:crs1"},"position":{"position_ms":20000},"is_active":false,"status":"playing"}');
+    is_deeply(\@Slim::Player::Client::EXECUTED, [],
+        "CR-S1: playback_state drift without sessionActive emits nothing (call-site guard preserved)");
+}
+{
+    local $Slim::Utils::Prefs::FAKE_VALUES{enableSpotifyConnect} = 1;
+    @Slim::Player::Client::EXECUTED = ();
+    my $ws = new_ws();
+    # sessionActive intentionally left false/default.
+    $ws->lastPositionMs(10000);
+    $ws->lastPositionTs(Time::HiRes::time() - 1);
+
+    $ws->_onMessage('{"type":"position_sync","position_ms":20000}');
+    is_deeply(
+        \@Slim::Player::Client::EXECUTED,
+        [ [ 'spottyconnect', 'seek', '20.000', '' ] ],
+        "CR-S1: position_sync drift without sessionActive still emits seek (no guard added to this call site)"
+    );
+}
+
+# Test 4: sessionPaused=true freezes the baseline inside _detectSeek --
+# elapsedMs contribution is 0 regardless of large wallclock elapsed.
+{
+    local $Slim::Utils::Prefs::FAKE_VALUES{enableSpotifyConnect} = 1;
+    @Slim::Player::Client::EXECUTED = ();
+    my $ws = new_ws();
+    $ws->sessionActive(1);
+    $ws->sessionPaused(1);
+    $ws->lastPositionMs(10000);
+    $ws->lastPositionTs(Time::HiRes::time() - 30);   # 30s "ago" -- ignored while paused
+
+    # Position within SEEK_THRESHOLD of the FROZEN baseline (10000ms, not the
+    # ~40000ms it would extrapolate to unpaused) -- no seek.
+    $ws->_onMessage('{"type":"position_sync","position_ms":10500,"speed":0}');
+    is_deeply(\@Slim::Player::Client::EXECUTED, [],
+        "CR-S1: sessionPaused=true freezes the baseline inside _detectSeek (elapsedMs contribution is 0)");
+
+    # Same paused instance, but the reported position IS far from the frozen
+    # baseline -- still emits, proving the frozen baseline is compared, not
+    # simply suppressed.
+    $ws->_onMessage('{"type":"position_sync","position_ms":50000,"speed":0}');
+    is_deeply(
+        \@Slim::Player::Client::EXECUTED,
+        [ [ 'spottyconnect', 'seek', '50.000', '' ] ],
+        "CR-S1: sessionPaused=true still emits seek when position is far from the frozen baseline"
+    );
+}
+
 done_testing();

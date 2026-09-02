@@ -797,21 +797,40 @@ sub _onPositionSync {
 
 	my $now = Time::HiRes::time();
 
+	# CR-S1 (Phase 77 Plan 02): drift detection extracted to a shared helper
+	# below -- _onPositionSync does NOT require sessionActive (guard stays
+	# here, not inside the helper; see _onPlaybackState for the divergent
+	# guard).
 	if (defined $self->lastPositionMs && defined $self->lastPositionTs) {
-		# Frozen baseline while paused: the expected position IS the last
-		# known position -- it must not advance with wallclock time just
-		# because the app hasn't moved (the elapsed paused interval is not
-		# elapsed PLAYBACK time).
-		my $elapsedMs  = $self->sessionPaused ? 0 : (($now - $self->lastPositionTs) * 1000);
-		my $expectedMs = $self->lastPositionMs + $elapsedMs;
-		my $deltaSec   = abs($posMs - $expectedMs) / 1000;
-		if ($deltaSec > SEEK_THRESHOLD) {
-			$self->_emit('seek', sprintf('%.3f', $posMs / 1000));
-		}
+		$self->_detectSeek($posMs, $now);
 	}
 
 	$self->lastPositionMs($posMs);
 	$self->lastPositionTs($now);
+}
+
+# CR-S1 (Phase 77 Plan 02, PATTERNS "CR-S1 helper extraction"):
+# shared drift computation, extracted from the byte-for-byte identical
+# blocks that used to live inline in _onPositionSync and _onPlaybackState.
+#
+# Frozen baseline while paused: the expected position IS the last known
+# position -- it must not advance with wallclock time just because the app
+# hasn't moved (the elapsed paused interval is not elapsed PLAYBACK time).
+#
+# CRITICAL (PATTERNS-verified divergence): the guards that decide WHETHER
+# to call this helper stay at the two call sites, not inside it --
+# _onPositionSync's guard never checks sessionActive; _onPlaybackState's
+# guard additionally requires $self->sessionActive. Do not add a
+# sessionActive check in here.
+sub _detectSeek {
+	my ($self, $posMs, $now) = @_;
+
+	my $elapsedMs  = $self->sessionPaused ? 0 : (($now - $self->lastPositionTs) * 1000);
+	my $expectedMs = $self->lastPositionMs + $elapsedMs;
+	my $deltaSec   = abs($posMs - $expectedMs) / 1000;
+	if ($deltaSec > SEEK_THRESHOLD) {
+		$self->_emit('seek', sprintf('%.3f', $posMs / 1000));
+	}
 }
 
 # Snapshot on connect / get_state response -- initial resync after a WS
@@ -866,16 +885,11 @@ sub _onPlaybackState {
 	}
 	if (defined $posMs) {
 		my $now = Time::HiRes::time();
+		# CR-S1: same helper as _onPositionSync, but this call site's guard
+		# additionally requires sessionActive (divergence from
+		# _onPositionSync, preserved deliberately).
 		if ($self->sessionActive && defined $self->lastPositionMs && defined $self->lastPositionTs) {
-			# Frozen baseline while paused -- see _onPositionSync for the
-			# same rule (the expected position IS the last known position
-			# while paused; it does not advance with wallclock time).
-			my $elapsedMs  = $self->sessionPaused ? 0 : (($now - $self->lastPositionTs) * 1000);
-			my $expectedMs = $self->lastPositionMs + $elapsedMs;
-			my $deltaSec   = abs($posMs - $expectedMs) / 1000;
-			if ($deltaSec > SEEK_THRESHOLD) {
-				$self->_emit('seek', sprintf('%.3f', $posMs / 1000));
-			}
+			$self->_detectSeek($posMs, $now);
 		}
 		$self->lastPositionMs($posMs);
 		$self->lastPositionTs($now);
