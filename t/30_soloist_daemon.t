@@ -328,4 +328,166 @@ require_ok('Plugins::SpotOn::Unified::SoloistDaemon')
     );
 }
 
+# ============================================================
+# CR-S3 (Phase 77 Plan 02, RESEARCH Pitfall 4): first-ever coverage for
+# _pollWsPort/_pollHttpPort. These two functions look structurally
+# identical but diverge in failure semantics (WS calls stop() on
+# exhaustion, HTTP does NOT -- WR-07 idle-daemon protection). These tests
+# pin that divergence through the shared _pollPortScaffold() extraction.
+#
+# Instances are constructed directly via the stubbed Accessor::new (bless
+# []) rather than SoloistDaemon->new(...), which would spawn a real
+# process -- these tests exercise the poll functions in isolation.
+# ============================================================
+
+package Test::FakeDaemonProc;
+sub new   { my ($class, $alive) = @_; return bless { alive => $alive }, $class; }
+sub alive { return $_[0]->{alive}; }
+
+package main;
+
+my $CRS3_MAX_ATTEMPTS = Plugins::SpotOn::Unified::SoloistDaemon::PORT_POLL_MAX_ATTEMPTS();
+
+# Test 1: _pollWsPort exhausting max attempts with the process alive calls
+# $self->stop() (failure semantics preserved).
+{
+    my $daemon = bless [], 'Plugins::SpotOn::Unified::SoloistDaemon';
+    $daemon->mac('aa:bb:cc:dd:ee:10');
+    $daemon->_proc(Test::FakeDaemonProc->new(1));
+    $daemon->_wsPortPollAttempts(0);
+    my $dataDir = tempdir(CLEANUP => 1);    # ws.port never written
+
+    my $stopped = 0;
+    no warnings 'redefine';
+    local *Plugins::SpotOn::Unified::SoloistDaemon::stop = sub { $stopped++; };
+
+    for (1 .. $CRS3_MAX_ATTEMPTS) {
+        Plugins::SpotOn::Unified::SoloistDaemon::_pollWsPort($daemon, $dataDir);
+    }
+
+    is($stopped, 1,
+        "CR-S3: _pollWsPort exhausting max attempts with process alive calls stop() (failure semantics preserved)");
+}
+
+# Test 2: _pollHttpPort exhausting max attempts does NOT call stop() and
+# leaves the daemon runnable (WR-07 idle-daemon protection preserved).
+{
+    my $daemon = bless [], 'Plugins::SpotOn::Unified::SoloistDaemon';
+    $daemon->mac('aa:bb:cc:dd:ee:11');
+    $daemon->_proc(Test::FakeDaemonProc->new(1));
+    $daemon->_httpPortPollAttempts(0);
+
+    my ($fh, $tmppath) = File::Temp::tempfile(UNLINK => 1);
+    close($fh);    # empty file -- -s is false, port never "announced"
+    $daemon->_httpPortTmpfile($tmppath);
+
+    my $stopped = 0;
+    no warnings 'redefine';
+    local *Plugins::SpotOn::Unified::SoloistDaemon::stop = sub { $stopped++; };
+
+    for (1 .. $CRS3_MAX_ATTEMPTS) {
+        Plugins::SpotOn::Unified::SoloistDaemon::_pollHttpPort($daemon);
+    }
+
+    is($stopped, 0,
+        "CR-S3: _pollHttpPort exhausting max attempts does NOT call stop() (WR-07 idle-daemon protection preserved)");
+    ok(defined $daemon->_httpPortTmpfile,
+        "CR-S3: exhausted HTTP-port poll leaves the tmpfile path intact -- daemon stays pollable on demand (WR-07)");
+}
+
+# Test 3: a port file appearing on attempt N (< max) resolves the poll
+# successfully for both variants (scaffold reschedule-then-resolve works).
+
+# -- HTTP variant --
+{
+    my $daemon = bless [], 'Plugins::SpotOn::Unified::SoloistDaemon';
+    $daemon->mac('aa:bb:cc:dd:ee:12');
+    $daemon->_proc(Test::FakeDaemonProc->new(1));
+    $daemon->_httpPortPollAttempts(0);
+
+    my ($fh, $tmppath) = File::Temp::tempfile(UNLINK => 1);
+    close($fh);
+    $daemon->_httpPortTmpfile($tmppath);
+
+    Plugins::SpotOn::Unified::SoloistDaemon::_pollHttpPort($daemon);
+    is($daemon->_streamPort, undef,
+        "CR-S3: _pollHttpPort attempt 1 (no port yet) does not resolve");
+    ok(defined $daemon->_httpPortTmpfile,
+        "CR-S3: _pollHttpPort attempt 1 reschedules, tmpfile path untouched");
+
+    open(my $wfh, '>', $tmppath) or die $!;
+    print $wfh "54321\n";
+    close($wfh);
+
+    Plugins::SpotOn::Unified::SoloistDaemon::_pollHttpPort($daemon);
+    is($daemon->_streamPort, 54321,
+        "CR-S3: _pollHttpPort resolves once the port file is written (scaffold reschedule works)");
+    is($daemon->_httpPortTmpfile, undef,
+        "CR-S3: _pollHttpPort success unlinks-and-clears the tmpfile (WR-07)");
+    ok(!-f $tmppath, "CR-S3: _pollHttpPort success unlinks the tmpfile from disk");
+}
+
+# -- WS variant -- (stubs Plugins::SpotOn::Unified::SoloistWS so the
+# on_found success body's require/new/connect never touches a real socket;
+# the stub shadows the real module because $stub_dir precedes $project_dir
+# in @INC)
+{
+    write_stub($stub_dir, 'Plugins::SpotOn::Unified::SoloistWS', <<'END');
+package Plugins::SpotOn::Unified::SoloistWS;
+our @NEW_CALLS;
+sub new {
+    my ($class, %args) = @_;
+    push @NEW_CALLS, \%args;
+    return bless { %args, connect_called => 0 }, $class;
+}
+sub connect { $_[0]->{connect_called}++; return 1; }
+1;
+END
+    require Plugins::SpotOn::Unified::SoloistWS;
+
+    my $daemon = bless [], 'Plugins::SpotOn::Unified::SoloistDaemon';
+    $daemon->mac('aa:bb:cc:dd:ee:13');
+    $daemon->_proc(Test::FakeDaemonProc->new(1));
+    $daemon->_wsPortPollAttempts(0);
+    $daemon->_spawnTime(time() - 5);
+
+    my $dataDir    = tempdir(CLEANUP => 1);
+    my $wsPortFile = catfile($dataDir, 'ws.port');
+
+    Plugins::SpotOn::Unified::SoloistDaemon::_pollWsPort($daemon, $dataDir);
+    is($daemon->_wsPort, undef,
+        "CR-S3: _pollWsPort attempt 1 (no ws.port file yet) does not resolve");
+
+    open(my $wfh, '>', $wsPortFile) or die $!;
+    print $wfh "23456\n";
+    close($wfh);
+
+    Plugins::SpotOn::Unified::SoloistDaemon::_pollWsPort($daemon, $dataDir);
+    is($daemon->_wsPort, 23456,
+        "CR-S3: _pollWsPort resolves once ws.port is written with a fresh mtime (scaffold reschedule works)");
+    is(scalar(@Plugins::SpotOn::Unified::SoloistWS::NEW_CALLS), 1,
+        "CR-S3: _pollWsPort success path constructs exactly one SoloistWS instance");
+}
+
+# Test 4: _pollWsPort ignores a port file with mtime older than _spawnTime
+# (stale-file guard stays WS-only).
+{
+    my $daemon = bless [], 'Plugins::SpotOn::Unified::SoloistDaemon';
+    $daemon->mac('aa:bb:cc:dd:ee:14');
+    $daemon->_proc(Test::FakeDaemonProc->new(1));
+    $daemon->_wsPortPollAttempts(0);
+    $daemon->_spawnTime(time() + 60);    # spawnTime "in the future" vs. the file's mtime below
+
+    my $dataDir    = tempdir(CLEANUP => 1);
+    my $wsPortFile = catfile($dataDir, 'ws.port');
+    open(my $wfh, '>', $wsPortFile) or die $!;
+    print $wfh "9999\n";
+    close($wfh);    # mtime is "now" -- strictly before _spawnTime -- stale
+
+    Plugins::SpotOn::Unified::SoloistDaemon::_pollWsPort($daemon, $dataDir);
+
+    is($daemon->_wsPort, undef,
+        "CR-S3: _pollWsPort ignores a port file with mtime older than _spawnTime (stale-file guard stays WS-only)");
+}
+
 done_testing();

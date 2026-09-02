@@ -291,63 +291,67 @@ sub _pollWsPort {
 
 	return unless $self->_proc;    # stop() cleared state -- nothing to do
 
-	my $attempts = ($self->_wsPortPollAttempts || 0) + 1;
-	$self->_wsPortPollAttempts($attempts);
-
 	my $wsPortFile = catfile($dataDir, 'ws.port');
-	my $port;
 
-	if (-f $wsPortFile) {
-		my @stat = stat($wsPortFile);
-		my $mtime = $stat[9] || 0;
-		if ($mtime >= ($self->_spawnTime || 0)) {
-			if (open(my $fh, '<', $wsPortFile)) {
-				my $line = readline($fh);
-				close($fh);
-				if (defined $line && $line =~ /^(\d+)\s*$/) {
-					$port = $1 + 0;
-				}
+	$self->_pollPortScaffold(
+		attempts_get => sub { $self->_wsPortPollAttempts },
+		attempts_set => sub { $self->_wsPortPollAttempts($_[0]) },
+		# WS-only: a port file is only trusted if its mtime is at or after
+		# _spawnTime -- a stale file left over from a previous daemon
+		# instance at the same data-dir must never be read as this run's
+		# port (T-77-04).
+		read_port => sub {
+			return undef unless -f $wsPortFile;
+			my @stat = stat($wsPortFile);
+			my $mtime = $stat[9] || 0;
+			return undef unless $mtime >= ($self->_spawnTime || 0);
+			return undef unless open(my $fh, '<', $wsPortFile);
+			my $line = readline($fh);
+			close($fh);
+			return undef unless defined $line && $line =~ /^(\d+)\s*$/;
+			return $1 + 0;
+		},
+		reschedule => sub {
+			Slim::Utils::Timers::setTimer($self, Time::HiRes::time() + PORT_POLL_INTERVAL, \&_pollWsPort, $dataDir);
+		},
+		# WS-only: an exhausted/dead-process poll calls stop() -- a daemon
+		# that never announces its WS control port is unusable (T-77-05
+		# does NOT apply here; this is the HTTP-only WR-07 protection).
+		on_exhausted => sub {
+			my ($procAlive) = @_;
+			if ($procAlive) {
+				$log->warn("SpotOn Soloist daemon did not announce ws.port in time - stopping (mac="
+					. $self->mac . ")");
+				$self->stop();
 			}
-		}
-	}
+			else {
+				$log->warn("SpotOn Soloist daemon exited before announcing ws.port (mac=" . $self->mac . ")");
+			}
+		},
+		on_found => sub {
+			my ($port) = @_;
 
-	my $procAlive = $self->_proc && $self->_proc->alive;
+			$self->_wsPort($port);
+			main::INFOLOG && $log->is_info && $log->info(
+				"SpotOn Soloist daemon ws.port announced: $port (mac=" . $self->mac . ")"
+			);
 
-	if (!defined $port && $procAlive && $attempts < PORT_POLL_MAX_ATTEMPTS) {
-		Slim::Utils::Timers::setTimer($self, Time::HiRes::time() + PORT_POLL_INTERVAL, \&_pollWsPort, $dataDir);
-		return;
-	}
+			# 73-02 Pitfall 7: the daemon is demonstrably up and its startup
+			# banner (which includes the "client expires in N days" line)
+			# has had time to flush to the stderr-capture file by the time
+			# ws.port appears -- parse once per start, no re-poll needed
+			# for a 90-day clock.
+			$self->_parseExpiryDays;
 
-	unless (defined $port) {
-		if ($procAlive) {
-			$log->warn("SpotOn Soloist daemon did not announce ws.port in time - stopping (mac="
-				. $self->mac . ")");
-			$self->stop();
-		}
-		else {
-			$log->warn("SpotOn Soloist daemon exited before announcing ws.port (mac=" . $self->mac . ")");
-		}
-		return;
-	}
-
-	$self->_wsPort($port);
-	main::INFOLOG && $log->is_info && $log->info(
-		"SpotOn Soloist daemon ws.port announced: $port (mac=" . $self->mac . ")"
+			require Plugins::SpotOn::Unified::SoloistWS;
+			$self->_ws( Plugins::SpotOn::Unified::SoloistWS->new(
+				daemon => $self,
+				mac    => $self->mac,
+				port   => $port,
+			) );
+			$self->_ws->connect;
+		},
 	);
-
-	# 73-02 Pitfall 7: the daemon is demonstrably up and its startup banner
-	# (which includes the "client expires in N days" line) has had time to
-	# flush to the stderr-capture file by the time ws.port appears -- parse
-	# once per start, no re-poll needed for a 90-day clock.
-	$self->_parseExpiryDays;
-
-	require Plugins::SpotOn::Unified::SoloistWS;
-	$self->_ws( Plugins::SpotOn::Unified::SoloistWS->new(
-		daemon => $self,
-		mac    => $self->mac,
-		port   => $port,
-	) );
-	$self->_ws->connect;
 }
 
 sub _pollHttpPort {
@@ -356,56 +360,89 @@ sub _pollHttpPort {
 	my $tmpfile = $self->_httpPortTmpfile;
 	return unless $tmpfile;    # stop() cleared state -- nothing to do
 
-	my $attempts = ($self->_httpPortPollAttempts || 0) + 1;
-	$self->_httpPortPollAttempts($attempts);
-
-	my $port;
-	if (-s $tmpfile) {
-		if (open(my $fh, '<', $tmpfile)) {
+	$self->_pollPortScaffold(
+		attempts_get => sub { $self->_httpPortPollAttempts },
+		attempts_set => sub { $self->_httpPortPollAttempts($_[0]) },
+		# HTTP-only: no mtime staleness check -- the tmpfile is unique per
+		# daemon spawn (File::Temp), so there's no cross-instance leftover
+		# risk the way there is for ws.port's fixed per-player path.
+		read_port => sub {
+			return undef unless -s $tmpfile;
+			return undef unless open(my $fh, '<', $tmpfile);
 			my $line = readline($fh);
 			close($fh);
-			if (defined $line && $line =~ /^(\d+)\s*$/) {
-				$port = $1 + 0;
+			return undef unless defined $line && $line =~ /^(\d+)\s*$/;
+			return $1 + 0;
+		},
+		reschedule => sub {
+			Slim::Utils::Timers::setTimer($self, Time::HiRes::time() + PORT_POLL_INTERVAL, \&_pollHttpPort);
+		},
+		# HTTP-only (WR-07, T-77-05): exhausting attempts while the process
+		# is alive does NOT call stop() -- fake-libpulse's HTTP server may
+		# just be slow to bind/listen; keep the tmpfile path and the daemon
+		# alive so ensureHttpPort() can re-poll on demand when the stream
+		# URL is actually needed. A slow-but-eventual announcement must
+		# never kill an otherwise-healthy daemon. Only a genuinely dead
+		# process clears the tmpfile.
+		on_exhausted => sub {
+			my ($procAlive) = @_;
+			if ($procAlive) {
+				main::INFOLOG && $log->is_info && $log->info(
+					"SpotOn Soloist daemon HTTP stream port not yet announced — will poll on demand (mac="
+					. $self->mac . ")");
 			}
-		}
-	}
+			else {
+				$log->warn("SpotOn Soloist daemon exited before announcing HTTP stream port (mac=" . $self->mac . ")");
+				$self->_httpPortTmpfile(undef);
+				unlink $tmpfile;
+			}
+		},
+		on_found => sub {
+			my ($port) = @_;
 
+			# WR-07: unlink only THIS daemon's own tmpfile once the port is
+			# successfully read. Never unlink while the daemon might still
+			# need to write it (the idle-daemon path above).
+			$self->_httpPortTmpfile(undef);
+			unlink $tmpfile;
+
+			$self->_streamPort($port);
+			main::INFOLOG && $log->is_info && $log->info(
+				"SpotOn Soloist daemon HTTP stream port announced: $port (mac=" . $self->mac . ")"
+			);
+		},
+	);
+}
+
+# CR-S3 (Phase 77 Plan 02, RESEARCH Pitfall 4): the shared scaffold between
+# _pollWsPort and _pollHttpPort -- ONLY the truly identical part (attempts-
+# counter increment, procAlive check, reschedule-if-alive-and-under-max-
+# attempts). The two functions' distinct success/failure bodies (WS mtime
+# staleness guard + stop()-on-exhaustion; HTTP tmpfile unlink + no-stop-on-
+# exhaustion, WR-07) stay as per-caller closures passed in here -- do NOT
+# fold those into this helper (that is the exact regression Pitfall 4
+# warns about: a slow-but-eventual HTTP port announcement must never stop
+# an otherwise-healthy daemon).
+sub _pollPortScaffold {
+	my ($self, %args) = @_;
+
+	my $attempts = ($args{attempts_get}->() || 0) + 1;
+	$args{attempts_set}->($attempts);
+
+	my $port      = $args{read_port}->();
 	my $procAlive = $self->_proc && $self->_proc->alive;
 
 	if (!defined $port && $procAlive && $attempts < PORT_POLL_MAX_ATTEMPTS) {
-		Slim::Utils::Timers::setTimer($self, Time::HiRes::time() + PORT_POLL_INTERVAL, \&_pollHttpPort);
+		$args{reschedule}->();
 		return;
 	}
 
 	unless (defined $port) {
-		if ($procAlive) {
-			# fake-libpulse starts its HTTP server at dlopen time, but the
-			# port file may not be written yet if the constructor's bind/listen
-			# takes longer than our poll window. Keep the tmpfile path and the
-			# daemon alive — ensureHttpPort() re-polls on demand when the
-			# stream URL is actually needed.
-			main::INFOLOG && $log->is_info && $log->info(
-				"SpotOn Soloist daemon HTTP stream port not yet announced — will poll on demand (mac="
-				. $self->mac . ")");
-		}
-		else {
-			$log->warn("SpotOn Soloist daemon exited before announcing HTTP stream port (mac=" . $self->mac . ")");
-			$self->_httpPortTmpfile(undef);
-			unlink $tmpfile;
-		}
+		$args{on_exhausted}->($procAlive);
 		return;
 	}
 
-	# WR-07: unlink only THIS daemon's own tmpfile once the port is
-	# successfully read. Never unlink while the daemon might still need
-	# to write it (the idle-daemon path above).
-	$self->_httpPortTmpfile(undef);
-	unlink $tmpfile;
-
-	$self->_streamPort($port);
-	main::INFOLOG && $log->is_info && $log->info(
-		"SpotOn Soloist daemon HTTP stream port announced: $port (mac=" . $self->mac . ")"
-	);
+	$args{on_found}->($port);
 }
 
 sub ensureHttpPort {
