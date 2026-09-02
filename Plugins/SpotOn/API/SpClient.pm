@@ -816,11 +816,8 @@ sub getAlbumTracks {
                 }
             }
 
-            my $total = scalar @gids;
-            my $end   = $offset + $limit - 1;
-            $end = $total - 1 if $end > $total - 1;
-            my @sliceGids = ($offset < $total && $offset <= $end) ? @gids[$offset .. $end] : ();
-            my @sliceIds  = map { $class->hexToId($_) } @sliceGids;
+            my ($sliceGids, $total) = $class->_sliceAsPage(\@gids, $offset, $limit);
+            my @sliceIds = map { $class->hexToId($_) } @$sliceGids;
 
             $class->_enrichTracks($accountId, \@sliceIds, sub {
                 my ($tracks) = @_;
@@ -1080,11 +1077,8 @@ sub getShowEpisodes {
 
             my @gids = map { $_->{gid} } grep { $_->{gid} } @{ $meta->{episode} || [] };
 
-            my $total = scalar @gids;
-            my $end   = $offset + $limit - 1;
-            $end = $total - 1 if $end > $total - 1;
-            my @sliceGids = ($offset < $total && $offset <= $end) ? @gids[$offset .. $end] : ();
-            my @sliceIds  = map { $class->hexToId($_) } @sliceGids;
+            my ($sliceGids, $total) = $class->_sliceAsPage(\@gids, $offset, $limit);
+            my @sliceIds = map { $class->hexToId($_) } @$sliceGids;
 
             $class->_enrichMeta($accountId, \@sliceIds, 'episode', '_normalizeEpisode', sub {
                 my ($episodes) = @_;
