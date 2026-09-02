@@ -821,23 +821,16 @@ sub _onSeek {
     return if !defined $client;
     $client = $client->master;
 
-    # Phase 78-02: bounded-model Browse seek forwarding.  LMS now DOES
-    # restart the stream for Soloist Browse (getSeekData returns
-    # timeOffset); the WS seek runs in parallel so the daemon flushes and
-    # repositions while LMS is rebuilding the connection.  Documented race
-    # (RESEARCH Pitfall 5): if the new GET arrives before the daemon flush,
-    # a brief burst of pre-seek audio may be heard before the
-    # flush-disconnect closes the stale connection and LMS retries.
-    # Separate timer key (_bufferedBrowseSeek is a distinct coderef from
-    # _bufferedSeek) so the Connect and browse debounces cannot collide.
-    if (my $browseWs = _soloistBrowseWs($client)) {
-        my $position   = _seekPositionFromRequest($client, $request);
-        my $positionMs = int($position * 1000);
-
-        Slim::Utils::Timers::killTimers($client, \&_bufferedBrowseSeek);
-        Slim::Utils::Timers::setTimer($client, Time::HiRes::time() + SEEK_DEBOUNCE, \&_bufferedBrowseSeek, $positionMs);
-        return;
-    }
+    # Plan 77-04 (D-02): Browse-mode seek forwarding used to live here
+    # (Phase 78-02's debounced _bufferedBrowseSeek), racing independently
+    # against LMS's own seek-restart connection -- the exact architecture
+    # the 78-UAT test 10 bug lived in (RESEARCH Pitfall 1: narrowing a race
+    # window is not removing it). Browse seeks are now armed and dispatched
+    # exclusively from ProtocolHandler::getNextTrack's resume branch, the
+    # single deterministic call site LMS's own stream-restart already flows
+    # through. _bufferedBrowseSeek's body stays in place (uncalled) as
+    # one-line-rewire rollback insurance until Plan 77-06's live-UAT
+    # checkpoint confirms the new path, after which it is deleted.
 
     return unless __PACKAGE__->isSpotifyConnect($client);
 
