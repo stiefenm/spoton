@@ -821,16 +821,14 @@ sub _onSeek {
     return if !defined $client;
     $client = $client->master;
 
-    # Plan 77-04 (D-02): Browse-mode seek forwarding used to live here
-    # (Phase 78-02's debounced _bufferedBrowseSeek), racing independently
-    # against LMS's own seek-restart connection -- the exact architecture
-    # the 78-UAT test 10 bug lived in (RESEARCH Pitfall 1: narrowing a race
-    # window is not removing it). Browse seeks are now armed and dispatched
-    # exclusively from ProtocolHandler::getNextTrack's resume branch, the
-    # single deterministic call site LMS's own stream-restart already flows
-    # through. _bufferedBrowseSeek's body stays in place (uncalled) as
-    # one-line-rewire rollback insurance until Plan 77-06's live-UAT
-    # checkpoint confirms the new path, after which it is deleted.
+    # Plan 77-04 (D-02): Browse-mode seek forwarding used to live here,
+    # racing independently against LMS's own seek-restart connection --
+    # the exact architecture the 78-UAT test 10 bug lived in (RESEARCH
+    # Pitfall 1: narrowing a race window is not removing it). Browse seeks
+    # are now armed and dispatched exclusively from
+    # ProtocolHandler::getNextTrack's resume branch, the single
+    # deterministic call site LMS's own stream-restart already flows
+    # through -- live-UAT-confirmed at Plan 77-06.
 
     return unless __PACKAGE__->isSpotifyConnect($client);
 
@@ -843,24 +841,6 @@ sub _onSeek {
     # Debounce: coalesce rapid seek events (0.3s window)
     Slim::Utils::Timers::killTimers($client, \&_bufferedSeek);
     Slim::Utils::Timers::setTimer($client, Time::HiRes::time() + SEEK_DEBOUNCE, \&_bufferedSeek, $positionMs);
-}
-
-# _bufferedBrowseSeek($client, $positionMs)
-# Phase 78-02: debounced soloist-browse seek forward — re-checks the
-# bounded criterion (the player may have stopped during the debounce
-# window) before sending.
-sub _bufferedBrowseSeek {
-    my ($client, $positionMs) = @_;
-
-    my $browseWs = _soloistBrowseWs($client);
-    return unless $browseWs;
-
-    main::INFOLOG && $log->is_info && $log->info(
-        "Soloist browse: forwarding seek to daemon via WS seek: ${positionMs}ms"
-    );
-    $log->warn("[DIAG] browse_seek_to_daemon: mac=" . $client->id . " position_ms=$positionMs debounced=" . SEEK_DEBOUNCE . "s") if $prefs->get('diagnosticMode');
-
-    $browseWs->sendCommand('seek', position_ms => $positionMs);
 }
 
 sub _bufferedSeek {

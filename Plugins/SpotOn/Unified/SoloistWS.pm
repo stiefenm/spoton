@@ -342,7 +342,8 @@ sub sendCommand {
 	# daemon rejects a quoted position_ms with "invalid JSON or missing
 	# required fields" (UAT gap 2, live-verified against the soloist WS
 	# port). Single choke point here covers Connect.pm's Connect-seek path
-	# AND _bufferedBrowseSeek's browse-seek path. Do NOT apply this to the
+	# AND ProtocolHandler::getNextTrack's armed browse-seek dispatch
+	# (Plan 77-04/77-06). Do NOT apply this to the
 	# `enabled` scalar-ref booleans (\1/\0) used elsewhere in this module --
 	# int() must only ever touch position_ms and volume.
 	for my $numericParam (qw(position_ms volume)) {
