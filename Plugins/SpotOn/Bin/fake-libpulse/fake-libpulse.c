@@ -3505,6 +3505,106 @@ int main(void) {
         }
     }
 
+    /* Rapid-skip last boundary wins (D-04, Plan 77-05 Task 1, RESEARCH
+     * Pattern 2): two POST /boundary markers planted back-to-back, with
+     * NO client attached during either plant -- so nothing can drain
+     * and lock in the first watermark before the second lands. This
+     * makes the assertion deterministic rather than a race against the
+     * 50ms drain tick: the client attaches only AFTER both plants are
+     * already resolved, so its very first drain pass already sees
+     * whichever watermark is in effect. The existing plant-site
+     * behavior (unconditional overwrite of g_boundary_at_pushed, no C
+     * change needed for D-04) means that's the SECOND (later) marker --
+     * proven here by requiring the client to receive chunk1+chunk2's
+     * combined bytes (W2) before EOF, not just chunk1's (W1), which is
+     * what a stale-first-marker bug would produce. */
+    {
+        pthread_mutex_lock(&g_ring.lock);
+        g_ring.total_popped += (int64_t)g_ring.fill;
+        g_ring.head = g_ring.tail = g_ring.fill = 0;
+        g_ring.client_connected = 0;
+        pthread_mutex_unlock(&g_ring.lock);
+        g_boundary_at_pushed = -1;
+        g_seek_flush_armed = 0;
+
+        /* chunk1 -- becomes W1's content once boundary #1 plants. */
+        float chunk1[4] = { 0.3f, -0.3f, 0.2f, -0.2f };
+        int32_t expected_chunk1[4];
+        for (int i = 0; i < 4; i++) expected_chunk1[i] = _test_f32_to_s32(chunk1[i]);
+        pa_stream_write(s, chunk1, sizeof(chunk1), NULL, 0, 0);
+
+        int boundary1_ok = _test_post_control(port, "/boundary");  /* W1 */
+
+        /* chunk2 -- pushed AFTER boundary #1 plants, BEFORE boundary #2
+         * -- must be included once boundary #2 overwrites the watermark
+         * to W2. No client is attached yet, so nothing has drained past
+         * W1 in between -- this ordering is guaranteed, not raced. */
+        float chunk2[4] = { 0.1f, -0.1f, 0.05f, -0.05f };
+        int32_t expected_chunk2[4];
+        for (int i = 0; i < 4; i++) expected_chunk2[i] = _test_f32_to_s32(chunk2[i]);
+        pa_stream_write(s, chunk2, sizeof(chunk2), NULL, 0, 0);
+
+        int boundary2_ok = _test_post_control(port, "/boundary");  /* W2 > W1, overwrites */
+
+        if (!boundary1_ok || !boundary2_ok) {
+            fprintf(stderr, "FAIL: rapid-skip test: a POST /boundary did not return 200 OK\n");
+            failures++;
+        } else {
+            /* Attach the client only now -- AFTER both watermarks are
+             * planted -- so the drain loop's first pass already sees
+             * the LAST-planted (W2) marker, never the stale W1 one. */
+            static const char getReq[] = "GET /stream HTTP/1.0\r\n\r\n";
+            int rfd = _test_connect_loopback(port);
+            if (rfd < 0) {
+                fprintf(stderr, "FAIL: rapid-skip test: could not connect streaming client\n");
+                failures++;
+            } else if (write(rfd, getReq, sizeof(getReq) - 1) < 0
+                       || _test_read_header(rfd, 3000) != 0) {
+                fprintf(stderr, "FAIL: rapid-skip test: could not attach streaming client\n");
+                failures++;
+                close(rfd);
+            } else {
+                int got_eof = 0;
+                unsigned char received[64];
+                size_t received_n = 0;
+                for (int i = 0; i < 150 && !got_eof; i++) {
+                    struct pollfd pfd; pfd.fd = rfd; pfd.events = POLLIN;
+                    if (poll(&pfd, 1, 10) > 0) {
+                        ssize_t n = read(rfd, received + received_n, sizeof(received) - received_n);
+                        if (n == 0) {
+                            got_eof = 1;
+                        } else if (n < 0 && errno != EAGAIN && errno != EINTR) {
+                            got_eof = 1;
+                        } else if (n > 0) {
+                            received_n += (size_t)n;
+                        }
+                    }
+                }
+                close(rfd);
+
+                unsigned char expected_combined[sizeof(expected_chunk1) + sizeof(expected_chunk2)];
+                memcpy(expected_combined, expected_chunk1, sizeof(expected_chunk1));
+                memcpy(expected_combined + sizeof(expected_chunk1), expected_chunk2, sizeof(expected_chunk2));
+                size_t expected_n = sizeof(expected_combined);
+
+                if (!got_eof) {
+                    fprintf(stderr, "FAIL: rapid-skip test: client never reached EOF (hung)\n");
+                    failures++;
+                } else if (received_n != expected_n) {
+                    fprintf(stderr, "FAIL: rapid-skip test: received %zu byte(s), expected exactly %zu "
+                                    "(W2's combined chunk1+chunk2 -- a stale W1 would stop at %zu)\n",
+                            received_n, expected_n, sizeof(expected_chunk1));
+                    failures++;
+                } else if (memcmp(received, expected_combined, expected_n) != 0) {
+                    fprintf(stderr, "FAIL: rapid-skip test: received bytes mismatch (wrong watermark applied?)\n");
+                    failures++;
+                } else {
+                    printf("ok: rapid-skip last boundary wins\n");
+                }
+            }
+        }
+    }
+
     /* Drop-oldest test: force client_connected=0 and an empty ring
      * directly (same translation unit, direct struct access), then
      * push far more than RING_CAPACITY worth of samples and confirm
