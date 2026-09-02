@@ -218,6 +218,20 @@ sub _hasLogin5Creds {
     return $creds ? 1 : 0;
 }
 
+# _delegateToClient($class, $method, @args)
+# CR-S2: absorbs the uniform 4-line body (INFOLOG + require + delegate +
+# implicit return of Client.pm's return value) shared by every
+# _hasLogin5Creds guard site's "no login5-capable credentials" branch.
+# $method is always a hardcoded string literal at each call site -- never
+# derived from input (T-77-06) -- and dispatched dynamically onto
+# Plugins::SpotOn::API::Client so this one sub serves all 15 uniform sites.
+sub _delegateToClient {
+    my ($class, $method, @args) = @_;
+    main::INFOLOG && $log->info("SpClient: no login5-capable credentials, delegating $method to Client.pm (D-06)");
+    require Plugins::SpotOn::API::Client;
+    return Plugins::SpotOn::API::Client->$method(@args);
+}
+
 # _username($class, $accountId)
 # The Spotify canonical username from stored credentials -- ALWAYS the
 # source for collection/v2, context-resolve, recently-played, and rootlist
@@ -473,12 +487,7 @@ sub _cacheTTL {
 sub getTrack {
     my ($class, $accountId, $trackId, $cb) = @_;
 
-    unless ($class->_hasLogin5Creds($accountId)) {
-        main::INFOLOG && $log->info('SpClient: no login5-capable credentials, delegating getTrack to Client.pm (D-06)');
-        require Plugins::SpotOn::API::Client;
-        Plugins::SpotOn::API::Client->getTrack($accountId, $trackId, $cb);
-        return;
-    }
+    return $class->_delegateToClient('getTrack', $accountId, $trackId, $cb) unless $class->_hasLogin5Creds($accountId);
 
     my $hexId = $class->idToHex($trackId);
     unless ($hexId) {
@@ -696,12 +705,7 @@ sub _enrichTracks {
 sub getAlbum {
     my ($class, $accountId, $albumId, $cb) = @_;
 
-    unless ($class->_hasLogin5Creds($accountId)) {
-        main::INFOLOG && $log->info('SpClient: no login5-capable credentials, delegating getAlbum to Client.pm (D-06)');
-        require Plugins::SpotOn::API::Client;
-        Plugins::SpotOn::API::Client->getAlbum($accountId, $albumId, $cb);
-        return;
-    }
+    return $class->_delegateToClient('getAlbum', $accountId, $albumId, $cb) unless $class->_hasLogin5Creds($accountId);
 
     my $hexId = $class->idToHex($albumId);
     unless ($hexId) {
@@ -776,12 +780,7 @@ sub getAlbumTracks {
     my $offset = $params->{offset} // 0;
     my $limit  = $params->{limit}  // 50;
 
-    unless ($class->_hasLogin5Creds($accountId)) {
-        main::INFOLOG && $log->info('SpClient: no login5-capable credentials, delegating getAlbumTracks to Client.pm (D-06)');
-        require Plugins::SpotOn::API::Client;
-        Plugins::SpotOn::API::Client->getAlbumTracks($accountId, $albumId, $params, $cb);
-        return;
-    }
+    return $class->_delegateToClient('getAlbumTracks', $accountId, $albumId, $params, $cb) unless $class->_hasLogin5Creds($accountId);
 
     my $hexId = $class->idToHex($albumId);
     unless ($hexId) {
@@ -838,12 +837,7 @@ sub getAlbumTracks {
 sub getArtist {
     my ($class, $accountId, $artistId, $cb) = @_;
 
-    unless ($class->_hasLogin5Creds($accountId)) {
-        main::INFOLOG && $log->info('SpClient: no login5-capable credentials, delegating getArtist to Client.pm (D-06)');
-        require Plugins::SpotOn::API::Client;
-        Plugins::SpotOn::API::Client->getArtist($accountId, $artistId, $cb);
-        return;
-    }
+    return $class->_delegateToClient('getArtist', $accountId, $artistId, $cb) unless $class->_hasLogin5Creds($accountId);
 
     my $hexId = $class->idToHex($artistId);
     unless ($hexId) {
@@ -919,12 +913,7 @@ sub getArtistAlbums {
     my $offset = $params->{offset} // 0;
     my $limit  = $params->{limit}  // 20;
 
-    unless ($class->_hasLogin5Creds($accountId)) {
-        main::INFOLOG && $log->info('SpClient: no login5-capable credentials, delegating getArtistAlbums to Client.pm (D-06)');
-        require Plugins::SpotOn::API::Client;
-        Plugins::SpotOn::API::Client->getArtistAlbums($accountId, $artistId, $params, $cb);
-        return;
-    }
+    return $class->_delegateToClient('getArtistAlbums', $accountId, $artistId, $params, $cb) unless $class->_hasLogin5Creds($accountId);
 
     my $hexId = $class->idToHex($artistId);
     unless ($hexId) {
@@ -986,12 +975,7 @@ sub getArtistAlbums {
 sub getShow {
     my ($class, $accountId, $showId, $cb) = @_;
 
-    unless ($class->_hasLogin5Creds($accountId)) {
-        main::INFOLOG && $log->info('SpClient: no login5-capable credentials, delegating getShow to Client.pm (D-06)');
-        require Plugins::SpotOn::API::Client;
-        Plugins::SpotOn::API::Client->getShow($accountId, $showId, $cb);
-        return;
-    }
+    return $class->_delegateToClient('getShow', $accountId, $showId, $cb) unless $class->_hasLogin5Creds($accountId);
 
     my $hexId = $class->idToHex($showId);
     unless ($hexId) {
@@ -1045,12 +1029,7 @@ sub getShowEpisodes {
     my $offset = $params->{offset} // 0;
     my $limit  = $params->{limit}  // 50;
 
-    unless ($class->_hasLogin5Creds($accountId)) {
-        main::INFOLOG && $log->info('SpClient: no login5-capable credentials, delegating getShowEpisodes to Client.pm (D-06)');
-        require Plugins::SpotOn::API::Client;
-        Plugins::SpotOn::API::Client->getShowEpisodes($accountId, $showId, $params, $cb);
-        return;
-    }
+    return $class->_delegateToClient('getShowEpisodes', $accountId, $showId, $params, $cb) unless $class->_hasLogin5Creds($accountId);
 
     my $hexId = $class->idToHex($showId);
     unless ($hexId) {
@@ -1094,12 +1073,7 @@ sub getShowEpisodes {
 sub getEpisode {
     my ($class, $accountId, $episodeId, $cb) = @_;
 
-    unless ($class->_hasLogin5Creds($accountId)) {
-        main::INFOLOG && $log->info('SpClient: no login5-capable credentials, delegating getEpisode to Client.pm (D-06)');
-        require Plugins::SpotOn::API::Client;
-        Plugins::SpotOn::API::Client->getEpisode($accountId, $episodeId, $cb);
-        return;
-    }
+    return $class->_delegateToClient('getEpisode', $accountId, $episodeId, $cb) unless $class->_hasLogin5Creds($accountId);
 
     my $hexId = $class->idToHex($episodeId);
     unless ($hexId) {
@@ -1476,12 +1450,7 @@ sub getSavedAlbums {
     my $offset = $params->{offset} // 0;
     my $limit  = $params->{limit}  // 50;
 
-    unless ($class->_hasLogin5Creds($accountId)) {
-        main::INFOLOG && $log->info('SpClient: no login5-capable credentials, delegating getSavedAlbums to Client.pm (D-06)');
-        require Plugins::SpotOn::API::Client;
-        Plugins::SpotOn::API::Client->getSavedAlbums($accountId, $params, $cb);
-        return;
-    }
+    return $class->_delegateToClient('getSavedAlbums', $accountId, $params, $cb) unless $class->_hasLogin5Creds($accountId);
 
     $class->_collectionAll($accountId, SET_MAP->{albums}, sub {
         my ($list, $err) = @_;
@@ -1531,12 +1500,7 @@ sub getFollowedArtists {
     $params ||= {};
     my $limit = $params->{limit} // 50;
 
-    unless ($class->_hasLogin5Creds($accountId)) {
-        main::INFOLOG && $log->info('SpClient: no login5-capable credentials, delegating getFollowedArtists to Client.pm (D-06)');
-        require Plugins::SpotOn::API::Client;
-        Plugins::SpotOn::API::Client->getFollowedArtists($accountId, $params, $cb);
-        return;
-    }
+    return $class->_delegateToClient('getFollowedArtists', $accountId, $params, $cb) unless $class->_hasLogin5Creds($accountId);
 
     $class->_collectionAll($accountId, SET_MAP->{artists}, sub {
         my ($list, $err) = @_;
@@ -1613,12 +1577,7 @@ sub getSavedShows {
     my $offset = $params->{offset} // 0;
     my $limit  = $params->{limit}  // 50;
 
-    unless ($class->_hasLogin5Creds($accountId)) {
-        main::INFOLOG && $log->info('SpClient: no login5-capable credentials, delegating getSavedShows to Client.pm (D-06)');
-        require Plugins::SpotOn::API::Client;
-        Plugins::SpotOn::API::Client->getSavedShows($accountId, $params, $cb);
-        return;
-    }
+    return $class->_delegateToClient('getSavedShows', $accountId, $params, $cb) unless $class->_hasLogin5Creds($accountId);
 
     # WR-02: honor $params->{_noCache} (Plugin.pm:2088's call shape) --
     # bypasses (without disabling) the 60s collection/v2 list cache on
@@ -1760,12 +1719,7 @@ sub getSavedTracks {
     my $offset = $params->{offset} // 0;
     my $limit  = $params->{limit}  // 50;
 
-    unless ($class->_hasLogin5Creds($accountId)) {
-        main::INFOLOG && $log->info('SpClient: no login5-capable credentials, delegating getSavedTracks to Client.pm (D-06)');
-        require Plugins::SpotOn::API::Client;
-        Plugins::SpotOn::API::Client->getSavedTracks($accountId, $params, $cb);
-        return;
-    }
+    return $class->_delegateToClient('getSavedTracks', $accountId, $params, $cb) unless $class->_hasLogin5Creds($accountId);
 
     $class->_likedSongsUris($accountId, sub {
         my ($uris, $err) = @_;
@@ -1812,12 +1766,7 @@ sub getRecentlyPlayed {
     $params ||= {};
     my $limit = $params->{limit} // 50;
 
-    unless ($class->_hasLogin5Creds($accountId)) {
-        main::INFOLOG && $log->info('SpClient: no login5-capable credentials, delegating getRecentlyPlayed to Client.pm (D-06)');
-        require Plugins::SpotOn::API::Client;
-        Plugins::SpotOn::API::Client->getRecentlyPlayed($accountId, $params, $cb);
-        return;
-    }
+    return $class->_delegateToClient('getRecentlyPlayed', $accountId, $params, $cb) unless $class->_hasLogin5Creds($accountId);
 
     my $username = $class->_username($accountId);
     unless ($username) {
@@ -2097,12 +2046,7 @@ sub getUserPlaylists {
     my $offset = $params->{offset} // 0;
     my $limit  = $params->{limit}  // 50;
 
-    unless ($class->_hasLogin5Creds($accountId)) {
-        main::INFOLOG && $log->info('SpClient: no login5-capable credentials, delegating getUserPlaylists to Client.pm (D-06)');
-        require Plugins::SpotOn::API::Client;
-        Plugins::SpotOn::API::Client->getUserPlaylists($accountId, $params, $cb);
-        return;
-    }
+    return $class->_delegateToClient('getUserPlaylists', $accountId, $params, $cb) unless $class->_hasLogin5Creds($accountId);
 
     $class->_rootlistPlaylists($accountId, sub {
         my ($playlists, $err) = @_;
@@ -2181,12 +2125,7 @@ sub getPlaylistItems {
     my $offset = $params->{offset} // 0;
     my $limit  = $params->{limit}  // 100;
 
-    unless ($class->_hasLogin5Creds($accountId)) {
-        main::INFOLOG && $log->info('SpClient: no login5-capable credentials, delegating getPlaylistItems to Client.pm (D-06)');
-        require Plugins::SpotOn::API::Client;
-        Plugins::SpotOn::API::Client->getPlaylistItems($accountId, $playlistId, $params, $cb);
-        return;
-    }
+    return $class->_delegateToClient('getPlaylistItems', $accountId, $playlistId, $params, $cb) unless $class->_hasLogin5Creds($accountId);
 
     # WR-04: unlike track/album/artist/show/episode ids (converted via
     # idToHex), playlist ids are used directly as base62 in the spclient URL
