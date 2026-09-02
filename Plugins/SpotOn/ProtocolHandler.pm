@@ -657,6 +657,48 @@ sub new {
 # Called by StreamingController before transcoding pipeline starts.
 # Translates dead Connect history URLs to Browse URLs so the binary
 # receives a valid spoton://track:ID instead of spoton://connect-TIMESTAMP.
+# _armSeekFlush($helper, $onDone) -- Plan 77-04 (D-02/D-05).
+#
+# Arms the daemon's fake-libpulse seek-flush gate (Plan 77-01's
+# POST /seek-arm) BEFORE the caller sends the WS command that will trigger
+# the daemon's own pa_stream_flush() -- a same-track seek (D-02) or a
+# URI-mismatch play (D-05). Both cause the C layer to flush its ring; an
+# unarmed flush disconnects the HTTP client (D-12 skip semantics), which is
+# exactly the bug this arms around for a seek/mismatch that is NOT a skip.
+#
+# $onDone is invoked ONLY after the POST completes (success or error) --
+# never before -- so the caller's WS command is guaranteed to reach the
+# daemon after the arm lands. This removes the independent-scheduling race
+# entirely (RESEARCH Pitfall 1): the two calls now share one synchronous
+# call site instead of racing across the old debounced-timer path.
+#
+# Uses Slim::Networking::SimpleAsyncHTTP per CLAUDE.md's async-HTTP idiom
+# (never LWP -- LMS is single-threaded). Degrades open on error: a dead/slow
+# control endpoint still calls $onDone (T-77-10) so getNextTrack never
+# wedges -- the caller's flush just falls back to pre-Phase-77
+# disconnect-on-flush behavior for that one command.
+#
+# Loopback-only URL built solely from $helper->_streamPort (internal
+# integer, no request-derived data -- T-77-08); distinct from the
+# LAN-facing serverAddr() URL used for the /stream endpoint itself.
+sub _armSeekFlush {
+    my ($helper, $onDone) = @_;
+
+    require Slim::Networking::SimpleAsyncHTTP;
+
+    my $url = 'http://127.0.0.1:' . $helper->_streamPort . '/seek-arm';
+
+    Slim::Networking::SimpleAsyncHTTP->new(
+        sub { $onDone->(); },
+        sub {
+            my ($http, $error) = @_;
+            $log->warn("_armSeekFlush: POST /seek-arm failed ($error) -- degrading to unarmed flush (pre-77 disconnect-on-flush behavior)");
+            $onDone->();
+        },
+        { timeout => 5 },
+    )->post($url);
+}
+
 sub getNextTrack {
     my ($class, $song, $successCb, $errorCb) = @_;
 
@@ -789,6 +831,33 @@ sub getNextTrack {
                 . " id=$id, mac=" . ($client ? $client->id : '?') . ")"
             );
             $ws->soloistBrowseActive(1) if $ws->can('soloistBrowseActive');
+
+            # D-02 (Plan 77-04): LMS's own seek-restart re-enters here with
+            # the SAME track id and a fresh $song->seekdata. Gate on
+            # defined(), NOT truthiness -- a seek to position 0 is a genuine
+            # seek (77-REVIEWS.md MEDIUM: falsy-0 must not silently degrade
+            # to an un-armed plain resume). Arm the C layer BEFORE sending
+            # the WS seek command so the daemon's pa_stream_flush() finds
+            # the arm already in place (RESEARCH Pitfall 1 -- ordering by
+            # callback, not by hope).
+            if ($song->can('seekdata') && $song->seekdata && defined $song->seekdata->{timeOffset}) {
+                my $timeOffset = $song->seekdata->{timeOffset};
+                _armSeekFlush($helper, sub {
+                    my $seekOk = $ws->sendCommand('seek', position_ms => int($timeOffset * 1000));
+                    unless ($seekOk) {
+                        $log->warn("getNextTrack: arm-leak -- seek sendCommand failed after successful /seek-arm ("
+                            . "mac=" . ($client ? $client->id : '?') . ")");
+                    }
+                    # Bare play resume: no-op if already playing, resumes if
+                    # paused (a seek alone could otherwise leave a paused
+                    # daemon paused while LMS expects a stream), and re-arms
+                    # pendingPlayConfirm for LMS's stream swap.
+                    $ws->sendCommand('play');
+                    $successCb->();
+                });
+                return;
+            }
+
             # Resume (play without URI): safe if daemon is already playing
             # (no-op), resumes if paused, and arms pendingPlayConfirm to
             # suppress the transitional _onPause from LMS's stream swap.
@@ -801,6 +870,37 @@ sub getNextTrack {
                 . " mac=" . ($client ? $client->id : '?') . ")"
             );
             $ws->soloistBrowseActive(1) if $ws->can('soloistBrowseActive');
+
+            # D-05 (Plan 77-04): URI-mismatch dispatches arm-then-play
+            # through the same mechanism as D-02 (CONTEXT <specifics>:
+            # implement once, use twice). Only arm when a flush is
+            # plausibly coming: $daemonCurrent non-empty (NOT the D-10
+            # idle-first-track case) AND the session is not paused/stopped.
+            # SoloistWS never clears lastTrackId on 'stopped'
+            # (77-REVIEWS.md MEDIUM), so a stale non-empty $daemonCurrent
+            # can reach this branch after 'album ends -> session stops ->
+            # user plays a different album' -- arming there risks planting
+            # an arm no flush ever consumes (the HIGH leak finding). A
+            # missing sessionPaused accessor counts as paused: degrade-open,
+            # never arm on uncertainty.
+            my $shouldArm = ($daemonCurrent ne '')
+                && $ws->can('sessionPaused')
+                && !$ws->sessionPaused;
+
+            if ($shouldArm) {
+                _armSeekFlush($helper, sub {
+                    my $playOk = $ws->sendCommand('play', uri => "spotify:$type:$id");
+                    unless ($playOk) {
+                        $log->warn("getNextTrack: arm-leak -- play sendCommand failed after successful /seek-arm ("
+                            . "mac=" . ($client ? $client->id : '?') . ")");
+                        $errorCb->('PROBLEM_OPENING', 'Soloist daemon send failed');
+                        return;
+                    }
+                    $successCb->();
+                });
+                return;
+            }
+
             $ws->sendCommand('play', uri => "spotify:$type:$id")
                 or do { $errorCb->('PROBLEM_OPENING', 'Soloist daemon send failed'); return; };
         }

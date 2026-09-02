@@ -198,6 +198,37 @@ sub resolvePassthroughForClient { return $PASSTHROUGH; }
 1;
 END
 
+# Plan 77-04: records constructor callbacks + post($url) calls, and exposes
+# a deferred-fire mode so tests can assert no WS command was recorded before
+# the arm POST's callback fires (ordering, not timing -- RESEARCH Pitfall 1).
+# Mirrors t/30_soloist_daemon.t's stub shape, extended with a call recorder
+# and manual fire_ok/fire_error control.
+write_stub($stub_dir, 'Slim::Networking::SimpleAsyncHTTP', <<'END');
+package Slim::Networking::SimpleAsyncHTTP;
+our @CALLS;             # every instance that called ->post(), in order
+our $AUTO_FIRE = 'ok';  # 'ok' | 'error' | 'defer'
+sub new {
+    my ($class, $ok_cb, $err_cb, $opts) = @_;
+    return bless { ok_cb => $ok_cb, err_cb => $err_cb, opts => $opts }, $class;
+}
+sub post {
+    my ($self, $url, @rest) = @_;
+    $self->{url} = $url;
+    push @CALLS, $self;
+    if ($AUTO_FIRE eq 'ok') {
+        $self->fire_ok;
+    }
+    elsif ($AUTO_FIRE eq 'error') {
+        $self->fire_error;
+    }
+    # 'defer' -- caller fires manually via fire_ok/fire_error below.
+    return $self;
+}
+sub fire_ok    { my $self = shift; $self->{ok_cb}->($self); }
+sub fire_error { my $self = shift; $self->{err_cb}->($self, '500 Internal Server Error', undef); }
+1;
+END
+
 # ============================================================
 # main:: constants
 # ============================================================
@@ -238,6 +269,9 @@ require_ok('Slim::Player::Protocols::HTTP')
 
 require_ok('Plugins::SpotOn::Unified::DaemonManager')
     or BAIL_OUT("Failed to load the Plugins::SpotOn::Unified::DaemonManager stub");
+
+require_ok('Slim::Networking::SimpleAsyncHTTP')
+    or BAIL_OUT("Failed to load the Slim::Networking::SimpleAsyncHTTP stub");
 
 sub reset_backend {
     my ($value) = @_;
@@ -290,10 +324,11 @@ my $pkg = 'Plugins::SpotOn::ProtocolHandler';
     sub new {
         my ($class, %args) = @_;
         return bless {
-            connected    => 1,
-            lastTrackId  => undef,
-            sent         => [],
-            send_success => 1,
+            connected     => 1,
+            lastTrackId   => undef,
+            sent          => [],
+            send_success  => 1,
+            sessionPaused => 0,
             %args,
         }, $class;
     }
@@ -302,6 +337,10 @@ my $pkg = 'Plugins::SpotOn::ProtocolHandler';
     # KE: browse-connect-gating -- ProtocolHandler::getNextTrack sets this
     # right before dispatching the WS 'play' command.
     sub soloistBrowseActive { my $self = shift; $self->{soloistBrowseActive} = shift if @_; return $self->{soloistBrowseActive}; }
+    # Plan 77-04 (D-05): a missing accessor counts as paused in production
+    # (degrade-open), but this stub always answers `can()` truthy -- tests
+    # control the value directly via the constructor/setter instead.
+    sub sessionPaused { my $self = shift; $self->{sessionPaused} = shift if @_; return $self->{sessionPaused}; }
     sub sendCommand {
         my ($self, $cmd, %p) = @_;
         push @{ $self->{sent} }, [$cmd, \%p];
@@ -670,6 +709,213 @@ my $pkg = 'Plugins::SpotOn::ProtocolHandler';
     ok($error_called,    "getNextTrack: errorCb called when sendCommand fails");
     is($error_type, 'PROBLEM_OPENING',
         "getNextTrack: error type is 'PROBLEM_OPENING' on send failure");
+}
+
+# ============================================================
+# Plan 77-04 (D-02/D-05): arm-then-command dispatch in both getNextTrack
+# branches. Each block resets the SimpleAsyncHTTP recorder first.
+# ============================================================
+
+# --- Test 1 (D-02 seek, ordering): resume branch + non-zero seekdata --
+# arm POST fires, WS seek+play are sent ONLY after the arm callback runs.
+{
+    @Slim::Networking::SimpleAsyncHTTP::CALLS = ();
+    local $Slim::Networking::SimpleAsyncHTTP::AUTO_FIRE = 'defer';
+
+    reset_backend('soloist');
+    my $ws = Test::FakeSoloistWs->new(connected => 1, lastTrackId => 'abc123');
+    $Plugins::SpotOn::Unified::DaemonManager::HELPER =
+        Plugins::SpotOn::Unified::SoloistDaemon->new(alive => 1, port => 39755, ws => $ws);
+    local $Plugins::SpotOn::Connect::_IS_CONNECT = 0;
+
+    my $client = MockClient->new(synced => 0);
+    my $track  = MockTrack->new('spoton://track:abc123');
+    my $song   = MockSong->new(master => $client, track => $track);
+    $song->seekdata({ timeOffset => 5 });
+
+    my ($success_called, $error_called);
+    $pkg->getNextTrack($song, sub { $success_called = 1 }, sub { $error_called = 1 });
+
+    is(scalar(@Slim::Networking::SimpleAsyncHTTP::CALLS), 1,
+        "Test 1 (D-02 seek): exactly one /seek-arm POST issued");
+    like($Slim::Networking::SimpleAsyncHTTP::CALLS[0]->{url}, qr{/seek-arm$},
+        "Test 1: POST URL ends in /seek-arm");
+    is_deeply($ws->{sent}, [],
+        "Test 1: no WS command recorded before the arm callback fires (ordering)");
+    ok(!$success_called, "Test 1: successCb not yet called before the arm callback fires");
+
+    $Slim::Networking::SimpleAsyncHTTP::CALLS[0]->fire_ok;
+
+    is_deeply($ws->{sent}, [['seek', { position_ms => 5000 }], ['play', {}]],
+        "Test 1: seek(position_ms=5000) then bare play, both sent only after the arm callback ran");
+    ok($success_called, "Test 1: successCb called after the armed dispatch completes");
+    ok(!$error_called,  "Test 1: errorCb not called");
+    is($ws->soloistBrowseActive, 1,
+        "Test 1 (Pitfall 2): soloistBrowseActive still set before the armed dispatch");
+}
+
+# --- Test 2 (D-02 seek-to-zero, 77-REVIEWS.md MEDIUM): defined-but-falsy
+# timeOffset must still arm -- gate is defined(), not truthiness.
+{
+    @Slim::Networking::SimpleAsyncHTTP::CALLS = ();
+    local $Slim::Networking::SimpleAsyncHTTP::AUTO_FIRE = 'ok';
+
+    reset_backend('soloist');
+    my $ws = Test::FakeSoloistWs->new(connected => 1, lastTrackId => 'abc123');
+    $Plugins::SpotOn::Unified::DaemonManager::HELPER =
+        Plugins::SpotOn::Unified::SoloistDaemon->new(alive => 1, port => 39755, ws => $ws);
+    local $Plugins::SpotOn::Connect::_IS_CONNECT = 0;
+
+    my $client = MockClient->new(synced => 0);
+    my $track  = MockTrack->new('spoton://track:abc123');
+    my $song   = MockSong->new(master => $client, track => $track);
+    $song->seekdata({ timeOffset => 0 });
+
+    my ($success_called, $error_called);
+    $pkg->getNextTrack($song, sub { $success_called = 1 }, sub { $error_called = 1 });
+
+    is(scalar(@Slim::Networking::SimpleAsyncHTTP::CALLS), 1,
+        "Test 2 (seek-to-zero): the arm POST still fires for timeOffset==0 (defined, not truthy)");
+    is_deeply($ws->{sent}, [['seek', { position_ms => 0 }], ['play', {}]],
+        "Test 2: seek(position_ms=0) then bare play -- a 0-seek does NOT degrade to a plain resume");
+    ok($success_called, "Test 2: successCb called");
+    ok(!$error_called,  "Test 2: errorCb not called");
+}
+
+# --- Test 3 (resume, no seek): unchanged behavior, zero /seek-arm POSTs --
+{
+    @Slim::Networking::SimpleAsyncHTTP::CALLS = ();
+    local $Slim::Networking::SimpleAsyncHTTP::AUTO_FIRE = 'ok';
+
+    reset_backend('soloist');
+    my $ws = Test::FakeSoloistWs->new(connected => 1, lastTrackId => 'abc123');
+    $Plugins::SpotOn::Unified::DaemonManager::HELPER =
+        Plugins::SpotOn::Unified::SoloistDaemon->new(alive => 1, port => 39755, ws => $ws);
+    local $Plugins::SpotOn::Connect::_IS_CONNECT = 0;
+
+    my $client = MockClient->new(synced => 0);
+    my $track  = MockTrack->new('spoton://track:abc123');
+    my $song   = MockSong->new(master => $client, track => $track);
+
+    my ($success_called, $error_called);
+    $pkg->getNextTrack($song, sub { $success_called = 1 }, sub { $error_called = 1 });
+
+    is(scalar(@Slim::Networking::SimpleAsyncHTTP::CALLS), 0,
+        "Test 3 (resume, no seek): zero /seek-arm POSTs");
+    is_deeply($ws->{sent}, [['play', {}]],
+        "Test 3: plain sendCommand('play') exactly as pre-77");
+    ok($success_called, "Test 3: successCb called");
+    ok(!$error_called,  "Test 3: errorCb not called");
+}
+
+# --- Test 4 (D-05 mismatch, session not paused): arm-then-play --
+{
+    @Slim::Networking::SimpleAsyncHTTP::CALLS = ();
+    local $Slim::Networking::SimpleAsyncHTTP::AUTO_FIRE = 'ok';
+
+    reset_backend('soloist');
+    my $ws = Test::FakeSoloistWs->new(connected => 1, lastTrackId => 'other999', sessionPaused => 0);
+    $Plugins::SpotOn::Unified::DaemonManager::HELPER =
+        Plugins::SpotOn::Unified::SoloistDaemon->new(alive => 1, port => 39755, ws => $ws);
+    local $Plugins::SpotOn::Connect::_IS_CONNECT = 0;
+
+    my $client = MockClient->new(synced => 0);
+    my $track  = MockTrack->new('spoton://track:abc123');
+    my $song   = MockSong->new(master => $client, track => $track);
+
+    my ($success_called, $error_called);
+    $pkg->getNextTrack($song, sub { $success_called = 1 }, sub { $error_called = 1 });
+
+    is(scalar(@Slim::Networking::SimpleAsyncHTTP::CALLS), 1,
+        "Test 4 (D-05 mismatch, not paused): one /seek-arm POST");
+    is_deeply($ws->{sent}, [['play', { uri => 'spotify:track:abc123' }]],
+        "Test 4: play-with-uri dispatched from within the arm callback");
+    ok($success_called, "Test 4: successCb called");
+    ok(!$error_called,  "Test 4: errorCb not called");
+    is($ws->soloistBrowseActive, 1,
+        "Test 4 (Pitfall 2): soloistBrowseActive still set before the armed dispatch");
+}
+
+# --- Test 5 (stale lastTrackId, session paused/stopped, 77-REVIEWS.md
+# MEDIUM): SoloistWS never clears lastTrackId on 'stopped' -- must NOT arm.
+{
+    @Slim::Networking::SimpleAsyncHTTP::CALLS = ();
+    local $Slim::Networking::SimpleAsyncHTTP::AUTO_FIRE = 'ok';
+
+    reset_backend('soloist');
+    my $ws = Test::FakeSoloistWs->new(connected => 1, lastTrackId => 'other999', sessionPaused => 1);
+    $Plugins::SpotOn::Unified::DaemonManager::HELPER =
+        Plugins::SpotOn::Unified::SoloistDaemon->new(alive => 1, port => 39755, ws => $ws);
+    local $Plugins::SpotOn::Connect::_IS_CONNECT = 0;
+
+    my $client = MockClient->new(synced => 0);
+    my $track  = MockTrack->new('spoton://track:abc123');
+    my $song   = MockSong->new(master => $client, track => $track);
+
+    my ($success_called, $error_called);
+    $pkg->getNextTrack($song, sub { $success_called = 1 }, sub { $error_called = 1 });
+
+    is(scalar(@Slim::Networking::SimpleAsyncHTTP::CALLS), 0,
+        "Test 5 (stale lastTrackId, sessionPaused): zero /seek-arm POSTs -- no arm without a plausible flush");
+    is_deeply($ws->{sent}, [['play', { uri => 'spotify:track:abc123' }]],
+        "Test 5: direct un-armed play-with-uri, exactly as today");
+    ok($success_called, "Test 5: successCb called");
+    ok(!$error_called,  "Test 5: errorCb not called");
+}
+
+# --- Test 6 (D-10 idle daemon, first track): lastTrackId '' -- no flush
+# expected, must not arm.
+{
+    @Slim::Networking::SimpleAsyncHTTP::CALLS = ();
+    local $Slim::Networking::SimpleAsyncHTTP::AUTO_FIRE = 'ok';
+
+    reset_backend('soloist');
+    my $ws = Test::FakeSoloistWs->new(connected => 1, lastTrackId => '', sessionPaused => 0);
+    $Plugins::SpotOn::Unified::DaemonManager::HELPER =
+        Plugins::SpotOn::Unified::SoloistDaemon->new(alive => 1, port => 39755, ws => $ws);
+    local $Plugins::SpotOn::Connect::_IS_CONNECT = 0;
+
+    my $client = MockClient->new(synced => 0);
+    my $track  = MockTrack->new('spoton://track:abc123');
+    my $song   = MockSong->new(master => $client, track => $track);
+
+    my ($success_called, $error_called);
+    $pkg->getNextTrack($song, sub { $success_called = 1 }, sub { $error_called = 1 });
+
+    is(scalar(@Slim::Networking::SimpleAsyncHTTP::CALLS), 0,
+        "Test 6 (D-10 idle daemon): zero /seek-arm POSTs -- first track is unbounded");
+    is_deeply($ws->{sent}, [['play', { uri => 'spotify:track:abc123' }]],
+        "Test 6: direct un-armed play-with-uri, exactly as today");
+    ok($success_called, "Test 6: successCb called");
+    ok(!$error_called,  "Test 6: errorCb not called");
+}
+
+# --- Test 7 (degrade-open): arm POST errors -- WS command still sent and
+# successCb still fires (arm failure degrades to pre-77 flush-disconnect
+# behavior, never blocks playback, T-77-10).
+{
+    @Slim::Networking::SimpleAsyncHTTP::CALLS = ();
+    local $Slim::Networking::SimpleAsyncHTTP::AUTO_FIRE = 'error';
+
+    reset_backend('soloist');
+    my $ws = Test::FakeSoloistWs->new(connected => 1, lastTrackId => 'other999', sessionPaused => 0);
+    $Plugins::SpotOn::Unified::DaemonManager::HELPER =
+        Plugins::SpotOn::Unified::SoloistDaemon->new(alive => 1, port => 39755, ws => $ws);
+    local $Plugins::SpotOn::Connect::_IS_CONNECT = 0;
+
+    my $client = MockClient->new(synced => 0);
+    my $track  = MockTrack->new('spoton://track:abc123');
+    my $song   = MockSong->new(master => $client, track => $track);
+
+    my ($success_called, $error_called);
+    $pkg->getNextTrack($song, sub { $success_called = 1 }, sub { $error_called = 1 });
+
+    is(scalar(@Slim::Networking::SimpleAsyncHTTP::CALLS), 1,
+        "Test 7 (degrade-open): the arm POST was attempted");
+    is_deeply($ws->{sent}, [['play', { uri => 'spotify:track:abc123' }]],
+        "Test 7: WS play command still sent after the arm POST errors");
+    ok($success_called, "Test 7: successCb still fires after an arm-POST error (never blocks playback)");
+    ok(!$error_called,  "Test 7: errorCb not called -- arm failure is not a dispatch failure");
 }
 
 done_testing();
