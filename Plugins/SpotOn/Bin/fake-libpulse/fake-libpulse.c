@@ -3605,6 +3605,271 @@ int main(void) {
         }
     }
 
+    /* Takeover during armed window serves no pre-flush bytes (D-05/D-02,
+     * Plan 77-05 Task 2, RESEARCH Pitfall 3): a NEW client attaches via
+     * the pre-existing, arm-independent GET /stream takeover logic WHILE
+     * a seek-arm is pending -- Plan 77-01's drain-loop write gate must
+     * hold through the takeover too, not just for whichever client was
+     * attached when the arm landed. Client 2 must receive ZERO bytes of
+     * whatever is pushed pre-flush (withheld, then discarded by the
+     * flush itself), and its first bytes after the flush must be
+     * exactly the post-flush pattern -- memcmp-proven, not merely
+     * "still connected" (Pitfall 3's own content-assertion requirement). */
+    {
+        pthread_mutex_lock(&g_ring.lock);
+        g_ring.total_popped += (int64_t)g_ring.fill;
+        g_ring.head = g_ring.tail = g_ring.fill = 0;
+        g_ring.client_connected = 0;
+        pthread_mutex_unlock(&g_ring.lock);
+        g_boundary_at_pushed = -1;
+        g_seek_flush_armed = 0;
+
+        static const char getReq[] = "GET /stream HTTP/1.0\r\n\r\n";
+
+        int c1fd = _test_connect_loopback(port);
+        if (c1fd < 0) {
+            fprintf(stderr, "FAIL: takeover-armed test: could not connect client 1\n");
+            failures++;
+        } else if (write(c1fd, getReq, sizeof(getReq) - 1) < 0
+                   || _test_read_header(c1fd, 3000) != 0) {
+            fprintf(stderr, "FAIL: takeover-armed test: could not attach client 1\n");
+            failures++;
+            close(c1fd);
+        } else {
+            float attachPattern[2] = { 0.5f, -0.5f };
+            int32_t expected_attach[2];
+            expected_attach[0] = _test_f32_to_s32(attachPattern[0]);
+            expected_attach[1] = _test_f32_to_s32(attachPattern[1]);
+            pa_stream_write(s, attachPattern, sizeof(attachPattern), NULL, 0, 0);
+
+            unsigned char got_attach[8];
+            if (_test_read_bytes(c1fd, got_attach, sizeof(got_attach), 3000) != 0
+                || memcmp(got_attach, expected_attach, sizeof(expected_attach)) != 0) {
+                fprintf(stderr, "FAIL: takeover-armed test: client 1 did not attach/drain normally\n");
+                failures++;
+                close(c1fd);
+            } else if (!_test_post_control(port, "/seek-arm")) {
+                fprintf(stderr, "FAIL: takeover-armed test: POST /seek-arm did not return 200 OK\n");
+                failures++;
+                close(c1fd);
+            } else {
+                /* Client 2 takes over WHILE armed -- the existing GET
+                 * /stream takeover logic (unconditional, independent of
+                 * arm state) closes client 1 and promotes client 2. */
+                int c2fd = _test_connect_loopback(port);
+                if (c2fd < 0) {
+                    fprintf(stderr, "FAIL: takeover-armed test: could not connect client 2\n");
+                    failures++;
+                    close(c1fd);
+                } else if (write(c2fd, getReq, sizeof(getReq) - 1) < 0
+                           || _test_read_header(c2fd, 3000) != 0) {
+                    fprintf(stderr, "FAIL: takeover-armed test: could not attach client 2 (takeover)\n");
+                    failures++;
+                    close(c1fd);
+                    close(c2fd);
+                } else {
+                    /* Client 1 is superseded by the takeover; the
+                     * takeover mechanism itself is pre-existing and
+                     * host-tested elsewhere -- this test's focus is the
+                     * drain gate holding across it, not the takeover
+                     * mechanics themselves. */
+                    close(c1fd);
+
+                    /* PRE-flush pattern -- pushed AFTER client 2's
+                     * takeover, while still armed. Must NOT reach
+                     * client 2 (drain gate withholds all pops while
+                     * armed, Plan 77-01's Pitfall-3 fix) and must not
+                     * disconnect it either. */
+                    float prePattern[2] = { 0.75f, -0.75f };
+                    pa_stream_write(s, prePattern, sizeof(prePattern), NULL, 0, 0);
+
+                    int preLeaked = 0;
+                    int preEof = 0;
+                    {
+                        unsigned char peek[64];
+                        struct timeval ps, pn;
+                        gettimeofday(&ps, NULL);
+                        for (;;) {
+                            struct pollfd pfd; pfd.fd = c2fd; pfd.events = POLLIN;
+                            int rc = poll(&pfd, 1, 20);
+                            if (rc > 0) {
+                                ssize_t n = read(c2fd, peek, sizeof(peek));
+                                if (n > 0) { preLeaked = 1; break; }
+                                if (n == 0) { preEof = 1; break; }
+                            }
+                            gettimeofday(&pn, NULL);
+                            if ((pn.tv_sec - ps.tv_sec) * 1000 >= 400) break;
+                        }
+                    }
+
+                    /* Flush -- armed, so client 2 stays attached; the
+                     * withheld pre-flush pattern is discarded by the
+                     * flush itself (_ring_flush), never delivered. */
+                    pa_operation *flushOp = pa_stream_flush(s, NULL, NULL);
+                    if (flushOp) {
+                        pa_operation_unref(flushOp);
+                    }
+
+                    /* POST-flush pattern -- the ONLY bytes that must
+                     * reach client 2. */
+                    float postPattern[4] = { 0.125f, -0.125f, 0.0f, 1.0f };
+                    int32_t expected_post[4];
+                    for (int i = 0; i < 4; i++) {
+                        expected_post[i] = _test_f32_to_s32(postPattern[i]);
+                    }
+                    pa_stream_write(s, postPattern, sizeof(postPattern), NULL, 0, 0);
+
+                    unsigned char got_post[16];
+                    int gotPost = (_test_read_bytes(c2fd, got_post, sizeof(got_post), 3000) == 0);
+
+                    pthread_mutex_lock(&g_ring.lock);
+                    int stillConnected = g_ring.client_connected;
+                    pthread_mutex_unlock(&g_ring.lock);
+
+                    if (preLeaked) {
+                        fprintf(stderr, "FAIL: takeover-armed test: pre-flush bytes leaked to client 2 during the armed window\n");
+                        failures++;
+                    } else if (preEof) {
+                        fprintf(stderr, "FAIL: takeover-armed test: client 2 saw EOF while armed and waiting (before flush)\n");
+                        failures++;
+                    } else if (!gotPost) {
+                        fprintf(stderr, "FAIL: takeover-armed test: post-flush pattern never arrived at client 2\n");
+                        failures++;
+                    } else if (memcmp(got_post, expected_post, sizeof(expected_post)) != 0) {
+                        fprintf(stderr, "FAIL: takeover-armed test: client 2's first bytes mismatch (pre-flush bytes interleaved?)\n");
+                        failures++;
+                    } else if (!stillConnected) {
+                        fprintf(stderr, "FAIL: takeover-armed test: client 2 was disconnected (armed flush across a takeover should not disconnect)\n");
+                        failures++;
+                    } else {
+                        printf("ok: takeover during armed window serves no pre-flush bytes\n");
+                    }
+
+                    close(c2fd);
+                }
+            }
+        }
+    }
+
+    /* Double seek-arm double flush (RESEARCH Open Question 1, locked by
+     * Plan 77-01's saturating-counter design): two POST /seek-arm
+     * requests land back-to-back BEFORE either flush consumes an arm --
+     * the counter (not a one-shot bool) must honor BOTH, keeping the
+     * client attached across BOTH flushes. A THIRD, un-armed flush
+     * afterward must restore ordinary D-12 disconnect semantics -- the
+     * counter cannot leak into permanently suppressing skip behavior
+     * (T-77-11). */
+    {
+        pthread_mutex_lock(&g_ring.lock);
+        g_ring.total_popped += (int64_t)g_ring.fill;
+        g_ring.head = g_ring.tail = g_ring.fill = 0;
+        g_ring.client_connected = 0;
+        pthread_mutex_unlock(&g_ring.lock);
+        g_boundary_at_pushed = -1;
+        g_seek_flush_armed = 0;
+
+        static const char getReq[] = "GET /stream HTTP/1.0\r\n\r\n";
+        int dfd = _test_connect_loopback(port);
+        if (dfd < 0) {
+            fprintf(stderr, "FAIL: double-flush test: could not connect client\n");
+            failures++;
+        } else if (write(dfd, getReq, sizeof(getReq) - 1) < 0
+                   || _test_read_header(dfd, 3000) != 0) {
+            fprintf(stderr, "FAIL: double-flush test: could not attach client\n");
+            failures++;
+            close(dfd);
+        } else {
+            float attachPattern[2] = { 0.5f, -0.5f };
+            int32_t expected_attach[2];
+            expected_attach[0] = _test_f32_to_s32(attachPattern[0]);
+            expected_attach[1] = _test_f32_to_s32(attachPattern[1]);
+            pa_stream_write(s, attachPattern, sizeof(attachPattern), NULL, 0, 0);
+
+            unsigned char got_attach[8];
+            if (_test_read_bytes(dfd, got_attach, sizeof(got_attach), 3000) != 0
+                || memcmp(got_attach, expected_attach, sizeof(expected_attach)) != 0) {
+                fprintf(stderr, "FAIL: double-flush test: client did not attach/drain normally\n");
+                failures++;
+                close(dfd);
+            } else if (!_test_post_control(port, "/seek-arm")
+                       || !_test_post_control(port, "/seek-arm")) {
+                fprintf(stderr, "FAIL: double-flush test: a POST /seek-arm did not return 200 OK\n");
+                failures++;
+                close(dfd);
+            } else {
+                /* First flush -- consumes one of the two arms; client
+                 * must stay attached. */
+                pa_operation *flush1 = pa_stream_flush(s, NULL, NULL);
+                if (flush1) pa_operation_unref(flush1);
+
+                /* Second flush -- consumes the second arm; client must
+                 * STILL stay attached (Open Question 1's actual answer:
+                 * the counter honors both arms, not just the first). */
+                pa_operation *flush2 = pa_stream_flush(s, NULL, NULL);
+                if (flush2) pa_operation_unref(flush2);
+
+                pthread_mutex_lock(&g_ring.lock);
+                int connectedAfterTwoFlushes = g_ring.client_connected;
+                pthread_mutex_unlock(&g_ring.lock);
+
+                /* Audio pushed after the second flush must reach the
+                 * still-attached client normally. */
+                float postPattern[4] = { 0.125f, -0.125f, 0.0f, 1.0f };
+                int32_t expected_post[4];
+                for (int i = 0; i < 4; i++) {
+                    expected_post[i] = _test_f32_to_s32(postPattern[i]);
+                }
+                pa_stream_write(s, postPattern, sizeof(postPattern), NULL, 0, 0);
+
+                unsigned char got_post[16];
+                int gotPost = (_test_read_bytes(dfd, got_post, sizeof(got_post), 3000) == 0);
+
+                if (!connectedAfterTwoFlushes) {
+                    fprintf(stderr, "FAIL: double-flush test: client was disconnected after only the SECOND armed flush (counter did not honor both arms)\n");
+                    failures++;
+                    close(dfd);
+                } else if (!gotPost) {
+                    fprintf(stderr, "FAIL: double-flush test: post-second-flush pattern never arrived\n");
+                    failures++;
+                    close(dfd);
+                } else if (memcmp(got_post, expected_post, sizeof(expected_post)) != 0) {
+                    fprintf(stderr, "FAIL: double-flush test: post-second-flush bytes mismatch\n");
+                    failures++;
+                    close(dfd);
+                } else {
+                    /* Third flush -- UN-armed (both prior arms already
+                     * consumed) -- must restore ordinary D-12
+                     * disconnect: the client must reach a real EOF. */
+                    pa_operation *flush3 = pa_stream_flush(s, NULL, NULL);
+                    if (flush3) pa_operation_unref(flush3);
+
+                    int got_eof = 0;
+                    for (int i = 0; i < 100 && !got_eof; i++) {
+                        struct pollfd pfd; pfd.fd = dfd; pfd.events = POLLIN;
+                        int prc = poll(&pfd, 1, 10);
+                        if (prc > 0) {
+                            unsigned char sink[256];
+                            ssize_t n = read(dfd, sink, sizeof(sink));
+                            if (n == 0) {
+                                got_eof = 1;
+                            } else if (n < 0 && errno != EAGAIN && errno != EINTR) {
+                                got_eof = 1;
+                            }
+                        }
+                    }
+                    close(dfd);
+
+                    if (!got_eof) {
+                        fprintf(stderr, "FAIL: double-flush test: third (un-armed) flush did not disconnect the client within 1s -- D-12 not restored\n");
+                        failures++;
+                    } else {
+                        printf("ok: double seek-arm double flush keeps client attached\n");
+                    }
+                }
+            }
+        }
+    }
+
     /* Drop-oldest test: force client_connected=0 and an empty ring
      * directly (same translation unit, direct struct access), then
      * push far more than RING_CAPACITY worth of samples and confirm
