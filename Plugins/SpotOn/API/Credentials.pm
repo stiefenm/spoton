@@ -469,7 +469,7 @@ sub pairingDeviceName {
 
 # startPairing($class, $accountId)
 # -> (1) on started, or (0, $reason) with reason in:
-#    already_running | unknown_account | no_binary | no_capability | spawn_failed
+#    already_running | unknown_account | no_binary | no_capability | binary_no_proxy | spawn_failed
 sub startPairing {
     my ($class, $accountId) = @_;
 
@@ -496,6 +496,12 @@ sub startPairing {
         return (0, 'no_capability');
     }
 
+    require Plugins::SpotOn::Net;
+    if (Plugins::SpotOn::Net::proxyBlockedReason()) {
+        $log->error("Credentials: proxy is configured but SpotOn binary lacks proxy support — not starting pairing (account " . _mask($accountId) . ")");
+        return (0, 'binary_no_proxy');
+    }
+
     my $name = $class->pairingDeviceName();
 
     # D-01 isolation: pairing output lands in a staging dir first -- a wrong
@@ -516,6 +522,7 @@ sub startPairing {
             $helperPath, '-n', $name,
             '--cache', $stagingDir,
             '--discover-once',
+            Plugins::SpotOn::Net::binaryProxyArgs(),
         );
     };
     if ($@ || !$proc) {
@@ -594,6 +601,13 @@ sub _spawnTokenLogin {
     require Plugins::SpotOn::Helper;
     my $helperPath = Plugins::SpotOn::Helper->get();
 
+    require Plugins::SpotOn::Net;
+    if (Plugins::SpotOn::Net::proxyBlockedReason()) {
+        $log->error("Credentials: proxy is configured but SpotOn binary lacks proxy support — not starting token-login for account "
+            . _mask($accountId));
+        return 0;
+    }
+
     unless (-d $targetDir) {
         require File::Path;
         # IN-02: restrict directory permissions to owner-only (0700) for
@@ -628,6 +642,7 @@ sub _spawnTokenLogin {
             $helperPath, '-n', 'SpotOn',
             '--token-login', @tokenArgs,
             '--cache', $targetDir,
+            Plugins::SpotOn::Net::binaryProxyArgs(),
         );
     };
     delete $ENV{SPOTON_TOKEN} if $useTokenEnv;  # immediately after spawn

@@ -14,7 +14,7 @@ use Slim::Utils::Log;
 use Slim::Utils::Prefs;
 use Slim::Utils::Strings qw(cstring);
 use Slim::Utils::Timers;
-use Slim::Networking::SimpleAsyncHTTP;
+require Plugins::SpotOn::Net;
 
 use Plugins::SpotOn::Plugin;
 use Plugins::SpotOn::Unified::Daemon;
@@ -486,7 +486,7 @@ sub _streamAlivePoll {
             $helper->_healthCheckCount($count);
 
             if ($count % 12 == 0) {
-                Slim::Networking::SimpleAsyncHTTP->new(
+                Plugins::SpotOn::Net->http(
                     sub { $class->_onHealthResponse($helper, @_) },
                     sub { $class->_onHealthError($helper, @_) },
                     { timeout => 5 }
@@ -690,6 +690,33 @@ sub startHelper {
         );
         $class->stopHelper($clientId);
         $helper = undef;
+    }
+
+    # Network proxy (spec 2.3/2.4): routing is a security property, so unlike
+    # the name/format checks below there is no "stream active" deferral.
+    # Blocked (proxy set, binary cannot take --proxy): stop the daemon; the
+    # (re-)start below is refused by Daemon::start (fail-closed).
+    # Changed proxy url (set, changed or cleared): restart with the new one.
+    if ($helper && $helper->alive) {
+        if (Plugins::SpotOn::Net::proxyBlockedReason()) {
+            main::INFOLOG && $log->is_info && $log->info(
+                "Proxy configured but SpotOn binary lacks proxy support — stopping Unified daemon for $clientId"
+            );
+            $class->stopHelper($clientId);
+            $helper = undef;
+        }
+        else {
+            my $proxy      = Plugins::SpotOn::Net::currentProxy();
+            my $currentUrl = $proxy ? $proxy->{url} : '';
+            if (($helper->_proxyUrl // '') ne $currentUrl) {
+                main::INFOLOG && $log->is_info && $log->info(
+                    "Network proxy changed for $clientId (was '" . ($helper->_proxyUrl // '')
+                    . "', now '$currentUrl') — restarting daemon"
+                );
+                $class->stopHelper($clientId);
+                $helper = undef;
+            }
+        }
     }
 
     if ($helper && $helper->alive) {

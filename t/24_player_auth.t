@@ -192,6 +192,14 @@ sub reset_stub {
 1;
 END
 
+# Stub: Slim::Networking::SimpleAsyncHTTP -- Plugins::SpotOn::Net loads it at
+# compile time (pulled in lazily by Credentials for the proxy argv/fail-closed check)
+write_stub($stub_dir, 'Slim::Networking::SimpleAsyncHTTP', <<'END');
+package Slim::Networking::SimpleAsyncHTTP;
+sub new { bless {}, shift }
+1;
+END
+
 # Stub: Plugins::SpotOn::Helper -- discover-once capability present by default
 my $fake_helper_path = "$cache_dir/fake-spoton";
 write_stub($stub_dir, 'Plugins::SpotOn::Helper', <<"END");
@@ -624,6 +632,42 @@ my $CREDS = Plugins::SpotOn::API::Credentials::;
     is($ok3, 0, 'g: spawn failure resolves ok=0');
     is($reason3, 'spawn_failed', 'g: spawn failure resolves reason=spawn_failed');
     is($CREDS->pairingStatus()->{state}, 'idle', 'g: state stays idle after spawn failure');
+}
+
+# ============================================================
+# Network proxy: --proxy passthrough and fail-closed (pairing spawn)
+# ============================================================
+{
+    reset_all();
+    preferences('plugin.spoton')->set('accounts', { acctprox => { spotifyUserId => 'userP' } });
+
+    # proxy configured + capability -> --proxy <url> in argv
+    preferences('plugin.spoton')->set('networkProxy', 'http://p:3128');
+    $Plugins::SpotOn::Helper::caps{proxy} = 1;
+    my ($ok, $reason) = $CREDS->startPairing('acctprox');
+    is($ok, 1, 'proxy: pairing starts with proxy capability');
+    my @args = @{ $Proc::Background::spawns[0] || [] };
+    my ($pi) = grep { $args[$_] eq '--proxy' } 0..$#args;
+    ok(defined $pi && $args[$pi + 1] eq 'http://p:3128', 'proxy: argv carries --proxy http://p:3128');
+    $CREDS->cancelPairing();
+
+    # no proxy -> no --proxy in argv
+    reset_all();
+    preferences('plugin.spoton')->set('networkProxy', '');
+    $CREDS->startPairing('acctprox');
+    @args = @{ $Proc::Background::spawns[0] || [] };
+    ok(!(grep { $_ eq '--proxy' } @args), 'proxy: no --proxy when no proxy configured');
+    $CREDS->cancelPairing();
+
+    # proxy configured, binary lacks capability -> fail closed, no spawn
+    reset_all();
+    preferences('plugin.spoton')->set('networkProxy', 'http://p:3128');
+    $Plugins::SpotOn::Helper::caps{proxy} = undef;
+    ($ok, $reason) = $CREDS->startPairing('acctprox');
+    is($ok, 0, 'proxy: pairing refused without proxy capability');
+    is($reason, 'binary_no_proxy', 'proxy: reason is binary_no_proxy');
+    is(scalar(@Proc::Background::spawns), 0, 'proxy: fail-closed, no spawn');
+    preferences('plugin.spoton')->set('networkProxy', '');
 }
 
 done_testing();

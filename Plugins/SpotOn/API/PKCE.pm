@@ -203,8 +203,8 @@ sub exchangeCode {
         'code_verifier=' . uri_escape($codeVerifier),
     );
 
-    require Slim::Networking::SimpleAsyncHTTP;
-    Slim::Networking::SimpleAsyncHTTP->new(
+    require Plugins::SpotOn::Net;
+    Plugins::SpotOn::Net->http(
         sub {
             my $http = shift;
             my $tokenData = eval { from_json($http->content) };
@@ -251,8 +251,8 @@ sub refreshAccessToken {
         'client_id=' . uri_escape($clientId),
     );
 
-    require Slim::Networking::SimpleAsyncHTTP;
-    Slim::Networking::SimpleAsyncHTTP->new(
+    require Plugins::SpotOn::Net;
+    Plugins::SpotOn::Net->http(
         sub {
             my $http = shift;
             my $tokenData = eval { from_json($http->content) };

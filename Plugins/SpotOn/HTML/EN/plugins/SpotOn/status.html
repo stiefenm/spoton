@@ -312,6 +312,27 @@ footer {
             var limClass = api.limitsProbed ? '' : 'pending';
             body.appendChild(createMetricRow('API Limits', api.limitsProbed ? limStr : limStr + ' (probing...)', limClass));
         }
+
+        renderNetwork(data, body);
+    }
+
+    var NET_STR = {
+        network: '[% "PLUGIN_SPOTON_STATUS_NETWORK" | string | html %]',
+        direct:  '[% "PLUGIN_SPOTON_STATUS_NETWORK_DIRECT" | string | html %]',
+        proxy:   '[% "PLUGIN_SPOTON_STATUS_NETWORK_VIA_PROXY" | string | html %]',
+        blocked: '[% "PLUGIN_SPOTON_STATUS_NETWORK_BLOCKED" | string | html %]'
+    };
+
+    function renderNetwork(data, body) {
+        var net = data.network || {};
+        var label = net.mode === 'proxy'
+            ? NET_STR.proxy + (net.proxy ? ': ' + net.proxy : '')
+            : NET_STR.direct;
+        // createMetricRow sets textContent -- proxy URL is never parsed as HTML
+        body.appendChild(createMetricRow(NET_STR.network, label, net.blocked ? 'dot-dead' : ''));
+        if (net.blocked) {
+            body.appendChild(createMetricRow('', NET_STR.blocked, 'dot-dead'));
+        }
     }
 
     function renderErrors(data) {

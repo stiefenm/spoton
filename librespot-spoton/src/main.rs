@@ -54,6 +54,7 @@ use librespot_core::Session;
 use librespot_discovery::{DeviceType, Discovery};
 use futures_util::StreamExt;
 use tokio::time::{timeout, Duration};
+use url::Url;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -121,6 +122,9 @@ async fn main() {
     let mut bitrate: u32 = 320;
 
     let mut enable_normalisation = false;
+
+    // --proxy http://host:port (validated; fail-closed on bad input)
+    let mut proxy: Option<Url> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -256,6 +260,21 @@ async fn main() {
                     i += 1;
                 }
             }
+            "--proxy" => {
+                if i + 1 < args.len() {
+                    match parse_proxy_arg(&args[i + 1]) {
+                        Ok(u) => proxy = Some(u),
+                        Err(e) => {
+                            eprintln!("invalid --proxy: {e}");
+                            process::exit(2);
+                        }
+                    }
+                    i += 1;
+                } else {
+                    eprintln!("invalid --proxy: missing value");
+                    process::exit(2);
+                }
+            }
             "--client-id" => {
                 if i + 1 < args.len() {
                     client_id = args[i + 1].clone();
@@ -297,6 +316,7 @@ async fn main() {
                 "lms-auth": true,
                 "ogg-direct": has_passthrough,
                 "passthrough": has_passthrough,
+                "proxy": true,            // --proxy http://host:port (HTTP CONNECT)
                 "passthrough-mixer": true, // Phase 64: PassthroughMixer (GH #144) — no PCM double attenuation
                 "token-env": true,        // Phase 51 CR-01: SPOTON_TOKEN env var support
                 "token-login": true,
@@ -323,7 +343,7 @@ async fn main() {
                 process::exit(1);
             }
 
-            match run_authenticate(&username, &password, &cache_dir).await {
+            match run_authenticate(&username, &password, &cache_dir, proxy.as_ref()).await {
                 Ok(_) => {
                     println!("authorized");
                     process::exit(0);
@@ -342,7 +362,7 @@ async fn main() {
                 process::exit(1);
             }
 
-            match run_get_token(&cache_dir, &scope, &client_id).await {
+            match run_get_token(&cache_dir, &scope, &client_id, proxy.as_ref()).await {
                 Ok(_) => {
                     process::exit(0);
                 }
@@ -379,7 +399,7 @@ async fn main() {
                 process::exit(1);
             }
 
-            match run_token_login(&token_str, &cache_dir).await {
+            match run_token_login(&token_str, &cache_dir, proxy.as_ref()).await {
                 Ok(_) => {
                     println!("credentials_saved");
                     process::exit(0);
@@ -398,7 +418,7 @@ async fn main() {
                 process::exit(1);
             }
 
-            match run_discover_once(&device_name, &cache_dir).await {
+            match run_discover_once(&device_name, &cache_dir, proxy.as_ref()).await {
                 Ok(username) => {
                     println!("credentials_saved");
                     println!("{}", username);
@@ -433,6 +453,7 @@ async fn main() {
                 passthrough,
                 bitrate,
                 enable_normalisation,
+                proxy.clone(),
             )
             .await
             {
@@ -452,13 +473,14 @@ async fn run_authenticate(
     username: &str,
     password: &str,
     cache_dir: &str,
+    proxy: Option<&Url>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let credentials = Credentials::with_password(username, password);
 
     // Cache object: credentials_path = cache_dir, no volume/audio paths
     let cache = Cache::new(Some(cache_dir), None::<&str>, None::<&str>, None)?;
 
-    let session_config = SessionConfig::default();
+    let session_config = base_session_config(proxy);
     let session = Session::new(session_config, Some(cache));
 
     // connect() with store_credentials=true saves credentials.json to cache_dir
@@ -480,6 +502,7 @@ async fn run_authenticate(
 async fn run_token_login(
     access_token: &str,
     cache_dir: &str,
+    proxy: Option<&Url>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Credentials::with_access_token() sets auth_type = AUTHENTICATION_SPOTIFY_TOKEN
     let credentials = Credentials::with_access_token(access_token);
@@ -487,7 +510,7 @@ async fn run_token_login(
     // Cache object: credentials_path = cache_dir, no volume/audio paths
     let cache = Cache::new(Some(cache_dir), None::<&str>, None::<&str>, None)?;
 
-    let session_config = SessionConfig::default();
+    let session_config = base_session_config(proxy);
     let session = Session::new(session_config, Some(cache));
 
     // store_credentials=true: librespot-core connects, receives reusable_auth_credentials
@@ -505,6 +528,7 @@ async fn run_get_token(
     cache_dir: &str,
     scope: &str,
     client_id: &str,
+    proxy: Option<&Url>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Load cached credentials from credentials.json in cache_dir
     let cache = Cache::new(Some(cache_dir), None::<&str>, None::<&str>, None)?;
@@ -520,7 +544,7 @@ async fn run_get_token(
         }
     };
 
-    let session_config = SessionConfig::default();
+    let session_config = base_session_config(proxy);
     let session = Session::new(session_config, None);
 
     // Connect using cached credentials (store_credentials=false — already stored)
@@ -582,6 +606,7 @@ async fn run_get_token(
 async fn run_discover_once(
     device_name: &str,
     cache_dir: &str,
+    proxy: Option<&Url>,
 ) -> Result<String, Box<dyn std::error::Error>> {
     // Stable device_id from cache_dir via FNV-1a (not DefaultHasher which
     // is version-specific and would cause duplicate Spotify devices on rebuild).
@@ -617,7 +642,7 @@ async fn run_discover_once(
     // Write credentials.json via session.connect(creds, store_credentials=true)
     // Source: run_authenticate() pattern
     let cache = Cache::new(Some(cache_dir), None::<&str>, None::<&str>, None)?;
-    let session_config = SessionConfig::default();
+    let session_config = base_session_config(proxy);
     let session = Session::new(session_config, Some(cache));
     session.connect(credentials, true).await?;
 
@@ -634,3 +659,88 @@ async fn run_discover_once(
     Ok(username)
 }
 
+
+/// Single constructor for every SessionConfig. With a proxy set, librespot
+/// routes the AP, dealer websocket and HTTP client through it and restricts
+/// the AP port itself, so `ap_port` is intentionally left alone.
+pub(crate) fn base_session_config(proxy: Option<&Url>) -> SessionConfig {
+    SessionConfig {
+        proxy: proxy.cloned(),
+        ..Default::default()
+    }
+}
+
+/// Parse and validate `--proxy`: `http://host:port`, explicit port 1-65535,
+/// no userinfo/path/query. A single trailing `/` is tolerated.
+pub(crate) fn parse_proxy_arg(s: &str) -> Result<Url, String> {
+    let t = s.trim();
+    let t = t.strip_suffix('/').unwrap_or(t);
+    let lower = t.to_ascii_lowercase();
+    if lower.starts_with("socks5://") || lower.starts_with("socks://") || lower.starts_with("socks5h://") {
+        return Err("socks proxies are not supported yet (use http://host:port)".into());
+    }
+    let rest = match lower.strip_prefix("http://") {
+        Some(_) => &t["http://".len()..],
+        None => return Err("only http://host:port proxies are supported".into()),
+    };
+    if rest.is_empty() {
+        return Err("missing host".into());
+    }
+    if rest.contains('@') {
+        return Err("credentials in proxy URL are not supported".into());
+    }
+    if rest.contains(['/', '?', '#']) {
+        return Err("proxy URL must not contain a path or query".into());
+    }
+    let port_str = if rest.starts_with('[') {
+        match rest.find(']') {
+            Some(end) => rest[end + 1..].strip_prefix(':'),
+            None => return Err("invalid IPv6 host".into()),
+        }
+    } else {
+        rest.rsplit_once(':').map(|(_, p)| p)
+    };
+    let port: u16 = port_str
+        .ok_or_else(|| "missing port (expected http://host:port)".to_string())?
+        .parse()
+        .map_err(|_| "invalid port".to_string())?;
+    if port == 0 {
+        return Err("invalid port".into());
+    }
+    // Url::parse drops the default port, and librespot connects via
+    // socket_addrs(|| None), which would then fail at connect time.
+    if port == 80 {
+        return Err("port 80 is not supported for the proxy (librespot limitation); use another port".into());
+    }
+    let url = Url::parse(&format!("http://{rest}")).map_err(|e| format!("{e}"))?;
+    if url.host_str().is_none() {
+        return Err("missing host".into());
+    }
+    Ok(url)
+}
+
+#[cfg(test)]
+mod proxy_tests {
+    use super::*;
+
+    #[test] fn proxy_ok() { assert_eq!(parse_proxy_arg("http://10.0.0.1:3128").unwrap().port(), Some(3128)); }
+    #[test] fn proxy_ipv6_ok() { assert!(parse_proxy_arg("http://[::1]:8080").is_ok()); }
+    #[test] fn proxy_trailing_slash_and_trim() { assert_eq!(parse_proxy_arg(" http://h:3128/ ").unwrap().port(), Some(3128)); }
+    #[test] fn proxy_rejects_no_port() { assert!(parse_proxy_arg("http://host").is_err()); }
+    #[test] fn proxy_rejects_ipv6_no_port() { assert!(parse_proxy_arg("http://[::1]").is_err()); }
+    #[test] fn proxy_rejects_port_zero() { assert!(parse_proxy_arg("http://host:0").is_err()); }
+    #[test] fn proxy_rejects_port_80() {
+        assert!(parse_proxy_arg("http://h:80").is_err());
+        assert!(parse_proxy_arg("http://[::1]:80").is_err());
+    }
+    #[test] fn proxy_rejects_path() { assert!(parse_proxy_arg("http://host:3128/x").is_err()); }
+    #[test] fn proxy_rejects_https() { assert!(parse_proxy_arg("https://host:3128").is_err()); }
+    #[test] fn proxy_rejects_socks() { assert!(parse_proxy_arg("socks5://host:1080").is_err()); }
+    #[test] fn proxy_rejects_userinfo() { assert!(parse_proxy_arg("http://u:p@host:3128").is_err()); }
+    #[test] fn session_config_with_proxy() {
+        let u = parse_proxy_arg("http://p:3128").unwrap();
+        assert_eq!(base_session_config(Some(&u)).proxy, Some(u.clone()));
+        assert_eq!(base_session_config(Some(&u)).ap_port, None);
+    }
+    #[test] fn session_config_without_proxy() { assert!(base_session_config(None).proxy.is_none()); }
+}

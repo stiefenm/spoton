@@ -316,6 +316,22 @@
 		<label for="pref_normalization">[% 'PLUGIN_SPOTON_NORMALIZATION_LABEL' | string %]</label>
 	[% END %]
 
+	[% WRAPPER setting title="PLUGIN_SPOTON_NETWORK_PROXY" desc="PLUGIN_SPOTON_NETWORK_PROXY_DESC" %]
+		<input type="text" class="stdedit" name="pref_networkProxy" id="pref_networkProxy"
+			size="40" placeholder="http://host:3128" value="[% networkProxy | html %]"/>
+		<button type="button" class="submit" id="proxyTestBtn" onclick="spotonProxyTest()"
+			data-ok-text="[% 'PLUGIN_SPOTON_NETWORK_PROXY_TEST_OK' | string | html %]">
+			[% 'PLUGIN_SPOTON_NETWORK_PROXY_TEST' | string %]
+		</button>
+		<div id="proxy-test-status" style="display:none; margin-top:6px; font-size:0.9em"></div>
+		[% IF networkProxyError %]
+		<div style="color:orange; margin-top:6px; font-size:0.9em">[% networkProxyError | string %]</div>
+		[% END %]
+		[% IF proxyBinaryUnsupported %]
+		<div style="color:orange; margin-top:6px; font-size:0.9em">[% 'PLUGIN_SPOTON_NETWORK_PROXY_BINARY_UNSUPPORTED' | string %]</div>
+		[% END %]
+	[% END %]
+
 	<hr style="margin:16px 0; border:0; border-top:1px solid rgba(128,128,128,0.25)"/>
 	<h2>[% 'PLUGIN_SPOTON_SETTINGS_DIAG_SECTION' | string %]</h2>
 
@@ -356,6 +372,36 @@
 	[% END %]
 
 	<script type="text/javascript">
+	function spotonProxyTest() {
+		var btn      = document.getElementById('proxyTestBtn');
+		var input    = document.getElementById('pref_networkProxy');
+		var statusEl = document.getElementById('proxy-test-status');
+
+		btn.disabled = true;
+		var done = function(text, ok) {
+			btn.disabled = false;
+			statusEl.textContent = text;
+			statusEl.style.color = ok ? 'green' : 'orange';
+			statusEl.style.display = 'block';
+		};
+
+		var xhr = new XMLHttpRequest();
+		xhr.open('POST', '/plugins/SpotOn/settings/proxy/test', true);
+		xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+		xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+		xhr.onload = function() {
+			var data;
+			try { data = JSON.parse(xhr.responseText); } catch(e) { data = null; }
+			if (data && data.status === 'ok') {
+				done(btn.dataset.okText.replace('%s', data.ms), true);
+			} else {
+				done((data && data.message) || ('HTTP ' + xhr.status), false);
+			}
+		};
+		xhr.onerror = function() { done('Request failed', false); };
+		xhr.send('proxy=' + encodeURIComponent(input.value));
+	}
+
 	function spotonPkceStart() {
 		var btn      = document.getElementById('pkceConnectBtn');
 		var statusEl = document.getElementById('pkce-status');

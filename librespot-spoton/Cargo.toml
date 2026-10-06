@@ -29,5 +29,6 @@ hyper          = { version = "1", features = ["http1", "server"] }
 hyper-util     = { version = "0.1", features = ["server-auto", "server-graceful", "service", "tokio"] }
 http-body-util = "0.1"
 tokio-stream   = "0.1"
+url            = "2"
 log            = "0.4"
 env_logger     = "0.11"

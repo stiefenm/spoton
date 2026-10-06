@@ -9,7 +9,7 @@ use URI::Escape qw(uri_escape uri_escape_utf8);
 use Exporter 'import';
 our @EXPORT_OK = qw(SPOTON_DEFAULT_CLIENT_ID);
 
-use Slim::Networking::SimpleAsyncHTTP;
+require Plugins::SpotOn::Net;
 use Slim::Utils::Cache;
 use Slim::Utils::Log;
 use Slim::Utils::Prefs;
@@ -858,7 +858,7 @@ sub pathfinderHome {
             return;
         }
 
-        my $http = Slim::Networking::SimpleAsyncHTTP->new(
+        my $http = Plugins::SpotOn::Net->http(
             sub {
                 my $http    = shift;
                 my $content = $http->content // '';
@@ -1192,7 +1192,7 @@ sub getWebPlayerPlaylistItems {
             return;
         }
 
-        my $http = Slim::Networking::SimpleAsyncHTTP->new(
+        my $http = Plugins::SpotOn::Net->http(
             sub {
                 my $http    = shift;
                 my $content = $http->content // '';
@@ -1480,7 +1480,7 @@ sub _doRequest {
         main::INFOLOG && $log->info("Client: $method $cleanPath");
 
         my $reqStartTime = Time::HiRes::time();
-        my $http = Slim::Networking::SimpleAsyncHTTP->new(
+        my $http = Plugins::SpotOn::Net->http(
             sub {
                 # Success callback — parse JSON and cache
                 my $http = shift;

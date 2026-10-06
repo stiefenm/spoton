@@ -364,7 +364,8 @@ write_stub($stub_dir, 'Plugins::SpotOn::Helper', <<'END');
 package Plugins::SpotOn::Helper;
 sub get { return wantarray ? ('/usr/bin/spoton', '1.0.0-test') : '/usr/bin/spoton' }
 sub getVersion { '1.0.0-test' }
-sub getCapability { {} }
+our $PROXY_CAP = 1;
+sub getCapability { ($_[1] || '') eq 'proxy' ? $PROXY_CAP : {} }
 1;
 END
 
@@ -461,7 +462,7 @@ require Plugins::SpotOn::Plugin;
 # Tests
 # ============================================================
 
-plan tests => 27;
+plan tests => 33;
 
 # Test 1: Status.pm compiles
 require_ok('Plugins::SpotOn::Status');
@@ -613,3 +614,25 @@ unlike($jsonText, qr/leaked_secret_auth_data_xyz/,
 
 unlike($jsonText, qr/leaked_secret_username/,
     'Test 23: serialized status payload never leaks the fixture username');
+
+# ============================================================
+# Tests 28-33: network section (proxy mode / direct / blocked)
+# ============================================================
+my $net_prefs = Slim::Utils::Prefs::preferences('plugin.spoton');
+sub status_data {
+    @Slim::Web::HTTP::http_responses = ();
+    Plugins::SpotOn::Status::_statusDataHandler('fake_http_client', FakeStatusResponse->new);
+    return JSON::PP::decode_json(${ $Slim::Web::HTTP::http_responses[-1][2] });
+}
+
+$net_prefs->set('networkProxy', '');
+is(status_data()->{network}{mode}, 'direct', 'Test 28: no proxy pref -> network.mode direct');
+ok(!status_data()->{network}{blocked}, 'Test 29: direct mode is not blocked');
+
+$net_prefs->set('networkProxy', 'http://p:3128');
+is(status_data()->{network}{mode}, 'proxy', 'Test 30: proxy pref -> network.mode proxy');
+is(status_data()->{network}{proxy}, 'http://p:3128', 'Test 31: network.proxy carries the URL');
+ok(!status_data()->{network}{blocked}, 'Test 32: binary with proxy capability is not blocked');
+
+$Plugins::SpotOn::Helper::PROXY_CAP = undef;
+is(status_data()->{network}{blocked}, 'binary_no_proxy', 'Test 33: binary without proxy capability -> blocked');

@@ -3315,3 +3315,211 @@ PLUGIN_SPOTON_PLAYER_AUTH_BROWSER_FAILED
 	NO	Autorisering mislyktes. Prøv igjen, eller bruk ZeroConf-paring ovenfor.
 	PL	Autoryzacja nie powiodła się. Spróbuj ponownie lub użyj parowania ZeroConf powyżej.
 	SV	Auktoriseringen misslyckades. Försök igen eller använd ZeroConf-parkoppling ovan.
+
+PLUGIN_SPOTON_NETWORK_PROXY
+	CS	Síťový proxy
+	DA	Netværksproxy
+	DE	Netzwerk-Proxy
+	EN	Network proxy
+	ES	Proxy de red
+	FR	Proxy réseau
+	IT	Proxy di rete
+	NL	Netwerkproxy
+	NO	Nettverksproxy
+	PL	Proxy sieciowe
+	SV	Nätverksproxy
+
+PLUGIN_SPOTON_NETWORK_PROXY_DESC
+	CS	Veškerý provoz SpotOn směrem na Spotify (Web API, přihlášení, audio, Connect) půjde přes tento HTTP proxy. Nechte prázdné pro přímé připojení. Podporovány jsou HTTP proxy s podporou CONNECT, bez autentizace. Příklad: http://192.168.1.10:3128
+	DA	Al SpotOn-trafik til Spotify (Web API, login, lyd, Connect) går gennem denne HTTP-proxy. Lad feltet stå tomt for en direkte forbindelse. HTTP-proxyer med CONNECT-understøttelse og uden godkendelse understøttes. Eksempel: http://192.168.1.10:3128
+	DE	Der gesamte SpotOn-Verkehr zu Spotify (Web-API, Anmeldung, Audio, Connect) läuft über diesen HTTP-Proxy. Leer lassen für eine direkte Verbindung. Unterstützt werden HTTP-Proxys mit CONNECT-Unterstützung und ohne Authentifizierung. Beispiel: http://192.168.1.10:3128
+	EN	All SpotOn traffic to Spotify (Web API, sign-in, audio, Connect) goes through this HTTP proxy. Leave empty for a direct connection. HTTP proxies with CONNECT support, without authentication, are supported. Example: http://192.168.1.10:3128
+	ES	Todo el tráfico de SpotOn hacia Spotify (Web API, inicio de sesión, audio, Connect) pasa por este proxy HTTP. Déjalo vacío para una conexión directa. Se admiten proxies HTTP con soporte CONNECT y sin autenticación. Ejemplo: http://192.168.1.10:3128
+	FR	Tout le trafic de SpotOn vers Spotify (API Web, connexion, audio, Connect) passe par ce proxy HTTP. Laissez vide pour une connexion directe. Les proxys HTTP avec prise en charge de CONNECT, sans authentification, sont pris en charge. Exemple : http://192.168.1.10:3128
+	IT	Tutto il traffico di SpotOn verso Spotify (Web API, accesso, audio, Connect) passa attraverso questo proxy HTTP. Lascia vuoto per una connessione diretta. Sono supportati i proxy HTTP con supporto CONNECT e senza autenticazione. Esempio: http://192.168.1.10:3128
+	NL	Al het SpotOn-verkeer naar Spotify (Web API, aanmelden, audio, Connect) gaat via deze HTTP-proxy. Laat leeg voor een directe verbinding. HTTP-proxy's met CONNECT-ondersteuning en zonder authenticatie worden ondersteund. Voorbeeld: http://192.168.1.10:3128
+	NO	All SpotOn-trafikk til Spotify (Web API, pålogging, lyd, Connect) går gjennom denne HTTP-proxyen. La feltet stå tomt for direkte tilkobling. HTTP-proxyer med CONNECT-støtte og uten autentisering støttes. Eksempel: http://192.168.1.10:3128
+	PL	Cały ruch SpotOn do Spotify (Web API, logowanie, dźwięk, Connect) przechodzi przez ten serwer proxy HTTP. Pozostaw puste dla połączenia bezpośredniego. Obsługiwane są proxy HTTP z obsługą CONNECT, bez uwierzytelniania. Przykład: http://192.168.1.10:3128
+	SV	All SpotOn-trafik till Spotify (Web API, inloggning, ljud, Connect) går via denna HTTP-proxy. Lämna tomt för direktanslutning. HTTP-proxyer med CONNECT-stöd och utan autentisering stöds. Exempel: http://192.168.1.10:3128
+
+PLUGIN_SPOTON_NETWORK_PROXY_TEST
+	CS	Otestovat proxy
+	DA	Test proxy
+	DE	Proxy testen
+	EN	Test proxy
+	ES	Probar proxy
+	FR	Tester le proxy
+	IT	Prova proxy
+	NL	Proxy testen
+	NO	Test proxy
+	PL	Przetestuj proxy
+	SV	Testa proxy
+
+PLUGIN_SPOTON_NETWORK_PROXY_TEST_OK
+	CS	Spojení funguje (%s ms)
+	DA	Forbindelsen virker (%s ms)
+	DE	Verbindung funktioniert (%s ms)
+	EN	Connection works (%s ms)
+	ES	La conexión funciona (%s ms)
+	FR	La connexion fonctionne (%s ms)
+	IT	La connessione funziona (%s ms)
+	NL	Verbinding werkt (%s ms)
+	NO	Tilkoblingen fungerer (%s ms)
+	PL	Połączenie działa (%s ms)
+	SV	Anslutningen fungerar (%s ms)
+
+PLUGIN_SPOTON_NETWORK_PROXY_ERR_SCHEME
+	CS	Proxy musí začínat http:// (formát: http://host:port).
+	DA	Proxyen skal starte med http:// (format: http://host:port).
+	DE	Der Proxy muss mit http:// beginnen (Format: http://host:port).
+	EN	The proxy must start with http:// (format: http://host:port).
+	ES	El proxy debe empezar por http:// (formato: http://host:port).
+	FR	Le proxy doit commencer par http:// (format : http://host:port).
+	IT	Il proxy deve iniziare con http:// (formato: http://host:port).
+	NL	De proxy moet beginnen met http:// (formaat: http://host:port).
+	NO	Proxyen må starte med http:// (format: http://host:port).
+	PL	Adres proxy musi zaczynać się od http:// (format: http://host:port).
+	SV	Proxyn måste börja med http:// (format: http://host:port).
+
+PLUGIN_SPOTON_NETWORK_PROXY_ERR_SOCKS
+	CS	Proxy SOCKS zatím nejsou podporovány — použijte HTTP proxy (většina SOCKS klientů umí zpřístupnit i HTTP port).
+	DA	SOCKS-proxyer understøttes ikke endnu — brug en HTTP-proxy (de fleste SOCKS-klienter kan også tilbyde en HTTP-port).
+	DE	SOCKS-Proxys werden noch nicht unterstützt — verwende einen HTTP-Proxy (die meisten SOCKS-Clients können auch einen HTTP-Port bereitstellen).
+	EN	SOCKS proxies are not supported yet — use an HTTP proxy (most SOCKS clients can also expose an HTTP port).
+	ES	Los proxies SOCKS aún no son compatibles — usa un proxy HTTP (la mayoría de los clientes SOCKS también pueden ofrecer un puerto HTTP).
+	FR	Les proxys SOCKS ne sont pas encore pris en charge — utilisez un proxy HTTP (la plupart des clients SOCKS peuvent aussi exposer un port HTTP).
+	IT	I proxy SOCKS non sono ancora supportati — usa un proxy HTTP (la maggior parte dei client SOCKS può esporre anche una porta HTTP).
+	NL	SOCKS-proxy's worden nog niet ondersteund — gebruik een HTTP-proxy (de meeste SOCKS-clients kunnen ook een HTTP-poort aanbieden).
+	NO	SOCKS-proxyer støttes ikke ennå — bruk en HTTP-proxy (de fleste SOCKS-klienter kan også tilby en HTTP-port).
+	PL	Proxy SOCKS nie są jeszcze obsługiwane — użyj proxy HTTP (większość klientów SOCKS może też udostępnić port HTTP).
+	SV	SOCKS-proxyer stöds inte ännu — använd en HTTP-proxy (de flesta SOCKS-klienter kan också erbjuda en HTTP-port).
+
+PLUGIN_SPOTON_NETWORK_PROXY_ERR_USERINFO
+	CS	Proxy s uživatelským jménem a heslem nejsou podporovány — zadejte pouze http://host:port.
+	DA	Proxyer med brugernavn og adgangskode understøttes ikke — angiv kun http://host:port.
+	DE	Proxys mit Benutzername und Passwort werden nicht unterstützt — gib nur http://host:port an.
+	EN	Proxies with a username and password are not supported — enter only http://host:port.
+	ES	Los proxies con usuario y contraseña no son compatibles — introduce solo http://host:port.
+	FR	Les proxys avec identifiant et mot de passe ne sont pas pris en charge — saisissez uniquement http://host:port.
+	IT	I proxy con nome utente e password non sono supportati — inserisci solo http://host:port.
+	NL	Proxy's met gebruikersnaam en wachtwoord worden niet ondersteund — voer alleen http://host:port in.
+	NO	Proxyer med brukernavn og passord støttes ikke — skriv bare http://host:port.
+	PL	Proxy z nazwą użytkownika i hasłem nie są obsługiwane — wpisz tylko http://host:port.
+	SV	Proxyer med användarnamn och lösenord stöds inte — ange endast http://host:port.
+
+PLUGIN_SPOTON_NETWORK_PROXY_ERR_PATH
+	CS	Adresa proxy nesmí obsahovat cestu ani parametry — formát: http://host:port.
+	DA	Proxyadressen må ikke indeholde sti eller parametre — format: http://host:port.
+	DE	Die Proxy-Adresse darf keinen Pfad und keine Parameter enthalten — Format: http://host:port.
+	EN	The proxy address must not contain a path or query — format: http://host:port.
+	ES	La dirección del proxy no puede contener ruta ni parámetros — formato: http://host:port.
+	FR	L'adresse du proxy ne doit contenir ni chemin ni paramètres — format : http://host:port.
+	IT	L'indirizzo del proxy non deve contenere percorso o parametri — formato: http://host:port.
+	NL	Het proxyadres mag geen pad of queryparameters bevatten — formaat: http://host:port.
+	NO	Proxyadressen kan ikke inneholde sti eller parametere — format: http://host:port.
+	PL	Adres proxy nie może zawierać ścieżki ani parametrów — format: http://host:port.
+	SV	Proxyadressen får inte innehålla sökväg eller parametrar — format: http://host:port.
+
+PLUGIN_SPOTON_NETWORK_PROXY_ERR_PORT
+	CS	Chybí port nebo je neplatný — zadejte port 1–65535, například http://host:3128.
+	DA	Porten mangler eller er ugyldig — angiv en port mellem 1 og 65535, f.eks. http://host:3128.
+	DE	Der Port fehlt oder ist ungültig — gib einen Port von 1 bis 65535 an, z. B. http://host:3128.
+	EN	The port is missing or invalid — enter a port from 1 to 65535, for example http://host:3128.
+	ES	Falta el puerto o no es válido — introduce un puerto de 1 a 65535, por ejemplo http://host:3128.
+	FR	Le port est absent ou invalide — saisissez un port de 1 à 65535, par exemple http://host:3128.
+	IT	La porta manca o non è valida — inserisci una porta da 1 a 65535, ad esempio http://host:3128.
+	NL	De poort ontbreekt of is ongeldig — voer een poort van 1 tot 65535 in, bijvoorbeeld http://host:3128.
+	NO	Porten mangler eller er ugyldig — skriv en port fra 1 til 65535, for eksempel http://host:3128.
+	PL	Brak portu lub jest nieprawidłowy — podaj port od 1 do 65535, na przykład http://host:3128.
+	SV	Porten saknas eller är ogiltig — ange en port från 1 till 65535, till exempel http://host:3128.
+
+PLUGIN_SPOTON_NETWORK_PROXY_ERR_PORT80
+	CS	Port 80 pro proxy není podporován — použijte jiný port (například 3128 nebo 8080).
+	DA	Port 80 understøttes ikke til proxyen — brug en anden port (for eksempel 3128 eller 8080).
+	DE	Port 80 wird für den Proxy nicht unterstützt — verwende einen anderen Port (zum Beispiel 3128 oder 8080).
+	EN	Port 80 is not supported for the proxy — use another port (for example 3128 or 8080).
+	ES	El puerto 80 no es compatible con el proxy — usa otro puerto (por ejemplo 3128 u 8080).
+	FR	Le port 80 n'est pas pris en charge pour le proxy — utilisez un autre port (par exemple 3128 ou 8080).
+	IT	La porta 80 non è supportata per il proxy — usa un'altra porta (ad esempio 3128 o 8080).
+	NL	Poort 80 wordt niet ondersteund voor de proxy — gebruik een andere poort (bijvoorbeeld 3128 of 8080).
+	NO	Port 80 støttes ikke for proxyen — bruk en annen port (for eksempel 3128 eller 8080).
+	PL	Port 80 nie jest obsługiwany dla proxy — użyj innego portu (na przykład 3128 lub 8080).
+	SV	Port 80 stöds inte för proxyn — använd en annan port (till exempel 3128 eller 8080).
+
+PLUGIN_SPOTON_NETWORK_PROXY_ERR_HOST
+	CS	Neplatný název hostitele nebo IP adresa — formát: http://host:port.
+	DA	Ugyldigt værtsnavn eller IP-adresse — format: http://host:port.
+	DE	Ungültiger Hostname oder ungültige IP-Adresse — Format: http://host:port.
+	EN	Invalid host name or IP address — format: http://host:port.
+	ES	Nombre de host o dirección IP no válidos — formato: http://host:port.
+	FR	Nom d'hôte ou adresse IP invalide — format : http://host:port.
+	IT	Nome host o indirizzo IP non valido — formato: http://host:port.
+	NL	Ongeldige hostnaam of ongeldig IP-adres — formaat: http://host:port.
+	NO	Ugyldig vertsnavn eller IP-adresse — format: http://host:port.
+	PL	Nieprawidłowa nazwa hosta lub adres IP — format: http://host:port.
+	SV	Ogiltigt värdnamn eller ogiltig IP-adress — format: http://host:port.
+
+PLUGIN_SPOTON_NETWORK_PROXY_BINARY_UNSUPPORTED
+	CS	Vybraný binární soubor SpotOn nepodporuje proxy. Přehrávání a Connect jsou vypnuty, dokud nevyberete přibalený binární soubor nebo nesmažete proxy.
+	DA	Den valgte SpotOn-binær understøtter ikke proxyer. Afspilning og Connect er deaktiveret, indtil du vælger den medfølgende binær eller fjerner proxyen.
+	DE	Die ausgewählte SpotOn-Binärdatei unterstützt keine Proxys. Wiedergabe und Connect sind deaktiviert, bis du die mitgelieferte Binärdatei auswählst oder den Proxy entfernst.
+	EN	The selected SpotOn binary does not support proxies. Playback and Connect are disabled until you select the bundled binary or clear the proxy.
+	ES	El binario de SpotOn seleccionado no admite proxies. La reproducción y Connect están desactivados hasta que selecciones el binario incluido o borres el proxy.
+	FR	Le binaire SpotOn sélectionné ne prend pas en charge les proxys. La lecture et Connect sont désactivés tant que vous ne sélectionnez pas le binaire fourni ou ne supprimez pas le proxy.
+	IT	Il binario SpotOn selezionato non supporta i proxy. Riproduzione e Connect sono disattivati finché non selezioni il binario incluso o rimuovi il proxy.
+	NL	Het geselecteerde SpotOn-binaire bestand ondersteunt geen proxy's. Afspelen en Connect zijn uitgeschakeld totdat je het meegeleverde bestand kiest of de proxy wist.
+	NO	Den valgte SpotOn-binærfilen støtter ikke proxyer. Avspilling og Connect er deaktivert til du velger den medfølgende binærfilen eller fjerner proxyen.
+	PL	Wybrany plik binarny SpotOn nie obsługuje proxy. Odtwarzanie i Connect są wyłączone, dopóki nie wybierzesz dołączonego pliku lub nie wyczyścisz proxy.
+	SV	Den valda SpotOn-binären stöder inte proxyer. Uppspelning och Connect är inaktiverade tills du väljer den medföljande binären eller rensar proxyn.
+
+PLUGIN_SPOTON_STATUS_NETWORK
+	CS	Síť
+	DA	Netværk
+	DE	Netzwerk
+	EN	Network
+	ES	Red
+	FR	Réseau
+	IT	Rete
+	NL	Netwerk
+	NO	Nettverk
+	PL	Sieć
+	SV	Nätverk
+
+PLUGIN_SPOTON_STATUS_NETWORK_DIRECT
+	CS	Přímé připojení
+	DA	Direkte forbindelse
+	DE	Direktverbindung
+	EN	Direct
+	ES	Conexión directa
+	FR	Connexion directe
+	IT	Connessione diretta
+	NL	Directe verbinding
+	NO	Direkte tilkobling
+	PL	Połączenie bezpośrednie
+	SV	Direktanslutning
+
+PLUGIN_SPOTON_STATUS_NETWORK_VIA_PROXY
+	CS	Přes proxy
+	DA	Via proxy
+	DE	Über Proxy
+	EN	Via proxy
+	ES	A través de proxy
+	FR	Via proxy
+	IT	Tramite proxy
+	NL	Via proxy
+	NO	Via proxy
+	PL	Przez proxy
+	SV	Via proxy
+
+PLUGIN_SPOTON_STATUS_NETWORK_BLOCKED
+	CS	Zablokováno: binárka nepodporuje proxy
+	DA	Blokeret: binærfilen understøtter ikke proxy
+	DE	Blockiert: Binärdatei unterstützt keinen Proxy
+	EN	Blocked: binary does not support proxies
+	ES	Bloqueado: el binario no admite proxy
+	FR	Bloqué : le binaire ne prend pas en charge les proxys
+	IT	Bloccato: il binario non supporta i proxy
+	NL	Geblokkeerd: binary ondersteunt geen proxy
+	NO	Blokkert: binærfilen støtter ikke proxy
+	PL	Zablokowano: plik binarny nie obsługuje proxy
+	SV	Blockerad: binärfilen stöder inte proxy

@@ -46,7 +46,6 @@ use tokio_stream::StreamExt as TokioStreamExt;
 use librespot_connect::{ConnectConfig, Spirc};
 use librespot_core::authentication::Credentials;
 use librespot_core::cache::Cache;
-use librespot_core::config::SessionConfig;
 use librespot_core::Session;
 use librespot_playback::audio_backend::{Sink, SinkError, SinkResult};
 use librespot_playback::config::{AudioFormat, Bitrate, PlayerConfig};
@@ -1298,6 +1297,7 @@ pub async fn run_unified(
     passthrough: bool,
     bitrate_kbps: u32,
     enable_normalisation: bool,
+    proxy: Option<url::Url>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Issue #97: convert kbps to librespot Bitrate enum once, reuse everywhere.
     let bitrate_enum = match bitrate_kbps {
@@ -1342,7 +1342,7 @@ pub async fn run_unified(
     // 3. Session — connect when Browse-only; Spirc::new() connects when Connect enabled.
     //    Spirc::new() calls session.connect() internally; calling it here too causes
     //    "Session is not connected" because the second connect invalidates the first.
-    let mut session_config = SessionConfig::default();
+    let mut session_config = crate::base_session_config(proxy.as_ref());
     session_config.device_id = device_id_shared.clone();
     if let Some(ap) = autoplay {
         session_config.autoplay = Some(ap);

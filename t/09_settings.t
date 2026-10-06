@@ -309,6 +309,7 @@ END
 write_stub($stub_dir, 'Plugins::SpotOn::Helper', <<'END');
 package Plugins::SpotOn::Helper;
 sub get { return '/usr/bin/false' }
+sub getCapability { return 1 }
 sub init { }
 1;
 END
@@ -1346,6 +1347,91 @@ SKIP: {
 
         ok($src =~ /sub _collectAuthHealth\b/,
             'Status.pm defines _collectAuthHealth (moved from Settings.pm)');
+    }
+}
+
+# ============================================================
+# Network proxy setting (Task 7): validation, save, Test endpoint
+# ============================================================
+SKIP: {
+    skip "Settings.pm module required for network proxy tests", 18
+        unless eval { require Plugins::SpotOn::Settings; require Plugins::SpotOn::Net; 1 };
+
+    my $prefs = Slim::Utils::Prefs::preferences('plugin.spoton');
+    my $h = sub { my ($p) = @_; Plugins::SpotOn::Settings->handler(undef, $p, sub { }, undef, undef); return $p };
+
+    $Plugins::SpotOn::Unified::DaemonManager::schedule_init_calls = 0;
+    my $p = $h->({ saveSettings => 1, pref_networkProxy => ' http://p:3128/ ' });
+    is($prefs->get('networkProxy'), 'http://p:3128', 'networkProxy: trimmed + normalised value saved');
+    ok(!$p->{networkProxyError}, 'networkProxy: no error for valid value');
+    is($p->{networkProxy}, 'http://p:3128', 'networkProxy: normalised value passed to template');
+    ok($Plugins::SpotOn::Unified::DaemonManager::schedule_init_calls > 0,
+        'networkProxy: daemons restart on save (existing behavior)');
+
+    $h->({ saveSettings => 1, pref_networkProxy => '' });
+    is($prefs->get('networkProxy'), '', 'networkProxy: empty clears the pref');
+
+    $prefs->set('networkProxy', 'http://keep:1');
+    $p = $h->({ saveSettings => 1, pref_networkProxy => 'socks5://x:1' });
+    is($prefs->get('networkProxy'), 'http://keep:1', 'networkProxy: invalid value not saved');
+    is($p->{networkProxyError}, 'PLUGIN_SPOTON_NETWORK_PROXY_ERR_SOCKS', 'networkProxy: socks error key');
+    is($p->{networkProxy}, 'socks5://x:1', 'networkProxy: invalid input echoed back to the field');
+
+    $p = $h->({ saveSettings => 1, pref_networkProxy => 'http://h:80' });
+    is($p->{networkProxyError}, 'PLUGIN_SPOTON_NETWORK_PROXY_ERR_PORT80', 'networkProxy: port80 error key');
+
+    $h->({ saveSettings => 1 });
+    is($prefs->get('networkProxy'), 'http://keep:1', 'networkProxy: field not sent -> untouched');
+
+    # Test endpoint
+    my @http_calls;
+    my $reply_ok = 1;
+    no warnings qw(redefine once);
+    local *Plugins::SpotOn::Net::http = sub {
+        my ($class, $cb, $ecb, $params) = @_;
+        push @http_calls, $params;
+        return bless { cb => $cb, ecb => $ecb }, 'FakeProxyHttp';
+    };
+    local *FakeProxyHttp::get = sub {
+        my ($self, $url) = @_;
+        push @http_calls, $url;
+        $reply_ok ? $self->{cb}->(bless {}, 'FakeProxyHttp') : $self->{ecb}->($self, 'proxy: CONNECT rejected: 403 Forbidden');
+    };
+
+    my $call = sub {
+        my ($body) = @_;
+        @Slim::Web::HTTP::http_responses = ();
+        my $resp = FakeSettingsResponse->new(request => FakeSettingsRequest->new(headers => {}, content => $body));
+        Plugins::SpotOn::Settings::_proxyTestHandler(undef, $resp);
+        return JSON::PP::decode_json(${ $Slim::Web::HTTP::http_responses[0][2] });
+    };
+
+    my $r = $call->('proxy=http://host');
+    is($r->{status}, 'error', 'proxy test: invalid value -> error');
+    is(scalar @http_calls, 0, 'proxy test: invalid value triggers no network request');
+
+    $r = $call->('proxy=http://h:3128');
+    is_deeply([$r->{status}, ref $http_calls[0], $http_calls[0]{proxyOverride}{port}, $http_calls[1]],
+        ['ok', 'HASH', 3128, 'https://apresolve.spotify.com/?type=accesspoint'],
+        'proxy test: success uses proxyOverride from the field value');
+
+    @http_calls = (); $reply_ok = 0;
+    $r = $call->('proxy=http://h:3128');
+    is_deeply([$r->{status}, $r->{message}], ['error', 'proxy: CONNECT rejected: 403 Forbidden'],
+        'proxy test: transport error message passed through');
+
+    @http_calls = (); $reply_ok = 1;
+    $r = $call->('proxy=');
+    ok(exists $http_calls[0]{proxyOverride} && !defined $http_calls[0]{proxyOverride},
+        'proxy test: empty value tests the direct connection (proxyOverride undef)');
+
+    # Net->http dying must still produce exactly one JSON error reply
+    {
+        local *Plugins::SpotOn::Net::http = sub { die "boom in http\n" };
+        $r = $call->('proxy=http://h:3128');
+        is($r->{status}, 'error', 'proxy test: die in Net->http -> error reply');
+        is($r->{message}, 'boom in http', 'proxy test: die message returned without trailing newline');
+        is(scalar @Slim::Web::HTTP::http_responses, 1, 'proxy test: exactly one reply on die');
     }
 }
 

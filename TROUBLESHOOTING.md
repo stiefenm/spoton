@@ -137,6 +137,33 @@ If the Status page shows `API Limits: Search 10 | Library 10 | Playlists 20` (or
 - **Update to v2.1.6 or later** — includes an upgraded librespot with CDN fallback (automatically tries the next CDN URL on 404) plus SpotOn's own 404 retry layer (3 attempts with 2s delay)
 - If errors persist after updating, you can block specific bad CDN hosts via `/etc/hosts` — see the [forum thread](https://forums.lyrion.org/forum/user-forums/3rd-party-software/1826188-announce-spoton) for known problematic hosts
 
+### Using a proxy
+
+**When to use it:** your network cannot reach Spotify directly (restricted region, corporate or ISP filtering) but you have an HTTP proxy that can. Any HTTP proxy that supports `CONNECT` works, for example Squid, tinyproxy, or the HTTP port of an xray/sing-box/Clash client.
+
+**Setup:** in SpotOn Settings, enter the proxy in the **Network proxy** field as `http://host:port` (for example `http://192.168.1.10:8888`) and press **Test**. When you save a changed proxy (set, changed, or cleared), the running SpotOn daemons restart within a few seconds to pick it up, even during playback; saving without changing it does not restart them. Leave the field empty for a direct connection.
+
+**Limitations:**
+- Port 80 is not supported (the playback binary cannot use a port-80 proxy); use another port.
+- SOCKS (`socks5://`) is not supported yet. SOCKS clients such as xray, sing-box, or Clash can usually expose an additional HTTP proxy port; use that one.
+- Proxy authentication (`user:pass@`) is not supported yet.
+- There is no automatic fallback: if the proxy fails, SpotOn does not connect directly.
+- Cover images (`i.scdn.co`) are fetched by your browser, players, or the LMS image proxy and load directly, not through this proxy.
+- LMS's own **Web proxy** setting is unrelated; LMS ignores it for HTTPS anyway. Use the SpotOn field.
+- The network proxy is tested with LMS 9.x.
+
+**Log messages** (all transport errors start with `proxy: `):
+- `proxy: CONNECT rejected: 403 Forbidden` — the proxy refused the tunnel; check its `Allow` / ACL rules and that the port to Spotify (443) is permitted
+- `proxy: timeout` — no answer within 5 seconds; wrong host/port, firewall, or the proxy is down
+- `proxy: cannot connect to <host>:<port>: …` — the TCP connection to the proxy failed (for example `Connection refused`: nothing listens on that port; or a timeout: the host is unreachable)
+- `proxy: unreachable (recent failure, retry in Ns)` — the proxy timed out or refused the connection less than 30 seconds ago, so SpotOn does not wait for it again until then (this keeps LMS responsive); the **Test** button always tries for real
+- `proxy: connection closed` — the proxy closed the connection before replying
+- `proxy: malformed response` — the address is not an HTTP proxy (for example a SOCKS port)
+- `proxy: TLS setup failed: ...` — the encrypted connection could not be prepared (local TLS/OpenSSL problem in LMS's Perl, before anything is sent)
+- `proxy: TLS handshake failed: ...` — the tunnel was established but the connection to Spotify failed inside it
+
+**Log error "proxy is configured but SpotOn binary lacks proxy support" (status page: "Blocked: binary does not support proxies"):** a proxy is configured, but the chosen librespot binary was built without proxy support. SpotOn refuses to start the daemon rather than connect directly. Select a bundled binary that supports proxies in Settings, or clear the proxy field.
+
 ## mDNS / ZeroConf and Playback Authorization
 
 SpotOn uses mDNS (ZeroConf) for two purposes:

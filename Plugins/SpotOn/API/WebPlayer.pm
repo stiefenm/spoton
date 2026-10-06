@@ -13,7 +13,7 @@ use warnings;
 use JSON::XS::VersionOneAndTwo;
 use Digest::SHA qw(hmac_sha1);
 use HTTP::Date qw(str2time);
-use Slim::Networking::SimpleAsyncHTTP;
+require Plugins::SpotOn::Net;
 use Slim::Utils::Cache;
 use Slim::Utils::Log;
 use Slim::Utils::Prefs;
@@ -101,7 +101,7 @@ use strict;
 use warnings;
 
 use JSON::XS::VersionOneAndTwo;
-use Slim::Networking::SimpleAsyncHTTP;
+require Plugins::SpotOn::Net;
 
 use constant SECRET_URL => 'https://raw.githubusercontent.com/xyloflake/spot-secrets-go/refs/heads/main/secrets/secretDict.json';
 use constant CACHE_KEY      => 'spoton_wp_secret';
@@ -132,7 +132,7 @@ sub getSecret {
         }
     }
 
-    Slim::Networking::SimpleAsyncHTTP->new(
+    Plugins::SpotOn::Net->http(
         sub {
             my $http   = shift;
             my $result = $class->_parseAndValidate($http->content);
@@ -366,7 +366,7 @@ sub _requestToken {
         . '?reason=transport&productType=web-player'
         . '&totp=' . $otp . '&totpServer=' . $otp . '&totpVer=' . $version;
 
-    Slim::Networking::SimpleAsyncHTTP->new(
+    Plugins::SpotOn::Net->http(
         sub {
             my $http      = shift;
             my $content   = $http->content // '';
@@ -492,7 +492,7 @@ sub _clientToken {
         },
     });
 
-    Slim::Networking::SimpleAsyncHTTP->new(
+    Plugins::SpotOn::Net->http(
         sub {
             my $http = shift;
             my $data = eval { from_json($http->content) };
@@ -526,7 +526,7 @@ sub _clientToken {
 sub _serverTime {
     my ($class, $cb) = @_;
 
-    Slim::Networking::SimpleAsyncHTTP->new(
+    Plugins::SpotOn::Net->http(
         sub {
             my $http  = shift;
             my $date  = eval { $http->headers ? $http->headers->header('Date') : undef };

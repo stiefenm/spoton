@@ -37,6 +37,7 @@ __PACKAGE__->mk_accessor( rw => qw(
 	_connectEnabled
 	_passthrough
 	_bitrate
+	_proxyUrl
 	_lastSeen
 	_proc
 	_startTimes
@@ -61,6 +62,9 @@ __PACKAGE__->mk_accessor( rw => qw(
 my $prefs       = preferences('plugin.spoton');
 my $serverPrefs = preferences('server');
 my $log         = logger('plugin.spoton');
+
+# MAC => 1 while start() is refused by the proxy fail-closed guard (log-once).
+my %proxyBlockedLogged;
 
 sub new {
 	my ($class, $id) = @_;
@@ -94,6 +98,24 @@ sub start {
 		$log->warn("SpotOn Unified daemon: no client found for MAC " . $self->mac);
 		return;
 	}
+
+	# Fail closed: never start the daemon directly when a proxy is configured
+	# but the binary cannot route through it.
+	# Logged at ERROR once per blocked period per player (the watchdog calls
+	# start() every pass); state is package-level because DaemonManager
+	# deletes the Daemon object on stopHelper.
+	require Plugins::SpotOn::Net;
+	if (Plugins::SpotOn::Net::proxyBlockedReason()) {
+		my $msg = "SpotOn Unified daemon: proxy is configured but SpotOn binary lacks proxy support — not starting";
+		if ($proxyBlockedLogged{$self->mac}++) {
+			main::INFOLOG && $log->is_info && $log->info("$msg (still blocked)");
+		}
+		else {
+			$log->error($msg);
+		}
+		return;
+	}
+	delete $proxyBlockedLogged{$self->mac};
 
 	# GH #143: static group suffix instead of composed syncname; single
 	# source of truth lives in DaemonManager::deviceNameForClient (CON-06).
@@ -136,6 +158,12 @@ sub start {
 	push @helperArgs, '--bitrate', $bitrate;
 
 	push @helperArgs, '--enable-volume-normalisation' if $prefs->get('normalization');
+
+	# Network proxy (empty list when none is configured). The url is recorded
+	# so DaemonManager::startHelper restarts the daemon when it changes.
+	my $proxy = Plugins::SpotOn::Net::currentProxy();
+	$self->_proxyUrl($proxy ? $proxy->{url} : '');
+	push @helperArgs, Plugins::SpotOn::Net::binaryProxyArgs();
 
 	# D-07 / D-01: Connect is conditional on per-player toggle.
 	# The unified daemon always starts (credential-gated), but --enable-connect

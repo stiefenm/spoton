@@ -14,7 +14,7 @@ use Slim::Utils::Log;
 use Slim::Utils::Cache;
 use Slim::Utils::Prefs;
 use Slim::Utils::Timers;
-use Slim::Networking::SimpleAsyncHTTP;
+require Plugins::SpotOn::Net;
 
 # Seconds; delta threshold to trigger a seek on change events
 use constant SEEK_THRESHOLD => 3;
@@ -204,7 +204,7 @@ sub _sendControlCommand {
     );
     $log->warn("[DIAG] control_cmd_sent: mac=" . $client->id . " endpoint=$endpoint body=$jsonBody") if $prefs->get('diagnosticMode');
 
-    my $http = Slim::Networking::SimpleAsyncHTTP->new(
+    my $http = Plugins::SpotOn::Net->http(
         sub {
             main::DEBUGLOG && $log->is_debug && $log->debug("_sendControlCommand: $endpoint OK");
             $log->warn("[DIAG] control_cmd_ok: mac=" . $client->id . " endpoint=$endpoint") if $prefs->get('diagnosticMode');

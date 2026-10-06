@@ -117,6 +117,7 @@ sub initPlugin {
         enableAutoplay       => 1,     # D-08: Autoplay toggle, default on (Connect autoplay only — DSTM decoupled per GH #117)
         cacheSchemaVersion   => 0,     # D-02: migration marker — triggers cache clear on version bump
         diagnosticMode       => 0,     # #3: diagnostic logging toggle, default off
+        networkProxy         => '',    # HTTP CONNECT proxy URL (http://host:port); empty = direct
         streamingMode        => 'direct', # COMPAT-01: global streaming mode default (direct|proxy); per-player override lives in same-name client pref (GH #96)
         recentSearches => [],
         credProvenanceMigrated => 0,   # GH #147 plan 65-03: one-shot legacy-credential provenance migration marker

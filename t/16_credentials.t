@@ -216,6 +216,14 @@ sub reset_stub {
 1;
 END
 
+# Stub: Slim::Networking::SimpleAsyncHTTP -- Plugins::SpotOn::Net loads it at
+# compile time (pulled in lazily by Credentials for the proxy argv/fail-closed check)
+write_stub($stub_dir, 'Slim::Networking::SimpleAsyncHTTP', <<'END');
+package Slim::Networking::SimpleAsyncHTTP;
+sub new { bless {}, shift }
+1;
+END
+
 # ============================================================
 # Stub: Plugins::SpotOn::Helper
 # get() returns a configurable fake binary path (default: a path under the
@@ -877,6 +885,41 @@ sub seed_staging_credentials {
     my @offending = grep { /tok-fresh|tok-keymaster-secret/ } @Slim::Utils::Log::logged;
     is(scalar(@offending), 0,
         'Test 12: no captured log line contains any full access token value (T-29-07/T-65-09)');
+}
+
+# ============================================================
+# Network proxy: --proxy passthrough and fail-closed (token-login spawn)
+# ============================================================
+{
+    reset_all();
+    my $accountId = 'acct_proxy';
+    seed_credentials($accountId, { username => 'userA', auth_type => 1, auth_data => 'QUJD' });
+    my $prefs = preferences('plugin.spoton');
+
+    $prefs->set('networkProxy', 'http://p:3128');
+    $Plugins::SpotOn::Helper::caps{proxy} = 1;
+    Plugins::SpotOn::API::Credentials->deriveCredentials($accountId, sub { });
+    is(scalar(@Proc::Background::spawns), 1, 'proxy: token-login spawned with proxy capability');
+    my @args = @{ $Proc::Background::spawns[0] || [] };
+    my ($pi) = grep { $args[$_] eq '--proxy' } 0..$#args;
+    ok(defined $pi && $args[$pi + 1] eq 'http://p:3128', 'proxy: argv carries --proxy http://p:3128');
+
+    reset_all();
+    seed_credentials($accountId, { username => 'userA', auth_type => 1, auth_data => 'QUJD' });
+    $prefs->set('networkProxy', '');
+    Plugins::SpotOn::API::Credentials->deriveCredentials($accountId, sub { });
+    @args = @{ $Proc::Background::spawns[0] || [] };
+    ok(!(grep { $_ eq '--proxy' } @args), 'proxy: no --proxy when no proxy configured');
+
+    reset_all();
+    seed_credentials($accountId, { username => 'userA', auth_type => 1, auth_data => 'QUJD' });
+    $prefs->set('networkProxy', 'http://p:3128');
+    $Plugins::SpotOn::Helper::caps{proxy} = undef;
+    my $cbres;
+    Plugins::SpotOn::API::Credentials->deriveCredentials($accountId, sub { $cbres = [@_] });
+    is(scalar(@Proc::Background::spawns), 0, 'proxy: fail-closed, no token-login spawn without proxy capability');
+    ok($cbres && !$cbres->[0], 'proxy: callback resolved as failure');
+    $prefs->set('networkProxy', '');
 }
 
 done_testing();

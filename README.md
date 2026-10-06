@@ -30,6 +30,7 @@ SpotOn is not a fork or a competitor. It is a from-scratch rewrite designed arou
 - **Don't Stop The Music** — Automatic queue extension with multi-artist search, diversity pool from your top tracks, and anti-bubble deduplication
 - **Material Skin Integration** — Menu icons for all navigation entries, fallback artwork for grid/cover-view compatibility, and optional home-screen rows (Recently Played, Top Tracks, Made For You, Main Menu, Playlists)
 - **Auth Health Dashboard** — Status page shows Web API token and playback credentials separately with credential source and remediation guidance
+- **Network proxy** — Optional HTTP CONNECT proxy (`http://host:port`) for all Spotify traffic, API and playback daemon alike, with a connection test in Settings and no silent fallback to a direct connection
 - **Multi-Account** — Switch between Spotify accounts without re-authentication
 
 ## Requirements

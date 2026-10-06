@@ -16,6 +16,7 @@ use Slim::Utils::Log;
 use Slim::Utils::Prefs;
 use Slim::Utils::Strings qw(string);
 use Plugins::SpotOn::Helper;
+use Plugins::SpotOn::Net ();
 
 use constant SETTINGS_URL => 'plugins/SpotOn/settings/basic.html';
 
@@ -86,6 +87,12 @@ sub new {
     Slim::Web::Pages->addRawFunction(
         'plugins/SpotOn/settings/playerauth/browser/manual',
         \&_playerAuthBrowserManualHandler
+    );
+
+    # Network proxy "Test" button
+    Slim::Web::Pages->addRawFunction(
+        'plugins/SpotOn/settings/proxy/test',
+        \&_proxyTestHandler
     );
 
     return $self;
@@ -299,7 +306,28 @@ sub handler {
             $mode = 'direct' unless $mode =~ /^(?:direct|proxy)$/;
             $prefs->set('streamingMode', $mode);
         }
+
+        # Network proxy: validated manually (not in prefs()) so an invalid value
+        # never reaches the pref. Field absent -> untouched; empty -> direct.
+        if (defined $paramRef->{'pref_networkProxy'}) {
+            my $raw = $paramRef->{'pref_networkProxy'};
+            my ($parsed, $err) = Plugins::SpotOn::Net::parseProxyUrl($raw);
+            if ($parsed) {
+                $prefs->set('networkProxy', $parsed->{url});
+            }
+            elsif (($err // '') eq 'empty') {
+                $prefs->set('networkProxy', '');
+            }
+            else {
+                $paramRef->{networkProxyError} = _proxyErrorKey($err);
+                $paramRef->{networkProxyInput} = $raw;
+            }
+        }
     }
+
+    $paramRef->{networkProxy} = $paramRef->{networkProxyInput} // ($prefs->get('networkProxy') // '');
+    $paramRef->{proxyBinaryUnsupported} =
+        (Plugins::SpotOn::Net::proxyBlockedReason() // '') eq 'binary_no_proxy' ? 1 : 0;
 
     my $serverPrefs = preferences('server');
 
@@ -904,9 +932,9 @@ sub _pkceLoadVerifierDataFromState {
 sub _pkceFinishAuth {
     my ($httpClient, $response, $tokenData, $clientId, $isJson) = @_;
 
-    require Slim::Networking::SimpleAsyncHTTP;
+    require Plugins::SpotOn::Net;
 
-    Slim::Networking::SimpleAsyncHTTP->new(
+    Plugins::SpotOn::Net->http(
         sub {
             my $http    = shift;
             my $profile = eval { from_json($http->content) };
@@ -1191,6 +1219,17 @@ $action
 # Returns a downloadable text file with system info + daemon logs.
 # Only works when diagnosticMode pref is enabled (403 otherwise).
 # ============================================================
+sub _networkProxyDiagLine {
+    my $line = eval {
+        require Plugins::SpotOn::Net;
+        my $proxy = Plugins::SpotOn::Net::currentProxy();
+        my $l = 'Network proxy: ' . ($proxy ? $proxy->{url} : 'direct');
+        $l .= ' (blocked: binary lacks proxy support)' if Plugins::SpotOn::Net::proxyBlockedReason();
+        $l;
+    };
+    return $line // 'Network proxy: unknown';
+}
+
 sub _diagnosticBundleHandler {
     my ($httpClient, $response) = @_;
 
@@ -1234,6 +1273,7 @@ sub _diagnosticBundleHandler {
         "Active account: $redactedId",
         "Bitrate: " . ($prefs->get('bitrate') || 320),
         "Normalization: " . ($prefs->get('normalization') ? 'on' : 'off'),
+        _networkProxyDiagLine(),
         "Client-ID: $redactedClientId",
         "diagnosticMode: 1",
         '',
@@ -1356,6 +1396,67 @@ sub _clearLogsHandler {
     main::INFOLOG && $log->is_info && $log->info("clearLogs: deleted $deleted log file(s)");
 
     _jsonResponse($httpClient, $response, { status => 'ok', deleted => $deleted });
+}
+
+# parseProxyUrl error key -> strings.txt key
+sub _proxyErrorKey {
+    my ($err) = @_;
+    my %map = (
+        scheme            => 'PLUGIN_SPOTON_NETWORK_PROXY_ERR_SCHEME',
+        socks_unsupported => 'PLUGIN_SPOTON_NETWORK_PROXY_ERR_SOCKS',
+        userinfo          => 'PLUGIN_SPOTON_NETWORK_PROXY_ERR_USERINFO',
+        path              => 'PLUGIN_SPOTON_NETWORK_PROXY_ERR_PATH',
+        port              => 'PLUGIN_SPOTON_NETWORK_PROXY_ERR_PORT',
+        port80            => 'PLUGIN_SPOTON_NETWORK_PROXY_ERR_PORT80',
+        host              => 'PLUGIN_SPOTON_NETWORK_PROXY_ERR_HOST',
+    );
+    return $map{$err // ''} || 'PLUGIN_SPOTON_NETWORK_PROXY_ERR_HOST';
+}
+
+# POST plugins/SpotOn/settings/proxy/test  (param: proxy)
+# Checks the value currently typed in the field (not the saved pref) by
+# fetching the Spotify access-point resolver through it. Empty = direct.
+sub _proxyTestHandler {
+    my ($httpClient, $response) = @_;
+
+    return unless _csrfCheck($httpClient, $response);
+
+    my $raw = _postParam($response->request, 'proxy');
+    my ($parsed, $err) = Plugins::SpotOn::Net::parseProxyUrl($raw);
+
+    if (!$parsed && ($err // 'empty') ne 'empty') {
+        _jsonResponse($httpClient, $response,
+            { status => 'error', message => string(_proxyErrorKey($err)) });
+        return;
+    }
+
+    require Time::HiRes;
+    my $start = Time::HiRes::time();
+
+    my $replied = 0;
+    my $reply = sub {
+        return if $replied++;
+        _jsonResponse($httpClient, $response, $_[0]);
+    };
+
+    eval {
+        Plugins::SpotOn::Net->http(
+            sub {
+                my $ms = int((Time::HiRes::time() - $start) * 1000);
+                $reply->({ status => 'ok', ms => $ms });
+            },
+            sub {
+                my ($http, $error) = @_;
+                $reply->({ status => 'error', message => ($error // 'unknown error') . '' });
+            },
+            { timeout => 10, proxyOverride => $parsed },
+        )->get('https://apresolve.spotify.com/?type=accesspoint');
+        1;
+    } or do {
+        my $msg = "$@";
+        $msg =~ s/\s+\z//;
+        $reply->({ status => 'error', message => $msg || 'unknown error' });
+    };
 }
 
 sub _jsonResponse {

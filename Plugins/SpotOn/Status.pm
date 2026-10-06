@@ -126,6 +126,12 @@ sub _statusDataHandler {
     # require Client.pm for this.
     $data{madeForYou}{hashConfigured} = (length($prefs->get('pathfinderHash') || '') > 0) ? 1 : 0;
 
+    # --- Network (proxy mode) ---
+    $data{network} = eval { _collectNetwork() } // {};
+    if ($@) {
+        main::INFOLOG && $log->is_info && $log->info("Status: _collectNetwork failed: $@");
+    }
+
     # --- System info (D-05: cached, computed once) ---
     $data{system} = eval { _systemInfo() } // {};
     if ($@) {
@@ -152,6 +158,16 @@ sub _statusDataHandler {
 # ============================================================
 # Data collectors
 # ============================================================
+
+sub _collectNetwork {
+    require Plugins::SpotOn::Net;
+    my $proxy = Plugins::SpotOn::Net::currentProxy();
+    return {
+        mode    => $proxy ? 'proxy' : 'direct',
+        proxy   => $proxy ? $proxy->{url} : undef,
+        blocked => Plugins::SpotOn::Net::proxyBlockedReason(),
+    };
+}
 
 sub _collectDaemons {
     my @daemons;
