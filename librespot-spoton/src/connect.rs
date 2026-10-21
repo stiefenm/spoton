@@ -25,6 +25,9 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, watch};
 
+use crate::metadata::track_metadata;
+#[cfg(test)]
+use librespot_metadata::audio::{AudioItem, UniqueFields};
 use librespot_playback::audio_backend::{Sink, SinkError, SinkResult};
 use librespot_playback::config::AudioFormat;
 use librespot_playback::convert::Converter;
@@ -65,6 +68,15 @@ pub struct LMS {
 }
 
 impl LMS {
+    /// Initialize both event orderings with the same pause grace and position sync.
+    fn begin_session(&self) {
+        if let Ok(mut start) = self.last_session_start.lock() {
+            *start = Some(std::time::Instant::now());
+        }
+        self.was_paused.store(false, Ordering::Release);
+        self.needs_position_sync.store(true, Ordering::Release);
+    }
+
     pub fn new(
         host_port: Option<String>,
         player_mac: Option<String>,
@@ -119,7 +131,7 @@ impl LMS {
     /// `current_track` is the dispatch loop's cursor: base62 id of the last-seen
     /// Playing track. Mutated in place.
     ///
-    /// Wire vocabulary (6 commands): start, change, stop, volume, seek, resume.
+    /// Wire vocabulary: start, change, metadata, stop, volume, seek, resume.
     /// "pause" is intentionally not emitted — Paused and Stopped collapse to "stop".
     pub async fn handle_player_event(
         &self,
@@ -170,10 +182,17 @@ impl LMS {
                         }
                     }
                     None => {
-                        self.was_paused.store(false, Ordering::Release);
-                        // TrackChanged is the authoritative "start" source.
-                        // Only set cursor here as fallback (Playing without prior TrackChanged).
+                        // Establish the LMS stream even if Playing precedes TrackChanged;
+                        // the later TrackChanged delivers metadata for this same ID.
+                        self.begin_session();
                         *current_track = Some(new_id.clone());
+                        self.notify("start", &new_id, "").await;
+                        // This event already supplies the initial transfer position.
+                        self.needs_position_sync.store(false, Ordering::Release);
+                        let secs = f64::from(*position_ms) / 1000.0;
+                        if secs > 1.0 {
+                            self.notify("seek", &format!("{secs:.3}"), "").await;
+                        }
                     }
                 }
             }
@@ -245,29 +264,27 @@ impl LMS {
             // TrackChanged: authoritative source for "start" and "change" notifications.
             // Playing only handles seek-sync for the same track.
             PlayerEvent::TrackChanged { audio_item } => {
+                let metadata = track_metadata(audio_item);
                 let new_id = audio_item.track_id.to_id();
                 log::debug!("[spoton] TrackChanged: track_id={new_id}");
                 match current_track.as_deref() {
                     Some(prev) if prev == new_id.as_str() => {
                         self.was_paused.store(false, Ordering::Release);
+                        // Playing can precede TrackChanged. Deliver its metadata even
+                        // when that earlier event already advanced the track cursor.
+                        if metadata.is_some() {
+                            self.notify_with_metadata("metadata", &new_id, "", metadata.as_ref()).await;
+                        }
                     }
                     Some(_) => {
                         self.was_paused.store(false, Ordering::Release);
                         let prev = current_track.replace(new_id.clone()).unwrap_or_default();
-                        self.notify("change", &new_id, &prev).await;
+                        self.notify_with_metadata("change", &new_id, &prev, metadata.as_ref()).await;
                     }
                     None => {
-                        // D-03: Session start — set grace timer to suppress spurious
-                        // Paused that Spirc fires immediately after TrackChanged.
-                        // ONLY on None->Some (session start), never on Some->Some (track change).
-                        // Uses Instant for NTP immunity (WR-05 fix).
-                        if let Ok(mut start) = self.last_session_start.lock() {
-                            *start = Some(std::time::Instant::now());
-                        }
-                        log::debug!("[spoton] TrackChanged (session start): grace timer set");
-                        self.needs_position_sync.store(true, Ordering::Release);
+                        self.begin_session();
                         *current_track = Some(new_id.clone());
-                        self.notify("start", &new_id, "").await;
+                        self.notify_with_metadata("start", &new_id, "", metadata.as_ref()).await;
                     }
                 }
             }
@@ -283,6 +300,15 @@ impl LMS {
     /// swallowed with a warning — the daemon must never panic on LMS outage.
     /// If `auth` is set, adds `Authorization: Basic <creds>` header.
     pub async fn notify(&self, cmd: &str, p1: &str, p2: &str) {
+        self.notify_with_metadata(cmd, p1, p2, None).await;
+    }
+
+    /// Send tagged metadata in the same dispatch as its track transition so LMS never
+    /// races a separate metadata notification against playlist creation. Existing
+    /// parameter positions are preserved, including the empty previous ID on start.
+    async fn notify_with_metadata(
+        &self, cmd: &str, p1: &str, p2: &str, metadata: Option<&serde_json::Value>,
+    ) {
         let host_port = match self.host_port.as_deref() {
             Some(h) => h,
             None => return,
@@ -299,8 +325,13 @@ impl LMS {
         if !p1.is_empty() {
             params.push(json!(p1));
         }
-        if !p2.is_empty() {
+        if !p2.is_empty() || metadata.is_some() {
             params.push(json!(p2));
+        }
+        if let Some(metadata) = metadata {
+            // LMS parses extra arguments as tag:value. Use an explicit tag so
+            // colons inside JSON cannot be mistaken for a parameter name.
+            params.push(json!(format!("metadata:{metadata}")));
         }
         let body = json!({
             "id": 1,
@@ -576,3 +607,154 @@ impl Sink for HttpStreamSink {
     }
 }
 
+
+/// Exercise the actual JSON-RPC transport without a Spotify account or LMS server.
+#[cfg(test)]
+mod metadata_tests {
+    use super::*;
+    use librespot_core::SpotifyUri;
+    use librespot_metadata::{
+        artist::{ArtistRole, ArtistWithRole, ArtistsWithRole},
+        audio::item::CoverImage,
+        image::ImageSize,
+    };
+    use tokio::{io::AsyncReadExt, net::TcpListener};
+
+    /// Representative loaded track includes Unicode and punctuation requiring JSON escaping.
+    fn item(id: &str) -> AudioItem {
+        AudioItem {
+            track_id: SpotifyUri::from_uri(&format!("spotify:track:{id}")).unwrap(),
+            uri: format!("spotify:track:{id}"),
+            files: Default::default(),
+            name: "Björk: \"Live\" — 東京".into(),
+            covers: vec![CoverImage {
+                url: "https://i.scdn.co/image/example".into(),
+                size: ImageSize::LARGE,
+                width: 640,
+                height: 640,
+            }],
+            language: vec![],
+            duration_ms: 237_360,
+            is_explicit: false,
+            availability: Ok(()),
+            alternatives: None,
+            unique_fields: UniqueFields::Track {
+                artists: ArtistsWithRole(vec![ArtistWithRole {
+                    id: SpotifyUri::from_uri("spotify:artist:0000000000000000000001").unwrap(),
+                    name: "Artist & guest".into(),
+                    role: ArtistRole::ARTIST_ROLE_MAIN_ARTIST,
+                }]),
+                album: "Album: one".into(),
+                album_artists: vec![],
+                popularity: 0,
+                number: 1,
+                disc_number: 1,
+            },
+        }
+    }
+
+    /// Read one complete HTTP request and verify its byte count before parsing JSON.
+    async fn receive(listener: &TcpListener) -> serde_json::Value {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut bytes = Vec::new();
+        stream.read_to_end(&mut bytes).await.unwrap();
+        let request = String::from_utf8(bytes).unwrap();
+        let (headers, body) = request.split_once("\r\n\r\n").unwrap();
+        assert!(headers.contains(&format!("Content-Length: {}", body.len())));
+        serde_json::from_str(body).unwrap()
+    }
+
+    /// Verify track metadata reaches the same positional argument on start and change.
+    #[tokio::test]
+    async fn start_change_and_same_track_metadata() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let lms = LMS::new(Some(listener.local_addr().unwrap().to_string()), Some("player".into()), None, None);
+        let mut cursor = None;
+        for (id, command, previous) in [
+            ("6AFchAk1WiYMnWVZcm82s5", "start", ""),
+            ("7AXVmFR9ewYFFB0fKEyGkW", "change", "6AFchAk1WiYMnWVZcm82s5"),
+            ("7AXVmFR9ewYFFB0fKEyGkW", "metadata", ""),
+        ] {
+            let event = PlayerEvent::TrackChanged { audio_item: Box::new(item(id)) };
+            lms.handle_player_event(&event, &mut cursor).await;
+            let request = receive(&listener).await;
+            let args = request["params"][1].as_array().unwrap();
+            assert_eq!(args.len(), 5);
+            assert_eq!(args[1], command);
+            assert_eq!(args[2], id);
+            assert_eq!(args[3], previous);
+            let metadata: serde_json::Value = serde_json::from_str(args[4].as_str().unwrap().strip_prefix("metadata:").unwrap()).unwrap();
+            assert_eq!(metadata["uri"], format!("spotify:track:{id}"));
+            assert_eq!(metadata["name"], "Björk: \"Live\" — 東京");
+            assert_eq!(metadata["artists"][0]["name"], "Artist & guest");
+            assert_eq!(metadata["artists"][0]["id"], "0000000000000000000001");
+            assert_eq!(metadata["album"]["name"], "Album: one");
+            assert_eq!(metadata["album"]["images"][0]["width"], 640);
+            assert_eq!(metadata["duration_ms"], 237_360);
+        }
+    }
+
+    /// Playing-first ordering must establish the stream before metadata-only delivery.
+    #[tokio::test]
+    async fn playing_before_track_changed_starts_stream() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let lms = LMS::new(Some(listener.local_addr().unwrap().to_string()), Some("player".into()), None, None);
+        let mut cursor = None;
+        let audio_item = item("6AFchAk1WiYMnWVZcm82s5");
+        let event = PlayerEvent::Playing {
+            track_id: audio_item.track_id.clone(), play_request_id: 1, position_ms: 0,
+        };
+        lms.handle_player_event(&event, &mut cursor).await;
+        assert_eq!(receive(&listener).await["params"][1][1], "start");
+        lms.handle_player_event(&PlayerEvent::TrackChanged { audio_item: Box::new(audio_item) }, &mut cursor).await;
+        assert_eq!(receive(&listener).await["params"][1][1], "metadata");
+    }
+
+    /// Both start orderings suppress transient pause and synchronize a mid-track transfer.
+    #[tokio::test]
+    async fn session_start_preserves_grace_and_position() {
+        for playing_first in [true, false] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let lms = LMS::new(Some(listener.local_addr().unwrap().to_string()), Some("player".into()), None, None);
+            let mut cursor = None;
+            let audio_item = item("6AFchAk1WiYMnWVZcm82s5");
+            let playing = PlayerEvent::Playing {
+                track_id: audio_item.track_id.clone(), play_request_id: 1, position_ms: 42000,
+            };
+            let changed = PlayerEvent::TrackChanged { audio_item: Box::new(audio_item) };
+            lms.handle_player_event(if playing_first { &playing } else { &changed }, &mut cursor).await;
+            assert_eq!(receive(&listener).await["params"][1][1], "start");
+            assert!(lms.last_session_start.lock().unwrap().is_some());
+            if playing_first {
+                let seek = receive(&listener).await;
+                assert_eq!(seek["params"][1][1], "seek");
+                assert_eq!(seek["params"][1][2], "42.000");
+            }
+            let paused = PlayerEvent::Paused {
+                track_id: SpotifyUri::from_uri("spotify:track:6AFchAk1WiYMnWVZcm82s5").unwrap(),
+                play_request_id: 1, position_ms: 42000,
+            };
+            lms.handle_player_event(&paused, &mut cursor).await;
+            assert!(!lms.was_paused.load(Ordering::Acquire));
+            assert!(tokio::time::timeout(std::time::Duration::from_millis(20), listener.accept()).await.is_err());
+            lms.handle_player_event(if playing_first { &changed } else { &playing }, &mut cursor).await;
+            let request = receive(&listener).await;
+            assert_eq!(request["params"][1][1], if playing_first { "metadata" } else { "seek" });
+            assert!(!lms.needs_position_sync.load(Ordering::Acquire));
+        }
+    }
+
+    /// Missing track artists fall back to album artists, without requiring cover art.
+    #[test]
+    fn missing_artwork_and_track_artists() {
+        let mut audio_item = item("6AFchAk1WiYMnWVZcm82s5");
+        audio_item.covers.clear();
+        if let UniqueFields::Track { artists, album_artists, .. } = &mut audio_item.unique_fields {
+            artists.0.clear();
+            album_artists.push("Album artist".into());
+        }
+        let metadata = track_metadata(&audio_item).unwrap();
+        assert_eq!(metadata["artists"][0]["name"], "Album artist");
+        assert_eq!(metadata["album"]["images"], json!([]));
+    }
+}

@@ -5,6 +5,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- **Spotify Connect track information** — Track changes use metadata already loaded by the playback daemon. Older daemons retain bounded Web API retries that respect rate-limit backoff.
+- **Browse track information** — Track metadata uses the running daemon before the Web API. Cached details remain available, with Web API fallback for unavailable daemons and podcasts.
+
 ## [3.5.8] - 2026-08-22
 
 ### Fixed

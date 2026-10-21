@@ -39,6 +39,7 @@
 //   exit 0 on success, exit 1 on failure (including 15-min timeout)
 
 mod connect;  // connect.rs: LMS + HttpStreamSink used by unified.rs
+mod metadata;
 mod browse;   // browse.rs: BrowseHttpSink + serve_track_request used by unified.rs
 mod unified;  // Phase 29: unified Browse+Connect daemon (one process, one port)
 

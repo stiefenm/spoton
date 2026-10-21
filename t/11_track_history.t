@@ -60,7 +60,9 @@ my $_noop_logger = bless {}, 'Slim::Utils::Log';
 sub addLogCategory { return $_noop_logger }
 sub logger         { return $_noop_logger }
 sub info  { }
-sub warn  { }
+# Capture diagnostic markers so tests can distinguish local success from fallback.
+our @messages;
+sub warn { push @messages, $_[1] }
 sub error { }
 sub debug { }
 sub is_info  { 0 }
@@ -184,11 +186,14 @@ END
 # Stub: JSON::XS::VersionOneAndTwo
 write_stub($stub_dir, 'JSON::XS::VersionOneAndTwo', <<'END');
 package JSON::XS::VersionOneAndTwo;
-use parent 'Exporter';
-our @EXPORT = qw(from_json to_json);
 use JSON::PP ();
-sub from_json { JSON::PP::decode_json($_[0]) }
-sub to_json   { JSON::PP::encode_json($_[0]) }
+# LMS installs aliases in the caller; qualified calls to this package must fail.
+sub import {
+    my $caller = caller;
+    no strict 'refs';
+    *{"${caller}::from_json"} = \&JSON::PP::decode_json;
+    *{"${caller}::to_json"} = \&JSON::PP::encode_json;
+}
 1;
 END
 
@@ -289,11 +294,39 @@ END
 write_stub($stub_dir, 'Plugins::SpotOn::API::Client', <<'END');
 package Plugins::SpotOn::API::Client;
 our $mock_track = undef;
+our $track_calls = 0;
 sub getTrack {
     my ($class, $account_id, $track_id, $cb) = @_;
+    $track_calls++;
     $cb->($mock_track);
 }
 sub AUTOLOAD { }
+1;
+END
+
+# Optional daemon and HTTP stubs let metadata tests choose success or fallback.
+write_stub($stub_dir, 'Plugins::SpotOn::Unified::DaemonManager', <<'END');
+package Plugins::SpotOn::Unified::DaemonManager;
+our $helper;
+# No daemon is present unless a test explicitly supplies one.
+sub helperForClient { $helper }
+1;
+END
+
+write_stub($stub_dir, 'Slim::Networking::SimpleAsyncHTTP', <<'END');
+package Slim::Networking::SimpleAsyncHTTP;
+our ($body, $fail, $last_url, $defer, $pending);
+# Retain both callbacks so a test can model a late local HTTP response.
+sub new { my ($class, $ok, $err) = @_; bless {ok=>$ok, err=>$err}, $class }
+# Dispatch synchronously by default; deferred requests exercise debounce behavior.
+sub get {
+    my ($self, $url) = @_;
+    $last_url = $url;
+    if ($defer) { $pending = $self; return; }
+    $self->{$fail ? 'err' : 'ok'}->($self);
+}
+# Tests supply the serialized response exactly as LMS's HTTP client would.
+sub content { $body }
 1;
 END
 
@@ -746,6 +779,67 @@ subtest 'D-07: HTTP /stream URL is not canonicalized, returns placeholder' => su
     ok(defined $result, 'D-07: /stream URL returns defined result');
     is($result->{cover}, '/html/images/cover.png',
         'D-07: /stream URL is not canonicalized to a track cache key — falls to placeholder');
+};
+
+# Local metadata must avoid the Web API and safely fall back on old/broken daemons.
+subtest 'Daemon metadata and API fallback' => sub {
+    ok(!JSON::XS::VersionOneAndTwo->can('from_json'), 'LMS compatibility module has no package-local decoder');
+    require JSON::PP;
+    require Slim::Networking::SimpleAsyncHTTP;
+    require Plugins::SpotOn::Unified::DaemonManager;
+    {
+        package MetadataDaemon;
+        # This fixture represents an already-running daemon, never a new process.
+        sub alive { 1 }
+        # A fixed local port makes the requested endpoint observable.
+        sub _streamPort { 12345 }
+    }
+    local $Plugins::SpotOn::Unified::DaemonManager::helper = bless {}, 'MetadataDaemon';
+    local $Plugins::SpotOn::API::Client::mock_track = { name => 'API fallback' };
+    my $id = '0000000000000000000001';
+    my $url = "spoton://track:$id";
+    my $client = MockClient->new('metadata_player');
+    my $prefs = Slim::Utils::Prefs::preferences('plugin.spoton');
+    $prefs->set('diagnosticMode', 1);
+    my $info = { uri => "spotify:track:$id", name => 'Local title',
+        artists => [{name => 'Local artist'}],
+        album => {name => 'Local album', images => []}, duration_ms => 123000 };
+    for my $case ('success', 'wrong track', 'bad JSON', 'bad artists', 'bad album', 'bad duration', 'bad artwork', 'HTTP error') {
+        Slim::Utils::Cache->new->clear();
+        @Slim::Utils::Log::messages = ();
+        $Plugins::SpotOn::API::Client::track_calls = 0;
+        local $Slim::Networking::SimpleAsyncHTTP::fail = $case eq 'HTTP error';
+        my %response = %$info;
+        $response{uri} = 'spotify:track:0000000000000000000002' if $case eq 'wrong track';
+        $response{artists} = ['invalid'] if $case eq 'bad artists';
+        $response{album} = [] if $case eq 'bad album';
+        $response{duration_ms} = [] if $case eq 'bad duration';
+        $response{album} = { images => [{url => []}] } if $case eq 'bad artwork';
+        local $Slim::Networking::SimpleAsyncHTTP::body = $case eq 'bad JSON' ? '{' : JSON::PP::encode_json(\%response);
+        Plugins::SpotOn::ProtocolHandler::_asyncRefetch('Plugins::SpotOn::ProtocolHandler', $client, $url, $url);
+        my $cached = Slim::Utils::Cache->new->get('spoton_meta_' . Digest::MD5::md5_hex($url));
+        is($cached->{title}, $case eq 'success' ? 'Local title' : 'API fallback', "$case uses correct metadata");
+        is($Plugins::SpotOn::API::Client::track_calls, $case eq 'success' ? 0 : 1, "$case Web API count");
+        ok(!$Plugins::SpotOn::ProtocolHandler::_pendingRefetch{$url}, "$case clears pending state");
+        my $marker = $case eq 'success' ? 'browse_metadata_from_daemon' : 'browse_metadata_fallback';
+        ok(scalar(grep { /$marker/ } @Slim::Utils::Log::messages), "$case diagnostic identifies metadata path");
+    }
+    is($Slim::Networking::SimpleAsyncHTTP::last_url, "http://127.0.0.1:12345/metadata/track/$id", 'Uses local metadata endpoint');
+    local $Slim::Networking::SimpleAsyncHTTP::defer = 1;
+    local $Slim::Networking::SimpleAsyncHTTP::body = JSON::PP::encode_json($info);
+    Plugins::SpotOn::ProtocolHandler::_asyncRefetch('Plugins::SpotOn::ProtocolHandler', $client, $url, $url);
+    my $pending = $Slim::Networking::SimpleAsyncHTTP::pending;
+    Plugins::SpotOn::ProtocolHandler::_asyncRefetch('Plugins::SpotOn::ProtocolHandler', $client, $url, $url);
+    is($Slim::Networking::SimpleAsyncHTTP::pending, $pending, 'Concurrent lookup shares pending request');
+    Slim::Utils::Cache->new->set('spoton_meta_' . Digest::MD5::md5_hex($url),
+        {title => 'Older title', albumId => 'album-id', year => '2004'}, 604800);
+    $pending->{ok}->($pending);
+    my $merged = Slim::Utils::Cache->new->get('spoton_meta_' . Digest::MD5::md5_hex($url));
+    is($merged->{albumId}, 'album-id', 'Late daemon response preserves richer cached album ID');
+    is($merged->{year}, '2004', 'Late daemon response preserves cached year');
+    is($merged->{title}, 'Local title', 'Fresh title still wins');
+    ok(!$Plugins::SpotOn::ProtocolHandler::_pendingRefetch{$url}, 'Late completion clears pending state');
+    $prefs->set('diagnosticMode', 0);
 };
 
 done_testing();

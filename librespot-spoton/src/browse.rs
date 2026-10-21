@@ -16,6 +16,9 @@
 
 use std::convert::Infallible;
 use std::time::Duration;
+use std::sync::Arc;
+
+use crate::metadata::MetadataStore;
 
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full, combinators::BoxBody};
@@ -169,6 +172,7 @@ pub async fn serve_track_request(
     passthrough: bool,
     bitrate: Bitrate,
     normalisation: bool,
+    metadata: Arc<MetadataStore>,
 ) -> StatusCode {
     // Create a per-request Player.
     // The factory closure captures a clone of pcm_tx for BrowseHttpSink.
@@ -193,13 +197,16 @@ pub async fn serve_track_request(
 
     // Load and start playback.
     // true = play immediately, start_position_ms = seek offset (0 for normal start).
+    let mut events = player.get_player_event_channel();
     player.load(uri, true, start_position_ms);
 
     // Event loop: wait for Unavailable (404) or EndOfTrack/Stopped (200).
     // Other events (Loading, Playing, VolumeChanged, etc.) are ignored.
-    let mut events = player.get_player_event_channel();
     loop {
         match events.recv().await {
+            Some(PlayerEvent::TrackChanged { audio_item }) => {
+                metadata.remember(&audio_item);
+            }
             Some(PlayerEvent::Unavailable { track_id: tid, .. }) => {
                 log::info!("[spoton/browse] track {} unavailable", tid);
                 return StatusCode::NOT_FOUND;
@@ -215,7 +222,7 @@ pub async fn serve_track_request(
                 return StatusCode::OK;
             }
             Some(_) => {
-                // Ignore other events (Loading, Playing, TrackChanged, etc.).
+                // Ignore other events (Loading, Playing, etc.).
                 continue;
             }
             None => {

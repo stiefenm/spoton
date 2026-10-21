@@ -13,7 +13,10 @@ use Slim::Utils::Versions;
 use Slim::Utils::Cache;
 use Slim::Utils::Network;
 use Digest::MD5 qw(md5_hex);
+use JSON::XS::VersionOneAndTwo;
 use Time::HiRes;
+
+use Plugins::SpotOn::Metadata;
 
 my $log   = logger('plugin.spoton');
 my $prefs = preferences('plugin.spoton');
@@ -1063,7 +1066,7 @@ sub _placeholderMeta {
 }
 
 # _asyncRefetch($class, $client, $url, $canonical)
-# Fires an async API::Client->getTrack call for a cache-miss URL.
+# Tries daemon metadata for music, with Web API fallback on a cache miss.
 # D-04: extracts track ID from Browse URL or from cached spotifyUri for Connect URLs.
 # D-05: debounce via %_pendingRefetch — one in-flight re-fetch per URL.
 # Pitfall 4: delete from debounce hash is the FIRST action in the callback.
@@ -1158,6 +1161,9 @@ sub _asyncRefetch {
             ? "spoton://track:$trackId"
             : $canonical;
 
+        Plugins::SpotOn::Metadata::preserveDetails(
+            \%new_meta, $cache->get('spoton_meta_' . md5_hex($cacheUrl)),
+        );
         $cache->set('spoton_meta_' . md5_hex($cacheUrl), \%new_meta, 604800);
 
         $new_meta{url} ||= $cacheUrl;
@@ -1177,10 +1183,46 @@ sub _asyncRefetch {
         }
     };
 
-    if ($episodeId) {
-        Plugins::SpotOn::API::Client->getEpisode($accountId, $episodeId, $fetchCb);
+    my $apiFetch = sub {
+        if ($episodeId) {
+            Plugins::SpotOn::API::Client->getEpisode($accountId, $episodeId, $fetchCb);
+        } else {
+            Plugins::SpotOn::API::Client->getTrack($accountId, $trackId, $fetchCb);
+        }
+    };
+
+    # A running daemon can supply music metadata through its playback session.
+    # Older daemons return 404; absent daemons and podcasts retain the API path.
+    my $helper = $trackId && $client ? eval {
+        require Plugins::SpotOn::Unified::DaemonManager;
+        Plugins::SpotOn::Unified::DaemonManager->helperForClient($client);
+    } : undef;
+    if ($helper && $helper->alive && $helper->_streamPort) {
+        require Slim::Networking::SimpleAsyncHTTP;
+        Slim::Networking::SimpleAsyncHTTP->new(
+            sub {
+                my ($http) = @_;
+                my $info = eval { from_json($http->content) };
+                # Validate before the common callback clears the pending request.
+                if (Plugins::SpotOn::Metadata::validTrack($info, $trackId)) {
+                    $log->warn("[DIAG] browse_metadata_from_daemon: track=$trackId")
+                        if $prefs->get('diagnosticMode');
+                    $fetchCb->($info);
+                    return;
+                }
+                $log->warn("[DIAG] browse_metadata_fallback: track=$trackId reason=invalid_payload")
+                    if $prefs->get('diagnosticMode');
+                $apiFetch->();
+            },
+            sub {
+                $log->warn("[DIAG] browse_metadata_fallback: track=$trackId reason=http_error")
+                    if $prefs->get('diagnosticMode');
+                $apiFetch->();
+            },
+            { timeout => 10 },
+        )->get('http://127.0.0.1:' . $helper->_streamPort . "/metadata/track/$trackId");
     } else {
-        Plugins::SpotOn::API::Client->getTrack($accountId, $trackId, $fetchCb);
+        $apiFetch->();
     }
 }
 

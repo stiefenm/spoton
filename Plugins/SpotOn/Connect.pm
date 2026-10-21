@@ -10,9 +10,12 @@ use JSON::XS::VersionOneAndTwo;
 use Scalar::Util qw(blessed);
 use Time::HiRes;
 
+use Plugins::SpotOn::Metadata;
+
 use Slim::Utils::Log;
 use Slim::Utils::Cache;
 use Slim::Utils::Prefs;
+use Slim::Utils::Strings qw(cstring);
 use Slim::Utils::Timers;
 use Slim::Networking::SimpleAsyncHTTP;
 
@@ -40,6 +43,9 @@ use constant SEEK_DEBOUNCE => 0.3;
 # stop-before-play burst (~1-2s); 10s is generous. Without a fallback, a failed
 # metadata fetch leaves the flag set forever and ALL stop events get swallowed.
 use constant NEW_TRACK_FALLBACK => 10;
+
+# Maximum recovery attempts after API::Client exhausts its own short retry.
+use constant METADATA_RETRIES => 3;
 
 my $prefs       = preferences('plugin.spoton');
 my $serverPrefs = preferences('server');
@@ -515,6 +521,8 @@ sub _onPlaylistJump {
 #   volume — VolumeChanged (after suppress);    p1=volume 0-100, p2=""
 #   seek   — Seeked mid-playback;               p1=position in seconds (3 decimals), p2=""
 #   resume — Playing after Pause (same track); p1=track_id(base62), p2=position (seconds, 3 decimals)
+#   metadata — same-track metadata delivery; p1=track_id, p2="", metadata:JSON
+#   start/change may also include metadata:JSON (an LMS tagged parameter).
 #   ready  — Spirc reconnected internally;      p1="", p2=""
 # ---------------------------------------------------------------------------
 sub _connectEvent {
@@ -549,6 +557,16 @@ sub _connectEvent {
         }
 
         $_activeConnectPlayer = $client->id;
+    }
+
+    # Metadata-only delivery handles Playing arriving before TrackChanged.
+    # It must never claim a session or change which track is considered current.
+    if ($cmd eq 'metadata') {
+        my $trackId = $request->getParam('_p2') || '';
+        return unless __PACKAGE__->isSpotifyConnect($client)
+            && ($client->pluginData('eventTrackUri') || '') eq "spotify:track:$trackId";
+        _connectTrackMetadata($client, $trackId, $request->getParam('metadata'));
+        return;
     }
 
     # -----------------------------------------------------------------
@@ -712,9 +730,10 @@ sub _connectEvent {
             }
 
             my $ts      = int(Time::HiRes::time() * 1000);
+            my $connectUrl = sprintf("spoton://connect-%u", $ts);
             my $playReq = Slim::Control::Request->new($client->id, [
                 'playlist', 'play',
-                sprintf("spoton://connect-%u", $ts)
+                $connectUrl
             ]);
             $playReq->source(__PACKAGE__);
             $playReq->execute();
@@ -722,7 +741,7 @@ sub _connectEvent {
             $client->pluginData(pendingConnect => 0);
 
             if ($trackId) {
-                _fetchTrackMetadata($client, $trackId);
+                _connectTrackMetadata($client, $trackId, $request->getParam('metadata'), $connectUrl);
             }
 
             $log->warn("[DIAG] [$diagTs] resume: player=" . $client->id
@@ -820,18 +839,19 @@ sub _connectEvent {
         # The spoton://connect-<ts> URL signals Connect mode to ProtocolHandler.pm
         # which returns 'soc' from formatOverride() and provides canDirectStream URL.
         my $ts      = int(Time::HiRes::time() * 1000);
+        my $connectUrl = sprintf("spoton://connect-%u", $ts);
         my $playReq = Slim::Control::Request->new($client->id, [
             'playlist', 'play',
-            sprintf("spoton://connect-%u", $ts)
+            $connectUrl
         ]);
         $playReq->source(__PACKAGE__);
         $playReq->execute();
 
         $client->pluginData(pendingConnect => 0);
 
-        # Fetch metadata for NowPlaying display via API::Client (D-13)
+        # Apply daemon metadata immediately, with API fallback for older binaries.
         if ($trackId) {
-            _fetchTrackMetadata($client, $trackId);
+            _connectTrackMetadata($client, $trackId, $request->getParam('metadata'), $connectUrl);
         }
 
         $log->warn("[DIAG] [$diagTs] start: player=" . $client->id
@@ -890,10 +910,10 @@ sub _connectEvent {
             $playReq->execute();
         }
 
-        # Fetch metadata for the new track (D-13)
+        # Apply the metadata carried by this track transition.
         if ($newTrackId) {
             $client->pluginData(eventTrackUri => "spotify:track:$newTrackId");
-            _fetchTrackMetadata($client, $newTrackId);
+            _connectTrackMetadata($client, $newTrackId, $request->getParam('metadata'));
         }
 
         $log->warn("[DIAG] [$diagTs] change: player=" . $client->id
@@ -988,24 +1008,118 @@ sub _connectEvent {
     main::INFOLOG && $log->is_info && $log->info("Unhandled spottyconnect command: $cmd");
 }
 
-# _fetchTrackMetadata($client, $trackId)
-# Fetches track metadata from Spotify Web API and updates NowPlaying display.
-# Uses API::Client->getTrack() which routes via own-token (me/* path not needed here,
-# track endpoint is accessible with own or bundled token).
+# Accept only the daemon's expected track shape. Invalid/older payloads retain
+# the API fallback; matching metadata is kept for same-track resume/re-entry.
+sub _connectTrackMetadata {
+    my ($client, $trackId, $json, $expectedUrl) = @_;
+    # A later metadata-only event must retain a pending start's target URL.
+    my $previous = $client->pluginData('connectMetadataPending');
+    $expectedUrl ||= $previous->{expectedUrl}
+        if $previous && $previous->{trackId} eq $trackId;
+    my $info;
+    if (defined $json && length($json)) {
+        $info = eval { from_json($json) };
+        $info = undef unless Plugins::SpotOn::Metadata::validTrack($info, $trackId);
+        $client->pluginData(connectMetadata => $info) if $info;
+    }
+    unless ($info) {
+        my $cached = $client->pluginData('connectMetadata');
+        $info = $cached if $cached && $cached->{uri} eq "spotify:track:$trackId";
+    }
+    Slim::Utils::Timers::killTimers($client, \&_retryTrackMetadata);
+    Slim::Utils::Timers::killTimers($client, \&_deliverConnectMetadata);
+    $client->pluginData(metadataRequest => undef);
+    my $pending = {
+        trackId => $trackId, info => $info, expectedUrl => $expectedUrl,
+        deadline => Time::HiRes::time() + 5,
+    };
+    $client->pluginData(connectMetadataPending => $pending);
+    _deliverConnectMetadata($client, $pending);
+}
+
+# playlist play may return before playingSong changes. Wait briefly for that
+# exact stream, without another Spotify request or applying data to the old song.
+sub _deliverConnectMetadata {
+    my ($client, $pending) = @_;
+    return unless $client->pluginData('connectMetadataPending')
+        && $client->pluginData('connectMetadataPending') == $pending
+        && __PACKAGE__->isSpotifyConnect($client)
+        && ($client->pluginData('eventTrackUri') || '') eq "spotify:track:$pending->{trackId}";
+    my $song = $client->playingSong();
+    my $url = $song && $song->track ? ($song->track->url || '') : '';
+    if ($url =~ m{^spoton://connect-}
+        && (!$pending->{expectedUrl} || $url eq $pending->{expectedUrl})) {
+        $client->pluginData(connectMetadataPending => undef);
+        _fetchTrackMetadata($client, $pending->{trackId}, 0, undef, $pending->{info});
+    } elsif (Time::HiRes::time() < $pending->{deadline}) {
+        Slim::Utils::Timers::setTimer($client, Time::HiRes::time() + 0.1,
+            \&_deliverConnectMetadata, $pending);
+    } else {
+        $client->pluginData(connectMetadataPending => undef);
+        _finishNewTrack($client);
+    }
+}
+
+# Bind replies and retries to one transition, including an A -> B -> A skip.
+sub _metadataRequestIsCurrent {
+    my ($client, $trackId, $context) = @_;
+    my $song = $client->playingSong();
+    return __PACKAGE__->isSpotifyConnect($client)
+        && $client->pluginData('metadataRequest')
+        && $client->pluginData('metadataRequest') == $context
+        && ($client->pluginData('eventTrackUri') || '') eq "spotify:track:$trackId"
+        && $song && $context->{song} && $song == $context->{song}
+        && $song->track && $song->track->url =~ m{^spoton://connect-};
+}
+
+# Timer callback checks ownership before issuing another API request.
+sub _retryTrackMetadata {
+    my ($client, $trackId, $attempt, $context) = @_;
+    return unless _metadataRequestIsCurrent($client, $trackId, $context);
+    _fetchTrackMetadata($client, $trackId, $attempt, $context);
+}
+
+# Fetch current Connect metadata without restarting audio. Recovery attempts
+# preserve the transition context and respect the API's shared backoff expiry.
 sub _fetchTrackMetadata {
-    my ($client, $trackId) = @_;
+    my ($client, $trackId, $attempt, $context, $daemonInfo) = @_;
 
     return unless $trackId;
+    $attempt ||= 0;
 
-    require Plugins::SpotOn::API::Client;
+    unless ($context) {
+        Slim::Utils::Timers::killTimers($client, \&_retryTrackMetadata);
+        $context = { song => $client->playingSong() };
+        $client->pluginData(metadataRequest => $context);
+        if (!$daemonInfo && _metadataRequestIsCurrent($client, $trackId, $context)) {
+            my $song = $context->{song};
+            my $url = $song->track->url;
+            my $title = cstring($client, 'PLUGIN_SPOTON_LOADING_TRACK_INFORMATION');
+            $song->pluginData(info => {
+                title => $title, artist => '', album => '', duration => 0,
+                cover => IMG_TRACK, icon => IMG_TRACK, url => $url,
+            });
+            $cache->remove('spoton_meta_' . md5_hex($url));
+            Slim::Music::Info::setCurrentTitle($url, $title, $client);
+            my $streamUrl = $song->streamUrl;
+            Slim::Music::Info::setCurrentTitle($streamUrl, $title)
+                if $streamUrl && $streamUrl ne $url;
+            $song->duration(0);
+            $client->streamingProgressBar({ url => $streamUrl, duration => 0 });
+            $client->currentPlaylistUpdateTime(Time::HiRes::time())
+                if $client->can('currentPlaylistUpdateTime');
+            Slim::Control::Request::notifyFromArray($client, ['newmetadata']);
+        }
+    }
 
     my $accountId = $prefs->client($client)->get('activeAccount')
                  || $prefs->get('activeAccount')
                  || '';
     $log->warn("[DIAG] metadata_fetch: mac=" . $client->id . " track=$trackId account=$accountId") if $prefs->get('diagnosticMode');
 
-    Plugins::SpotOn::API::Client->getTrack($accountId, $trackId, sub {
-        my ($trackInfo) = @_;
+    my $applyMetadata = sub {
+        my ($trackInfo, $error) = @_;
+        return unless _metadataRequestIsCurrent($client, $trackId, $context);
 
         # Stale-API protection (T-05-14 / Pitfall 5): the binary's event track_id
         # has priority over the API response. If event says different track, trust event.
@@ -1027,6 +1141,19 @@ sub _fetchTrackMetadata {
         # H7: EVERY exit path of this callback must clear newTrack — a leaked
         # flag swallows all subsequent stop events.
         unless ($trackInfo && $trackInfo->{name}) {
+            my $code = $error ? ($error->{code} || 0) : 0;
+            # Retry transient failures, but not permanent authorization/not-found errors.
+            if ($attempt < METADATA_RETRIES && (!$code || $code == 429 || $code >= 500)) {
+                my $now = Time::HiRes::time();
+                my $retryAt = $now + 5 * (2 ** $attempt);
+                my $rateLimitUntil = $cache->get('spoton_rate_limit') || 0;
+                $retryAt = $rateLimitUntil + 1 if $rateLimitUntil + 1 > $retryAt;
+                Slim::Utils::Timers::setTimer($client, $retryAt,
+                    \&_retryTrackMetadata, $trackId, $attempt + 1, $context);
+                $log->warn(sprintf('[DIAG] metadata_retry: mac=%s track=%s attempt=%d delay=%.1fs',
+                    $client->id, $trackId, $attempt + 1, $retryAt - $now))
+                    if $prefs->get('diagnosticMode');
+            }
             # Push the change handler's progress reset now -- metadata fetch
             # failed (429 backoff / parse error / no data), so this is the
             # only remaining chance to notify clients (Phase 58, preserves #126).
@@ -1047,6 +1174,19 @@ sub _fetchTrackMetadata {
         my $duration = ($trackInfo->{duration_ms} || 0) / 1000;
         my $cover    = _largestImage(($trackInfo->{album} || {})->{images}) || IMG_TRACK;
         my $year     = Plugins::SpotOn::Plugin::_releaseYear(($trackInfo->{album} || {})->{release_date});
+
+        # A Connect stream URL spans multiple songs: reuse it only on an exact URI match.
+        my $logicalCacheUrl = $song->track->url || $song->streamUrl;
+        my $previous = $logicalCacheUrl && $cache->get('spoton_meta_' . md5_hex($logicalCacheUrl));
+        $previous = undef unless $previous
+            && ($previous->{spotifyUri} || '') eq "spotify:track:$trackId";
+        my %trackIds = Plugins::SpotOn::Plugin::_extractTrackIds($trackInfo);
+        my $details = Plugins::SpotOn::Metadata::preserveDetails(
+            { %trackIds, year => $year },
+            $cache->get('spoton_meta_' . md5_hex("spoton://track:$trackId")), $previous,
+        );
+        $year = $details->{year};
+        @trackIds{qw(artistId artistIds albumId)} = @{$details}{qw(artistId artistIds albumId)};
 
         # Instant display update — set on both logical and stream URL so renderers
         # that key their display off the stream URL (e.g. UPnPBridge) also get the title
@@ -1090,7 +1230,6 @@ sub _fetchTrackMetadata {
         # Cache key uses connect-timestamp URL; spotifyUri enables future Browse translation.
         my $cacheUrl = $song->track->url || $song->streamUrl;
         if ($cacheUrl) {
-            my %trackIds = Plugins::SpotOn::Plugin::_extractTrackIds($trackInfo);
             $cache->set(
                 'spoton_meta_' . md5_hex($cacheUrl),
                 {
@@ -1134,7 +1273,16 @@ sub _fetchTrackMetadata {
             "Track metadata updated: $title — $artist"
         );
         $log->warn("[DIAG] metadata_success: mac=" . $client->id . " track=$trackId title=$title duration=$duration") if $prefs->get('diagnosticMode');
-    });
+    };
+
+    if ($daemonInfo) {
+        $log->warn("[DIAG] metadata_from_daemon: mac=" . $client->id . " track=$trackId")
+            if $prefs->get('diagnosticMode');
+        $applyMetadata->($daemonInfo);
+    } else {
+        require Plugins::SpotOn::API::Client;
+        Plugins::SpotOn::API::Client->getTrack($accountId, $trackId, $applyMetadata);
+    }
 }
 
 sub _largestImage { Plugins::SpotOn::Plugin::_largestImage(@_) }

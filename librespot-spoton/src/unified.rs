@@ -527,6 +527,7 @@ async fn unified_http_server(
     bitrate: Bitrate,
     enable_normalisation: bool,
 ) {
+    let metadata = Arc::new(crate::metadata::MetadataStore::default());
     let graceful = GracefulShutdown::new();
     let mut shutdown_rx = std::pin::pin!(shutdown_rx);
 
@@ -547,6 +548,7 @@ async fn unified_http_server(
                     Err(_) => continue,
                 };
 
+                let metadata = Arc::clone(&metadata);
                 let session = Arc::clone(&session);
                 let spirc_active = Arc::clone(&spirc_active);
                 let spirc_handle = Arc::clone(&spirc_handle);
@@ -569,6 +571,7 @@ async fn unified_http_server(
                 let ogg_headers_complete = ogg_headers_complete.as_ref().map(Arc::clone);
 
                 let svc = hyper::service::service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                    let metadata = Arc::clone(&metadata);
                     let session = Arc::clone(&session);
                     let spirc_active = Arc::clone(&spirc_active);
                     let spirc_handle = Arc::clone(&spirc_handle);
@@ -593,6 +596,23 @@ async fn unified_http_server(
                     async move {
                         let path = req.uri().path().to_owned();
                         let method = req.method().clone();
+
+                        // Metadata requests do not take over playback or load audio.
+                        if method == Method::GET && path.starts_with("/metadata/track/") {
+                            let id = &path["/metadata/track/".len()..];
+                            if id.len() != 22 || !id.bytes().all(|c| c.is_ascii_alphanumeric()) {
+                                return Ok(empty_response(StatusCode::BAD_REQUEST));
+                            }
+                            let session_snap = session.lock().await.clone();
+                            let Some(value) = metadata.get(&session_snap, id).await else {
+                                return Ok(empty_response(StatusCode::SERVICE_UNAVAILABLE));
+                            };
+                            let body = Full::new(Bytes::from(value.to_string()))
+                                .map_err(|e| match e {}).boxed();
+                            return Ok(Response::builder().status(StatusCode::OK)
+                                .header("Content-Type", "application/json")
+                                .body(body).expect("metadata response builder"));
+                        }
 
                         // ---- GET /health ----
                         if method == Method::GET && path == "/health" {
@@ -1014,7 +1034,7 @@ async fn unified_http_server(
                                     return;
                                 }
 
-                                let status = serve_track_request(&content_type_for_task, &track_id_for_task, session_snap, pcm_tx, start_position_ms, passthrough, bitrate, enable_normalisation).await;
+                                let status = serve_track_request(&content_type_for_task, &track_id_for_task, session_snap, pcm_tx, start_position_ms, passthrough, bitrate, enable_normalisation, metadata).await;
 
                                 // T-30-05 (informational): post-load gen check.
                                 // serve_track_request drops pcm_tx when it returns, causing
