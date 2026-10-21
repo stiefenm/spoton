@@ -944,4 +944,46 @@ SKIP: {
     }
 }
 
+# A warm GET remains usable during shared backoff without token or HTTP work.
+subtest 'cached GETs remain available during backoff' => sub {
+    my $cache = Slim::Utils::Cache->new();
+    $cache->clear();
+    Plugins::SpotOn::API::Client->reset();
+    Slim::Networking::SimpleAsyncHTTP::reset_requests();
+    Slim::Utils::Timers::reset_calls();
+    my $params = { _accountId => 'cacheAccount', q => 'a b', offset => 10, _locale => 'en' };
+    my $expected;
+    Plugins::SpotOn::API::Client->_request('get', 'search', { %$params }, sub { $expected = $_[0] });
+    is(scalar @Slim::Networking::SimpleAsyncHTTP::requests, 1, 'First read fills response cache');
+    $cache->set('spoton_rate_limit', Time::HiRes::time() + 120, 120);
+    my $before = Plugins::SpotOn::API::Client->statusSnapshot()->{apiRequestCount};
+    {
+        no warnings 'redefine';
+        local *Plugins::SpotOn::API::TokenManager::getToken = sub { die 'Cache hit must not obtain a token' };
+        my ($result, $error);
+        Plugins::SpotOn::API::Client->_request('get', '/search', { %$params }, sub { ($result, $error) = @_ });
+        is_deeply($result, $expected, 'Warm GET served during backoff, including leading-slash normalization');
+        ok(!$error, 'Cache hit is not reported as rate limited');
+    }
+    is(scalar @Slim::Networking::SimpleAsyncHTTP::requests, 1, 'Warm GET sends no HTTP request');
+    is(scalar @Slim::Utils::Timers::set_calls, 0, 'Warm GET schedules no retry');
+    is(Plugins::SpotOn::API::Client->statusSnapshot()->{apiRequestCount}, $before, 'Cache hit does not consume network request count');
+    for my $variant (
+        { %$params, _accountId => 'anotherAccount' },
+        { %$params, _locale => 'fr' },
+        { %$params, offset => 20 },
+        { %$params, _noCache => 1 },
+    ) {
+        my ($result, $error);
+        Plugins::SpotOn::API::Client->_request('get', 'search', $variant, sub { ($result, $error) = @_ });
+        ok(!$result && $error->{code} == 429, 'Miss/bypass still respects backoff and cache identity');
+    }
+    my ($result, $error);
+    Plugins::SpotOn::API::Client->_request('put', 'search', { %$params }, sub { ($result, $error) = @_ });
+    ok(!$result && $error->{code} == 429, 'A write never reuses a cached GET');
+    is(scalar @Slim::Networking::SimpleAsyncHTTP::requests, 1, 'Backoff still prevents uncached network traffic');
+    $cache->clear();
+    Plugins::SpotOn::API::Client->reset();
+};
+
 done_testing();

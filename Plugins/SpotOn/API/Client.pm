@@ -1345,13 +1345,26 @@ sub playerSeek {
 # Core request pipeline
 # ============================================================
 
+# Build identical account/query/locale identities for early cache hits and HTTP
+# requests. Internal options never enter the query string sent to Spotify.
+sub _requestDetails {
+    my ($cleanPath, $params) = @_;
+    my $accountId = $params->{_accountId} || '';
+    my $query = join('&', map { $_ . '=' . uri_escape_utf8($params->{$_}) }
+        sort grep { !/^_/ } keys %{$params});
+    my $suffix = length($query) ? "?$query" : '';
+    my $cacheKey = "spoton_resp_${accountId}_${cleanPath}$suffix";
+    $cacheKey .= "_locale=$params->{_locale}" if $params->{_locale};
+    return (API_BASE . "/$cleanPath$suffix", $cacheKey);
+}
+
 # _request($class, $method, $path, $params, $cb)
 # Central HTTP egress point. All Spotify API calls go through here (API-01).
 #
 # Request pipeline (D-04: single PKCE token per account, no flavor routing):
 #   1. Strip leading slash from path
-#   2. Rate-limit check (single key, no flavor suffix)
-#   3. Response cache check (unless _noCache) (API-03)
+#   2. GET response cache check (unless _noCache)
+#   3. Rate-limit check (single key, no flavor suffix)
 #   4. Concurrency cap (API-02) — defer via timer
 #   5. Increment inflight counter; wrap $cb in double-callback guard
 #   6. Dispatch to _doRequest
@@ -1362,7 +1375,24 @@ sub _request {
     my $cleanPath = $path;
     $cleanPath =~ s{^/}{};
 
-    # Step 2: Rate-limit check — single key, no flavor suffix (D-04).
+    # Step 2: Check the GET response cache unless _noCache is set.
+    # Cached reads need neither a token nor a network slot, even during backoff.
+    if (lc($method) eq 'get' && !$params->{_noCache}) {
+        my $cacheKey;
+        my $built = eval { (undef, $cacheKey) = _requestDetails($cleanPath, $params); 1 };
+        unless ($built) {
+            $log->error("Client: request build failed for $cleanPath: $@");
+            $cb->(undef, { error => 'internal_error' });
+            return;
+        }
+        if (my $cached = $cache->get($cacheKey)) {
+            main::INFOLOG && $log->info("Client: cache hit for $cleanPath (no token fetch needed)");
+            $cb->($cached);
+            return;
+        }
+    }
+
+    # Step 3: Rate-limit check — single key, no flavor suffix (D-04).
     # GH #155 follow-up: defer concurrent requests until the rate-limit
     # window closes instead of returning an empty page immediately.
     # The cache value is the expiry timestamp (set in the 429 handler).
@@ -1384,7 +1414,7 @@ sub _request {
         return;
     }
 
-    # Step 3: Concurrency cap (API-02, Pitfall 6).
+    # Step 4: Concurrency cap (API-02, Pitfall 6).
     if ($inflightCount >= MAX_CONCURRENT_REQUESTS) {
         Slim::Utils::Timers::setTimer(
             undef,
@@ -1394,7 +1424,7 @@ sub _request {
         return;
     }
 
-    # Step 4: Increment inflight counter and wrap $cb in double-callback guard.
+    # Step 5: Increment inflight counter and wrap $cb in double-callback guard.
     # $inflightCount is decremented exactly once per request by $userCb.
     $inflightCount++;
     $apiRequestCount++;
@@ -1405,7 +1435,7 @@ sub _request {
         $cb->(@_);
     };
 
-    # Step 5: Dispatch to request handler.
+    # Step 6: Dispatch to request handler.
     # H1: eval-guarded — any die after $inflightCount++ must exit through $userCb
     # (the single decrement point with double-call guard), or the counter leaks
     # until MAX_CONCURRENT_REQUESTS is reached and all API traffic deadlocks.
@@ -1433,18 +1463,9 @@ sub _doRequest {
     # A cache hit must never trigger a token fetch.
     # eval-guarded: uri_escape_utf8 or interpolation dies must exit via $userCb.
     # CR-01: Include accountId to prevent multi-account cache contamination.
-    my ($url, $queryStr);
+    my ($url, $cacheKey);
     my $built = eval {
-        $url = API_BASE . "/$cleanPath";
-        my @queryParts;
-        for my $key (sort keys %{$params}) {
-            next if $key =~ /^_/;
-            push @queryParts, "$key=" . uri_escape_utf8($params->{$key});
-        }
-        $queryStr = join('&', @queryParts);
-        if ($queryStr) {
-            $url .= '?' . $queryStr;
-        }
+        ($url, $cacheKey) = _requestDetails($cleanPath, $params);
         1;
     };
     unless ($built) {
@@ -1453,11 +1474,9 @@ sub _doRequest {
         return;
     }
 
-    unless ($params->{_noCache}) {
-        my $cacheKey = $queryStr
-            ? "spoton_resp_${accountId}_${cleanPath}?${queryStr}"
-            : "spoton_resp_${accountId}_${cleanPath}";
-        $cacheKey .= "_locale=$params->{_locale}" if $params->{_locale};
+    # A 429 retry timer re-enters _doRequest directly; another request may have
+    # populated the cache during the wait, so this second check is necessary.
+    if (lc($method) eq 'get' && !$params->{_noCache}) {
         $params->{_cacheKey} = $cacheKey;
         if (my $cached = $cache->get($cacheKey)) {
             main::INFOLOG && $log->info("Client: cache hit for $cleanPath (no token fetch needed)");
@@ -1507,7 +1526,7 @@ sub _doRequest {
                 }
 
                 # Cache response with domain-specific TTL (API-03).
-                unless ($params->{_noCache}) {
+                if (lc($method) eq 'get' && !$params->{_noCache}) {
                     my $ttl = $class->_cacheTTL($cleanPath);
                     if ($ttl > 0) {
                         my $cacheKey = $params->{_cacheKey} || "spoton_resp_$cleanPath";

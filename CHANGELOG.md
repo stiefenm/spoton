@@ -5,6 +5,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- **Cached Browse and Search results during rate limiting** — Previously cached results remain available during Spotify rate-limit backoff, without another API request. Cache hits appear in the info log.
+
 ## [3.5.8] - 2026-08-22
 
 ### Fixed
