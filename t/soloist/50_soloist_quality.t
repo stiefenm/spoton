@@ -79,8 +79,15 @@ sub can { 1 }
 END
 
 # Stub: Slim::Utils::Prefs -- global + per-client() namespaced store. Keys
-# per-client by the stringified client ref, so a client object created once
-# by the test resolves to the same namespace across every call.
+# per-client by the PLAYER ID ($client->id, the MAC), exactly like the real
+# Slim::Utils::Prefs::Namespace::client (Namespace.pm:220) -- never by the
+# stringified ref. A ref string is a memory address, and Perl hands the
+# address of a MockClient freed at a subtest boundary to the next one
+# blessed; keyed by address, that fresh player inherited an earlier case's
+# soloistQualityInitialised=1/soloistQualityPending=0 and onDaemonReady
+# returned early (debug ci-quality-case11-flake: CI red twice on Case 11,
+# locally ~1 % per run on Cases 14/17). reset_store() wipes every namespace;
+# reset_all() calls it so nothing survives a subtest boundary either way.
 write_stub($stub_dir, 'Slim::Utils::Prefs', <<'END');
 package Slim::Utils::Prefs;
 my %_store;
@@ -98,9 +105,10 @@ sub get { my ($self, $key) = @_; return $_store{$self->{_ns}}{$key}; }
 sub set { my ($self, $key, $val) = @_; $_store{$self->{_ns}}{$key} = $val; }
 sub client {
     my ($self, $client) = @_;
-    my $id = ref $client ? "$client" : ($client // 'default');
+    my $id = ref $client ? $client->id : ($client // 'default');
     return bless { _ns => $self->{_ns} . '_client_' . $id }, 'Slim::Utils::Prefs';
 }
+sub reset_store { %_store = (); }
 sub setChange { }
 sub AUTOLOAD { }
 1;
@@ -396,6 +404,7 @@ sub assert_cb_ok {
 
 sub reset_all {
     Slim::Networking::SimpleAsyncHTTP::reset_stub();
+    Slim::Utils::Prefs::reset_store();      # no per-client namespace survives a case boundary
     Slim::Utils::Cache->new()->clear();
     Plugins::SpotOn::API::Login5::reset_calls();
     $Plugins::SpotOn::API::Login5::mock_fail_reason = undef;
@@ -440,6 +449,67 @@ sub write_device_id {
     close($fh);
     return $uuid;
 }
+
+# ============================================================
+# Case 0 (debug ci-quality-case11-flake): the Prefs stub's per-client
+# namespace follows the PLAYER ID, never the object's address, and
+# reset_all() wipes it. Before this fix the key was the stringified ref;
+# Perl recycles a freed MockClient's address for the next one blessed, so a
+# fresh player inherited an earlier case's soloistQualityInitialised=1 and
+# onDaemonReady returned early (CI: Case 11 twice; locally Cases 14/17).
+# ============================================================
+subtest 'Case 0: per-client prefs are keyed by player id and wiped by reset_all' => sub {
+    reset_all();
+
+    # (a) identity: two live objects for the same MAC share one namespace, a
+    # different MAC does not -- a stub keyed by "$client" fails this.
+    my $a = MockClient->new('00:AA:00:00:00:01', 'player-0a');
+    my $b = bless { mac => '00:AA:00:00:00:01', name => 'player-0b' }, 'MockClient';
+    my $c = MockClient->new('00:AA:00:00:00:02', 'player-0c');
+    isnt("$a", "$b", 'precondition: two distinct live objects for the same MAC');
+    $prefs->client($a)->set('soloistQualityInitialised', 1);
+    is($prefs->client($b)->get('soloistQualityInitialised'), 1,
+        'same MAC, other object -> same namespace (keyed by ->id like Namespace.pm:220)');
+    ok(!$prefs->client($c)->get('soloistQualityInitialised'), 'other MAC -> other namespace');
+
+    # (b) the live defect shape: a player whose first daemon start succeeded
+    # is freed (as every case boundary frees the previous case's client), its
+    # address is recycled for a NEW player, and that player's UNREACHABLE
+    # first start must still end pending -- never pre-initialised.
+    my $mac_old = '00:AA:00:00:00:03';
+    my $mac_new = '00:AA:00:00:00:04';
+    write_device_id($mac_old);
+    write_device_id($mac_new);
+    $Slim::Networking::SimpleAsyncHTTP::read_content = build_content(0);
+    my $addr_old;
+    {
+        my $old = MockClient->new($mac_old, 'player-0-old');
+        $Q->onDaemonReady($mac_old);
+        assert_cb_ok('Case 0 (old player, verified first start)');
+        is($prefs->client($old)->get('soloistQualityInitialised'), 1, 'old player is initialised');
+        $addr_old = "$old";
+        delete $Slim::Player::Client::clients{$mac_old};
+    }
+    my $new = MockClient->new($mac_new, 'player-0-new');
+    SKIP: {
+        skip "allocator did not recycle the old player's address ($addr_old) for the new one ($new); inheritance path not exercised in this run", 4
+            unless "$new" eq $addr_old;
+        pass('precondition: the new player sits on the old player\'s recycled address');
+        $Slim::Networking::SimpleAsyncHTTP::write_mode  = 'error';
+        $Slim::Networking::SimpleAsyncHTTP::write_error = 'Connection refused';
+        $Q->onDaemonReady($mac_new);
+        assert_cb_ok('Case 0 (new player, unreachable first start)');
+        ok(!$prefs->client($new)->get('soloistQualityInitialised'),
+            'recycled address: the new player does NOT inherit soloistQualityInitialised');
+        is($prefs->client($new)->get('soloistQualityPending'), 1,
+            'recycled address: the new player ends pending (its write never reached the server)');
+    }
+
+    # (c) reset_all() wipes every per-client namespace -- a reset_all without
+    # reset_store() fails this.
+    reset_all();
+    ok(!defined $prefs->client($a)->get('soloistQualityInitialised'), 'reset_all wipes per-client prefs');
+};
 
 # ============================================================
 # Case 1: wire encoders match the spike's exact bytes

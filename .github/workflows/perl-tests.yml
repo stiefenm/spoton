@@ -2,7 +2,7 @@ name: Perl Tests
 
 on:
   push:
-    branches: [main, soloist, develop]
+    branches: [main, develop]
   pull_request:
     branches: [main]
 

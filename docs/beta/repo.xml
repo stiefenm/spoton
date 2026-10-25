@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    LMS repository descriptor for the SpotOn BETA.
+
+    Beta testers: add this URL in LMS Settings > Plugins > Additional Repositories:
+      https://stiefenm.github.io/spoton/beta/repo.xml
+    The stable repository (3.5.x) stays at
+      https://raw.githubusercontent.com/stiefenm/spoton/main/repo.xml
+-->
+<extensions>
+    <details>
+        <title lang="EN">SpotOn Beta Repository</title>
+        <title lang="DE">SpotOn-Beta-Repository</title>
+    </details>
+    <plugins>
+        <plugin
+            name="SpotOn"
+            version="4.0.0beta1"
+            target="unix|mac|windows"
+            minTarget="8.0"
+            maxTarget="*"
+            sha="f26902d23e183e1a1bded434a4c6ef8a386e2ad8"
+            url="https://github.com/stiefenm/spoton/releases/download/v4.0.0-beta.1/SpotOn-v4.0.0-beta.1.zip"
+            category="musicservices"
+            creator="Marek Stiefenhofer"
+            email="sti@posteo.de"
+        >
+            <title lang="EN">SpotOn (Beta)</title>
+            <title lang="DE">SpotOn (Beta)</title>
+            <desc lang="EN">Spotify plugin for Lyrion Music Server - beta 4.0.0-beta.1</desc>
+            <desc lang="DE">Spotify-Plugin fuer Lyrion Music Server - Beta 4.0.0-beta.1</desc>
+        </plugin>
+    </plugins>
+</extensions>
