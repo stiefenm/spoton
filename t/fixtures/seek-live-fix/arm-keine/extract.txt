@@ -1,0 +1,142 @@
+=== extract-run.pl Belegblock ===
+MAC: 02:00:00:5a:11:01
+T0: 07:04:57.632655001
+T1: 07:05:54.777324125
+Fenster (lokale Zeit): 07:04:55.633 .. 07:05:59.777  (T0-2s .. T1+5s)
+Zeitbasis: ANNAHME (vom Skript NICHT vorausgesetzt, sondern unten geprueft): server.log, Daemon-Log und Recorder-ts tragen dieselbe LOKALE Zeit; es wird kein UTC-Offset angewendet. Laeuft LMS unter TZ=UTC (Container-Standard), waere diese Annahme falsch -- siehe Abschnitt 'Zeitbasis-Selbsttest'.
+Quelle server.log: /var/log/squeezeboxserver/server.log
+Quelle Daemon-Log: /var/lib/squeezeboxserver/cache/spoton/0200005a1101-soloist.log
+Quelle Recorder: /tmp/claude-1000/-home-uuu-spoton/e8edd415-58f1-4363-8bb5-0eb4af863780/scratchpad/uat-dry/run1/ws.jsonl
+
+Abdeckung server.log: erste Zeile @26-09-24 05:05:21.0049 .. letzte Zeile @26-09-24 07:04:58.2135; am 2026-09-24 von 05:05:21.005 bis 07:04:58.214
+
+--- server.log: jumpToTime ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: jumpToTime
+
+--- server.log: noteSeekIntent ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: noteSeekIntent
+
+--- server.log: Song::open (seek=/time=/canSeek=) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: Song::open (seek=/time=/canSeek=)
+
+--- server.log: formatOverride (result=) ---
+[26-09-24 07:04:57.6916] Plugins::SpotOn::ProtocolHandler::formatOverride (187) [DIAG] formatOverride: mac=02:00:00:5a:11:01 url=spoton://track:552lBxKLGjerBDS8VYHOJn result=soc (soloist resolved=pcm)
+
+--- server.log: canDirectStream (result=/reason=) [1 von 1 Zeilen tragen KEINE MAC -- fuer sie ist die [ANDERE MAC]-Markierung strukturell unmoeglich, sie zaehlen ueber alle Spieler] ---
+[26-09-24 07:04:57.6921] Plugins::SpotOn::ProtocolHandler::canDirectStream (263) [DIAG] canDirectStream: soloist browse url=spoton://track:552lBxKLGjerBDS8VYHOJn result=0 reason=streamingMode_proxy
+
+--- server.log: Request: GET /stream ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: Request: GET /stream
+
+--- server.log: onStream (pos=/seek=) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: onStream (pos=/seek=)
+
+--- server.log: Control: dispatch (armed=) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: Control: dispatch (armed=)
+
+--- server.log: Control: loopback POST /seek-arm sent ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: Control: loopback POST /seek-arm sent
+
+--- server.log: SpotOn G3/G4-INSTR ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: SpotOn G3/G4-INSTR
+
+--- server.log: Stop in <STATE> -> ::_Stop ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: Stop in <STATE> -> ::_Stop
+
+--- server.log: playerTrackStarted / playerStopped / new state ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: playerTrackStarted / playerStopped / new state
+
+--- server.log: NextTrackError -> _NextIfMore (LMS interner Neustart-Vorlauf, T-3-Ausloeser) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: NextTrackError -> _NextIfMore (LMS interner Neustart-Vorlauf, T-3-Ausloeser)
+
+--- server.log: NextTrackError - new state (LMS-Kern-Fehlschlagverdikt desselben Zyklus) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: NextTrackError - new state (LMS-Kern-Fehlschlagverdikt desselben Zyklus)
+
+--- server.log: end of file or error on socket ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: end of file or error on socket
+
+--- server.log: notifyFromArray / Notifying ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: notifyFromArray / Notifying
+
+--- server.log: [DIAG] *_proxy (http_url=) ---
+[26-09-24 07:04:57.6922] Plugins::SpotOn::ProtocolHandler::new (666) [DIAG] soloist_browse_proxy: mac=02:00:00:5a:11:01 http_url=http://127.0.0.1:42201/stream?uri=spotify:track:552lBxKLGjerBDS8VYHOJn&g=2
+
+--- server.log: Prefetch watchdog -> Soloist::Control (Wachhund Runde 1, Uebergabe; Plugin.pm _prefetchHangCheck) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: Prefetch watchdog -> Soloist::Control (Wachhund Runde 1, Uebergabe; Plugin.pm _prefetchHangCheck)
+
+--- server.log: Control: watchdog forced skip (Wachhund Runde 2, erzwungener Sprung; Control.pm _watchdogRound2) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: Control: watchdog forced skip (Wachhund Runde 2, erzwungener Sprung; Control.pm _watchdogRound2)
+
+--- server.log: ProtocolHandler::getNextTrack (718, LMS fragt SpotOn nach dem naechsten Titel) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: ProtocolHandler::getNextTrack (718, LMS fragt SpotOn nach dem naechsten Titel)
+
+[4 von 7 server.log-Fensterzeilen fallen in keine der Kategorien und sind oben NICHT aufgefuehrt; davon 4 mit der MAC 02:00:00:5a:11:01]
+
+--- Fenster-Tor-Klassifikation (abgeleitet, kein Verdikt) ---
+[Fenster-Tor] KEIN _Stop-UEBERGANG IM FENSTER GEFUNDEN
+
+Hinweis Daemon-Log: 425104 Zeile(n) ohne eigenen Zeitstempel ([fakepulse] ohne ts: 381910, andere Form: 43194) uebersprungen -- sie sind keinem Zeitfenster zuzuordnen und in der Fensterzahl unten NICHT enthalten.
+!! Abdeckung Daemon-Log: KEINE Zeile vom 2026-09-24 in dieser Quelle (Datei-Abdeckung: 2026-09-06 18:01:25.701 .. 2026-09-23 07:04:57.905). Das Fenster ist damit fuer diese Quelle NICHT GEPRUEFT -- 'nichts gefunden' heisst hier 'nicht protokolliert', nicht 'nicht passiert'.
+
+--- Daemon-Log: client-attach / client-close / flush-disconnect ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] Daemon-Log: client-attach / client-close / flush-disconnect
+
+--- Daemon-Log: pa_stream_flush ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] Daemon-Log: pa_stream_flush
+
+--- Daemon-Log: flush: (BOUNDARY-Detailzeile zum pa_stream_flush -- bytes_written/ring_fill/corked) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] Daemon-Log: flush: (BOUNDARY-Detailzeile zum pa_stream_flush -- bytes_written/ring_fill/corked)
+
+--- Daemon-Log: seek_arm / seek_arm_expired / boundary_planted ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] Daemon-Log: seek_arm / seek_arm_expired / boundary_planted
+
+--- Daemon-Log: cork ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] Daemon-Log: cork
+
+--- Daemon-Log: Ticker (playing/paused/stopped) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] Daemon-Log: Ticker (playing/paused/stopped)
+
+--- Daemon-Log: Sitzungszustand (became active device / no longer active / shutting down / restoring session / ready / login failed) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] Daemon-Log: Sitzungszustand (became active device / no longer active / shutting down / restoring session / ready / login failed)
+
+--- Daemon-Log: underflow ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] underflow
+
+--- Daemon-Log: write_summary (letzte Kategorie -- Rauschunterdrueckung, s.u.) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] write_summary
+
+[0 von 0 Daemon-Fensterzeilen fallen in keine der Kategorien und sind oben NICHT aufgefuehrt]
+
+--- Zeitbasis-Selbsttest (server.log vs. Daemon-Log) ---
+NICHT DURCHFUEHRBAR: 0 'Request: GET /stream' im Fenster, 0 'client-attach' im Daemon-Log -- ohne Paar ist die Zeitbasis nicht pruefbar. Die Annahme in der Kopfzeile bleibt UNGEPRUEFT.
+
+========================================================================
+Recorder
+========================================================================
+--- Recorder: /tmp/claude-1000/-home-uuu-spoton/e8edd415-58f1-4363-8bb5-0eb4af863780/scratchpad/uat-dry/run1/ws.jsonl (Schema erkannt: roh) ---
+Datei-mtime: 2026-09-24 07:04:58.211471925 +0200 (kann bei archivierten/kopierten Belegen die Checkout-/Kopierzeit widerspiegeln, nicht die Aufnahmezeit -- das letzte Ereignis-ts bleibt das aussagekraeftige Signal)
+Abdeckung Recorder: erstes Ereignis @07:04:54.672 .. letztes Ereignis @07:04:58.213 (Fenster: 07:04:55.633 .. 07:05:59.777)
+[meta-Zeilen des Recorders, vollstaendig -- auch ausserhalb des Fensters]
+[META @07:04:54.671] HANDSHAKE-OK
+[keine REANFORDERUNG-Zeile im Mitschnitt -- der WS-Handshake ist bestaetigt (HANDSHAKE-OK), [ABGELEITET aus HANDSHAKE-OK ohne REANFORDERUNG:] der Recorder lief ohne --reannounce-lms, es wurde keine Reanforderung abgesetzt]
+@07:04:57.706 type=position_sync position_ms=150000 speed=0
+@07:04:58.212 type=playback_changed status=paused
+@07:04:58.213 type=playback_state status=paused uri=spotify:track:552lBxKLGjerBDS8VYHOJn position_ms=150000 speed=0 is_active=true
+@07:04:58.213 type=position_sync position_ms=150000 speed=0
+[1 Frame(s) anderer Typen in der ganzen Datei nicht einzeln aufgefuehrt: auth_state=1; davon im Fenster 0: keiner]
+Deckung: NICHT PRUEFBAR (--recorder-seconds fehlt -- ohne die erwartete Recorder-Laufzeit ist 'vollstaendig' nicht definiert). Erstes Ereignis @07:04:54.672, letztes Ereignis @07:04:58.213, T1=07:05:54.777324125.
+!! Recorder-Datei /tmp/claude-1000/-home-uuu-spoton/e8edd415-58f1-4363-8bb5-0eb4af863780/scratchpad/uat-dry/run1/ws.jsonl: das letzte Ereignis @07:04:58.213 liegt 56.6s VOR T1 (07:05:54.777324125) -- der Mitschnitt endet vor dem Fensterende-Anker dieses Laufs und deckt ihn damit NICHT ab (Ursache -- Prozesstod vs. sparsame WS-Verbindung -- ist aus der Datei allein nicht bestimmbar, dieses Skript faellt darueber kein Urteil).
+
+--- Abgeleitete Felder (Zeitstempel-Differenzen, kein Verdikt) ---
+Paarungsregel: ANKER = Vorkommen innerhalb T1 +/- 3s; PARTNER = Vorkommen innerhalb 3s um den ANKER.
+Liegt kein Anker in T1 +/- 3s, ist die Zuordnung mehrdeutig oder ist der Anker von Partnern auf BEIDEN Seiten eingerahmt, wird KEIN Delta ausgegeben, sondern der Grund genannt.
+[ABGELEITET] Delta(client-attach -> pa_stream_flush): kein Wert -- client-attach im Fenster T0-2s..T1+5s nicht gefunden. pa_stream_flush: im Fenster T0-2s..T1+5s nicht gefunden
+[ABGELEITET] Delta(loopback POST sent -> Request: GET): kein Wert -- loopback POST sent im Fenster T0-2s..T1+5s nicht gefunden. Request: GET: im Fenster T0-2s..T1+5s nicht gefunden
+[ABGELEITET] Delta(seek_arm: armed= -> pa_stream_flush): kein Wert -- seek_arm: armed= im Fenster T0-2s..T1+5s nicht gefunden. pa_stream_flush: im Fenster T0-2s..T1+5s nicht gefunden
+
+--- Restzaehler: verworfene, unerkannte und nicht kategorisierte Zeilen (Regel 2) ---
+server.log: 96 Zeile(n) gelesen = 0 ohne eigenen Zeitstempel + 0 mit unlesbarem Zeitstempel + 96 mit Zeitstempel; von diesen 89 ausserhalb des Fensters + 0 vom Tagesfilter verworfen + 7 im Fenster; von den Fensterzeilen 4 in keiner Kategorie (oben nur als Zahl genannt).
+Daemon-Log: 785169 Zeile(n) gelesen = 425104 ohne eigenen Zeitstempel + 0 mit unlesbarem Zeitstempel + 360065 mit Zeitstempel; von diesen 360015 ausserhalb des Fensters + 50 vom Tagesfilter verworfen + 0 im Fenster; von den Fensterzeilen 0 in keiner Kategorie (oben nur als Zahl genannt).
+Recorder: 7 Zeile(n) gelesen = 0 nicht als JSON parsbar + 0 in keinem bekannten Schema + 7 auswertbar (7 rohes, 0 flaches Schema); davon 1 meta, 0 tx, 0 Frametext nicht parsbar, 0 ohne Typfeld, 4 bekannter Typ im Fenster (oben aufgefuehrt), 1 bekannter Typ ausserhalb des Fensters, 1 anderer Typ (0 davon im Fenster).
+
+=== Redaktion: 0 Zeilen redigiert ===

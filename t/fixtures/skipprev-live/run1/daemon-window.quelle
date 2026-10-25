@@ -1,0 +1,2 @@
+DAEMON_LOG_DATEI=/var/lib/squeezeboxserver/cache/spoton/0200005a1103-soloist.log
+DAEMON_LOG_ZEILEN=424027..427021

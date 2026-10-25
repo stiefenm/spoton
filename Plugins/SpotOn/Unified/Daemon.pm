@@ -5,6 +5,7 @@ use warnings;
 
 use base qw(Slim::Utils::Accessor);
 
+use Fcntl qw(:mode);
 use File::Glob qw(bsd_glob);
 use File::Spec::Functions qw(catdir catfile);
 use File::Temp qw(tempfile);
@@ -22,6 +23,13 @@ use constant MAX_INTERVAL_BEFORE_DISABLE_DISCOVERY => 5 * 60;
 
 # Cooldown duration before re-enabling discovery after crash-loop (D-02: 30 minutes)
 use constant DISCOVERY_COOLDOWN_SECONDS => 1800;
+
+# 74b-04 (D-17, T-74b-15): upper bound of the librespot audio cache per account
+# directory. The binary ignores --disable-audio-cache and passes no size limit
+# to its cache, so SpotOn bounds the cache from Perl at daemon start. Not
+# configurable: librespot is the fallback backend and the cache is only a
+# performance aid.
+use constant AUDIO_CACHE_LIMIT_BYTES => 1024 * 1024 * 1024;
 
 # M12: async port-announcement poll — 0.1s interval, 100 attempts (10s cap).
 # Replaces the old synchronous usleep loop that blocked the LMS event loop.
@@ -48,6 +56,7 @@ __PACKAGE__->mk_accessor( rw => qw(
 	_portTmpfile
 	_portPollAttempts
 	_portWaitStart
+	_stoppedDeliberately
 	_stderrFile
 ) );
 # NOTE: _lastHealthRestart accessor removed (H9) — health-restart rate-limit
@@ -62,6 +71,11 @@ my $prefs       = preferences('plugin.spoton');
 my $serverPrefs = preferences('server');
 my $log         = logger('plugin.spoton');
 
+
+# 84-07 (SEAM-6.2): which backend this daemon belongs to. DaemonManager's
+# `isa('...SoloistDaemon')` sites become `backendName eq 'soloist'` (84-08).
+sub backendName { return 'librespot'; }
+
 sub new {
 	my ($class, $id) = @_;
 
@@ -75,6 +89,71 @@ sub new {
 	$self->start();
 
 	return $self;
+}
+
+# _pruneAudioCache($invocant, $dir, $limit) -- 74b-04 (D-17, T-74b-14):
+# delete the oldest audio cache files (by mtime) until the total is at or
+# below $limit; returns (deleted count, freed bytes). Layout (librespot-core
+# core/src/cache.rs file_path): <dir>/<first two hex chars>/<remaining 38 hex
+# chars>. ONLY such files count and may be deleted: a directory entry must be
+# a real directory (lstat, symlinks are never followed) named by exactly two
+# lowercase hex characters, a file in it a regular file (lstat) named by
+# exactly 38 lowercase hex characters. credentials.json, volume and every
+# other file stay. Never dies: any error ends in (0, 0) or the partial result.
+sub _pruneAudioCache {
+	my ($invocant, $dir, $limit) = @_;
+	$limit = AUDIO_CACHE_LIMIT_BYTES unless defined $limit;
+
+	my ($deleted, $freed) = (0, 0);
+	eval {
+		return unless defined $dir && length $dir && -d $dir;
+
+		opendir(my $dh, $dir) or die "opendir $dir: $!";
+		my @subdirs = grep { /\A[0-9a-f]{2}\z/ } readdir($dh);
+		closedir($dh);
+
+		my @files;
+		my $total = 0;
+		for my $sub (@subdirs) {
+			my $subPath = catdir($dir, $sub);
+			my @st = lstat($subPath) or next;
+			next unless S_ISDIR($st[2]);
+
+			opendir(my $sdh, $subPath) or next;
+			my @names = grep { /\A[0-9a-f]{38}\z/ } readdir($sdh);
+			closedir($sdh);
+
+			for my $name (@names) {
+				my $path = catfile($subPath, $name);
+				my @fst = lstat($path) or next;
+				next unless S_ISREG($fst[2]);
+				push @files, [ $fst[9], $path, $fst[7] ];
+				$total += $fst[7];
+			}
+		}
+
+		return if $total <= $limit;
+
+		for my $f (sort { $a->[0] <=> $b->[0] || $a->[1] cmp $b->[1] } @files) {
+			last if $total <= $limit;
+			if (unlink $f->[1]) {
+				$total   -= $f->[2];
+				$freed   += $f->[2];
+				$deleted++;
+			}
+			else {
+				$log->warn("SpotOn Unified daemon: cannot prune cache file $f->[1]: $!");
+			}
+		}
+		1;
+	};
+	$log->warn("SpotOn Unified daemon: audio cache prune error: $@") if $@;
+
+	main::INFOLOG && $log->is_info && $log->info(
+		"SpotOn Unified daemon: audio cache prune of " . ($dir // '?') . ": $deleted file(s), $freed bytes freed"
+	) if $deleted;
+
+	return ($deleted, $freed);
 }
 
 sub start {
@@ -107,6 +186,14 @@ sub start {
 		: catdir($serverPrefs->get('cachedir'), 'spoton');
 	$self->cache($cacheDir);
 	$self->_accountId($activeAccountId);
+
+	# 74b-04 (D-17): bound the audio cache of the account dir. Only with an
+	# active account (without one the dir is the shared spoton dir); a prune
+	# problem never blocks the daemon start.
+	if ($activeAccountId) {
+		eval { $self->_pruneAudioCache($cacheDir, AUDIO_CACHE_LIMIT_BYTES); 1 }
+			or $log->warn("SpotOn Unified daemon: audio cache prune failed: " . ($@ || 'unknown error'));
+	}
 
 	# Clear stream port before attempt (WR-04: stale _streamPort after failed restart)
 	$self->_streamPort(undef);
@@ -159,6 +246,23 @@ sub start {
 		    || ($client && $prefs->client($client)->get('disableDiscovery'))
 		    || $prefs->get('disableDiscovery');
 		push @helperArgs, '--disable-discovery' if $disableDiscovery;
+
+		# GH #131: sync groups need excess delivery bandwidth. LMS drift
+		# correction (_CheckSync skipAhead) discards audio, and _Rebuffer's
+		# hardcoded 5s threshold (Slim::Player::Player::rebuffer) cannot fill
+		# faster than 1x real-time from the CON-14 rate-limited /stream with
+		# the default 2000 ms headroom — result: 1s-play/10-20s-pause stutter
+		# cycles on mixed sync groups. 5000 ms (low end of the issue's
+		# 5000-10000 range) satisfies the rebuffer threshold while keeping
+		# Spotify-app transport latency acceptable. Trade-off: pause/skip from
+		# the Spotify app takes up to ~5s longer to be audible on the group.
+		# Spawn-time limitation: a player that joins a sync group AFTER the
+		# daemon spawned keeps the 2000 ms default until the next daemon
+		# restart — deliberately NOT restart-on-sync-change, per the Phase 63
+		# GH #143 decision (sync-membership changes must not bounce daemons).
+		if ($client->isSynced() && $client->model ne 'group') {
+			push @helperArgs, '--buffer-latency-ms', 5000;
+		}
 
 		# GH #144: the binary now uses a PassthroughMixer that tracks
 		# volume for the Spotify slider / VolumeChanged events but never
@@ -543,6 +647,10 @@ sub stopForSync {
 		$self->_proc->die;
 		$self->_streamPort(undef);    # clear stale port; start() will set the new one
 		$self->_startTimes([]);
+		# Phase 83.3 plan 17 (CR-01): a deliberate stop is never a crash --
+		# flag it so DaemonManager's dead-helper gate and the 5s poll do
+		# not misattribute this SIGTERM to the GH #147 backoff/D-07 counters.
+		$self->_stoppedDeliberately(1);
 	}
 	elsif (main::INFOLOG && $log->is_info) {
 		$log->info("This Unified daemon is dead already (stopForSync called on dead daemon for "

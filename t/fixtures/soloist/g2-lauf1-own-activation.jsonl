@@ -1,0 +1,28 @@
+#ts=18:05:20.382 epoch=1788710720.38292
+{"type":"auth_state","logged_in":true,"is_active":false,"device_name":"lavender-pa"}
+#ts=18:05:20.383 epoch=1788710720.38323
+{"type":"playback_state","status":"paused","item":{"uri":"spotify:track:46eu3SBuFCXWsPT39Yg3tJ","decorations":{"identity":{"name":"Don't Stop 'Til You Get Enough"}}},"context":{"uri":"spotify:track:4uLU6hMCjMI75M1A2tKUQC"},"position":{"position_ms":216216,"timestamp_ms":1788710720382,"speed":0},"is_active":false}
+#ts=18:05:26.493 epoch=1788710726.49346
+{"type":"playback_changed","status":"playing"}
+#ts=18:05:26.493 epoch=1788710726.49363
+{"type":"context_changed","context":{"uri":"spotify:track:4PTG3Z6ehGkBFwjybzWkR8"}}
+#ts=18:05:26.493 epoch=1788710726.49368
+{"type":"queue_changed"}
+#ts=18:05:26.493 epoch=1788710726.49373
+{"type":"playback_state","status":"playing","item":{"uri":""},"context":{"uri":"spotify:track:4PTG3Z6ehGkBFwjybzWkR8"},"position":{"position_ms":216216,"timestamp_ms":1788710726493,"speed":1},"is_active":false}
+#ts=18:05:26.493 epoch=1788710726.49377
+{"type":"position_sync","position":{"position_ms":216216,"timestamp_ms":1788710726493,"speed":1}}
+#ts=18:05:26.493 epoch=1788710726.4938
+{"type":"device_changed","is_active":true,"device_name":"lavender-pa"}
+#ts=18:05:26.574 epoch=1788710726.5746
+{"type":"track_changed","item":{"uri":"spotify:track:4PTG3Z6ehGkBFwjybzWkR8","decorations":{"identity":{"name":"Never Gonna Give You Up"}}}}
+#ts=18:05:26.574 epoch=1788710726.57476
+{"type":"playback_changed","status":"buffering"}
+#ts=18:05:26.574 epoch=1788710726.5748
+{"type":"queue_changed"}
+#ts=18:05:26.574 epoch=1788710726.57483
+{"type":"playback_state","status":"buffering","item":{"uri":"spotify:track:4PTG3Z6ehGkBFwjybzWkR8","decorations":{"identity":{"name":"Never Gonna Give You Up"}}},"context":{"uri":"spotify:track:4PTG3Z6ehGkBFwjybzWkR8"},"position":{"position_ms":0,"timestamp_ms":1788710726574,"speed":0},"is_active":true}
+#ts=18:05:26.574 epoch=1788710726.57489
+{"type":"position_sync","position":{"position_ms":0,"timestamp_ms":1788710726574,"speed":0}}
+#ts=18:05:26.693 epoch=1788710726.69343
+{"type":"position_sync","position":{"position_ms":139,"timestamp_ms":1788710726693,"speed":0}}

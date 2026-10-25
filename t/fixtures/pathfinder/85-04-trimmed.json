@@ -1,0 +1,1224 @@
+{
+   "_provenance" : {
+      "chunkmap_excerpt" : {
+         "cut" : "the u.u=e=>\"\"+(({id:\"name\",...})[e]||e)+\".\"+({id:\"hash\",...})[e]+\".js\" region (5232 B) and the u.p=\"...\" assignment, joined by a comment; the bundle itself is not kept in the repo",
+         "fetched" : "2026-10-17",
+         "sha256_of_whole_file" : "1129f07952e06b00be6af909364b0a6285f80636164613019cf4fa5fefe64062",
+         "size_bytes" : 4475202,
+         "source" : "https://open.spotifycdn.com/cdn/build/web-player/web-player.0079e2e5.js"
+      },
+      "homeSection_mfy" : {
+         "captured" : "2026-10-16T21:45:12+0200",
+         "cut" : "items trimmed from 9 to 3 (Release Radar, DJ, Daily Mix 1; totalCount kept at 9); section title carries the account name in the capture and is redacted; image urls are neutral placeholders",
+         "source" : "/home/uuu/SynologyDrive/dev/spoton-messdaten/85-04-mfy-spike/runs/probes2.json steps.homeSection_mfy (digest only)",
+         "status" : "RECONSTRUCTED: the MFY run directory holds digests only (no homeSection body); the envelope data.homeSections.sections[0].sectionItems.{totalCount,items[]} is rebuilt in the content.data.{__typename,uri,name,images} shape of 85-04-MFY-SPIKE.md:197-199"
+      },
+      "homeSection_topmix" : {
+         "captured" : "2026-10-16T21:45:12+0200",
+         "cut" : "items trimmed from 13 to 3; artist-derived mix names replaced by neutral names, one non-ASCII name (Café-Mix) kept for the UTF-8 case; totalCount kept at 13",
+         "source" : "/home/uuu/SynologyDrive/dev/spoton-messdaten/85-04-mfy-spike/runs/probes2.json steps.homeSection_topmix (digest only)",
+         "status" : "RECONSTRUCTED: same envelope rebuild as homeSection_mfy"
+      },
+      "redaction" : "account and user ids -> redacted; Spotify-made 37i9 playlist uris and the DJ uri kept",
+      "searchDesktop" : {
+         "captured" : "2026-10-16",
+         "cut" : "each section trimmed to 3 items (podcasts keep one GenericError item); topResultsV2, genres, users, audiobooks and chipOrder dropped; only the keys SpotOn reads are kept; names, ids, descriptions and image urls replaced by neutral placeholders, playlist attributes (carry the account name) and the owner user uri dropped; totalCounts kept",
+         "source" : "/home/uuu/SynologyDrive/dev/spoton-messdaten/85-04-top-search-spike/runs/sd1.pf_searchDesktop.body.json (data.searchV2)"
+      },
+      "searchTracks" : {
+         "captured" : "2026-10-16",
+         "source" : "/home/uuu/SynologyDrive/dev/spoton-messdaten/85-04-top-search-spike/runs/sd1.pf_searchDesktop.body.json data.searchV2.tracksV2 (the real tracksV2 of the searchDesktop capture)",
+         "status" : "RECONSTRUCTED: no searchTracks body was saved (runs/st1.json is a 1389 B request digest); the per-type envelope data.searchV2.tracksV2 is rebuilt from sd1 and trimmed to 3 items"
+      },
+      "userTopContent" : {
+         "captured" : "2026-10-16",
+         "cut" : "items trimmed from 50 to 3; only the keys SpotOn reads are kept (uri, name, duration.totalMilliseconds, artists.items[].profile.name/uri, albumOfTrack.name/uri/coverArt.sources); names, ids and image urls replaced by neutral placeholders; totalCount kept",
+         "source" : "/home/uuu/SynologyDrive/dev/spoton-messdaten/85-04-top-search-spike/runs/utc1.pf_userTopContent.body.json (data.me.profile.topTracks)"
+      }
+   },
+   "chunkmap_excerpt" : ",u.u=e=>\"\"+(({1328:\"xpui-pip-mini-player\",1401:\"xpui-routes-see-all-playlist-leavebehinds\",1498:\"xpui-routes-offline-browse\",1723:\"dwp-offline-empty-state\",1776:\"xpui-routes-music-video-prerelease\",180:\"xpui-routes-episode-more-like-this\",1821:\"xpui-routes-buddy-feed\",1872:\"xpui-routes-playlist\",1922:\"xpui-routes-venues\",1971:\"dev-playground\",2011:\"xpui-root-dialogs\",2070:\"podcast-charts\",2092:\"trending-near-you-toolbar\",2160:\"xpui-routes-download-page\",2195:\"dwp-premium-upsell-page\",2218:\"xpui-routes-web-settings\",2423:\"xpui-routes-label-artists\",2457:\"dwp-page-error-template\",2495:\"xpui-routes-track\",2553:\"xpui-routes-collection-episodes\",2621:\"xpui-routes-collection-songs\",2706:\"xpui-routes-recent-searches\",2741:\"dwp-video-player\",276:\"xpui-routes-recents\",2839:\"xpui-routes-blend\",2950:\"xpui-routes-collection-local-files\",3054:\"xpui-desktop-modals\",3272:\"lottie-animation\",3282:\"xpui-desktop-routes-settings\",3308:\"xpui-routes-podcast-chapter\",3319:\"dwp-now-playing-bar\",3333:\"xpui-routes-premium-page\",3522:\"xpui-routes-show-more-like-this\",3719:\"browse-v2\",3749:\"dwp-whats-new-feed\",3758:\"xpui-playlist-format-redirect-with-params\",3776:\"dwp-user-comments\",4068:\"xpui-routes-country-hub\",4146:\"xpui-routes-your-library-x\",4294:\"xpui-routes-all-show-ads\",4374:\"home-v2-section\",4382:\"xpui-routes-country-hub-section\",4406:\"xpui-routes-search\",4563:\"xpui-routes-show\",4935:\"xpui-routes-album\",5056:\"xpui-routes-stage-page\",5314:\"xpui-routes-lyrics\",535:\"dwp-socialPrompting\",5369:\"xpui-routes-create-playlist\",547:\"your-sound-capsule-modal\",5516:\"xpui-debug-window-contents\",5579:\"playlist-leavebehinds\",5908:\"xpui-routes-track-v2\",605:\"dwp-leaderboard-component\",6201:\"workbox-window\",6204:\"xpui-routes-collection-concerts\",6605:\"listening-stats-modal\",6642:\"xpui-routes-concert\",6766:\"xpui-routes-collection-concert-gallery\",6883:\"xpui-routes-cultural-moment-hub\",7161:\"xpui-routes-artist\",770:\"dwp-home-chips-row\",7873:\"ubi-highlighting\",792:\"home-subfeed\",7969:\"xpui-routes-profile\",8083:\"xpui-routes-taste-profile\",809:\"this-is-playlist-concerts-carousel\",8142:\"xpui-routes-label\",8168:\"desktop-update-notification\",82:\"dwp-watch-feed-view-container\",8221:\"ubi-showcase-test\",8319:\"dwp-home-header\",8388:\"podcast-charts-hub\",8390:\"dwp-promptedPlaylists\",846:\"home-ads-container\",8751:\"xpui-routes-kallax\",8816:\"dwp-error-page\",8891:\"dwp-top-bar\",8977:\"xpui-routes-concert-campaign\",9109:\"xpui-routes-health-check\",9148:\"home-v2\",9185:\"dwp-feedback-bar\",9201:\"xpui-routes-episode\",9220:\"xpui-routes-recently-played\",9465:\"dwp-video-takeover\",9494:\"concerts-on-tour-playlist-card\",9626:\"xpui-routes-album-prerelease\",9880:\"dwp-tuna\",9908:\"dwp-panel-section\"})[e]||e)+\".\"+({1081:\"91f63d20\",112:\"31723856\",1186:\"19e9b02e\",1272:\"795c911c\",1328:\"91fe3fc9\",1366:\"6a68a0b4\",1401:\"a05f9a64\",1498:\"1966f29c\",1545:\"4ac77589\",1675:\"179adc35\",1723:\"99442133\",1776:\"69df4456\",180:\"a9aace5c\",1821:\"96c2be26\",1872:\"8843efcf\",1922:\"fc4860e0\",1971:\"78c90a08\",1995:\"02a48ebc\",2011:\"17d7d824\",2070:\"94f9f8af\",2092:\"760af639\",2148:\"7a6c3866\",2160:\"9194190f\",2195:\"f38ca596\",2218:\"c9854e24\",2423:\"940e2350\",2457:\"d9b3e42f\",2492:\"8d598933\",2495:\"d434e2de\",2553:\"9f9436da\",2621:\"dea3a0d3\",2625:\"de9418b5\",2706:\"5a369a9f\",2741:\"574b534c\",2759:\"525b89c7\",276:\"b6f0a395\",2839:\"86cbff91\",2950:\"804bd7bb\",3029:\"6d0de760\",3054:\"1329e33e\",3079:\"b0045057\",3115:\"d1551e47\",3210:\"9686e4d1\",3272:\"f72a1411\",3282:\"733e41f6\",3308:\"e74f5e9d\",3319:\"23ccd98b\",3333:\"3d3b673e\",3522:\"c2fdaa52\",3565:\"8aa7d5a5\",3719:\"df02045f\",3749:\"4ea41bef\",3758:\"961924fe\",3770:\"af5bc76d\",3776:\"2b5b6914\",3833:\"fac242fd\",4062:\"65d8f6f7\",4068:\"7c0b5561\",4146:\"ddc87d92\",4167:\"868f7b09\",4195:\"afd4ba51\",4294:\"c7e7aa33\",4340:\"d259b637\",4374:\"16715539\",4382:\"4c758a5f\",4406:\"26863a01\",4447:\"d2469378\",4563:\"54a78333\",4609:\"43c2e0bc\",4694:\"8d91165f\",4729:\"6fc60d19\",4935:\"734c0a56\",5027:\"db950b86\",5056:\"0e43bb2c\",5314:\"a2887bf8\",535:\"8dac8cfb\",5369:\"f8f57675\",5424:\"3561ea4e\",5455:\"92860885\",5460:\"955b5cf2\",547:\"88163e68\",5476:\"1b4ed844\",5516:\"31354617\",5539:\"db982e67\",5579:\"0f6c8532\",5687:\"db233471\",5695:\"eb29c6f4\",5720:\"702fc947\",5816:\"7e7aa037\",5825:\"bf4fea7e\",5908:\"98f0f672\",605:\"77072e1e\",6201:\"e0b1932c\",6204:\"6fdcb2d1\",6357:\"cf8dc40c\",6576:\"ceaf2040\",6605:\"be66b688\",6642:\"92b7c556\",6766:\"42157f03\",6883:\"f8682aea\",7115:\"ef7e12b9\",7161:\"bc388d59\",7325:\"192d4601\",7414:\"ee0633ae\",7539:\"c7778a77\",7559:\"dd9750b8\",7560:\"5c1690f4\",770:\"8333fa04\",7702:\"1b0cc337\",7730:\"ed077006\",7873:\"9a17e2bf\",792:\"168ca61a\",7941:\"a53ec04f\",7950:\"6500916f\",7969:\"56baa6b4\",7981:\"c6ee34dc\",8023:\"34c048b0\",8083:\"9788e10f\",809:\"223d9fcb\",8142:\"6f749e5d\",8153:\"c3d5ee66\",8168:\"5ea76e4d\",82:\"1ecebde2\",8221:\"dbc3d9f8\",8231:\"184ea09a\",8319:\"f62fa08f\",8377:\"6b82c79e\",8388:\"dcbc41a1\",8390:\"836564ab\",846:\"00d7d5e7\",8546:\"aedc6a99\",8576:\"29986fc1\",8736:\"08c4ccf6\",8751:\"0bd329d5\",8783:\"151545fe\",8816:\"97cf9a5a\",8869:\"d0ad2bd8\",8891:\"8f565a1f\",8914:\"bb2539db\",8948:\"bcc34e08\",8977:\"70a7b35a\",9109:\"3f4fc09d\",9148:\"59187308\",9185:\"f8d05e35\",9201:\"078d59cd\",9210:\"531af8b2\",9220:\"9ac95802\",934:\"e79462cc\",9448:\"d14fdcf4\",9465:\"664a7f0d\",9493:\"05faca87\",9494:\"6f69d502\",9611:\"0a608bb2\",9626:\"683404e4\",9650:\"1893fa4f\",9667:\"4e76a255\",9880:\"af7dfc0a\",9886:\"51344fe0\",9908:\"e091f4c0\"})[e]+\".js\"\n/* ... */\n,u.p=\"https://open.spotifycdn.com/cdn/build/web-player/\",u",
+   "homeSection_mfy" : {
+      "data" : {
+         "homeSections" : {
+            "sections" : [
+               {
+                  "data" : {
+                     "__typename" : "HomeGenericSectionData",
+                     "title" : {
+                        "text" : "Made For redacted"
+                     }
+                  },
+                  "sectionItems" : {
+                     "items" : [
+                        {
+                           "content" : {
+                              "__typename" : "PlaylistResponseWrapper",
+                              "data" : {
+                                 "__typename" : "Playlist",
+                                 "images" : {
+                                    "items" : [
+                                       {
+                                          "sources" : [
+                                             {
+                                                "height" : 300,
+                                                "url" : "https://i.scdn.co/image/redacted1",
+                                                "width" : 300
+                                             }
+                                          ]
+                                       }
+                                    ]
+                                 },
+                                 "name" : "Release Radar",
+                                 "uri" : "spotify:playlist:37i9dQZEVXbkoDWHZvXaFe"
+                              }
+                           },
+                           "uri" : "spotify:playlist:37i9dQZEVXbkoDWHZvXaFe"
+                        },
+                        {
+                           "content" : {
+                              "__typename" : "PlaylistResponseWrapper",
+                              "data" : {
+                                 "__typename" : "Playlist",
+                                 "images" : {
+                                    "items" : [
+                                       {
+                                          "sources" : [
+                                             {
+                                                "height" : 300,
+                                                "url" : "https://i.scdn.co/image/redacted2",
+                                                "width" : 300
+                                             }
+                                          ]
+                                       }
+                                    ]
+                                 },
+                                 "name" : "DJ",
+                                 "uri" : "spotify:playlist:37i9dQZF1EYkqdzj48dyYq"
+                              }
+                           },
+                           "uri" : "spotify:playlist:37i9dQZF1EYkqdzj48dyYq"
+                        },
+                        {
+                           "content" : {
+                              "__typename" : "PlaylistResponseWrapper",
+                              "data" : {
+                                 "__typename" : "Playlist",
+                                 "images" : {
+                                    "items" : [
+                                       {
+                                          "sources" : [
+                                             {
+                                                "height" : 300,
+                                                "url" : "https://i.scdn.co/image/redacted3",
+                                                "width" : 300
+                                             }
+                                          ]
+                                       }
+                                    ]
+                                 },
+                                 "name" : "Daily Mix 1",
+                                 "uri" : "spotify:playlist:37i9dQZF1E3a6pKpVe40mF"
+                              }
+                           },
+                           "uri" : "spotify:playlist:37i9dQZF1E3a6pKpVe40mF"
+                        }
+                     ],
+                     "totalCount" : 9
+                  },
+                  "uri" : "spotify:section:0JQ5DAUnp4wcj0bCb3wh3S"
+               }
+            ]
+         }
+      }
+   },
+   "homeSection_topmix" : {
+      "data" : {
+         "homeSections" : {
+            "sections" : [
+               {
+                  "data" : {
+                     "__typename" : "HomeGenericSectionData",
+                     "title" : {
+                        "text" : "Your top mixes"
+                     }
+                  },
+                  "sectionItems" : {
+                     "items" : [
+                        {
+                           "content" : {
+                              "__typename" : "PlaylistResponseWrapper",
+                              "data" : {
+                                 "__typename" : "Playlist",
+                                 "images" : {
+                                    "items" : [
+                                       {
+                                          "sources" : [
+                                             {
+                                                "height" : 300,
+                                                "url" : "https://i.scdn.co/image/redacted4",
+                                                "width" : 300
+                                             }
+                                          ]
+                                       }
+                                    ]
+                                 },
+                                 "name" : "Jazz Mix",
+                                 "uri" : "spotify:playlist:37i9dQZF1EQqA6klNdJvwx"
+                              }
+                           },
+                           "uri" : "spotify:playlist:37i9dQZF1EQqA6klNdJvwx"
+                        },
+                        {
+                           "content" : {
+                              "__typename" : "PlaylistResponseWrapper",
+                              "data" : {
+                                 "__typename" : "Playlist",
+                                 "images" : {
+                                    "items" : [
+                                       {
+                                          "sources" : [
+                                             {
+                                                "height" : 300,
+                                                "url" : "https://i.scdn.co/image/redacted5",
+                                                "width" : 300
+                                             }
+                                          ]
+                                       }
+                                    ]
+                                 },
+                                 "name" : "Café-Mix",
+                                 "uri" : "spotify:playlist:37i9dQZF1EIXOF8cnjfC36"
+                              }
+                           },
+                           "uri" : "spotify:playlist:37i9dQZF1EIXOF8cnjfC36"
+                        },
+                        {
+                           "content" : {
+                              "__typename" : "PlaylistResponseWrapper",
+                              "data" : {
+                                 "__typename" : "Playlist",
+                                 "images" : {
+                                    "items" : [
+                                       {
+                                          "sources" : [
+                                             {
+                                                "height" : 300,
+                                                "url" : "https://i.scdn.co/image/redacted6",
+                                                "width" : 300
+                                             }
+                                          ]
+                                       }
+                                    ]
+                                 },
+                                 "name" : "2000s Mix",
+                                 "uri" : "spotify:playlist:37i9dQZF1EQn4jwNIohw50"
+                              }
+                           },
+                           "uri" : "spotify:playlist:37i9dQZF1EQn4jwNIohw50"
+                        }
+                     ],
+                     "totalCount" : 13
+                  },
+                  "uri" : "spotify:section:0JQ5DAnM3wGh0gz1MXnu89"
+               }
+            ]
+         }
+      }
+   },
+   "searchDesktop" : {
+      "data" : {
+         "searchV2" : {
+            "albumsV2" : {
+               "__typename" : "SearchResultsAlbumsV2",
+               "items" : [
+                  {
+                     "__typename" : "AlbumResponseWrapper",
+                     "data" : {
+                        "__typename" : "Album",
+                        "artists" : {
+                           "items" : [
+                              {
+                                 "profile" : {
+                                    "name" : "Artist 1"
+                                 },
+                                 "uri" : "spotify:artist:A010000000000000000000"
+                              }
+                           ]
+                        },
+                        "coverArt" : {
+                           "sources" : [
+                              {
+                                 "height" : 300,
+                                 "url" : "https://i.scdn.co/image/redacted-alb1-300",
+                                 "width" : 300
+                              }
+                           ]
+                        },
+                        "date" : {
+                           "year" : 1959
+                        },
+                        "name" : "Album 1",
+                        "type" : "ALBUM",
+                        "uri" : "spotify:album:B010000000000000000000"
+                     }
+                  },
+                  {
+                     "__typename" : "AlbumResponseWrapper",
+                     "data" : {
+                        "__typename" : "Album",
+                        "artists" : {
+                           "items" : [
+                              {
+                                 "profile" : {
+                                    "name" : "Artist 2"
+                                 },
+                                 "uri" : "spotify:artist:A020000000000000000000"
+                              }
+                           ]
+                        },
+                        "coverArt" : {
+                           "sources" : [
+                              {
+                                 "height" : 300,
+                                 "url" : "https://i.scdn.co/image/redacted-alb2-300",
+                                 "width" : 300
+                              }
+                           ]
+                        },
+                        "date" : {
+                           "year" : 1960
+                        },
+                        "name" : "Album 2",
+                        "type" : "ALBUM",
+                        "uri" : "spotify:album:B020000000000000000000"
+                     }
+                  },
+                  {
+                     "__typename" : "AlbumResponseWrapper",
+                     "data" : {
+                        "__typename" : "Album",
+                        "artists" : {
+                           "items" : [
+                              {
+                                 "profile" : {
+                                    "name" : "Artist 3"
+                                 },
+                                 "uri" : "spotify:artist:A030000000000000000000"
+                              }
+                           ]
+                        },
+                        "coverArt" : {
+                           "sources" : [
+                              {
+                                 "height" : 300,
+                                 "url" : "https://i.scdn.co/image/redacted-alb3-300",
+                                 "width" : 300
+                              }
+                           ]
+                        },
+                        "date" : {
+                           "year" : 1961
+                        },
+                        "name" : "Album 3",
+                        "type" : "ALBUM",
+                        "uri" : "spotify:album:B030000000000000000000"
+                     }
+                  }
+               ],
+               "totalCount" : 200
+            },
+            "artists" : {
+               "items" : [
+                  {
+                     "__typename" : "ArtistResponseWrapper",
+                     "data" : {
+                        "__typename" : "Artist",
+                        "profile" : {
+                           "name" : "Artist 1"
+                        },
+                        "uri" : "spotify:artist:A010000000000000000000",
+                        "visuals" : {
+                           "avatarImage" : {
+                              "sources" : [
+                                 {
+                                    "height" : 640,
+                                    "url" : "https://i.scdn.co/image/redacted-art1-640",
+                                    "width" : 640
+                                 },
+                                 {
+                                    "height" : 160,
+                                    "url" : "https://i.scdn.co/image/redacted-art1-160",
+                                    "width" : 160
+                                 }
+                              ]
+                           }
+                        }
+                     }
+                  },
+                  {
+                     "__typename" : "ArtistResponseWrapper",
+                     "data" : {
+                        "__typename" : "Artist",
+                        "profile" : {
+                           "name" : "Artist 2"
+                        },
+                        "uri" : "spotify:artist:A020000000000000000000",
+                        "visuals" : {
+                           "avatarImage" : {
+                              "sources" : [
+                                 {
+                                    "height" : 640,
+                                    "url" : "https://i.scdn.co/image/redacted-art2-640",
+                                    "width" : 640
+                                 },
+                                 {
+                                    "height" : 160,
+                                    "url" : "https://i.scdn.co/image/redacted-art2-160",
+                                    "width" : 160
+                                 }
+                              ]
+                           }
+                        }
+                     }
+                  },
+                  {
+                     "__typename" : "ArtistResponseWrapper",
+                     "data" : {
+                        "__typename" : "Artist",
+                        "profile" : {
+                           "name" : "Artist 3"
+                        },
+                        "uri" : "spotify:artist:A030000000000000000000",
+                        "visuals" : {
+                           "avatarImage" : {
+                              "sources" : [
+                                 {
+                                    "height" : 640,
+                                    "url" : "https://i.scdn.co/image/redacted-art3-640",
+                                    "width" : 640
+                                 },
+                                 {
+                                    "height" : 160,
+                                    "url" : "https://i.scdn.co/image/redacted-art3-160",
+                                    "width" : 160
+                                 }
+                              ]
+                           }
+                        }
+                     }
+                  }
+               ],
+               "totalCount" : 190
+            },
+            "episodes" : {
+               "items" : [
+                  {
+                     "__typename" : "EpisodeResponseWrapper",
+                     "data" : {
+                        "__typename" : "Episode",
+                        "coverArt" : {
+                           "sources" : [
+                              {
+                                 "height" : 300,
+                                 "url" : "https://i.scdn.co/image/redacted-ep1-300",
+                                 "width" : 300
+                              },
+                              {
+                                 "height" : 64,
+                                 "url" : "https://i.scdn.co/image/redacted-ep1-64",
+                                 "width" : 64
+                              }
+                           ]
+                        },
+                        "description" : "redacted",
+                        "duration" : {
+                           "totalMilliseconds" : 1800001
+                        },
+                        "name" : "Episode 1",
+                        "podcastV2" : {
+                           "__typename" : "PodcastResponseWrapper",
+                           "data" : {
+                              "__typename" : "Podcast",
+                              "coverArt" : {
+                                 "sources" : [
+                                    {
+                                       "height" : 300,
+                                       "url" : "https://i.scdn.co/image/redacted-show1-300",
+                                       "width" : 300
+                                    },
+                                    {
+                                       "height" : 64,
+                                       "url" : "https://i.scdn.co/image/redacted-show1-64",
+                                       "width" : 64
+                                    }
+                                 ]
+                              },
+                              "mediaType" : "AUDIO",
+                              "name" : "Show 1",
+                              "publisher" : {
+                                 "name" : "Publisher 1"
+                              },
+                              "uri" : "spotify:show:S010000000000000000000"
+                           }
+                        },
+                        "releaseDate" : {
+                           "isoString" : "2026-05-21T22:00:00Z",
+                           "precision" : "MINUTE"
+                        },
+                        "uri" : "spotify:episode:E010000000000000000000"
+                     }
+                  },
+                  {
+                     "__typename" : "EpisodeResponseWrapper",
+                     "data" : {
+                        "__typename" : "Episode",
+                        "coverArt" : {
+                           "sources" : [
+                              {
+                                 "height" : 300,
+                                 "url" : "https://i.scdn.co/image/redacted-ep2-300",
+                                 "width" : 300
+                              },
+                              {
+                                 "height" : 64,
+                                 "url" : "https://i.scdn.co/image/redacted-ep2-64",
+                                 "width" : 64
+                              }
+                           ]
+                        },
+                        "description" : "redacted",
+                        "duration" : {
+                           "totalMilliseconds" : 1800002
+                        },
+                        "name" : "Episode 2",
+                        "podcastV2" : {
+                           "__typename" : "PodcastResponseWrapper",
+                           "data" : {
+                              "__typename" : "Podcast",
+                              "coverArt" : {
+                                 "sources" : [
+                                    {
+                                       "height" : 300,
+                                       "url" : "https://i.scdn.co/image/redacted-show2-300",
+                                       "width" : 300
+                                    },
+                                    {
+                                       "height" : 64,
+                                       "url" : "https://i.scdn.co/image/redacted-show2-64",
+                                       "width" : 64
+                                    }
+                                 ]
+                              },
+                              "mediaType" : "AUDIO",
+                              "name" : "Show 2",
+                              "publisher" : {
+                                 "name" : "Publisher 2"
+                              },
+                              "uri" : "spotify:show:S020000000000000000000"
+                           }
+                        },
+                        "releaseDate" : {
+                           "isoString" : "2026-05-22T22:00:00Z",
+                           "precision" : "MINUTE"
+                        },
+                        "uri" : "spotify:episode:E020000000000000000000"
+                     }
+                  },
+                  {
+                     "__typename" : "EpisodeResponseWrapper",
+                     "data" : {
+                        "__typename" : "Episode",
+                        "coverArt" : {
+                           "sources" : [
+                              {
+                                 "height" : 300,
+                                 "url" : "https://i.scdn.co/image/redacted-ep3-300",
+                                 "width" : 300
+                              },
+                              {
+                                 "height" : 64,
+                                 "url" : "https://i.scdn.co/image/redacted-ep3-64",
+                                 "width" : 64
+                              }
+                           ]
+                        },
+                        "description" : "redacted",
+                        "duration" : {
+                           "totalMilliseconds" : 1800003
+                        },
+                        "name" : "Episode 3",
+                        "podcastV2" : {
+                           "__typename" : "PodcastResponseWrapper",
+                           "data" : {
+                              "__typename" : "Podcast",
+                              "coverArt" : {
+                                 "sources" : [
+                                    {
+                                       "height" : 300,
+                                       "url" : "https://i.scdn.co/image/redacted-show3-300",
+                                       "width" : 300
+                                    },
+                                    {
+                                       "height" : 64,
+                                       "url" : "https://i.scdn.co/image/redacted-show3-64",
+                                       "width" : 64
+                                    }
+                                 ]
+                              },
+                              "mediaType" : "AUDIO",
+                              "name" : "Show 3",
+                              "publisher" : {
+                                 "name" : "Publisher 3"
+                              },
+                              "uri" : "spotify:show:S030000000000000000000"
+                           }
+                        },
+                        "releaseDate" : {
+                           "isoString" : "2026-05-23T22:00:00Z",
+                           "precision" : "MINUTE"
+                        },
+                        "uri" : "spotify:episode:E030000000000000000000"
+                     }
+                  }
+               ],
+               "totalCount" : 1000
+            },
+            "playlists" : {
+               "items" : [
+                  {
+                     "__typename" : "PlaylistResponseWrapper",
+                     "data" : {
+                        "__typename" : "Playlist",
+                        "description" : "redacted",
+                        "images" : {
+                           "items" : [
+                              {
+                                 "sources" : [
+                                    {
+                                       "height" : 300,
+                                       "url" : "https://i.scdn.co/image/redacted-pl1-300",
+                                       "width" : 300
+                                    }
+                                 ]
+                              }
+                           ]
+                        },
+                        "name" : "Playlist 1",
+                        "ownerV2" : {
+                           "__typename" : "UserResponseWrapper",
+                           "data" : {
+                              "__typename" : "User",
+                              "name" : "Spotify",
+                              "uri" : "redacted",
+                              "username" : "redacted"
+                           }
+                        },
+                        "uri" : "spotify:playlist:P010000000000000000000"
+                     }
+                  },
+                  {
+                     "__typename" : "PlaylistResponseWrapper",
+                     "data" : {
+                        "__typename" : "Playlist",
+                        "description" : "redacted",
+                        "images" : {
+                           "items" : [
+                              {
+                                 "sources" : [
+                                    {
+                                       "height" : 300,
+                                       "url" : "https://i.scdn.co/image/redacted-pl2-300",
+                                       "width" : 300
+                                    }
+                                 ]
+                              }
+                           ]
+                        },
+                        "name" : "Playlist 2",
+                        "ownerV2" : {
+                           "__typename" : "UserResponseWrapper",
+                           "data" : {
+                              "__typename" : "User",
+                              "name" : "Spotify",
+                              "uri" : "redacted",
+                              "username" : "redacted"
+                           }
+                        },
+                        "uri" : "spotify:playlist:P020000000000000000000"
+                     }
+                  },
+                  {
+                     "__typename" : "PlaylistResponseWrapper",
+                     "data" : {
+                        "__typename" : "Playlist",
+                        "description" : "redacted",
+                        "images" : {
+                           "items" : [
+                              {
+                                 "sources" : [
+                                    {
+                                       "height" : 300,
+                                       "url" : "https://i.scdn.co/image/redacted-pl3-300",
+                                       "width" : 300
+                                    }
+                                 ]
+                              }
+                           ]
+                        },
+                        "name" : "Playlist 3",
+                        "ownerV2" : {
+                           "__typename" : "UserResponseWrapper",
+                           "data" : {
+                              "__typename" : "User",
+                              "name" : "Spotify",
+                              "uri" : "redacted",
+                              "username" : "redacted"
+                           }
+                        },
+                        "uri" : "spotify:playlist:P030000000000000000000"
+                     }
+                  }
+               ],
+               "totalCount" : 202
+            },
+            "podcasts" : {
+               "items" : [
+                  {
+                     "__typename" : "PodcastResponseWrapper",
+                     "data" : {
+                        "__typename" : "GenericError"
+                     }
+                  },
+                  {
+                     "__typename" : "PodcastResponseWrapper",
+                     "data" : {
+                        "__typename" : "Podcast",
+                        "coverArt" : {
+                           "sources" : [
+                              {
+                                 "height" : 300,
+                                 "url" : "https://i.scdn.co/image/redacted-show1-300",
+                                 "width" : 300
+                              },
+                              {
+                                 "height" : 64,
+                                 "url" : "https://i.scdn.co/image/redacted-show1-64",
+                                 "width" : 64
+                              }
+                           ]
+                        },
+                        "mediaType" : "AUDIO",
+                        "name" : "Show 1",
+                        "publisher" : {
+                           "name" : "Publisher 1"
+                        },
+                        "uri" : "spotify:show:S010000000000000000000"
+                     }
+                  },
+                  {
+                     "__typename" : "PodcastResponseWrapper",
+                     "data" : {
+                        "__typename" : "Podcast",
+                        "coverArt" : {
+                           "sources" : [
+                              {
+                                 "height" : 300,
+                                 "url" : "https://i.scdn.co/image/redacted-show2-300",
+                                 "width" : 300
+                              },
+                              {
+                                 "height" : 64,
+                                 "url" : "https://i.scdn.co/image/redacted-show2-64",
+                                 "width" : 64
+                              }
+                           ]
+                        },
+                        "mediaType" : "AUDIO",
+                        "name" : "Show 2",
+                        "publisher" : {
+                           "name" : "Publisher 2"
+                        },
+                        "uri" : "spotify:show:S020000000000000000000"
+                     }
+                  }
+               ],
+               "totalCount" : 148
+            },
+            "tracksV2" : {
+               "items" : [
+                  {
+                     "item" : {
+                        "__typename" : "TrackResponseWrapper",
+                        "data" : {
+                           "__typename" : "Track",
+                           "albumOfTrack" : {
+                              "coverArt" : {
+                                 "sources" : [
+                                    {
+                                       "height" : 300,
+                                       "url" : "https://i.scdn.co/image/redacted-alb1-300",
+                                       "width" : 300
+                                    },
+                                    {
+                                       "height" : 64,
+                                       "url" : "https://i.scdn.co/image/redacted-alb1-64",
+                                       "width" : 64
+                                    },
+                                    {
+                                       "height" : 640,
+                                       "url" : "https://i.scdn.co/image/redacted-alb1-640",
+                                       "width" : 640
+                                    }
+                                 ]
+                              },
+                              "name" : "Album 1",
+                              "uri" : "spotify:album:B010000000000000000000"
+                           },
+                           "artists" : {
+                              "items" : [
+                                 {
+                                    "profile" : {
+                                       "name" : "Artist 1"
+                                    },
+                                    "uri" : "spotify:artist:A010000000000000000000"
+                                 }
+                              ]
+                           },
+                           "duration" : {
+                              "totalMilliseconds" : 181000
+                           },
+                           "id" : "T010000000000000000000",
+                           "name" : "Track 1",
+                           "playability" : {
+                              "playable" : true
+                           },
+                           "uri" : "spotify:track:T010000000000000000000"
+                        }
+                     },
+                     "matchedFields" : []
+                  },
+                  {
+                     "item" : {
+                        "__typename" : "TrackResponseWrapper",
+                        "data" : {
+                           "__typename" : "Track",
+                           "albumOfTrack" : {
+                              "coverArt" : {
+                                 "sources" : [
+                                    {
+                                       "height" : 300,
+                                       "url" : "https://i.scdn.co/image/redacted-alb2-300",
+                                       "width" : 300
+                                    },
+                                    {
+                                       "height" : 64,
+                                       "url" : "https://i.scdn.co/image/redacted-alb2-64",
+                                       "width" : 64
+                                    },
+                                    {
+                                       "height" : 640,
+                                       "url" : "https://i.scdn.co/image/redacted-alb2-640",
+                                       "width" : 640
+                                    }
+                                 ]
+                              },
+                              "name" : "Album 2",
+                              "uri" : "spotify:album:B020000000000000000000"
+                           },
+                           "artists" : {
+                              "items" : [
+                                 {
+                                    "profile" : {
+                                       "name" : "Artist 2"
+                                    },
+                                    "uri" : "spotify:artist:A020000000000000000000"
+                                 }
+                              ]
+                           },
+                           "duration" : {
+                              "totalMilliseconds" : 182000
+                           },
+                           "id" : "T020000000000000000000",
+                           "name" : "Track 2",
+                           "playability" : {
+                              "playable" : true
+                           },
+                           "uri" : "spotify:track:T020000000000000000000"
+                        }
+                     },
+                     "matchedFields" : []
+                  },
+                  {
+                     "item" : {
+                        "__typename" : "TrackResponseWrapper",
+                        "data" : {
+                           "__typename" : "Track",
+                           "albumOfTrack" : {
+                              "coverArt" : {
+                                 "sources" : [
+                                    {
+                                       "height" : 300,
+                                       "url" : "https://i.scdn.co/image/redacted-alb3-300",
+                                       "width" : 300
+                                    },
+                                    {
+                                       "height" : 64,
+                                       "url" : "https://i.scdn.co/image/redacted-alb3-64",
+                                       "width" : 64
+                                    },
+                                    {
+                                       "height" : 640,
+                                       "url" : "https://i.scdn.co/image/redacted-alb3-640",
+                                       "width" : 640
+                                    }
+                                 ]
+                              },
+                              "name" : "Album 3",
+                              "uri" : "spotify:album:B030000000000000000000"
+                           },
+                           "artists" : {
+                              "items" : [
+                                 {
+                                    "profile" : {
+                                       "name" : "Artist 3"
+                                    },
+                                    "uri" : "spotify:artist:A030000000000000000000"
+                                 }
+                              ]
+                           },
+                           "duration" : {
+                              "totalMilliseconds" : 183000
+                           },
+                           "id" : "T030000000000000000000",
+                           "name" : "Track 3",
+                           "playability" : {
+                              "playable" : true
+                           },
+                           "uri" : "spotify:track:T030000000000000000000"
+                        }
+                     },
+                     "matchedFields" : []
+                  }
+               ],
+               "totalCount" : 421
+            }
+         }
+      }
+   },
+   "searchTracks" : {
+      "data" : {
+         "searchV2" : {
+            "tracksV2" : {
+               "items" : [
+                  {
+                     "item" : {
+                        "__typename" : "TrackResponseWrapper",
+                        "data" : {
+                           "__typename" : "Track",
+                           "albumOfTrack" : {
+                              "coverArt" : {
+                                 "sources" : [
+                                    {
+                                       "height" : 300,
+                                       "url" : "https://i.scdn.co/image/redacted-alb1-300",
+                                       "width" : 300
+                                    },
+                                    {
+                                       "height" : 64,
+                                       "url" : "https://i.scdn.co/image/redacted-alb1-64",
+                                       "width" : 64
+                                    },
+                                    {
+                                       "height" : 640,
+                                       "url" : "https://i.scdn.co/image/redacted-alb1-640",
+                                       "width" : 640
+                                    }
+                                 ]
+                              },
+                              "name" : "Album 1",
+                              "uri" : "spotify:album:B010000000000000000000"
+                           },
+                           "artists" : {
+                              "items" : [
+                                 {
+                                    "profile" : {
+                                       "name" : "Artist 1"
+                                    },
+                                    "uri" : "spotify:artist:A010000000000000000000"
+                                 }
+                              ]
+                           },
+                           "duration" : {
+                              "totalMilliseconds" : 181000
+                           },
+                           "id" : "T010000000000000000000",
+                           "name" : "Track 1",
+                           "playability" : {
+                              "playable" : true
+                           },
+                           "uri" : "spotify:track:T010000000000000000000"
+                        }
+                     },
+                     "matchedFields" : []
+                  },
+                  {
+                     "item" : {
+                        "__typename" : "TrackResponseWrapper",
+                        "data" : {
+                           "__typename" : "Track",
+                           "albumOfTrack" : {
+                              "coverArt" : {
+                                 "sources" : [
+                                    {
+                                       "height" : 300,
+                                       "url" : "https://i.scdn.co/image/redacted-alb2-300",
+                                       "width" : 300
+                                    },
+                                    {
+                                       "height" : 64,
+                                       "url" : "https://i.scdn.co/image/redacted-alb2-64",
+                                       "width" : 64
+                                    },
+                                    {
+                                       "height" : 640,
+                                       "url" : "https://i.scdn.co/image/redacted-alb2-640",
+                                       "width" : 640
+                                    }
+                                 ]
+                              },
+                              "name" : "Album 2",
+                              "uri" : "spotify:album:B020000000000000000000"
+                           },
+                           "artists" : {
+                              "items" : [
+                                 {
+                                    "profile" : {
+                                       "name" : "Artist 2"
+                                    },
+                                    "uri" : "spotify:artist:A020000000000000000000"
+                                 }
+                              ]
+                           },
+                           "duration" : {
+                              "totalMilliseconds" : 182000
+                           },
+                           "id" : "T020000000000000000000",
+                           "name" : "Track 2",
+                           "playability" : {
+                              "playable" : true
+                           },
+                           "uri" : "spotify:track:T020000000000000000000"
+                        }
+                     },
+                     "matchedFields" : []
+                  },
+                  {
+                     "item" : {
+                        "__typename" : "TrackResponseWrapper",
+                        "data" : {
+                           "__typename" : "Track",
+                           "albumOfTrack" : {
+                              "coverArt" : {
+                                 "sources" : [
+                                    {
+                                       "height" : 300,
+                                       "url" : "https://i.scdn.co/image/redacted-alb3-300",
+                                       "width" : 300
+                                    },
+                                    {
+                                       "height" : 64,
+                                       "url" : "https://i.scdn.co/image/redacted-alb3-64",
+                                       "width" : 64
+                                    },
+                                    {
+                                       "height" : 640,
+                                       "url" : "https://i.scdn.co/image/redacted-alb3-640",
+                                       "width" : 640
+                                    }
+                                 ]
+                              },
+                              "name" : "Album 3",
+                              "uri" : "spotify:album:B030000000000000000000"
+                           },
+                           "artists" : {
+                              "items" : [
+                                 {
+                                    "profile" : {
+                                       "name" : "Artist 3"
+                                    },
+                                    "uri" : "spotify:artist:A030000000000000000000"
+                                 }
+                              ]
+                           },
+                           "duration" : {
+                              "totalMilliseconds" : 183000
+                           },
+                           "id" : "T030000000000000000000",
+                           "name" : "Track 3",
+                           "playability" : {
+                              "playable" : true
+                           },
+                           "uri" : "spotify:track:T030000000000000000000"
+                        }
+                     },
+                     "matchedFields" : []
+                  }
+               ],
+               "totalCount" : 421
+            }
+         }
+      }
+   },
+   "userTopContent" : {
+      "data" : {
+         "me" : {
+            "profile" : {
+               "topTracks" : {
+                  "__typename" : "TrackPageV2",
+                  "items" : [
+                     {
+                        "data" : {
+                           "__typename" : "Track",
+                           "albumOfTrack" : {
+                              "coverArt" : {
+                                 "sources" : [
+                                    {
+                                       "height" : 300,
+                                       "url" : "https://i.scdn.co/image/redacted-alb1-300",
+                                       "width" : 300
+                                    },
+                                    {
+                                       "height" : 64,
+                                       "url" : "https://i.scdn.co/image/redacted-alb1-64",
+                                       "width" : 64
+                                    },
+                                    {
+                                       "height" : 640,
+                                       "url" : "https://i.scdn.co/image/redacted-alb1-640",
+                                       "width" : 640
+                                    }
+                                 ]
+                              },
+                              "name" : "Album 1",
+                              "uri" : "spotify:album:B010000000000000000000"
+                           },
+                           "artists" : {
+                              "items" : [
+                                 {
+                                    "profile" : {
+                                       "name" : "Artist 1"
+                                    },
+                                    "uri" : "spotify:artist:A010000000000000000000"
+                                 }
+                              ]
+                           },
+                           "duration" : {
+                              "totalMilliseconds" : 181000
+                           },
+                           "name" : "Track 1",
+                           "playability" : {
+                              "playable" : true
+                           },
+                           "uri" : "spotify:track:T010000000000000000000"
+                        }
+                     },
+                     {
+                        "data" : {
+                           "__typename" : "Track",
+                           "albumOfTrack" : {
+                              "coverArt" : {
+                                 "sources" : [
+                                    {
+                                       "height" : 300,
+                                       "url" : "https://i.scdn.co/image/redacted-alb2-300",
+                                       "width" : 300
+                                    },
+                                    {
+                                       "height" : 64,
+                                       "url" : "https://i.scdn.co/image/redacted-alb2-64",
+                                       "width" : 64
+                                    },
+                                    {
+                                       "height" : 640,
+                                       "url" : "https://i.scdn.co/image/redacted-alb2-640",
+                                       "width" : 640
+                                    }
+                                 ]
+                              },
+                              "name" : "Album 2",
+                              "uri" : "spotify:album:B020000000000000000000"
+                           },
+                           "artists" : {
+                              "items" : [
+                                 {
+                                    "profile" : {
+                                       "name" : "Artist 2"
+                                    },
+                                    "uri" : "spotify:artist:A020000000000000000000"
+                                 }
+                              ]
+                           },
+                           "duration" : {
+                              "totalMilliseconds" : 182000
+                           },
+                           "name" : "Track 2",
+                           "playability" : {
+                              "playable" : true
+                           },
+                           "uri" : "spotify:track:T020000000000000000000"
+                        }
+                     },
+                     {
+                        "data" : {
+                           "__typename" : "Track",
+                           "albumOfTrack" : {
+                              "coverArt" : {
+                                 "sources" : [
+                                    {
+                                       "height" : 300,
+                                       "url" : "https://i.scdn.co/image/redacted-alb3-300",
+                                       "width" : 300
+                                    },
+                                    {
+                                       "height" : 64,
+                                       "url" : "https://i.scdn.co/image/redacted-alb3-64",
+                                       "width" : 64
+                                    },
+                                    {
+                                       "height" : 640,
+                                       "url" : "https://i.scdn.co/image/redacted-alb3-640",
+                                       "width" : 640
+                                    }
+                                 ]
+                              },
+                              "name" : "Album 3",
+                              "uri" : "spotify:album:B030000000000000000000"
+                           },
+                           "artists" : {
+                              "items" : [
+                                 {
+                                    "profile" : {
+                                       "name" : "Artist 3"
+                                    },
+                                    "uri" : "spotify:artist:A030000000000000000000"
+                                 }
+                              ]
+                           },
+                           "duration" : {
+                              "totalMilliseconds" : 183000
+                           },
+                           "name" : "Track 3",
+                           "playability" : {
+                              "playable" : true
+                           },
+                           "uri" : "spotify:track:T030000000000000000000"
+                        }
+                     }
+                  ],
+                  "totalCount" : 407
+               }
+            }
+         }
+      }
+   }
+}

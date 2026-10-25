@@ -1,0 +1,13 @@
+# REAL archived server.log lines, nothing synthetic (MACs kept; no secrets in these lines).
+# source: /home/uuu/SynologyDrive/dev/spoton-messdaten/84-04-archive/server-261001-full-1601.log (sha256 prefix 47ba8af92c672ea2, 108882 lines, 2026-10-01)
+# lines: 8911 (08:19:08.0156), 105966 (14:26:19.4123), 108837 (14:45:54.1126) -- each with its two preceding lines as context
+# logger player.source (StreamingController.pm:437), INFO level: emitted only while player.source is at DEBUG/INFO
+[26-10-01 08:19:07.9154] Plugins::SpotOn::Soloist::Control::requestPause (722) SpotOn G3-INSTR: requestPause exit rc=1 observed.status=paused wsConnected=1 paired=1 pending=-
+[26-10-01 08:19:08.0152] Slim::Player::StreamingController::_eventAction (271) 02:00:00:5a:11:03: StatusHeartbeat in PAUSED-STREAMING -> Slim::Player::StreamingController::_CheckPaused
+[26-10-01 08:19:08.0156] Slim::Player::StreamingController::_CheckPaused (437) Stopping remote stream upon full buffer when paused (resume time: 121.802388004303)
+[26-10-01 14:26:19.3558] Plugins::SpotOn::Soloist::Control::_onFramePositionSync (3634) SpotOn G4-INSTR: status paused -> paused via position_sync speed=0 applied=1 pending=- (02:00:00:5a:11:01)
+[26-10-01 14:26:19.4121] Slim::Player::StreamingController::_eventAction (271) 02:00:00:5a:11:03: StatusHeartbeat in PAUSED-STREAMING -> Slim::Player::StreamingController::_CheckPaused
+[26-10-01 14:26:19.4123] Slim::Player::StreamingController::_CheckPaused (437) Stopping remote stream upon full buffer when paused (resume time: 39.765515165329)
+[26-10-01 14:45:54.1124] Plugins::SpotOn::Soloist::Control::_onFramePositionSync (3634) SpotOn G4-INSTR: status paused -> paused via position_sync speed=0 applied=1 pending=- (02:00:00:5a:11:03)
+[26-10-01 14:45:54.1125] Slim::Player::StreamingController::_eventAction (271) 02:00:00:5a:11:03: StatusHeartbeat in PAUSED-STREAMING -> Slim::Player::StreamingController::_CheckPaused
+[26-10-01 14:45:54.1126] Slim::Player::StreamingController::_CheckPaused (437) Stopping remote stream upon full buffer when paused (resume time: 43.5638671894073)

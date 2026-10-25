@@ -1,0 +1,11 @@
+{
+ "errors": [
+  {
+   "message": "02:00:00:5a:11:03: Connect claim: last message wins -- 02:00:00:5a:11:01 replaces it while 02:00:00:5a:11:03 still reports an active session (D-D2)",
+   "ts": 1790867249,
+   "module": "Soloist",
+   "key": "02:00:00:5a:11:03:claim-conflict:02:00:00:5a:11:03",
+   "level": "warn"
+  }
+ ]
+}

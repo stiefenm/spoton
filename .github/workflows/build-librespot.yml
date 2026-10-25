@@ -30,19 +30,30 @@ jobs:
             echo "workflow_dispatch detected — forcing full build"
             RUST_CHANGED=true
           else
-            PREV_TAG=$(git tag --sort=-v:refname | grep '^v' | sed -n '2p')
-            if [ -z "$PREV_TAG" ]; then
-              echo "No previous tag found — forcing full build"
-              RUST_CHANGED=true
-            else
-              echo "Previous tag: $PREV_TAG"
-              CHANGED=$(git diff --name-only "$PREV_TAG" "$GITHUB_REF_NAME" -- librespot-spoton/ | head -1)
-              if [ -n "$CHANGED" ]; then
+            # A tag without a pre-release marker (the final release) always builds the
+            # Rust binaries. git sorts v4.0.0-beta.1 above v4.0.0, so the second entry of
+            # the tag list would be the final tag itself and the diff below would be empty.
+            case "$GITHUB_REF_NAME" in
+              *-*|*beta*|*rc*)
+                PREV_TAG=$(git tag --sort=-v:refname | grep '^v' | sed -n '2p')
+                if [ -z "$PREV_TAG" ]; then
+                  echo "No previous tag found — forcing full build"
+                  RUST_CHANGED=true
+                else
+                  echo "Previous tag: $PREV_TAG"
+                  CHANGED=$(git diff --name-only "$PREV_TAG" "$GITHUB_REF_NAME" -- librespot-spoton/ | head -1)
+                  if [ -n "$CHANGED" ]; then
+                    RUST_CHANGED=true
+                  else
+                    RUST_CHANGED=false
+                  fi
+                fi
+                ;;
+              *)
+                echo "Release tag without pre-release marker - forcing full build"
                 RUST_CHANGED=true
-              else
-                RUST_CHANGED=false
-              fi
-            fi
+                ;;
+            esac
           fi
           echo "Rust changed: $RUST_CHANGED"
           echo "rust_changed=$RUST_CHANGED" >> $GITHUB_OUTPUT
@@ -236,6 +247,185 @@ jobs:
           path: spoton
           retention-days: 30
 
+  # CR-02: built HERE (not in the independent build-fake-libpulse.yml
+  # workflow) so the `release` job below can download its artifacts via
+  # actions/download-artifact@v4 -- that action only sees artifacts from
+  # its OWN workflow run, never a separate workflow's run. D-06 requires
+  # libpulse.so.0 to ship inside the plugin zip; a separate workflow made
+  # that structurally impossible. build-fake-libpulse.yml itself is kept
+  # for on-demand/manual builds (workflow_dispatch only, no longer runs
+  # on tag push) so this matrix is not duplicated on every release.
+  build-fake-libpulse:
+    name: Build fake-libpulse ${{ matrix.bin_dir }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - bin_dir: x86_64-linux
+            cc: gcc
+            cross_gcc_package: ''
+            elf_machine: 'Advanced Micro Devices X86-64'
+          - bin_dir: aarch64-linux
+            cc: aarch64-linux-gnu-gcc
+            cross_gcc_package: gcc-aarch64-linux-gnu
+            elf_machine: 'AArch64'
+          - bin_dir: armhf-linux
+            cc: arm-linux-gnueabihf-gcc
+            cross_gcc_package: gcc-arm-linux-gnueabihf
+            elf_machine: 'ARM'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install glibc cross-toolchain
+        if: matrix.cross_gcc_package != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.cross_gcc_package }}
+
+      - name: Build libpulse.so.0
+        run: |
+          # 79-26 (D-17): -B (unconditionally make all targets). In a fresh checkout the
+          # tracked x86_64 libpulse.so.0 is not older than its .c, so plain make does
+          # nothing and the x86_64 build would be copied into every Bin/<arch>/.
+          make -B -C Plugins/SpotOn/Bin/fake-libpulse CC=${{ matrix.cc }}
+
+      - name: Prepare binary
+        run: |
+          DEST_DIR="Plugins/SpotOn/Bin/${{ matrix.bin_dir }}"
+          mkdir -p "$DEST_DIR"
+          cp Plugins/SpotOn/Bin/fake-libpulse/libpulse.so.0 "$DEST_DIR/libpulse.so.0"
+          chmod 755 "$DEST_DIR/libpulse.so.0"
+
+      - name: Verify binary (glibc, not musl -- Pitfall 3)
+        run: |
+          BINARY="Plugins/SpotOn/Bin/${{ matrix.bin_dir }}/libpulse.so.0"
+          echo "=== Binary info ==="
+          file "$BINARY"
+          echo "=== SHA256 checksum ==="
+          sha256sum "$BINARY"
+
+          # WR-04: `file` on a shared object prints no libc identifier at
+          # all (verified empirically -- interpreter strings only exist
+          # in executables, not .so files), so a `file | grep -qi musl`
+          # guard can never actually catch a musl-linked .so. Inspect the
+          # dynamic section's NEEDED entries instead: musl links produce
+          # `NEEDED libc.so`, glibc produces `NEEDED libc.so.6`.
+          echo "=== readelf -d NEEDED entries ==="
+          readelf -d "$BINARY" | grep NEEDED
+
+          if readelf -d "$BINARY" | grep -q 'NEEDED.*\[libc\.so\]'; then
+            echo "FATAL: $BINARY was linked against musl libc (NEEDED libc.so, no .6)." >&2
+            echo "Soloist is a glibc binary -- a musl fake-libpulse.so.0" >&2
+            echo "will fail to load via LD_LIBRARY_PATH (dynamic loader" >&2
+            echo "mismatch). Check that CC=${{ matrix.cc }} resolved to" >&2
+            echo "a glibc cross-toolchain, not a musl one." >&2
+            exit 1
+          fi
+          if ! readelf -d "$BINARY" | grep -q 'NEEDED.*libc\.so\.6'; then
+            echo "FATAL: expected glibc NEEDED entry (libc.so.6) not found in $BINARY." >&2
+            exit 1
+          fi
+          echo "glibc verification passed (NEEDED libc.so.6 present, no musl libc.so)"
+
+          # 79-26 (D-17): the member must be an ELF of the matrix entry's own
+          # architecture. A fresh checkout once copied the tracked x86_64 shim
+          # into Bin/aarch64-linux and Bin/armhf-linux and the NEEDED checks
+          # above passed it. LC_ALL=C: readelf is localised ("Maschine:" on de).
+          echo "=== readelf -h Machine ==="
+          MACHINE=$(LC_ALL=C readelf -h "$BINARY" | sed -n 's/^ *Machine: *//p')
+          echo "$MACHINE"
+          if [ "$MACHINE" != "${{ matrix.elf_machine }}" ]; then
+            echo "FATAL: $BINARY is an ELF for '$MACHINE', expected '${{ matrix.elf_machine }}'." >&2
+            echo "The shim was not rebuilt with CC=${{ matrix.cc }} for ${{ matrix.bin_dir }}." >&2
+            exit 1
+          fi
+          echo "ELF machine verification passed ($MACHINE)"
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fake-libpulse-${{ matrix.bin_dir }}
+          path: Plugins/SpotOn/Bin/${{ matrix.bin_dir }}/libpulse.so.0
+          retention-days: 30
+
+  # D-09/D-03 (Phase 74): built HERE (not a separate workflow) for the same
+  # CR-02 reason as build-fake-libpulse above -- the release job's
+  # actions/download-artifact@v4 only sees artifacts from THIS workflow's own
+  # run. Runs unconditionally on tag/workflow_dispatch, with no
+  # detect-changes gate: spoton-helper compiles in seconds and must never
+  # ship stale (RESEARCH.md Pitfall 3).
+  build-spoton-helper:
+    name: Build spoton-helper ${{ matrix.bin_dir }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            bin_dir: x86_64-linux
+          - target: aarch64-unknown-linux-musl
+            bin_dir: aarch64-linux
+          - target: armv7-unknown-linux-musleabihf
+            bin_dir: armhf-linux
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Inject private patch patterns (compliance boundary, no-op if unavailable)
+        env:
+          GH_TOKEN: ${{ secrets.SPOTON_PRIVATE_PATTERNS_TOKEN }}
+          PRIVATE_PATTERNS_REPO: ${{ secrets.SPOTON_PRIVATE_PATTERNS_REPO }}
+        run: |
+          if [ -z "$PRIVATE_PATTERNS_REPO" ]; then
+            echo "No private patterns source configured — keeping public stub table"
+            exit 0
+          fi
+          gh api "repos/${PRIVATE_PATTERNS_REPO}/contents/patterns.rs" \
+            --jq '.content' | base64 -d > spoton-helper/src/patch/patterns.rs
+          echo "Private patch pattern table injected"
+
+      - name: Build binary
+        working-directory: spoton-helper
+        run: |
+          cross build --release --target ${{ matrix.target }}
+
+      - name: Prepare binary
+        run: |
+          DEST_DIR="Plugins/SpotOn/Bin/${{ matrix.bin_dir }}"
+          mkdir -p "$DEST_DIR"
+          cp "spoton-helper/target/${{ matrix.target }}/release/spoton-helper" "$DEST_DIR/spoton-helper"
+          chmod 755 "$DEST_DIR/spoton-helper"
+          rm -f "$DEST_DIR/.gitkeep"
+
+      - name: Verify binary
+        run: |
+          BINARY="Plugins/SpotOn/Bin/${{ matrix.bin_dir }}/spoton-helper"
+          echo "=== Binary info ==="
+          file "$BINARY"
+          echo "=== SHA256 checksum ==="
+          sha256sum "$BINARY"
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          # D-09/collision-safe: `helper-` prefix (NOT `spoton-helper-`) so
+          # the release job's `for dir in release-artifacts/spoton-*/`
+          # librespot fold-in loop never matches this artifact -- it would
+          # otherwise mis-copy spoton-helper into the librespot flatten step.
+          name: helper-${{ matrix.bin_dir }}
+          path: Plugins/SpotOn/Bin/${{ matrix.bin_dir }}/spoton-helper
+          retention-days: 30
+
   reuse-binaries:
     name: Reuse binaries from previous release
     runs-on: ubuntu-latest
@@ -325,7 +515,7 @@ jobs:
   release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
-    needs: [detect-changes, build, build-windows, lipo, reuse-binaries]
+    needs: [detect-changes, build, build-windows, lipo, reuse-binaries, build-fake-libpulse, build-spoton-helper]
     if: startsWith(github.ref, 'refs/tags/') && !cancelled() && !failure()
     permissions:
       contents: write
@@ -367,6 +557,32 @@ jobs:
             chmod 755 "$dest"/*
             rm -f "$dest/.gitkeep"
           done
+
+          # CR-02/D-06: fold in the fake-libpulse.so.0 stub built by the
+          # build-fake-libpulse job (same workflow run, so
+          # actions/download-artifact@v4 above can see it) into the same
+          # Bin/<arch>/ directories the librespot binaries just landed in.
+          for dir in release-artifacts/fake-libpulse-*/; do
+            bin_dir=$(basename "$dir" | sed 's/^fake-libpulse-//')
+            dest="Plugins/SpotOn/Bin/$bin_dir"
+            mkdir -p "$dest"
+            cp "$dir/libpulse.so.0" "$dest/libpulse.so.0"
+            chmod 755 "$dest/libpulse.so.0"
+          done
+
+          # D-09: fold in the spoton-helper binary built by the
+          # build-spoton-helper job (same workflow run, so
+          # actions/download-artifact@v4 above can see it). The `helper-*`
+          # artifact prefix is collision-safe -- it is never matched by the
+          # `release-artifacts/spoton-*/` librespot loop above.
+          for dir in release-artifacts/helper-*/; do
+            bin_dir=$(basename "$dir" | sed 's/^helper-//')
+            dest="Plugins/SpotOn/Bin/$bin_dir"
+            mkdir -p "$dest"
+            cp "$dir/spoton-helper" "$dest/spoton-helper"
+            chmod 755 "$dest/spoton-helper"
+          done
+
           VERSION="${GITHUB_REF_NAME}"
           zip -r "release-flat/SpotOn-${VERSION}.zip" Plugins/SpotOn/
           echo "=== Plugin zip ==="
@@ -404,4 +620,4 @@ jobs:
           files: release-flat/*
           body: ${{ steps.changelog.outputs.notes }}
           draft: false
-          prerelease: false
+          prerelease: ${{ contains(github.ref_name, '-') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') }}

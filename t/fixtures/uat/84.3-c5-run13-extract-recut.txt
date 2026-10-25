@@ -1,0 +1,399 @@
+=== extract-run.pl Belegblock ===
+MAC: 02:00:00:5a:11:01
+T0: 01:13:13.65962800
+T1: 01:15:52.990948406
+Fenster (lokale Zeit): 01:13:11.660 .. 01:15:57.991  (T0-2s .. T1+5s)
+Zeitbasis: ANNAHME (vom Skript NICHT vorausgesetzt, sondern unten geprueft): server.log, Daemon-Log und Recorder-ts tragen dieselbe LOKALE Zeit -- AUSSER den datumslosen UTC-Tickerzeilen des aktuellen Soloist-Builds ("HH:MM:SS.mmm [f:N ...] ..."), die per Systemzeitzone auf lokal umgerechnet und je Zeile als [UTC->lokal ...] markiert werden (WR-11, round 3). Laeuft LMS unter TZ=UTC (Container-Standard), waere die Annahme fuer die UEBRIGEN Quellen falsch -- siehe Abschnitt 'Zeitbasis-Selbsttest'.
+Quelle server.log: /tmp/claude-1000/-home-uuu-SynologyDrive-dev-spoton/e693c7fd-1319-46f4-ba6d-dd1040e073c6/scratchpad/run13-server.log
+Quelle Daemon-Log: /tmp/claude-1000/-home-uuu-SynologyDrive-dev-spoton/e693c7fd-1319-46f4-ba6d-dd1040e073c6/scratchpad/empty-daemon.log
+Quelle Recorder: /home/uuu/SynologyDrive/dev/spoton-messdaten/84-04-c5/run13/ws-all.jsonl
+
+Hinweis server.log: 50 Fortsetzungszeile(n) ohne eigenen Zeitstempel (HTTP-Header, Backtraces) uebersprungen -- sie sind keinem Zeitfenster zuzuordnen.
+Abdeckung server.log: erste Zeile @26-10-13 00:21:30.0329 .. letzte Zeile @26-10-14 22:30:04.8413; am 2026-10-13 von 00:21:30.033 bis 11:33:31.447
+
+--- server.log: jumpToTime ---
+[26-10-13 01:15:12.1359] Slim::Player::StreamingController::jumpToTime (2215) 02:00:00:5a:11:01
+
+--- server.log: noteSeekIntent ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: noteSeekIntent
+
+--- server.log: Song::open (seek=/time=/canSeek=) [1 von 1 Zeilen tragen KEINE MAC -- fuer sie ist die [ANDERE MAC]-Markierung strukturell unmoeglich, sie zaehlen ueber alle Spieler] ---
+[26-10-13 01:13:17.9680] Slim::Player::Song::open (395) seek=false time=0 canSeek=1
+
+--- server.log: formatOverride (result=) ---
+[26-10-13 01:13:17.9679] Plugins::SpotOn::ProtocolHandler::formatOverride (204) [DIAG] formatOverride: mac=02:00:00:5a:11:01 url=spoton://track:5oiTnaEHK3OFDZIL8AIYwu result=soc resolver=resolveSoloistFormat resolved=pcm
+
+--- server.log: canDirectStream (result=/reason=) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: canDirectStream (result=/reason=)
+
+--- server.log: Request: GET /stream ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: Request: GET /stream
+
+--- server.log: onStream (pos=/seek=) ---
+[26-10-13 01:13:17.9706] Plugins::SpotOn::Backend::Soloist::_trackFromOnStream (337) onStream: spoton://track:5oiTnaEHK3OFDZIL8AIYwu pos=0 seek=0 (mac=02:00:00:5a:11:01)
+
+--- server.log: Control: dispatch (armed=) (Anzahl: 7 im Fenster 01:13:11.660..01:15:57.991; davon 0 in T1+/-3s) ---
+[26-10-13 01:13:18.2826] Plugins::SpotOn::Soloist::Control::_execute (2888) Control: dispatch get_state armed=0 uri=- (02:00:00:5a:11:01)
+[26-10-13 01:13:44.9094] Plugins::SpotOn::Soloist::Control::_execute (2888) Control: dispatch get_state armed=0 uri=- (02:00:00:5a:11:01)
+[ANDERE MAC: 02:00:00:5a:11:03] [26-10-13 01:13:44.9097] Plugins::SpotOn::Soloist::Control::_execute (2888) Control: dispatch get_state armed=0 uri=- (02:00:00:5a:11:03)
+[26-10-13 01:14:44.9109] Plugins::SpotOn::Soloist::Control::_execute (2888) Control: dispatch get_state armed=0 uri=- (02:00:00:5a:11:01)
+[ANDERE MAC: 02:00:00:5a:11:03] [26-10-13 01:14:44.9113] Plugins::SpotOn::Soloist::Control::_execute (2888) Control: dispatch get_state armed=0 uri=- (02:00:00:5a:11:03)
+[26-10-13 01:15:44.9145] Plugins::SpotOn::Soloist::Control::_execute (2888) Control: dispatch get_state armed=0 uri=- (02:00:00:5a:11:01)
+[ANDERE MAC: 02:00:00:5a:11:03] [26-10-13 01:15:44.9149] Plugins::SpotOn::Soloist::Control::_execute (2888) Control: dispatch get_state armed=0 uri=- (02:00:00:5a:11:03)
+
+--- server.log: SoloistWS daemon-reported error (seek_to_restricted etc.) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: SoloistWS daemon-reported error (seek_to_restricted etc.)
+
+--- server.log: Control mode transitions (own activation echo / transfer-in / take-over / no longer active / leaveBrowse / leaveConnect) (Anzahl: 1 im Fenster 01:13:11.660..01:15:57.991; davon 0 in T1+/-3s) ---
+[26-10-13 01:13:17.9645] Plugins::SpotOn::Soloist::Control::_onFrameDeviceChanged (4609) Control: transfer-in -> mode=connect (02:00:00:5a:11:01)
+
+--- server.log: D-02 stays in connect (no url / connect-entry song re-announced) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: D-02 stays in connect (no url / connect-entry song re-announced)
+
+--- server.log: after leaveConnect (re-adoption hold / deactivate not sent) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: after leaveConnect (re-adoption hold / deactivate not sent)
+
+--- server.log: Connect claim (bound / released) (Anzahl: 1 im Fenster 01:13:11.660..01:15:57.991; davon 0 in T1+/-3s) ---
+[26-10-13 01:13:17.9643] Plugins::SpotOn::Connect::bindConnectClaim (231) Connect claim: bound 02:00:00:5a:11:01 source=transfer
+
+--- server.log: StreamingController no-op stop (Stop in <STATE> -> _NoOp) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: StreamingController no-op stop (Stop in <STATE> -> _NoOp)
+
+--- server.log: D-01(b) LMS stop / playlist clear notification (_onLmsStop) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: D-01(b) LMS stop / playlist clear notification (_onLmsStop)
+
+--- server.log: Control: loopback POST /seek-arm sent ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: Control: loopback POST /seek-arm sent
+
+--- server.log: SpotOn G3/G4-INSTR ---
+[26-10-13 01:13:17.9778] Plugins::SpotOn::Soloist::Control::_onFramePlaybackChanged (3973) SpotOn G4-INSTR: status playing -> buffering via playback_changed mode=connect pending=- (02:00:00:5a:11:01)
+[26-10-13 01:13:17.9782] Plugins::SpotOn::Soloist::Control::_debugStatusTransition (3469) SpotOn G4-INSTR: status buffering -> buffering via playback_state item.uri=spotify:track:5oiTnaEHK3OFDZIL8AIYwu (02:00:00:5a:11:01)
+[26-10-13 01:13:17.9788] Plugins::SpotOn::Soloist::Control::_onFramePositionSync (4069) SpotOn G4-INSTR: status buffering -> paused via position_sync speed=0 applied=1 pending=- (02:00:00:5a:11:01)
+[26-10-13 01:13:18.2820] Plugins::SpotOn::Soloist::Control::_onFramePlaybackChanged (3973) SpotOn G4-INSTR: status paused -> playing via playback_changed mode=connect pending=- (02:00:00:5a:11:01)
+[26-10-13 01:13:18.2830] Plugins::SpotOn::Soloist::Control::_debugStatusTransition (3469) SpotOn G4-INSTR: status playing -> playing via playback_state item.uri=spotify:track:5oiTnaEHK3OFDZIL8AIYwu (02:00:00:5a:11:01)
+[26-10-13 01:13:18.2832] Plugins::SpotOn::Soloist::Control::_debugStatusTransition (3469) SpotOn G4-INSTR: status playing -> playing via playback_state item.uri=spotify:track:5oiTnaEHK3OFDZIL8AIYwu (02:00:00:5a:11:01)
+[ANDERE MAC: 02:00:00:5a:11:03] [26-10-13 01:13:18.6672] Plugins::SpotOn::Soloist::Control::_onFramePlaybackChanged (3973) SpotOn G4-INSTR: status paused -> playing via playback_changed mode=idle pending=- (02:00:00:5a:11:03)
+[ANDERE MAC: 02:00:00:5a:11:03] [26-10-13 01:13:18.6674] Plugins::SpotOn::Soloist::Control::_debugStatusTransition (3469) SpotOn G4-INSTR: status playing -> playing via playback_state item.uri=spotify:track:5oiTnaEHK3OFDZIL8AIYwu (02:00:00:5a:11:03)
+[26-10-13 01:13:44.9100] Plugins::SpotOn::Soloist::Control::_debugStatusTransition (3469) SpotOn G4-INSTR: status playing -> playing via playback_state item.uri=spotify:track:5oiTnaEHK3OFDZIL8AIYwu (02:00:00:5a:11:01)
+[ANDERE MAC: 02:00:00:5a:11:03] [26-10-13 01:13:44.9102] Plugins::SpotOn::Soloist::Control::_debugStatusTransition (3469) SpotOn G4-INSTR: status playing -> playing via playback_state item.uri=spotify:track:5oiTnaEHK3OFDZIL8AIYwu (02:00:00:5a:11:03)
+[26-10-13 01:14:38.0171] Plugins::SpotOn::Soloist::Control::_onFramePlaybackChanged (3973) SpotOn G4-INSTR: status playing -> buffering via playback_changed mode=connect pending=- (02:00:00:5a:11:01)
+[26-10-13 01:14:38.0175] Plugins::SpotOn::Soloist::Control::_debugStatusTransition (3469) SpotOn G4-INSTR: status buffering -> buffering via playback_state item.uri=spotify:track:5oiTnaEHK3OFDZIL8AIYwu (02:00:00:5a:11:01)
+[26-10-13 01:14:38.0178] Plugins::SpotOn::Soloist::Control::_onFramePositionSync (4069) SpotOn G4-INSTR: status buffering -> paused via position_sync speed=0 applied=1 pending=- (02:00:00:5a:11:01)
+[ANDERE MAC: 02:00:00:5a:11:03] [26-10-13 01:14:38.6653] Plugins::SpotOn::Soloist::Control::_onFramePlaybackChanged (3973) SpotOn G4-INSTR: status playing -> buffering via playback_changed mode=idle pending=- (02:00:00:5a:11:03)
+[ANDERE MAC: 02:00:00:5a:11:03] [26-10-13 01:14:38.6657] Plugins::SpotOn::Soloist::Control::_debugStatusTransition (3469) SpotOn G4-INSTR: status buffering -> buffering via playback_state item.uri=spotify:track:5oiTnaEHK3OFDZIL8AIYwu (02:00:00:5a:11:03)
+[ANDERE MAC: 02:00:00:5a:11:03] [26-10-13 01:14:38.6659] Plugins::SpotOn::Soloist::Control::_onFramePositionSync (4069) SpotOn G4-INSTR: status buffering -> paused via position_sync speed=0 applied=1 pending=- (02:00:00:5a:11:03)
+[26-10-13 01:14:41.0449] Plugins::SpotOn::Soloist::Control::_onFramePlaybackChanged (3973) SpotOn G4-INSTR: status paused -> paused via playback_changed mode=connect pending=- (02:00:00:5a:11:01)
+[26-10-13 01:14:41.0479] Plugins::SpotOn::Soloist::Control::_debugStatusTransition (3469) SpotOn G4-INSTR: status paused -> paused via playback_state item.uri=spotify:track:5oiTnaEHK3OFDZIL8AIYwu (02:00:00:5a:11:01)
+[26-10-13 01:14:41.0487] Plugins::SpotOn::Soloist::Control::_onFramePositionSync (4069) SpotOn G4-INSTR: status paused -> paused via position_sync speed=0 applied=1 pending=- (02:00:00:5a:11:01)
+[ANDERE MAC: 02:00:00:5a:11:03] [26-10-13 01:14:41.6657] Plugins::SpotOn::Soloist::Control::_onFramePlaybackChanged (3973) SpotOn G4-INSTR: status paused -> paused via playback_changed mode=idle pending=- (02:00:00:5a:11:03)
+[ANDERE MAC: 02:00:00:5a:11:03] [26-10-13 01:14:41.6662] Plugins::SpotOn::Soloist::Control::_debugStatusTransition (3469) SpotOn G4-INSTR: status paused -> paused via playback_state item.uri=spotify:track:5oiTnaEHK3OFDZIL8AIYwu (02:00:00:5a:11:03)
+[ANDERE MAC: 02:00:00:5a:11:03] [26-10-13 01:14:41.6664] Plugins::SpotOn::Soloist::Control::_onFramePositionSync (4069) SpotOn G4-INSTR: status paused -> paused via position_sync speed=0 applied=1 pending=- (02:00:00:5a:11:03)
+[26-10-13 01:14:44.9116] Plugins::SpotOn::Soloist::Control::_debugStatusTransition (3469) SpotOn G4-INSTR: status paused -> paused via playback_state item.uri=spotify:track:5oiTnaEHK3OFDZIL8AIYwu (02:00:00:5a:11:01)
+[ANDERE MAC: 02:00:00:5a:11:03] [26-10-13 01:14:44.9117] Plugins::SpotOn::Soloist::Control::_debugStatusTransition (3469) SpotOn G4-INSTR: status paused -> paused via playback_state item.uri=spotify:track:5oiTnaEHK3OFDZIL8AIYwu (02:00:00:5a:11:03)
+[26-10-13 01:15:44.9152] Plugins::SpotOn::Soloist::Control::_debugStatusTransition (3469) SpotOn G4-INSTR: status paused -> paused via playback_state item.uri=spotify:track:5oiTnaEHK3OFDZIL8AIYwu (02:00:00:5a:11:01)
+[ANDERE MAC: 02:00:00:5a:11:03] [26-10-13 01:15:44.9154] Plugins::SpotOn::Soloist::Control::_debugStatusTransition (3469) SpotOn G4-INSTR: status paused -> paused via playback_state item.uri=spotify:track:5oiTnaEHK3OFDZIL8AIYwu (02:00:00:5a:11:03)
+
+--- server.log: Stop in <STATE> -> ::_Stop ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: Stop in <STATE> -> ::_Stop
+
+--- server.log: playerTrackStarted / playerStopped / new state ---
+[26-10-13 01:13:17.9712] Slim::Player::StreamingController::_eventAction (301) 02:00:00:5a:11:01: NextTrackReady - new state BUFFERING-STREAMING
+[26-10-13 01:13:17.9713] Slim::Player::StreamingController::_eventAction (301) 02:00:00:5a:11:01: Play - new state BUFFERING-STREAMING
+[26-10-13 01:13:18.1376] Slim::Player::StreamingController::playerTrackStarted (2253) 02:00:00:5a:11:01
+[26-10-13 01:13:18.1382] Slim::Player::StreamingController::_eventAction (301) 02:00:00:5a:11:01: Started - new state PLAYING-STREAMING
+[26-10-13 01:14:41.0034] Slim::Player::StreamingController::_eventAction (301) 02:00:00:5a:11:01: OutputUnderrun - new state BUFFERING-STREAMING
+
+--- server.log: NextTrackError -> _NextIfMore (LMS interner Neustart-Vorlauf, T-3-Ausloeser) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: NextTrackError -> _NextIfMore (LMS interner Neustart-Vorlauf, T-3-Ausloeser)
+
+--- server.log: NextTrackError - new state (LMS-Kern-Fehlschlagverdikt desselben Zyklus) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: NextTrackError - new state (LMS-Kern-Fehlschlagverdikt desselben Zyklus)
+
+--- server.log: remote stream stopped upon full buffer when paused (StreamingController:437/445) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: remote stream stopped upon full buffer when paused (StreamingController:437/445)
+
+--- server.log: end of file or error on socket ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: end of file or error on socket
+
+--- server.log: notifyFromArray / Notifying ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: notifyFromArray / Notifying
+
+--- server.log: [DIAG] *_proxy (http_url=) ---
+[26-10-13 01:13:17.9684] Plugins::SpotOn::Backend::Soloist::streamUrl (744) [DIAG] browse_proxy: mac=02:00:00:5a:11:01 http_url=http://127.0.0.1:37977/stream?uri=spotify:track:5oiTnaEHK3OFDZIL8AIYwu&g=23
+
+--- server.log: Prefetch watchdog -> Soloist::Control (Wachhund Runde 1, Uebergabe; Plugin.pm _prefetchHangCheck) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: Prefetch watchdog -> Soloist::Control (Wachhund Runde 1, Uebergabe; Plugin.pm _prefetchHangCheck)
+
+--- server.log: Soloist health (unhealthy -> stop / crash restart) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: Soloist health (unhealthy -> stop / crash restart)
+
+--- server.log: Control: watchdog forced skip (Wachhund Runde 2, erzwungener Sprung; Control.pm _watchdogRound2) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: Control: watchdog forced skip (Wachhund Runde 2, erzwungener Sprung; Control.pm _watchdogRound2)
+
+--- server.log: ProtocolHandler::getNextTrack (718, LMS fragt SpotOn nach dem naechsten Titel) (Anzahl: 1 im Fenster 01:13:11.660..01:15:57.991; davon 0 in T1+/-3s) ---
+[26-10-13 01:13:17.9675] Plugins::SpotOn::ProtocolHandler::getNextTrack (535) [DIAG] getNextTrack: mac=02:00:00:5a:11:01 url=spoton://track:5oiTnaEHK3OFDZIL8AIYwu
+
+--- server.log: Connect change verworfen (connect-guard, Connect.pm _connectEvent change-Zweig) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: Connect change verworfen (connect-guard, Connect.pm _connectEvent change-Zweig)
+
+--- server.log: Track change (Connect change-Dispatch -> playlist play; Connect.pm _connectEvent) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: Track change (Connect change-Dispatch -> playlist play; Connect.pm _connectEvent)
+
+--- server.log: Connect: hold (opened / closed by / skipped; 84-17 Connect.pm change handler) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: Connect: hold (opened / closed by / skipped; 84-17 Connect.pm change handler)
+
+--- server.log: Control: boundary reply (via=/anchor=; 84-17 Control.pm _postBoundaryRead) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: Control: boundary reply (via=/anchor=; 84-17 Control.pm _postBoundaryRead)
+
+--- server.log: Control: nachziehen (split-brain / watchdog re-emit; Control.pm _connectResync) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: Control: nachziehen (split-brain / watchdog re-emit; Control.pm _connectResync)
+
+--- server.log: Control: connect watchdog (Control.pm _watchdogRound2) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: Control: connect watchdog (Control.pm _watchdogRound2)
+
+--- server.log: Resume-Wiedereinstieg (Resume while not on Connect stream; Connect.pm _connectEvent resume-Zweig) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: Resume-Wiedereinstieg (Resume while not on Connect stream; Connect.pm _connectEvent resume-Zweig)
+
+--- server.log: Connect verb event (Got spottyconnect event; Connect.pm _connectEvent entry) (Anzahl: 6 im Fenster 01:13:11.660..01:15:57.991; davon 0 in T1+/-3s) ---
+[26-10-13 01:13:17.9646] Plugins::SpotOn::Connect::_connectEvent (1469) Got spottyconnect event for 02:00:00:5a:11:01: seek
+[26-10-13 01:13:17.9651] Plugins::SpotOn::Connect::_connectEvent (1469) Got spottyconnect event for 02:00:00:5a:11:01: resume
+[26-10-13 01:13:17.9783] Plugins::SpotOn::Connect::_connectEvent (1469) Got spottyconnect event for 02:00:00:5a:11:01: seek
+[26-10-13 01:13:18.2822] Plugins::SpotOn::Connect::_connectEvent (1469) Got spottyconnect event for 02:00:00:5a:11:01: resume
+[26-10-13 01:14:41.0453] Plugins::SpotOn::Connect::_connectEvent (1469) Got spottyconnect event for 02:00:00:5a:11:01: stop
+[26-10-13 01:14:41.0481] Plugins::SpotOn::Connect::_connectEvent (1469) Got spottyconnect event for 02:00:00:5a:11:01: seek
+
+--- server.log: Connect startOffset adjust (Stream mode seek / Resume: adjusted startOffset) (Anzahl: 5 im Fenster 01:13:11.660..01:15:57.991; davon 0 in T1+/-3s) [5 von 5 Zeilen tragen KEINE MAC -- fuer sie ist die [ANDERE MAC]-Markierung strukturell unmoeglich, sie zaehlen ueber alle Spieler] ---
+[26-10-13 01:13:17.9650] Plugins::SpotOn::Connect::_connectEvent (1635) Stream mode seek: adjusted startOffset to 121.2
+[26-10-13 01:13:17.9719] Plugins::SpotOn::Connect::_connectEvent (1864) Resume: adjusted startOffset to 121.2
+[26-10-13 01:13:17.9786] Plugins::SpotOn::Connect::_connectEvent (1635) Stream mode seek: adjusted startOffset to 118.491
+[26-10-13 01:13:18.2825] Plugins::SpotOn::Connect::_connectEvent (1864) Resume: adjusted startOffset to 118.491
+[26-10-13 01:14:41.0484] Plugins::SpotOn::Connect::_connectEvent (1635) Stream mode seek: adjusted startOffset to -82.624
+
+--- server.log: Control transfer-in drops the marker of an ended session (84-01 L2 repair) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: Control transfer-in drops the marker of an ended session (84-01 L2 repair)
+
+--- server.log: Control connect-off refusal (D-31; Control.pm _refuseTransferConnectOff) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: Control connect-off refusal (D-31; Control.pm _refuseTransferConnectOff)
+
+--- server.log: Connect startOffset write (mid-song connect / change reset; Connect.pm:685, :2106) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: Connect startOffset write (mid-song connect / change reset; Connect.pm:685, :2106)
+
+--- server.log: Control drift (daemon does not follow play; Control.pm _reconcile Schritt 5, :1865) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: Control drift (daemon does not follow play; Control.pm _reconcile Schritt 5, :1865)
+
+--- server.log: Control T1 (no track_changed within; Control.pm :2726) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: Control T1 (no track_changed within; Control.pm :2726)
+
+--- server.log: Slimproto heartbeat close (Haven't heard from; Slimproto.pm:224, INFO network.protocol.slimproto) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: Slimproto heartbeat close (Haven't heard from; Slimproto.pm:224, INFO network.protocol.slimproto)
+
+--- server.log: slimproto STAT (per-MAC INFO: fullness / output_fullness / elapsed; Slimproto.pm:810) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: slimproto STAT (per-MAC INFO: fullness / output_fullness / elapsed; Slimproto.pm:810)
+
+--- server.log: Connect: context-end settle (Pause discarded while rebuffering -> own stop; Connect.pm _settleNow, 84.3) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: Connect: context-end settle (Pause discarded while rebuffering -> own stop; Connect.pm _settleNow, 84.3)
+
+--- server.log: Connect: context-end check (settle evaluation / grace armed / skipped / cancelled; Connect.pm _settleCheck/_settleFire/_settleCancel, 84.3) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: Connect: context-end check (settle evaluation / grace armed / skipped / cancelled; Connect.pm _settleCheck/_settleFire/_settleCancel, 84.3)
+
+--- server.log: LMS pause/underrun state rows (Pause in <STATE> -> / OutputUnderrun in <STATE> -> ; StreamingController DEBUG, 84.3 D-09) (Anzahl: 2 im Fenster 01:13:11.660..01:15:57.991; davon 0 in T1+/-3s) ---
+[26-10-13 01:14:41.0023] Slim::Player::StreamingController::_eventAction (271) 02:00:00:5a:11:01: OutputUnderrun in PLAYING-STREAMING -> Slim::Player::StreamingController::_Rebuffer
+[26-10-13 01:14:41.0457] Slim::Player::StreamingController::_eventAction (271) 02:00:00:5a:11:01: Pause in BUFFERING-STREAMING -> Slim::Player::StreamingController::_NoOp
+
+--- server.log: LMS buffering progress (Buffering... <fullness> / <threshold>; Slim::Player::Player::_buffering, carries no MAC, 84.3 D-09 tail) (Anzahl: 104 im Fenster 01:13:11.660..01:15:57.991; davon 0 in T1+/-3s) [104 von 104 Zeilen tragen KEINE MAC -- fuer sie ist die [ANDERE MAC]-Markierung strukturell unmoeglich, sie zaehlen ueber alle Spieler] ---
+[26-10-13 01:13:18.0962] Slim::Player::Player::_buffering (1161) Buffering... 0 / 20480
+[26-10-13 01:14:41.1288] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:41.4298] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:41.7304] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:42.0310] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:42.3325] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:42.6336] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:42.9346] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:43.2353] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:43.5368] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:43.8377] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:44.1389] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:44.4403] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:44.7419] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:45.0433] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:45.3441] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:45.6450] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:45.9459] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:46.2476] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:46.5487] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:46.8505] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:47.1520] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:47.4537] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:47.7547] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:48.0559] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:48.3568] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:48.6576] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:48.9584] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:49.2592] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:49.5603] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:49.8613] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:50.1625] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:50.4634] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:50.7644] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:51.0655] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:51.3668] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:51.6686] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:51.9702] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:52.2716] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:52.5728] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:52.8736] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:53.1744] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:53.4757] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:53.7768] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:54.0777] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:54.3789] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:54.6797] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:54.9804] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:55.2810] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:55.5818] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:55.8828] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:56.1838] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:56.4850] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:56.7866] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:57.0878] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:57.3891] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:57.6899] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:57.9908] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:58.2919] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:58.5928] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:58.8940] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:59.1954] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:59.4966] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:14:59.7973] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:15:00.0981] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:15:00.3990] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:15:00.6997] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:15:01.0006] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:15:01.3013] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:15:01.6028] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:15:01.9044] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:15:02.2059] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:15:02.5068] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:15:02.8077] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:15:03.1086] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:15:03.4095] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:15:03.7103] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:15:04.0116] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:15:04.3129] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:15:04.6137] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:15:04.9147] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:15:05.2155] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:15:05.5165] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:15:05.8174] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:15:06.1182] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:15:06.4189] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:15:06.7198] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:15:07.0208] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:15:07.3215] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:15:07.6225] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:15:07.9234] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:15:08.2242] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:15:08.5249] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:15:08.8257] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:15:09.1266] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:15:09.4275] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:15:09.7283] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:15:10.0292] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:15:10.3301] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:15:10.6314] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:15:10.9323] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:15:11.2333] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:15:11.5339] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+[26-10-13 01:15:11.8349] Slim::Player::Player::_buffering (1161) Buffering... 3896 / 81920
+
+--- server.log: 84-26 repairs (resume refusal / autoplay re-adoption hold / transfer-in re-open follows the daemon / resume position set / change unpause skipped) / 84.2-05 (dormant-session handoff / context-end re-adoption hold) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: 84-26 repairs (resume refusal / autoplay re-adoption hold / transfer-in re-open follows the daemon / resume position set / change unpause skipped) / 84.2-05 (dormant-session handoff / context-end re-adoption hold)
+
+[1747 von 1910 server.log-Fensterzeilen fallen in keine der Kategorien und sind oben NICHT aufgefuehrt; davon 1664 mit der MAC 02:00:00:5a:11:01]
+
+--- Fenster-Tor-Klassifikation (abgeleitet, kein Verdikt) ---
+[Fenster-Tor] KEIN _Stop-UEBERGANG IM FENSTER GEFUNDEN
+
+!! Daemon-Log hat 0 Bytes: /tmp/claude-1000/-home-uuu-SynologyDrive-dev-spoton/e693c7fd-1319-46f4-ba6d-dd1040e073c6/scratchpad/empty-daemon.log -- KEIN Daemon-Beleg vorhanden. Der Daemon-Abschnitt unten ist NICHT GEPRUEFT, nicht 'still'.
+
+--- Daemon-Log: client-attach / client-close / flush-disconnect ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] Daemon-Log: client-attach / client-close / flush-disconnect
+
+--- Daemon-Log: pa_stream_flush ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] Daemon-Log: pa_stream_flush
+
+--- Daemon-Log: flush: (BOUNDARY-Detailzeile zum pa_stream_flush -- bytes_written/ring_fill/corked) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] Daemon-Log: flush: (BOUNDARY-Detailzeile zum pa_stream_flush -- bytes_written/ring_fill/corked)
+
+--- Daemon-Log: seek_arm / seek_arm_expired / boundary_planted ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] Daemon-Log: seek_arm / seek_arm_expired / boundary_planted
+
+--- Daemon-Log: cork ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] Daemon-Log: cork
+
+--- Daemon-Log: Ticker (playing/paused/stopped) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] Daemon-Log: Ticker (playing/paused/stopped)
+
+--- Daemon-Log: Sitzungszustand (became active device / no longer active / shutting down / restoring session / ready / login failed) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] Daemon-Log: Sitzungszustand (became active device / no longer active / shutting down / restoring session / ready / login failed)
+
+--- Daemon-Log: autoplay request (requesting autoplay context from ... -- "no request" = Autoplay AUS, hm://context-resolve = AN) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] Daemon-Log: autoplay request (requesting autoplay context from ... -- "no request" = Autoplay AUS, hm://context-resolve = AN)
+
+--- Daemon-Log: underflow ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] underflow
+
+--- Daemon-Log: write_summary (letzte Kategorie -- Rauschunterdrueckung, s.u.) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] write_summary
+
+[0 von 0 Daemon-Fensterzeilen fallen in keine der Kategorien und sind oben NICHT aufgefuehrt]
+
+--- Zeitbasis-Selbsttest (server.log vs. Daemon-Log) ---
+NICHT DURCHFUEHRBAR: 0 'Request: GET /stream' im Fenster, 0 'client-attach' im Daemon-Log -- ohne Paar ist die Zeitbasis nicht pruefbar. Die Annahme in der Kopfzeile bleibt UNGEPRUEFT.
+
+========================================================================
+Recorder
+========================================================================
+--- Recorder: /home/uuu/SynologyDrive/dev/spoton-messdaten/84-04-c5/run13/ws-all.jsonl (Schema erkannt: roh) ---
+Datei-mtime: 2026-10-13 01:15:53.021297902 +0200 (kann bei archivierten/kopierten Belegen die Checkout-/Kopierzeit widerspiegeln, nicht die Aufnahmezeit -- das letzte Ereignis-ts bleibt das aussagekraeftige Signal)
+Abdeckung Recorder: erstes Ereignis @01:13:11.887 .. letztes Ereignis @01:15:11.950 (Fenster: 01:13:11.660 .. 01:15:57.991)
+[meta-Zeilen des Recorders, vollstaendig -- auch ausserhalb des Fensters]
+[META @01:13:11.887] HANDSHAKE-OK
+[META @01:15:11.949] HANDSHAKE-OK
+[META @01:15:53.012] EOF
+[keine REANFORDERUNG-Zeile im Mitschnitt -- der WS-Handshake ist bestaetigt (HANDSHAKE-OK), [ABGELEITET aus HANDSHAKE-OK ohne REANFORDERUNG:] der Recorder lief ohne --reannounce-lms, es wurde keine Reanforderung abgesetzt]
+@01:13:11.887 type=playback_state status=paused uri=spotify:track:5oiTnaEHK3OFDZIL8AIYwu position_ms=121200 speed=0 is_active=false
+@01:13:17.963 type=device_changed is_active=true device_name=lavender-UAT
+@01:13:17.977 type=playback_changed status=buffering
+@01:13:17.977 type=queue_changed previous_n=0 upcoming_n=0
+@01:13:17.977 type=playback_state status=buffering uri=spotify:track:5oiTnaEHK3OFDZIL8AIYwu position_ms=118491 speed=0 is_active=true
+@01:13:17.977 type=position_sync position_ms=118491 speed=0
+@01:13:18.281 type=playback_changed status=playing
+@01:13:18.282 type=playback_state status=playing uri=spotify:track:5oiTnaEHK3OFDZIL8AIYwu position_ms=118492 speed=1 is_active=true
+@01:13:18.282 type=position_sync position_ms=118492 speed=1
+@01:14:38.016 type=playback_changed status=buffering
+@01:14:38.017 type=playback_state status=buffering uri=spotify:track:5oiTnaEHK3OFDZIL8AIYwu position_ms=198226 speed=0 is_active=true
+@01:14:38.017 type=position_sync position_ms=198226 speed=0
+@01:14:41.044 type=playback_changed status=paused
+@01:14:41.044 type=queue_changed previous_n=0 upcoming_n=0
+@01:14:41.044 type=playback_state status=paused uri=spotify:track:5oiTnaEHK3OFDZIL8AIYwu position_ms=0 speed=0 is_active=true
+@01:14:41.045 type=position_sync position_ms=0 speed=0
+@01:15:11.950 type=playback_state status=paused uri=spotify:track:5oiTnaEHK3OFDZIL8AIYwu position_ms=0 speed=0 is_active=true
+[2 Frame(s) anderer Typen in der ganzen Datei nicht einzeln aufgefuehrt: auth_state=2; davon im Fenster 2: auth_state=2]
+Deckung: NICHT PRUEFBAR (--recorder-seconds fehlt -- ohne die erwartete Recorder-Laufzeit ist 'vollstaendig' nicht definiert). Erstes Ereignis @01:13:11.887, letztes Ereignis @01:15:11.950, T1=01:15:52.990948406.
+!! Recorder-Datei /home/uuu/SynologyDrive/dev/spoton-messdaten/84-04-c5/run13/ws-all.jsonl: das letzte Ereignis @01:15:11.950 liegt 41.0s VOR T1 (01:15:52.990948406) -- der Mitschnitt endet vor dem Fensterende-Anker dieses Laufs und deckt ihn damit NICHT ab (Ursache -- Prozesstod vs. sparsame WS-Verbindung -- ist aus der Datei allein nicht bestimmbar, dieses Skript faellt darueber kein Urteil).
+   Zusaetzliches Signal (nicht alleinig beweiskraeftig): meta-Zeile EOF/ERROR/HANDSHAKE-TIMEOUT @01:15:53.012
+
+--- Abgeleitete Felder (Zeitstempel-Differenzen, kein Verdikt) ---
+Paarungsregel: ANKER = Vorkommen innerhalb T1 +/- 3s; PARTNER = Vorkommen innerhalb 3s um den ANKER.
+Liegt kein Anker in T1 +/- 3s, ist die Zuordnung mehrdeutig oder ist der Anker von Partnern auf BEIDEN Seiten eingerahmt, wird KEIN Delta ausgegeben, sondern der Grund genannt.
+[ABGELEITET] Delta(client-attach -> pa_stream_flush): kein Wert -- client-attach im Fenster T0-2s..T1+5s nicht gefunden. pa_stream_flush: im Fenster T0-2s..T1+5s nicht gefunden
+[ABGELEITET] Delta(loopback POST sent -> Request: GET): kein Wert -- loopback POST sent im Fenster T0-2s..T1+5s nicht gefunden. Request: GET: im Fenster T0-2s..T1+5s nicht gefunden
+[ABGELEITET] Delta(seek_arm: armed= -> pa_stream_flush): kein Wert -- seek_arm: armed= im Fenster T0-2s..T1+5s nicht gefunden. pa_stream_flush: im Fenster T0-2s..T1+5s nicht gefunden
+
+--- Restzaehler: verworfene, unerkannte und nicht kategorisierte Zeilen (Regel 2) ---
+server.log: 52112 Zeile(n) gelesen = 50 ohne eigenen Zeitstempel + 0 mit unlesbarem Zeitstempel + 0 datumslos ohne aufloesbaren Kalendertag + 52062 mit Zeitstempel; von diesen 50152 ausserhalb des Fensters + 0 vom Tagesfilter verworfen + 1910 im Fenster; von den Fensterzeilen 1747 in keiner Kategorie (oben nur als Zahl genannt).
+Daemon-Log: 0 Zeile(n) gelesen = 0 ohne eigenen Zeitstempel + 0 mit unlesbarem Zeitstempel + 0 datumslos ohne aufloesbaren Kalendertag + 0 mit Zeitstempel; von diesen 0 ausserhalb des Fensters + 0 vom Tagesfilter verworfen + 0 im Fenster; von den Fensterzeilen 0 in keiner Kategorie (oben nur als Zahl genannt).
+Recorder: 22 Zeile(n) gelesen = 0 nicht als JSON parsbar + 0 in keinem bekannten Schema + 22 auswertbar (22 rohes, 0 flaches Schema); davon 3 meta, 0 tx, 0 Frametext nicht parsbar, 0 ohne Typfeld, 17 bekannter Typ im Fenster (oben aufgefuehrt), 0 bekannter Typ ausserhalb des Fensters, 2 anderer Typ (2 davon im Fenster).
+
+=== Redaktion: 0 Zeilen redigiert ===

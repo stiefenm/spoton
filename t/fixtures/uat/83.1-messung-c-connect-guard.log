@@ -1,0 +1,257 @@
+[26-09-22 12:25:19.0038] Slim::Player::StreamingController::_eventAction (271) 02:00:00:5a:11:01: StatusHeartbeat in PLAYING-STREAMING -> Slim::Player::StreamingController::_CheckSync
+[26-09-22 12:25:19.7415] Slim::Control::Request::dump (2335) Request: Command [02:00:00:5a:11:01->spottyconnect] (Dispatchable)
+[26-09-22 12:25:19.7415] Slim::Control::Request::dump (2339)    Param: [_p3] = []
+[26-09-22 12:25:19.7416] Slim::Control::Request::dump (2339)    Param: [_p2] = [246.241]
+[26-09-22 12:25:19.7416] Slim::Control::Request::dump (2339)    Param: [_cmd] = [seek]
+[26-09-22 12:25:19.7416] Plugins::SpotOn::Connect::_connectEvent (926) Got spottyconnect event for 02:00:00:5a:11:01: seek
+[26-09-22 12:25:19.7417] Plugins::SpotOn::Connect::_connectEvent (1009) Dropping Connect seek event for non-Connect player 02:00:00:5a:11:01 (connect-guard)
+[26-09-22 12:25:19.7417] Slim::Control::Request::dump (2335) Request: Command [02:00:00:5a:11:01->spottyconnect] (Dispatchable)
+[26-09-22 12:25:19.7417] Slim::Control::Request::dump (2339)    Param: [_p3] = []
+[26-09-22 12:25:19.7418] Slim::Control::Request::dump (2339)    Param: [_p2] = [246.241]
+[26-09-22 12:25:19.7418] Slim::Control::Request::dump (2339)    Param: [_cmd] = [seek]
+[26-09-22 12:25:19.7418] Slim::Control::Request::executeDone (1917) 0
+[26-09-22 12:25:19.7418] Plugins::SpotOn::Soloist::Control::onEvent (2126) SpotOn G4-INSTR: status playing -> paused via position_sync speed=0 applied=1 pending=- (02:00:00:5a:11:01)
+[26-09-22 12:25:19.7815] Plugins::SpotOn::Soloist::Control::onEvent (2126) SpotOn G4-INSTR: status paused -> paused via position_sync speed=0 applied=1 pending=- (02:00:00:5a:11:01)
+[26-09-22 12:25:19.7817] Plugins::SpotOn::Soloist::Control::onEvent (2044) SpotOn G4-INSTR: status paused -> playing via playback_changed mode=connect pending=- (02:00:00:5a:11:01)
+[26-09-22 12:25:19.7818] Slim::Control::Request::dump (2335) Request: Command [02:00:00:5a:11:01->spottyconnect] (Dispatchable)
+[26-09-22 12:25:19.7818] Slim::Control::Request::dump (2339)    Param: [_cmd] = [resume]
+[26-09-22 12:25:19.7819] Slim::Control::Request::dump (2339)    Param: [_p3] = [246.293]
+[26-09-22 12:25:19.7819] Slim::Control::Request::dump (2339)    Param: [_p2] = [4a5VnoioMgv1e9R3EWAfYB]
+[26-09-22 12:25:19.7819] Plugins::SpotOn::Connect::_connectEvent (926) Got spottyconnect event for 02:00:00:5a:11:01: resume
+[26-09-22 12:25:19.7821] Plugins::SpotOn::Connect::_connectEvent (1074) [DIAG] resume_check: streamUrl=spoton://track:4a5VnoioMgv1e9R3EWAfYB trackUrl=spoton://track:4a5VnoioMgv1e9R3EWAfYB hasLiveMetadata=0 isDeadHistory=0 actuallyInConnect=1 isPlaying=1 isPaused=0
+[26-09-22 12:25:19.7821] Plugins::SpotOn::Connect::_connectEvent (1182) Resume event: trackId=4a5VnoioMgv1e9R3EWAfYB position=246.293
+[26-09-22 12:25:19.7821] Slim::Control::Request::dump (2335) Request: Command [02:00:00:5a:11:01->pause] from Plugins::SpotOn::Connect  (Dispatchable)
+[26-09-22 12:25:19.7822] Slim::Control::Request::dump (2339)    Param: [_fadein] = undef
+[26-09-22 12:25:19.7822] Slim::Control::Request::dump (2339)    Param: [_suppressShowBriefly] = undef
+[26-09-22 12:25:19.7822] Slim::Control::Request::dump (2339)    Param: [_newvalue] = [0]
+[26-09-22 12:25:19.7823] Slim::Control::Request::dump (2335) Request: Command [02:00:00:5a:11:01->pause] from Plugins::SpotOn::Connect  (Done)
+[26-09-22 12:25:19.7823] Slim::Control::Request::dump (2339)    Param: [_fadein] = undef
+[26-09-22 12:25:19.7823] Slim::Control::Request::dump (2339)    Param: [_suppressShowBriefly] = undef
+[26-09-22 12:25:19.7823] Slim::Control::Request::dump (2339)    Param: [_newvalue] = [0]
+[26-09-22 12:25:19.7823] Slim::Control::Request::executeDone (1917) 0
+[26-09-22 12:25:19.7824] Plugins::SpotOn::Connect::_connectEvent (1202) Resume: adjusted startOffset to 129.857848705292
+[26-09-22 12:25:19.7824] Plugins::SpotOn::Connect::_connectEvent (1208) [DIAG] [1790072719.782] resume: player=02:00:00:5a:11:01 track=4a5VnoioMgv1e9R3EWAfYB position=246.293 actuallyInConnect=1 elapsed=0.000
+[26-09-22 12:25:19.7824] Slim::Control::Request::dump (2335) Request: Command [02:00:00:5a:11:01->spottyconnect] (Dispatchable)
+[26-09-22 12:25:19.7824] Slim::Control::Request::dump (2339)    Param: [_cmd] = [resume]
+[26-09-22 12:25:19.7825] Slim::Control::Request::dump (2339)    Param: [_p3] = [246.293]
+[26-09-22 12:25:19.7825] Slim::Control::Request::dump (2339)    Param: [_p2] = [4a5VnoioMgv1e9R3EWAfYB]
+[26-09-22 12:25:19.7825] Slim::Control::Request::executeDone (1917) 0
+[26-09-22 12:25:19.7825] Plugins::SpotOn::Soloist::Control::_dispatch (1496) Control: dispatch get_state armed=0 uri=- (02:00:00:5a:11:01)
+[26-09-22 12:25:19.7828] Plugins::SpotOn::Soloist::Control::onEvent (2185) SpotOn G4-INSTR: status playing -> playing via playback_state item.uri=spotify:track:4a5VnoioMgv1e9R3EWAfYB (02:00:00:5a:11:01)
+[26-09-22 12:25:19.7829] Slim::Control::Request::notify (2009) Notifying spottyconnect
+[26-09-22 12:25:19.7829] Slim::Control::Request::notify (2009) Notifying pause
+[26-09-22 12:25:19.7830] Slim::Control::Request::notify (2047) Notifying Plugins::SpotOn::Plugin::_onPauseCommand of pause =~ [['pause']]
+[26-09-22 12:25:19.7983] Plugins::SpotOn::Soloist::Control::_loopbackPost (2902) Control: loopback POST /boundary sent (port 35057, 02:00:00:5a:11:01)
+[26-09-22 12:25:19.7984] Plugins::SpotOn::Soloist::Control::onEvent (2011) SpotOn G4-INSTR: status playing -> playing via track_changed foreign (02:00:00:5a:11:01)
+[26-09-22 12:25:19.7986] Slim::Control::Request::dump (2335) Request: Command [02:00:00:5a:11:01->spottyconnect] (Dispatchable)
+[26-09-22 12:25:19.7986] Slim::Control::Request::dump (2339)    Param: [_cmd] = [change]
+[26-09-22 12:25:19.7986] Slim::Control::Request::dump (2339)    Param: [_p2] = [2ziULaGXpu0eA2r66R0akP]
+[26-09-22 12:25:19.7986] Slim::Control::Request::dump (2339)    Param: [_p3] = [4a5VnoioMgv1e9R3EWAfYB]
+[26-09-22 12:25:19.7987] Plugins::SpotOn::Connect::_connectEvent (926) Got spottyconnect event for 02:00:00:5a:11:01: change
+[26-09-22 12:25:19.7987] Plugins::SpotOn::Connect::_connectEvent (1395) Dropping Connect change event for non-Connect player 02:00:00:5a:11:01 (connect-guard)
+[26-09-22 12:25:19.7988] Slim::Control::Request::dump (2335) Request: Command [02:00:00:5a:11:01->spottyconnect] (Dispatchable)
+[26-09-22 12:25:19.7988] Slim::Control::Request::dump (2339)    Param: [_cmd] = [change]
+[26-09-22 12:25:19.7988] Slim::Control::Request::dump (2339)    Param: [_p2] = [2ziULaGXpu0eA2r66R0akP]
+[26-09-22 12:25:19.7988] Slim::Control::Request::dump (2339)    Param: [_p3] = [4a5VnoioMgv1e9R3EWAfYB]
+[26-09-22 12:25:19.7988] Slim::Control::Request::executeDone (1917) 0
+[26-09-22 12:25:19.8397] Plugins::SpotOn::Soloist::Control::onEvent (2044) SpotOn G4-INSTR: status playing -> buffering via playback_changed mode=connect pending=- (02:00:00:5a:11:01)
+[26-09-22 12:25:19.8398] Plugins::SpotOn::Soloist::Control::onEvent (2069) Control: playback_changed 'buffering' (recognized no-op, 02:00:00:5a:11:01)
+[26-09-22 12:25:19.8403] Plugins::SpotOn::Soloist::Control::onEvent (2185) SpotOn G4-INSTR: status buffering -> buffering via playback_state item.uri=spotify:track:2ziULaGXpu0eA2r66R0akP (02:00:00:5a:11:01)
+[26-09-22 12:25:19.8404] Slim::Control::Request::dump (2335) Request: Command [02:00:00:5a:11:01->spottyconnect] (Dispatchable)
+[26-09-22 12:25:19.8405] Slim::Control::Request::dump (2339)    Param: [_cmd] = [seek]
+[26-09-22 12:25:19.8405] Slim::Control::Request::dump (2339)    Param: [_p3] = []
+[26-09-22 12:25:19.8405] Slim::Control::Request::dump (2339)    Param: [_p2] = [0.000]
+[26-09-22 12:25:19.8405] Plugins::SpotOn::Connect::_connectEvent (926) Got spottyconnect event for 02:00:00:5a:11:01: seek
+[26-09-22 12:25:19.8406] Plugins::SpotOn::Connect::_connectEvent (1009) Dropping Connect seek event for non-Connect player 02:00:00:5a:11:01 (connect-guard)
+[26-09-22 12:25:19.8406] Slim::Control::Request::dump (2335) Request: Command [02:00:00:5a:11:01->spottyconnect] (Dispatchable)
+[26-09-22 12:25:19.8406] Slim::Control::Request::dump (2339)    Param: [_cmd] = [seek]
+[26-09-22 12:25:19.8406] Slim::Control::Request::dump (2339)    Param: [_p3] = []
+[26-09-22 12:25:19.8407] Slim::Control::Request::dump (2339)    Param: [_p2] = [0.000]
+[26-09-22 12:25:19.8407] Slim::Control::Request::executeDone (1917) 0
+[26-09-22 12:25:19.8407] Plugins::SpotOn::Soloist::Control::onEvent (2126) SpotOn G4-INSTR: status buffering -> paused via position_sync speed=0 applied=1 pending=- (02:00:00:5a:11:01)
+[26-09-22 12:25:19.8408] Plugins::SpotOn::Soloist::Control::onEvent (2185) SpotOn G4-INSTR: status paused -> buffering via playback_state item.uri=spotify:track:2ziULaGXpu0eA2r66R0akP (02:00:00:5a:11:01)
+[26-09-22 12:25:19.8408] Plugins::SpotOn::Soloist::Control::onEvent (2044) SpotOn G4-INSTR: status buffering -> playing via playback_changed mode=connect pending=- (02:00:00:5a:11:01)
+[26-09-22 12:25:19.8409] Plugins::SpotOn::Soloist::Control::onEvent (2185) SpotOn G4-INSTR: status playing -> playing via playback_state item.uri=spotify:track:2ziULaGXpu0eA2r66R0akP (02:00:00:5a:11:01)
+[26-09-22 12:25:20.0050] Slim::Player::StreamingController::_eventAction (271) 02:00:00:5a:11:01: StatusHeartbeat in PLAYING-STREAMING -> Slim::Player::StreamingController::_CheckSync
+[26-09-22 12:25:20.1217] Plugins::SpotOn::Soloist::Control::_loopbackPost (2902) Control: loopback POST /boundary sent (port 37631, 02:00:00:5a:11:03)
+[26-09-22 12:25:20.1219] Plugins::SpotOn::Soloist::Control::onEvent (2011) SpotOn G4-INSTR: status paused -> playing via track_changed foreign (02:00:00:5a:11:03)
+[26-09-22 12:25:20.1625] Plugins::SpotOn::Soloist::Control::onEvent (2044) SpotOn G4-INSTR: status playing -> playing via playback_changed mode=idle pending=- (02:00:00:5a:11:03)
+[26-09-22 12:25:20.1630] Plugins::SpotOn::Soloist::Control::onEvent (2185) SpotOn G4-INSTR: status playing -> playing via playback_state item.uri=spotify:track:2ziULaGXpu0eA2r66R0akP (02:00:00:5a:11:03)
+[26-09-22 12:25:20.1675] Plugins::SpotOn::Unified::DaemonManager::_streamAlivePoll (549) SpotOn Unified daemon alive: 02:00:00:5a:11:03 pid=1226461
+[26-09-22 12:25:20.1675] Plugins::SpotOn::Unified::DaemonManager::_streamAlivePoll (549) SpotOn Unified daemon alive: 02:00:00:5a:11:01 pid=1226615
+[26-09-22 12:25:21.0006] Slim::Player::StreamingController::_eventAction (271) 02:00:00:5a:11:01: StatusHeartbeat in PLAYING-STREAMING -> Slim::Player::StreamingController::_CheckSync
+[26-09-22 12:25:21.3597] Plugins::SpotOn::Plugin::_prefetchWatchdog (4092) [DIAG] Watchdog: near end (elapsed=247.870110788345s, duration=246.293s) â arming 10s hang check
+[26-09-22 12:25:22.0018] Slim::Player::StreamingController::_eventAction (271) 02:00:00:5a:11:01: StatusHeartbeat in PLAYING-STREAMING -> Slim::Player::StreamingController::_CheckSync
+[26-09-22 12:25:23.0030] Slim::Player::StreamingController::_eventAction (271) 02:00:00:5a:11:01: StatusHeartbeat in PLAYING-STREAMING -> Slim::Player::StreamingController::_CheckSync
+[26-09-22 12:25:24.0038] Slim::Player::StreamingController::_eventAction (271) 02:00:00:5a:11:01: StatusHeartbeat in PLAYING-STREAMING -> Slim::Player::StreamingController::_CheckSync
+[26-09-22 12:25:25.0008] Slim::Player::StreamingController::_eventAction (271) 02:00:00:5a:11:01: StatusHeartbeat in PLAYING-STREAMING -> Slim::Player::StreamingController::_CheckSync
+[26-09-22 12:25:25.1680] Plugins::SpotOn::Unified::DaemonManager::_streamAlivePoll (549) SpotOn Unified daemon alive: 02:00:00:5a:11:03 pid=1226461
+[26-09-22 12:25:25.1681] Plugins::SpotOn::Unified::DaemonManager::_streamAlivePoll (549) SpotOn Unified daemon alive: 02:00:00:5a:11:01 pid=1226615
+[26-09-22 12:25:26.0015] Slim::Player::StreamingController::_eventAction (271) 02:00:00:5a:11:01: StatusHeartbeat in PLAYING-STREAMING -> Slim::Player::StreamingController::_CheckSync
+[26-09-22 12:25:27.0025] Slim::Player::StreamingController::_eventAction (271) 02:00:00:5a:11:01: StatusHeartbeat in PLAYING-STREAMING -> Slim::Player::StreamingController::_CheckSync
+[26-09-22 12:25:28.0038] Slim::Player::StreamingController::_eventAction (271) 02:00:00:5a:11:01: StatusHeartbeat in PLAYING-STREAMING -> Slim::Player::StreamingController::_CheckSync
+[26-09-22 12:25:29.0011] Slim::Player::StreamingController::_eventAction (271) 02:00:00:5a:11:01: StatusHeartbeat in PLAYING-STREAMING -> Slim::Player::StreamingController::_CheckSync
+[26-09-22 12:25:29.3628] Slim::Player::Source::_readNextChunk (356) Read to end of file or pipe
+[26-09-22 12:25:29.3630] Slim::Player::Source::_readNextChunk (379) end of file or error on socket, song pos: 51940904
+[26-09-22 12:25:29.3630] Slim::Player::Source::_readNextChunk (384) 02:00:00:5a:11:01 mark end of stream
+[26-09-22 12:25:29.3632] Slim::Player::StreamingController::_eventAction (271) 02:00:00:5a:11:01: LocalEndOfStream in PLAYING-STREAMING -> Slim::Player::StreamingController::_Streamout
+[26-09-22 12:25:29.3633] Slim::Player::StreamingController::_setStreamingState (2439) new streaming state STREAMOUT
+[26-09-22 12:25:29.3633] Slim::Player::StreamingController::_eventAction (301) 02:00:00:5a:11:01: LocalEndOfStream - new state PLAYING-STREAMOUT
+[26-09-22 12:25:30.0022] Slim::Player::StreamingController::_eventAction (271) 02:00:00:5a:11:01: StatusHeartbeat in PLAYING-STREAMOUT -> Slim::Player::StreamingController::_CheckSync
+[26-09-22 12:25:30.1686] Plugins::SpotOn::Unified::DaemonManager::_streamAlivePoll (549) SpotOn Unified daemon alive: 02:00:00:5a:11:03 pid=1226461
+[26-09-22 12:25:30.1688] Plugins::SpotOn::Unified::DaemonManager::_streamAlivePoll (549) SpotOn Unified daemon alive: 02:00:00:5a:11:01 pid=1226615
+[26-09-22 12:25:31.0025] Slim::Player::StreamingController::_eventAction (271) 02:00:00:5a:11:01: StatusHeartbeat in PLAYING-STREAMOUT -> Slim::Player::StreamingController::_CheckSync
+[26-09-22 12:25:31.3608] Plugins::SpotOn::Plugin::_prefetchHangCheck (4136) Prefetch watchdog: still on same track after 10s past end â handing to Soloist::Control (D-02)
+[26-09-22 12:52:26.7948] Plugins::SpotOn::Soloist::Control::onEvent (2185) SpotOn G4-INSTR: status playing -> playing via playback_state item.uri=spotify:track:37xM5UFUHSVBISEJWTYwvn (02:00:00:5a:11:01)
+[26-09-22 12:52:26.8003] Plugins::SpotOn::Soloist::Control::_loopbackPost (2902) Control: loopback POST /boundary sent (port 35057, 02:00:00:5a:11:01)
+[26-09-22 12:52:26.8004] Plugins::SpotOn::Soloist::Control::onEvent (2011) SpotOn G4-INSTR: status playing -> playing via track_changed foreign (02:00:00:5a:11:01)
+[26-09-22 12:52:26.8005] Slim::Control::Request::dump (2335) Request: Command [02:00:00:5a:11:01->spottyconnect] (Dispatchable)
+[26-09-22 12:52:26.8006] Slim::Control::Request::dump (2339)    Param: [_p3] = [37xM5UFUHSVBISEJWTYwvn]
+[26-09-22 12:52:26.8006] Slim::Control::Request::dump (2339)    Param: [_p2] = [2iSMEkcCtJNmnFqKEjl7Uo]
+[26-09-22 12:52:26.8006] Slim::Control::Request::dump (2339)    Param: [_cmd] = [change]
+[26-09-22 12:52:26.8007] Plugins::SpotOn::Connect::_connectEvent (926) Got spottyconnect event for 02:00:00:5a:11:01: change
+[26-09-22 12:52:26.8008] Plugins::SpotOn::Connect::_connectEvent (1395) Dropping Connect change event for non-Connect player 02:00:00:5a:11:01 (connect-guard)
+[26-09-22 12:52:26.8008] Slim::Control::Request::dump (2335) Request: Command [02:00:00:5a:11:01->spottyconnect] (Dispatchable)
+[26-09-22 12:52:26.8008] Slim::Control::Request::dump (2339)    Param: [_p3] = [37xM5UFUHSVBISEJWTYwvn]
+[26-09-22 12:52:26.8009] Slim::Control::Request::dump (2339)    Param: [_p2] = [2iSMEkcCtJNmnFqKEjl7Uo]
+[26-09-22 12:52:26.8009] Slim::Control::Request::dump (2339)    Param: [_cmd] = [change]
+[26-09-22 12:52:26.8009] Slim::Control::Request::executeDone (1917) 0
+[26-09-22 12:52:26.8010] Plugins::SpotOn::Soloist::Control::onEvent (2044) SpotOn G4-INSTR: status playing -> buffering via playback_changed mode=connect pending=- (02:00:00:5a:11:01)
+[26-09-22 12:52:26.8011] Plugins::SpotOn::Soloist::Control::onEvent (2069) Control: playback_changed 'buffering' (recognized no-op, 02:00:00:5a:11:01)
+[26-09-22 12:52:26.8016] Plugins::SpotOn::Soloist::Control::onEvent (2185) SpotOn G4-INSTR: status buffering -> buffering via playback_state item.uri=spotify:track:2iSMEkcCtJNmnFqKEjl7Uo (02:00:00:5a:11:01)
+[26-09-22 12:52:26.8017] Slim::Control::Request::dump (2335) Request: Command [02:00:00:5a:11:01->spottyconnect] (Dispatchable)
+[26-09-22 12:52:26.8017] Slim::Control::Request::dump (2339)    Param: [_cmd] = [seek]
+[26-09-22 12:52:26.8018] Slim::Control::Request::dump (2339)    Param: [_p3] = []
+[26-09-22 12:52:26.8018] Slim::Control::Request::dump (2339)    Param: [_p2] = [0.000]
+[26-09-22 12:52:26.8018] Plugins::SpotOn::Connect::_connectEvent (926) Got spottyconnect event for 02:00:00:5a:11:01: seek
+[26-09-22 12:52:26.8019] Plugins::SpotOn::Connect::_connectEvent (1009) Dropping Connect seek event for non-Connect player 02:00:00:5a:11:01 (connect-guard)
+[26-09-22 12:52:26.8019] Slim::Control::Request::dump (2335) Request: Command [02:00:00:5a:11:01->spottyconnect] (Dispatchable)
+[26-09-22 12:52:26.8019] Slim::Control::Request::dump (2339)    Param: [_cmd] = [seek]
+[26-09-22 12:52:26.8020] Slim::Control::Request::dump (2339)    Param: [_p3] = []
+[26-09-22 12:52:26.8020] Slim::Control::Request::dump (2339)    Param: [_p2] = [0.000]
+[26-09-22 12:52:26.8020] Slim::Control::Request::executeDone (1917) 0
+[26-09-22 12:52:26.8021] Plugins::SpotOn::Soloist::Control::onEvent (2126) SpotOn G4-INSTR: status buffering -> paused via position_sync speed=0 applied=1 pending=- (02:00:00:5a:11:01)
+[26-09-22 12:52:26.8029] Plugins::SpotOn::Soloist::Control::onEvent (2044) SpotOn G4-INSTR: status paused -> playing via playback_changed mode=connect pending=- (02:00:00:5a:11:01)
+[26-09-22 12:52:26.8030] Slim::Control::Request::dump (2335) Request: Command [02:00:00:5a:11:01->spottyconnect] (Dispatchable)
+[26-09-22 12:52:26.8030] Slim::Control::Request::dump (2339)    Param: [_cmd] = [resume]
+[26-09-22 12:52:26.8030] Slim::Control::Request::dump (2339)    Param: [_p2] = [2iSMEkcCtJNmnFqKEjl7Uo]
+[26-09-22 12:52:26.8031] Slim::Control::Request::dump (2339)    Param: [_p3] = [0.000]
+[26-09-22 12:52:26.8031] Plugins::SpotOn::Connect::_connectEvent (926) Got spottyconnect event for 02:00:00:5a:11:01: resume
+[26-09-22 12:52:26.8033] Plugins::SpotOn::Connect::_connectEvent (1074) [DIAG] resume_check: streamUrl=spoton://track:37xM5UFUHSVBISEJWTYwvn trackUrl=spoton://track:37xM5UFUHSVBISEJWTYwvn hasLiveMetadata=0 isDeadHistory=0 actuallyInConnect=0 isPlaying=1 isPaused=0
+[26-09-22 12:52:26.8033] Plugins::SpotOn::Connect::_connectEvent (1102) Resume while not on Connect stream â re-entering Connect via playlist play
+[26-09-22 12:52:26.8034] Slim::Control::Request::dump (2335) Request: Command [02:00:00:5a:11:01->stop] from Plugins::SpotOn::Connect  (Dispatchable)
+[26-09-22 12:52:26.8035] Slim::Player::StreamingController::stop (2166) 02:00:00:5a:11:01
+[26-09-22 12:52:26.8035] Slim::Player::StreamingController::_eventAction (271) 02:00:00:5a:11:01: Stop in PLAYING-STREAMING -> Slim::Player::StreamingController::_Stop
+[26-09-22 12:52:26.8038] Slim::Player::StreamingController::_Stop (609) Song queue is now 0
+[26-09-22 12:52:26.8039] Slim::Player::SongStreamController::DESTROY (50) DESTROY(Slim::Player::SongStreamController=ARRAY(0x5c48bd2079e8)) live=0
+[26-09-22 12:52:26.8040] Slim::Formats::RemoteStream::DESTROY (340) Slim::Player::Protocols::HTTP - in DESTROY
+[26-09-22 12:52:26.8040] Slim::Formats::RemoteStream::DESTROY (341) Slim::Player::Protocols::HTTP About to close socket to: [http://127.0.0.1:35057/stream?uri=spotify:track:37xM5UFUHSVBISEJWTYwvn&g=4]
+[26-09-22 12:52:26.8040] Slim::Player::StreamingController::_setPlayingState (2430) new playing state STOPPED
+[26-09-22 12:52:26.8041] Slim::Player::StreamingController::_setStreamingState (2439) new streaming state IDLE
+[26-09-22 12:52:26.8041] Slim::Control::Request::notifyFromArray (842) (playlist stop)
+[26-09-22 12:52:26.8042] Slim::Player::StreamingController::_eventAction (301) 02:00:00:5a:11:01: Stop - new state STOPPED-IDLE
+[26-09-22 12:52:26.8043] Slim::Control::Request::notifyFromArray (842) (menustatus ARRAY(0x5c48bcdadc40) add 02:00:00:5a:11:01)
+[26-09-22 12:52:26.8044] Slim::Player::Source::playmode (96) 02:00:00:5a:11:01: Current playmode: stop
+[26-09-22 12:52:26.8054] Slim::Control::Request::dump (2335) Request: Command [02:00:00:5a:11:01->stop] from Plugins::SpotOn::Connect  (Done)
+[26-09-22 12:52:26.8055] Slim::Control::Request::executeDone (1917) 0
+[26-09-22 12:52:26.8055] Slim::Control::Request::dump (2335) Request: Command [02:00:00:5a:11:01->playlist play] from Plugins::SpotOn::Connect  (Dispatchable)
+[26-09-22 12:52:26.8055] Slim::Control::Request::dump (2339)    Param: [_title] = undef
+[26-09-22 12:52:26.8055] Slim::Control::Request::dump (2339)    Param: [_fadein] = undef
+[26-09-22 12:52:26.8056] Slim::Control::Request::dump (2339)    Param: [_item] = [spoton://track:2iSMEkcCtJNmnFqKEjl7Uo]
+[26-09-22 12:52:26.8056] Slim::Control::Commands::playlistXitemCommand (1335) cmd: play, item: spoton://track:2iSMEkcCtJNmnFqKEjl7Uo, title: , fadeIn: undef
+[26-09-22 12:52:26.8056] Slim::Control::Commands::playlistXitemCommand (1360) url: spoton://track:2iSMEkcCtJNmnFqKEjl7Uo
+[26-09-22 12:52:26.8056] Plugins::SpotOn::ProtocolHandler::explodePlaylist (1030) explodePlaylist: spoton://track:2iSMEkcCtJNmnFqKEjl7Uo
+[26-09-22 12:52:26.8057] Slim::Control::Request::dump (2335) Request: Command [02:00:00:5a:11:01->playlist playtracks] (Dispatchable)
+[26-09-22 12:52:26.8057] Slim::Control::Request::dump (2339)    Param: [_index] = undef
+[26-09-22 12:52:26.8057] Slim::Control::Request::dump (2339)    Param: [_what] = [listRef]
+[26-09-22 12:52:26.8057] Slim::Control::Request::dump (2339)    Param: [_listref] = [ARRAY(0x5c48bcfab630)]
+[26-09-22 12:52:26.8057] Slim::Control::Request::dump (2339)    Param: [_fadein] = undef
+[26-09-22 12:52:26.8058] Slim::Player::StreamingController::stop (2166) 02:00:00:5a:11:01
+[26-09-22 12:52:26.8058] Slim::Player::StreamingController::_eventAction (271) 02:00:00:5a:11:01: Stop in STOPPED-IDLE -> Slim::Player::StreamingController::_NoOp
+[26-09-22 12:52:26.8058] Slim::Player::StreamingController::resetSongqueue (1830) Song queue is now 
+[26-09-22 12:52:26.8061] Slim::Control::Request::dump (2335) Request: Command [02:00:00:5a:11:01->playlist jump] (Dispatchable)
+[26-09-22 12:52:26.8061] Slim::Control::Request::dump (2339)    Param: [_noplay] = undef
+[26-09-22 12:52:26.8061] Slim::Control::Request::dump (2339)    Param: [_fadein] = undef
+[26-09-22 12:52:26.8061] Slim::Control::Request::dump (2339)    Param: [_index] = undef
+[26-09-22 12:52:26.8061] Slim::Control::Request::dump (2339)    Param: [_seekdata] = undef
+[26-09-22 12:52:26.8062] Slim::Control::Commands::playlistJumpCommand (1007) Jumping to 0
+[26-09-22 12:52:26.8062] Slim::Control::Commands::playlistJumpCommand (1020) playing 0
+[26-09-22 12:52:26.8062] Slim::Player::StreamingController::play (2169) 02:00:00:5a:11:01
+[26-09-22 12:52:26.8062] Slim::Player::StreamingController::_eventAction (271) 02:00:00:5a:11:01: Play in STOPPED-IDLE -> Slim::Player::StreamingController::_StopGetNext
+[26-09-22 12:52:26.8063] Slim::Player::StreamingController::_eventAction (282) params: seekdata => undef index => 0
+[26-09-22 12:52:26.8064] Slim::Player::StreamingController::_setPlayingState (2430) new playing state STOPPED
+[26-09-22 12:52:26.8064] Slim::Player::StreamingController::_setStreamingState (2439) new streaming state IDLE
+[26-09-22 12:52:26.8070] Slim::Player::Song::new (110) index 0 -> spoton://track:2iSMEkcCtJNmnFqKEjl7Uo
+[26-09-22 12:52:26.8071] Slim::Player::Song::new (145) live=2
+[26-09-22 12:52:26.8071] Slim::Player::StreamingController::_setStreamingState (2439) new streaming state TRACKWAIT
+[26-09-22 12:52:26.8071] Slim::Player::StreamingController::_getNextTrack (698) Loading metadata for spoton://track:2iSMEkcCtJNmnFqKEjl7Uo
+[26-09-22 12:52:26.8081] Plugins::SpotOn::API::Login5::getToken (79) Login5: token cache hit for account 4564****
+[26-09-22 12:52:26.8082] Plugins::SpotOn::API::SpClient::__ANON__ (354) SpClient: get metadata/4/track/4bb89853435a46b28f7fd230387dd2cc
+[26-09-22 12:52:26.8087] Slim::Player::StreamingController::_playersMessage (802) Streaminfos werden geladen...: spoton://track:2iSMEkcCtJNmnFqKEjl7Uo
+[26-09-22 12:52:26.8088] Slim::Player::Song::getNextSong (224) spoton://track:2iSMEkcCtJNmnFqKEjl7Uo
+[26-09-22 12:52:26.8089] Plugins::SpotOn::ProtocolHandler::getNextTrack (718) [DIAG] getNextTrack: mac=02:00:00:5a:11:01 url=spoton://track:2iSMEkcCtJNmnFqKEjl7Uo
+[26-09-22 12:52:26.8089] Plugins::SpotOn::ProtocolHandler::getNextTrack (896) getNextTrack: soloist browse -> Control->requestTrack(spoton://track:2iSMEkcCtJNmnFqKEjl7Uo, 0) (mac=02:00:00:5a:11:01)
+[26-09-22 12:52:26.8090] Slim::Player::StreamingController::_nextTrackReady (750) 02:00:00:5a:11:01: nextTrack will be index 0
+[26-09-22 12:52:26.8091] Slim::Player::StreamingController::_eventAction (271) 02:00:00:5a:11:01: NextTrackReady in STOPPED-TRACKWAIT -> Slim::Player::StreamingController::_Stream
+[26-09-22 12:52:26.8091] Slim::Player::StreamingController::_Stream (1232) Song queue is now 0
+[26-09-22 12:52:26.8091] Slim::Player::StreamingController::_Stream (1235) 02:00:00:5a:11:01: preparing to stream song index 0
+[26-09-22 12:52:26.8091] Slim::Player::Song::open (363) spoton://track:2iSMEkcCtJNmnFqKEjl7Uo
+[26-09-22 12:52:26.8092] Plugins::SpotOn::ProtocolHandler::formatOverride (187) [DIAG] formatOverride: mac=02:00:00:5a:11:01 url=spoton://track:2iSMEkcCtJNmnFqKEjl7Uo result=soc (soloist resolved=pcm)
+[26-09-22 12:52:26.8093] Slim::Player::Song::open (395) seek=false time=0 canSeek=1
+[26-09-22 12:52:26.8094] Slim::Player::TranscodingHelper::checkBin (269) Checking formats for: soc-pcm-*-*
+[26-09-22 12:52:26.8094] Slim::Player::TranscodingHelper::enabledFormat (236) Checking to see if soc-pcm-*-* is enabled
+[26-09-22 12:52:26.8094] Slim::Player::TranscodingHelper::checkBin (277)    enabled
+[26-09-22 12:52:26.8095] Slim::Player::TranscodingHelper::checkBin (279)   Found command: -
+[26-09-22 12:52:26.8095] Slim::Player::TranscodingHelper::getConvertCommand2 (494) Matched: soc->pcm via: -
+[26-09-22 12:52:26.8095] Slim::Player::Song::open (425) Transcoder: streamMode=I, streamformat=pcm
+[26-09-22 12:52:26.8096] Plugins::SpotOn::ProtocolHandler::canDirectStream (263) [DIAG] canDirectStream: soloist browse url=spoton://track:2iSMEkcCtJNmnFqKEjl7Uo result=0 reason=streamingMode_proxy
+[26-09-22 12:52:26.8096] Slim::Player::Song::open (480) Opening stream (no direct streaming) using Plugins::SpotOn::ProtocolHandler [spoton://track:2iSMEkcCtJNmnFqKEjl7Uo]
+[26-09-22 12:52:26.8096] Plugins::SpotOn::ProtocolHandler::new (587) D-08: Browse URL â unified daemon handles mode transition for 02:00:00:5a:11:01
+[26-09-22 12:52:26.8097] Plugins::SpotOn::ProtocolHandler::new (666) [DIAG] soloist_browse_proxy: mac=02:00:00:5a:11:01 http_url=http://127.0.0.1:35057/stream?uri=spotify:track:2iSMEkcCtJNmnFqKEjl7Uo&g=5
+[26-09-22 12:52:26.8097] Slim::Formats::RemoteStream::new (70) Opening connection to http://127.0.0.1:35057/stream?uri=spotify:track:2iSMEkcCtJNmnFqKEjl7Uo&g=5: [127.0.0.1 on port 35057 with path /stream?uri=spotify:track:2iSMEkcCtJNmnFqKEjl7Uo&g=5 with timeout 15]
+[26-09-22 12:52:26.8102] Slim::Formats::RemoteStream::request (145) Request: GET /stream?uri=spotify:track:2iSMEkcCtJNmnFqKEjl7Uo&g=5 HTTP/1.0
+[26-09-22 12:52:26.8103] Slim::Formats::RemoteStream::request (152) Response: HTTP/1.0 200 OK
+[26-09-22 12:52:26.8104] Slim::Player::Protocols::HTTP::parseDirectHeaders (727) header-ds: Content-Type: audio/x-pcm
+[26-09-22 12:52:26.8104] Slim::Player::Protocols::HTTP::parseDirectHeaders (727) header-ds: Connection: close
+[26-09-22 12:52:26.8110] Slim::Formats::RemoteStream::request (218) Opened stream!
+[26-09-22 12:52:26.8111] Slim::Player::Song::open (510) URL is a song (audio): spoton://track:2iSMEkcCtJNmnFqKEjl7Uo, type=pcm
+[26-09-22 12:52:26.8115] Slim::Player::SongStreamController::new (37) live=1
+[26-09-22 12:52:26.8116] Slim::Control::Request::notifyFromArray (842) (playlist open spoton://track:2iSMEkcCtJNmnFqKEjl7Uo)
+[26-09-22 12:52:26.8116] Slim::Control::Request::notifyFromArray (842) (playlist open spoton://track:2iSMEkcCtJNmnFqKEjl7Uo)
+[26-09-22 12:52:26.8117] Slim::Player::StreamingController::_Stream (1308) 02:00:00:5a:11:01: stream
+[26-09-22 12:52:26.8118] Plugins::SpotOn::ProtocolHandler::onStream (995) onStream: spoton://track:2iSMEkcCtJNmnFqKEjl7Uo pos=0 seek=0 (mac=02:00:00:5a:11:01)
+[26-09-22 12:52:26.8121] Slim::Player::StreamingController::_Stream (1345) Song queue is now 0
+[26-09-22 12:52:26.8122] Slim::Player::StreamingController::_setPlayingState (2430) new playing state BUFFERING
+[26-09-22 12:52:26.8122] Slim::Player::StreamingController::_setStreamingState (2439) new streaming state STREAMING
+[26-09-22 12:52:26.8122] Slim::Player::StreamingController::_eventAction (301) 02:00:00:5a:11:01: NextTrackReady - new state BUFFERING-STREAMING
+[26-09-22 12:52:26.8122] Slim::Player::StreamingController::_eventAction (301) 02:00:00:5a:11:01: Play - new state BUFFERING-STREAMING
+[26-09-22 12:52:26.8126] Slim::Control::Request::dump (2335) Request: Command [02:00:00:5a:11:01->playlist jump] (Done)
+[26-09-22 12:52:26.8126] Slim::Control::Request::dump (2339)    Param: [_noplay] = undef
+[26-09-22 12:52:26.8127] Slim::Control::Request::dump (2339)    Param: [_fadein] = undef
+[26-09-22 12:52:26.8127] Slim::Control::Request::dump (2339)    Param: [_index] = undef
+[26-09-22 12:52:26.8127] Slim::Control::Request::dump (2339)    Param: [_seekdata] = undef
+[26-09-22 12:52:26.8127] Slim::Control::Request::executeDone (1917) 0
+[26-09-22 12:52:26.8127] Slim::Control::Request::dump (2335) Request: Command [02:00:00:5a:11:01->playlist playtracks] (Done)
+[26-09-22 12:52:26.8127] Slim::Control::Request::dump (2339)    Param: [_index] = undef
+[26-09-22 12:52:26.8128] Slim::Control::Request::dump (2339)    Param: [_what] = [listRef]
+[26-09-22 12:52:26.8128] Slim::Control::Request::dump (2339)    Param: [_listref] = [ARRAY(0x5c48bcfab630)]
+[26-09-22 12:52:26.8128] Slim::Control::Request::dump (2339)    Param: [_fadein] = undef
+[26-09-22 12:52:26.8128] Slim::Control::Request::dump (2371)    Result: [index] = [0]
+[26-09-22 12:52:26.8128] Slim::Control::Request::executeDone (1917) 0
+[26-09-22 12:52:26.8128] Slim::Control::Request::dump (2335) Request: Command [02:00:00:5a:11:01->playlist play] from Plugins::SpotOn::Connect  (Done)
+[26-09-22 12:52:26.8129] Slim::Control::Request::dump (2339)    Param: [_title] = undef
+[26-09-22 12:52:26.8129] Slim::Control::Request::dump (2339)    Param: [_fadein] = undef
+[26-09-22 12:52:26.8129] Slim::Control::Request::dump (2339)    Param: [_item] = [spoton://track:2iSMEkcCtJNmnFqKEjl7Uo]
+[26-09-22 12:52:26.8129] Slim::Control::Request::executeDone (1917) 0
+[26-09-22 12:52:26.8129] Plugins::SpotOn::Connect::_fetchTrackMetadata (1706) [DIAG] metadata_fetch: mac=02:00:00:5a:11:01 track=2iSMEkcCtJNmnFqKEjl7Uo account=45642dde
+[26-09-22 12:52:26.8137] Plugins::SpotOn::API::Login5::getToken (79) Login5: token cache hit for account 4564****
+[26-09-22 12:52:26.8138] Plugins::SpotOn::API::SpClient::__ANON__ (354) SpClient: get metadata/4/track/4bb89853435a46b28f7fd230387dd2cc
+[26-09-22 12:52:26.8140] Plugins::SpotOn::Connect::_connectEvent (1171) [DIAG] [1790074346.803] resume: player=02:00:00:5a:11:01 track=2iSMEkcCtJNmnFqKEjl7Uo position=0.000 actuallyInConnect=0 reEntering=1 url=spoton://track:2iSMEkcCtJNmnFqKEjl7Uo elapsed=0.011
+[26-09-22 12:52:26.8141] Slim::Player::Song::DESTROY (155) DESTROY(Slim::Player::Song=ARRAY(0x5c48bd18d048)) live=1: index=0, url=spoton://track:37xM5UFUHSVBISEJWTYwvn
+[26-09-22 12:52:26.8141] Slim::Control::Request::dump (2335) Request: Command [02:00:00:5a:11:01->spottyconnect] (Dispatchable)
+[26-09-22 12:52:26.8141] Slim::Control::Request::dump (2339)    Param: [_cmd] = [resume]
+[26-09-22 12:52:26.8141] Slim::Control::Request::dump (2339)    Param: [_p2] = [2iSMEkcCtJNmnFqKEjl7Uo]
+[26-09-22 12:52:26.8141] Slim::Control::Request::dump (2339)    Param: [_p3] = [0.000]
+[26-09-22 12:52:26.8142] Slim::Control::Request::executeDone (1917) 0
+[26-09-22 12:52:26.8142] Plugins::SpotOn::Soloist::Control::_dispatch (1496) Control: dispatch get_state armed=0 uri=- (02:00:00:5a:11:01)
+[26-09-22 12:52:26.8143] Slim::Control::Request::notify (2009) Notifying spottyconnect

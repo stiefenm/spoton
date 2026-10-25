@@ -1,0 +1,81 @@
+=== @inline:clear_playlist ===
+STEP_CLEAR_PLAYLIST=done
+=== @inline:playlist_dump_before ===
+PLAYLIST_DUMP_BEFORE=/home/uuu/SynologyDrive/dev/spoton-messdaten/84-03-acceptance-x86-261001-1706/inline-C1-playlist-before.txt items=0
+=== l2-proof.sh::run empty --prior same ===
+L2_PROOF_RUN variant=empty mac=02:00:00:5a:11:01 date=2026-10-01T19:10:53+02:00
+PRIOR_MODE=same
+RESTART_BEFORE=no (prior session shape, not guarded)
+LMS_VERSION=9.1.1
+STALE_ID=1JSTJqkT5qHq8MDJnJbRE1
+LOGLEVEL_BEFORE=spoton=WARN source=ERROR
+LOGLEVEL_SET=spoton=DEBUG source=DEBUG
+APP_NEXT[prior] try=1 track='Beat It' duration_s=258 playing=False
+APP_NEXT[prior] try=2 track='Don't Stop Me Now' duration_s=209 playing=True
+APP_NEXT[prior]=ok duration_s=209 tries=2
+APP_PAUSE_CONFIRMED playing=False
+PRIOR_SESSION=PLAYING after=6s tries=1 controlMode=connect
+PRIOR_START_S=1.96523511123657
+PRIOR_POS_S=6.21946898460388
+PRIOR_TITLE_ID=1NHWG8zxSEypSRF3UufrnO
+PRIOR_SESSION_ENDED controlMode=idle lms_mode=pause after=0s tries=1
+APP_PAUSE_CONFIRMED playing=False
+PLAYLIST_BEFORE_URLS= items=0
+TRANSFER_RUNNER_EXIT=0
+PLAYLIST_AFTER_URLS=spoton://track:1NHWG8zxSEypSRF3UufrnO spoton://track:3ZOEytgrvLwQaqXreDs2Jx 
+TRANSFER_RUN_DIR=/home/uuu/SynologyDrive/dev/spoton-messdaten/84-14-entry-261001-191053-empty/transfer/run1
+GATE_TRANSFER_IN=UNBESTIMMT grund=ok
+EXTRACT=/home/uuu/SynologyDrive/dev/spoton-messdaten/84-14-entry-261001-191053-empty/extract-l2-empty.txt
+APP_TITLE_AT_TRANSFER=Don't Stop Me Now
+APP_POS_BAR_S=45
+APP_POS_RECORDER_S=45.84
+APP_POS_SRC=recorder
+APP_POS_AT_CONNECT_S=45.84
+SPOTON_CMD_IM_FENSTER=ja
+PFAD_STREAMINGMODE=proxy quelle=player
+PFAD_FORMAT=pcm
+ENTRY_ANCHOR=1790874742.5753
+ENTRY_ANCHOR_SRC=c1_log
+APP_POS_RECORDER_S=45.84
+APP_POS_SRC=explicit
+APP_POS_S=45.84
+ENTRY_FIRST_S=45.000
+ENTRY_FIRST_SRC=ticker
+ENTRY_LMS_S=44.86
+ENTRY_WS_S=45.84
+ENTRY_DELTA_S=-0.98
+ENTRY_GATE=PASS
+ENTRY_GATE_REASONS=all present reads within 2 s of the app position 45.84 s: lms=44.86 (d=-0.98), ws=45.84 (d=+0.00)
+ENTRY_ANCHOR_SRC=c1_log
+ENTRY_FIRST_S=45.000
+ENTRY_LMS_S=44.86
+ENTRY_WS_S=45.84
+ENTRY_DELTA_S=-0.98
+ENTRY_GATE=PASS
+T_TRANSFER_IN_LOG=1790874742.5753
+STALE_GETNEXTTRACK=0
+BROWSE_ENTRY_RELEASES_1S=0
+FIRST_VERB_AFTER_TRANSFER_IN=seek
+MARKER_DROP_LINES=0
+TICKER_STALE_LINES=0
+TICKER_FIRST_PLAYING=1NHWG8zxSEypSRF3UufrnO Don't Stop Me Now
+TRANSFERRED_ID=1NHWG8zxSEypSRF3UufrnO
+LMS_URL_AFTER=spoton://track:1NHWG8zxSEypSRF3UufrnO
+GATE_TRANSFER_IN_RUNNER=UNBESTIMMT
+ENTRY_TICKER_POS_S=45
+APP_POS_S=45.84
+C7_RAW=PASS
+C7=PASS
+ENTRY_GATE_SUPPLIED=PASS
+L2_GATE=PASS
+L2_GATE_REASONS=all checks C1-C8 satisfied
+C7_RAW=PASS
+C7=PASS
+L2_GATE=PASS
+PRIOR_GAP_S=39.62
+SETUP=OK prior=same prior_title=1NHWG8zxSEypSRF3UufrnO transferred=1NHWG8zxSEypSRF3UufrnO gap=39.62
+LOGLEVEL_RESTORED=spoton=WARN source=ERROR
+SECRET_GUARD=PASS
+RC=0
+=== @inline:playlist_dump_after ===
+PLAYLIST_DUMP_AFTER=/home/uuu/SynologyDrive/dev/spoton-messdaten/84-03-acceptance-x86-261001-1706/inline-C1-playlist-after.txt items=1

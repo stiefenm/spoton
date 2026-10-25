@@ -1,0 +1,93 @@
+{
+  "type": "playback_state",
+  "status": "playing",
+  "item": {
+    "uri": "spotify:track:254bXAqt3zP6P50BdQvEsq",
+    "entity_type": "track",
+    "decorations": {
+      "identity": {
+        "name": "Everywhere - 2017 Remaster"
+      },
+      "visual_identity": {
+        "cover": [
+          {
+            "url": "https://i.scdn.co/image/ab67616d00004851aaba065944cd82a6f15c86b6",
+            "size": "small"
+          },
+          {
+            "url": "https://i.scdn.co/image/ab67616d00001e02aaba065944cd82a6f15c86b6",
+            "size": "default"
+          },
+          {
+            "url": "https://i.scdn.co/image/ab67616d0000b273aaba065944cd82a6f15c86b6",
+            "size": "large"
+          },
+          {
+            "url": "https://i.scdn.co/image/ab67616d0000b273aaba065944cd82a6f15c86b6",
+            "size": "xlarge"
+          }
+        ]
+      },
+      "parent": {
+        "entity": {
+          "uri": "spotify:album:4AsXQ17Arq1cUVoa9dKJ3F",
+          "entity_type": "album",
+          "decorations": {
+            "identity": {
+              "name": "Tango In the Night (Deluxe Edition)"
+            }
+          }
+        }
+      },
+      "creators": [
+        {
+          "entity": {
+            "uri": "spotify:artist:08GQAI4eElDnROBrJRGE0X",
+            "entity_type": "artist",
+            "decorations": {
+              "identity": {
+                "name": "Fleetwood Mac"
+              }
+            }
+          }
+        }
+      ],
+      "playback": {
+        "duration_ms": 226653,
+        "content_ratings": []
+      }
+    }
+  },
+  "context": {
+    "uri": "spotify:station:track:4uLU6hMCjMI75M1A2tKUQC",
+    "entity_type": "unknown",
+    "decorations": {}
+  },
+  "position": {
+    "position_ms": 1535707,
+    "timestamp_ms": 1790002306837,
+    "speed": 1
+  },
+  "volume": 90,
+  "is_active": true,
+  "options": {
+    "shuffle": false,
+    "repeat": "off",
+    "playback_speed": 1,
+    "modes": {
+      "context_enhancement": "NONE"
+    }
+  },
+  "available_actions": {
+    "add_to_queue": {},
+    "pause": {},
+    "seek": {},
+    "seek_backward": {
+      "step_ms": 15000
+    },
+    "seek_forward": {
+      "step_ms": 15000
+    },
+    "skip_next": {}
+  }
+}

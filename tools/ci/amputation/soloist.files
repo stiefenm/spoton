@@ -1,0 +1,13 @@
+# Soloist side of the backend seam (84-12, SEAM-6.3.2). One repo-relative
+# path per line; a trailing / marks a directory. amputate.sh removes every
+# path and FAILS on a missing one (a stale manifest must be red).
+# Disjoint from librespot.files by construction.
+Plugins/SpotOn/Soloist.pm
+Plugins/SpotOn/Soloist/
+Plugins/SpotOn/Unified/SoloistDaemon.pm
+Plugins/SpotOn/Unified/SoloistWS.pm
+Plugins/SpotOn/Unified/DeferBudget.pm
+Plugins/SpotOn/Vendor/
+Plugins/SpotOn/Bin/fake-libpulse/
+Plugins/SpotOn/Backend/Soloist.pm
+tools/soloist-ws-record.pl

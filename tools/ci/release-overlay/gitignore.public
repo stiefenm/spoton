@@ -1,0 +1,40 @@
+# Rust build artifacts
+librespot-spoton/target/
+
+# Perl test artifacts
+*.bak
+
+# Platform binaries (built by CI, distributed via GitHub Releases)
+Plugins/SpotOn/Bin/*
+# fake-libpulse.c + Makefile are SOURCE, not a build artifact --
+# track them, but keep the locally-buildable libpulse.so.0 ignored.
+!Plugins/SpotOn/Bin/fake-libpulse/
+Plugins/SpotOn/Bin/fake-libpulse/*.so
+Plugins/SpotOn/Bin/fake-libpulse/*.so.*
+Plugins/SpotOn/Bin/fake-libpulse/*.o
+Plugins/SpotOn/Bin/fake-libpulse/fake-libpulse-test
+
+# Release ZIP archives (built locally, distributed via GitHub Releases)
+SpotOn-v*.zip
+
+# Private notes (never commit)
+obsidian/
+
+# Internal development files (not part of the plugin)
+.planning/
+.claude/
+.github/scripts/forum-monitor/
+CLAUDE.md
+.continue-here.md
+REQUIREMENTS.md
+claude-spotty.sudoers
+test_keymaster_*.py
+test_pkce_token.py
+win-vm/
+
+# Local build archives (large, machine-local reference material, never versioned)
+soloist-releases/
+
+# Python bytecode
+__pycache__/
+*.pyc

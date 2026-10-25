@@ -1,0 +1,41 @@
+[26-10-09 21:09:24.6296] Slim::Player::Source::_wakeupOnReadable (415) 02:00:00:5a:11:01
+[26-10-09 21:09:24.6800] Slim::Player::Source::_wakeupOnReadable (415) 02:00:00:5a:11:01
+[26-10-09 21:09:24.7301] Slim::Player::Source::_wakeupOnReadable (415) 02:00:00:5a:11:01
+[26-10-09 21:09:24.7806] Slim::Player::Source::_wakeupOnReadable (415) 02:00:00:5a:11:01
+[26-10-09 21:09:24.8309] Slim::Player::Source::_wakeupOnReadable (415) 02:00:00:5a:11:01
+[26-10-09 21:09:24.8812] Slim::Player::Source::_wakeupOnReadable (415) 02:00:00:5a:11:01
+[26-10-09 21:09:24.8997] Plugins::SpotOn::Soloist::Control::_onFramePlaybackChanged (3894) SpotOn G4-INSTR: status playing -> buffering via playback_changed mode=connect pending=- (02:00:00:5a:11:01)
+[26-10-09 21:09:24.8998] Plugins::SpotOn::Soloist::Control::_onFramePlaybackChanged (3919) Control: playback_changed 'buffering' (recognized no-op, 02:00:00:5a:11:01)
+[26-10-09 21:09:24.9001] Plugins::SpotOn::Soloist::Control::_debugStatusTransition (3390) SpotOn G4-INSTR: status buffering -> buffering via playback_state item.uri=spotify:track:5oiTnaEHK3OFDZIL8AIYwu (02:00:00:5a:11:01)
+[26-10-09 21:09:24.9003] Plugins::SpotOn::Soloist::Control::_onFramePositionSync (3990) SpotOn G4-INSTR: status buffering -> paused via position_sync speed=0 applied=1 pending=- (02:00:00:5a:11:01)
+[26-10-09 21:09:25.0043] Slim::Player::StreamingController::_eventAction (271) 02:00:00:5a:11:01: StatusHeartbeat in PLAYING-STREAMING -> Slim::Player::StreamingController::_CheckSync
+[26-10-09 21:09:25.4757] Plugins::SpotOn::Soloist::Control::_onFramePlaybackChanged (3894) SpotOn G4-INSTR: status playing -> buffering via playback_changed mode=idle pending=- (02:00:00:5a:11:03)
+[26-10-09 21:09:25.4759] Plugins::SpotOn::Soloist::Control::_debugStatusTransition (3390) SpotOn G4-INSTR: status buffering -> buffering via playback_state item.uri=spotify:track:5oiTnaEHK3OFDZIL8AIYwu (02:00:00:5a:11:03)
+[26-10-09 21:09:25.4760] Plugins::SpotOn::Soloist::Control::_onFramePositionSync (3990) SpotOn G4-INSTR: status buffering -> paused via position_sync speed=0 applied=1 pending=- (02:00:00:5a:11:03)
+[26-10-09 21:09:25.6194] Plugins::SpotOn::Unified::DaemonManager::_streamAlivePoll (1486) SpotOn Unified daemon alive: 02:00:00:5a:11:03 pid=561460
+[26-10-09 21:09:25.6197] Plugins::SpotOn::Unified::DaemonManager::_streamAlivePoll (1486) SpotOn Unified daemon alive: 02:00:00:5a:11:01 pid=561655
+[26-10-09 21:09:26.0007] Slim::Player::StreamingController::_eventAction (271) 02:00:00:5a:11:01: StatusHeartbeat in PLAYING-STREAMING -> Slim::Player::StreamingController::_CheckSync
+[26-10-09 21:09:27.0013] Slim::Player::StreamingController::_eventAction (271) 02:00:00:5a:11:01: StatusHeartbeat in PLAYING-STREAMING -> Slim::Player::StreamingController::_CheckSync
+[26-10-09 21:09:27.9889] Plugins::SpotOn::Soloist::Control::_onFramePlaybackChanged (3894) SpotOn G4-INSTR: status paused -> paused via playback_changed mode=connect pending=- (02:00:00:5a:11:01)
+[26-10-09 21:09:27.9893] Plugins::SpotOn::Connect::_connectEvent (1521) Got spottyconnect event for 02:00:00:5a:11:01: stop
+[26-10-09 21:09:27.9895] Plugins::SpotOn::Connect::_connectEvent (2394) Spotify told us to pause: 02:00:00:5a:11:01
+[26-10-09 21:09:27.9897] Slim::Player::StreamingController::pause (2185) 02:00:00:5a:11:01
+[26-10-09 21:09:27.9899] Slim::Player::StreamingController::_eventAction (271) 02:00:00:5a:11:01: Pause in PLAYING-STREAMING -> Slim::Player::StreamingController::_Pause
+[26-10-09 21:09:27.9900] Slim::Player::StreamingController::_setPlayingState (2430) new playing state PAUSED
+[26-10-09 21:09:27.9904] Slim::Player::StreamingController::_eventAction (301) 02:00:00:5a:11:01: Pause - new state PAUSED-STREAMING
+[26-10-09 21:09:27.9905] Slim::Player::Source::playmode (96) 02:00:00:5a:11:01: Current playmode: pause
+[26-10-09 21:09:27.9919] Plugins::SpotOn::Connect::_connectEvent (2404) [DIAG] [1791572967.989] stop: player=02:00:00:5a:11:01 isPlaying=0 gracePeriod=0 elapsed=0.003
+[26-10-09 21:09:27.9921] Plugins::SpotOn::Soloist::Control::_debugStatusTransition (3390) SpotOn G4-INSTR: status paused -> paused via playback_state item.uri=spotify:track:5oiTnaEHK3OFDZIL8AIYwu (02:00:00:5a:11:01)
+[26-10-09 21:09:27.9922] Plugins::SpotOn::Connect::_connectEvent (1521) Got spottyconnect event for 02:00:00:5a:11:01: seek
+[26-10-09 21:09:27.9923] Plugins::SpotOn::Connect::_connectEvent (1663) Binary reported seek to: 0.000
+[26-10-09 21:09:27.9923] Plugins::SpotOn::Connect::_connectEvent (1664) [DIAG] seek_from_binary: mac=02:00:00:5a:11:01 position=0.000
+[26-10-09 21:09:27.9923] Plugins::SpotOn::Connect::_connectEvent (1682) Stream mode seek: adjusted startOffset to -80.323
+[26-10-09 21:09:27.9925] Plugins::SpotOn::Soloist::Control::_onFramePositionSync (3990) SpotOn G4-INSTR: status paused -> paused via position_sync speed=0 applied=1 pending=- (02:00:00:5a:11:01)
+[26-10-09 21:09:27.9926] Slim::Player::StreamingController::playerOutputUnderrun (2292) 02:00:00:5a:11:01: decoder: 3800 / output: 0
+[26-10-09 21:09:27.9927] Slim::Player::StreamingController::_eventAction (271) 02:00:00:5a:11:01: OutputUnderrun in PAUSED-STREAMING -> Slim::Player::StreamingController::_NoOp
+[26-10-09 21:09:27.9928] Plugins::SpotOn::Connect::_onPause (1156) SpotOn G3-INSTR: _onPause mac=02:00:00:5a:11:01 isUnpause=0 isStop=0 ctl=1 mode=connect
+[26-10-09 21:09:27.9929] Plugins::SpotOn::Soloist::Control::requestPause (818) SpotOn G3-INSTR: requestPause mac=02:00:00:5a:11:01 mode=connect isStop=0
+[26-10-09 21:09:27.9929] Plugins::SpotOn::Soloist::Control::requestPause (912) SpotOn G3-INSTR: requestPause exit rc=1 observed.status=paused wsConnected=1 paired=1 pending=-
+[26-10-09 21:09:28.1409] Slim::Player::StreamingController::_eventAction (271) 02:00:00:5a:11:01: StatusHeartbeat in PAUSED-STREAMING -> Slim::Player::StreamingController::_CheckPaused
+[26-10-09 21:09:28.3415] Slim::Player::StreamingController::_eventAction (271) 02:00:00:5a:11:01: StatusHeartbeat in PAUSED-STREAMING -> Slim::Player::StreamingController::_CheckPaused
+[26-10-09 21:09:28.5761] Plugins::SpotOn::Soloist::Control::_onFramePlaybackChanged (3894) SpotOn G4-INSTR: status paused -> paused via playback_changed mode=idle pending=- (02:00:00:5a:11:03)

@@ -1,0 +1,60 @@
+1790854914.008714236	play	207.274788967133	You're So Vain	playing	2DnJjbjNTV9Nd5NOa1KGba	178	You're So Vain
+1790854915.184461669	play	234.01883099556	You're So Vain	playing	2DnJjbjNTV9Nd5NOa1KGba	178	You're So Vain
+1790854916.347640651	play	235.195252056122	You're So Vain	playing	2DnJjbjNTV9Nd5NOa1KGba	178	You're So Vain
+1790854917.507902039	play	236.356560178757	You're So Vain	playing	2DnJjbjNTV9Nd5NOa1KGba	178	You're So Vain
+1790854918.663796054	play	237.517450115204	You're So Vain	playing	2DnJjbjNTV9Nd5NOa1KGba	178	You're So Vain
+1790854919.815220364	play	238.67543396759	You're So Vain	playing	2DnJjbjNTV9Nd5NOa1KGba	178	You're So Vain
+1790854920.968895452	play	239.824616069794	You're So Vain	playing	2DnJjbjNTV9Nd5NOa1KGba	178	You're So Vain
+1790854922.132744675	play	240.979376979828	You're So Vain	playing	2DnJjbjNTV9Nd5NOa1KGba	178	You're So Vain
+1790854923.296777183	play	242.14319906044	You're So Vain	playing	2DnJjbjNTV9Nd5NOa1KGba	233	You're So Vain
+1790854924.465750583	play	243.306103105545	You're So Vain	playing	2DnJjbjNTV9Nd5NOa1KGba	233	You're So Vain
+1790854925.632175866	play	244.473944135666	You're So Vain	playing	2DnJjbjNTV9Nd5NOa1KGba	233	You're So Vain
+1790854926.799671654	play	245.64046408844	You're So Vain	playing	2DnJjbjNTV9Nd5NOa1KGba	233	You're So Vain
+1790854927.980999374	play	258.411	You're So Vain	playing	28H3wOEKsaEa8NBEYCLl4j	0	You Make Loving Fun - 2004 Remaster
+1790854929.151128790	play	258.411	You're So Vain	playing	28H3wOEKsaEa8NBEYCLl4j	0	You Make Loving Fun - 2004 Remaster
+1790854930.329100792	play	258.411	You're So Vain	playing	28H3wOEKsaEa8NBEYCLl4j	0	You Make Loving Fun - 2004 Remaster
+1790854931.496749237	play	258.411	You're So Vain	playing	28H3wOEKsaEa8NBEYCLl4j	0	You Make Loving Fun - 2004 Remaster
+1790854932.679634820	play	258.411	You're So Vain	playing	28H3wOEKsaEa8NBEYCLl4j	0	You Make Loving Fun - 2004 Remaster
+1790854933.843124475	play	258.411	You're So Vain	playing	28H3wOEKsaEa8NBEYCLl4j	0	You Make Loving Fun - 2004 Remaster
+1790854935.001275811	play	258.411	You're So Vain	playing	28H3wOEKsaEa8NBEYCLl4j	0	You Make Loving Fun - 2004 Remaster
+1790854936.164764174	play	258.411	You're So Vain	playing	28H3wOEKsaEa8NBEYCLl4j	0	You Make Loving Fun - 2004 Remaster
+1790854937.338222809	play	258.411	You're So Vain	playing	28H3wOEKsaEa8NBEYCLl4j	0	You Make Loving Fun - 2004 Remaster
+1790854938.498538058	play	258.411	You're So Vain	playing	28H3wOEKsaEa8NBEYCLl4j	10	You Make Loving Fun - 2004 Remaster
+1790854939.662660555	play	258.411	You're So Vain	playing	28H3wOEKsaEa8NBEYCLl4j	10	You Make Loving Fun - 2004 Remaster
+1790854940.820719707	play	25.4713388557434	You Make Loving Fun - 2004 Remaster	playing	28H3wOEKsaEa8NBEYCLl4j	10	You Make Loving Fun - 2004 Remaster
+1790854941.997109981	play	26.8198160266876	You Make Loving Fun - 2004 Remaster	playing	28H3wOEKsaEa8NBEYCLl4j	10	You Make Loving Fun - 2004 Remaster
+1790854943.168010099	play	28.1753249549866	You Make Loving Fun - 2004 Remaster	playing	28H3wOEKsaEa8NBEYCLl4j	10	You Make Loving Fun - 2004 Remaster
+1790854944.334115960	play	29.4726339645386	You Make Loving Fun - 2004 Remaster	playing	28H3wOEKsaEa8NBEYCLl4j	10	You Make Loving Fun - 2004 Remaster
+1790854945.501633389	play	30.834138010025	You Make Loving Fun - 2004 Remaster	playing	28H3wOEKsaEa8NBEYCLl4j	10	You Make Loving Fun - 2004 Remaster
+1790854946.686465536	play	32.183764995575	You Make Loving Fun - 2004 Remaster	playing	28H3wOEKsaEa8NBEYCLl4j	10	You Make Loving Fun - 2004 Remaster
+1790854947.863622443	play	33.5572479057312	You Make Loving Fun - 2004 Remaster	playing	28H3wOEKsaEa8NBEYCLl4j	10	You Make Loving Fun - 2004 Remaster
+1790854949.041940807	play	34.9193029899597	You Make Loving Fun - 2004 Remaster	playing	28H3wOEKsaEa8NBEYCLl4j	33	You Make Loving Fun - 2004 Remaster
+1790854950.222556195	play	36.2628512001038	You Make Loving Fun - 2004 Remaster	playing	28H3wOEKsaEa8NBEYCLl4j	33	You Make Loving Fun - 2004 Remaster
+1790854951.396813914	play	37.6383849868774	You Make Loving Fun - 2004 Remaster	playing	28H3wOEKsaEa8NBEYCLl4j	33	You Make Loving Fun - 2004 Remaster
+1790854952.575599367	play	39.004354932785	You Make Loving Fun - 2004 Remaster	playing	28H3wOEKsaEa8NBEYCLl4j	33	You Make Loving Fun - 2004 Remaster
+1790854953.745598498	play	40.3919768943787	You Make Loving Fun - 2004 Remaster	playing	28H3wOEKsaEa8NBEYCLl4j	33	You Make Loving Fun - 2004 Remaster
+1790854954.905903939	play	41.7591200351715	You Make Loving Fun - 2004 Remaster	playing	28H3wOEKsaEa8NBEYCLl4j	33	You Make Loving Fun - 2004 Remaster
+1790854956.088072983	play	43.0945999164581	You Make Loving Fun - 2004 Remaster	playing	28H3wOEKsaEa8NBEYCLl4j	33	You Make Loving Fun - 2004 Remaster
+1790854957.263016994	play	44.4741488895416	You Make Loving Fun - 2004 Remaster	playing	28H3wOEKsaEa8NBEYCLl4j	33	You Make Loving Fun - 2004 Remaster
+1790854958.439937245	play	45.8448478794098	You Make Loving Fun - 2004 Remaster	playing	28H3wOEKsaEa8NBEYCLl4j	45	You Make Loving Fun - 2004 Remaster
+1790854959.605038355	play	47.1737318668365	You Make Loving Fun - 2004 Remaster	playing	28H3wOEKsaEa8NBEYCLl4j	45	You Make Loving Fun - 2004 Remaster
+1790854960.781519821	play	48.5655789852142	You Make Loving Fun - 2004 Remaster	playing	28H3wOEKsaEa8NBEYCLl4j	45	You Make Loving Fun - 2004 Remaster
+1790854961.950896350	play	49.7720110816956	You Make Loving Fun - 2004 Remaster	playing	28H3wOEKsaEa8NBEYCLl4j	45	You Make Loving Fun - 2004 Remaster
+1790854963.121772161	play	51.028989982605	You Make Loving Fun - 2004 Remaster	playing	28H3wOEKsaEa8NBEYCLl4j	45	You Make Loving Fun - 2004 Remaster
+1790854964.294131466	play	52.2005021305084	You Make Loving Fun - 2004 Remaster	playing	28H3wOEKsaEa8NBEYCLl4j	45	You Make Loving Fun - 2004 Remaster
+1790854965.471007605	play	53.3716379394531	You Make Loving Fun - 2004 Remaster	playing	28H3wOEKsaEa8NBEYCLl4j	45	You Make Loving Fun - 2004 Remaster
+1790854966.660171147	play	54.5485760688782	You Make Loving Fun - 2004 Remaster	playing	28H3wOEKsaEa8NBEYCLl4j	45	You Make Loving Fun - 2004 Remaster
+1790854967.840662872	play	55.7399640331268	You Make Loving Fun - 2004 Remaster	playing	28H3wOEKsaEa8NBEYCLl4j	45	You Make Loving Fun - 2004 Remaster
+1790854969.013493074	play	56.9189980487823	You Make Loving Fun - 2004 Remaster	playing	28H3wOEKsaEa8NBEYCLl4j	55	You Make Loving Fun - 2004 Remaster
+1790854970.175938093	play	58.091235994339	You Make Loving Fun - 2004 Remaster	playing	28H3wOEKsaEa8NBEYCLl4j	55	You Make Loving Fun - 2004 Remaster
+1790854971.353178286	play	59.2538070201874	You Make Loving Fun - 2004 Remaster	playing	28H3wOEKsaEa8NBEYCLl4j	55	You Make Loving Fun - 2004 Remaster
+1790854972.530870571	play	60.4308610210419	You Make Loving Fun - 2004 Remaster	playing	28H3wOEKsaEa8NBEYCLl4j	55	You Make Loving Fun - 2004 Remaster
+1790854973.706752037	play	61.6093528728485	You Make Loving Fun - 2004 Remaster	playing	28H3wOEKsaEa8NBEYCLl4j	55	You Make Loving Fun - 2004 Remaster
+1790854974.885594387	play	62.7840291252136	You Make Loving Fun - 2004 Remaster	playing	28H3wOEKsaEa8NBEYCLl4j	55	You Make Loving Fun - 2004 Remaster
+1790854976.053679826	play	63.9642381191254	You Make Loving Fun - 2004 Remaster	playing	28H3wOEKsaEa8NBEYCLl4j	55	You Make Loving Fun - 2004 Remaster
+1790854977.187929903	play	65.1332798976898	You Make Loving Fun - 2004 Remaster	playing	28H3wOEKsaEa8NBEYCLl4j	55	You Make Loving Fun - 2004 Remaster
+1790854978.357763492	play	66.2656639080048	You Make Loving Fun - 2004 Remaster	playing	28H3wOEKsaEa8NBEYCLl4j	65	You Make Loving Fun - 2004 Remaster
+1790854979.540266564	play	67.4352630367279	You Make Loving Fun - 2004 Remaster	playing	28H3wOEKsaEa8NBEYCLl4j	65	You Make Loving Fun - 2004 Remaster
+1790854980.701618205	play	68.6214999675751	You Make Loving Fun - 2004 Remaster	playing	28H3wOEKsaEa8NBEYCLl4j	65	You Make Loving Fun - 2004 Remaster
+1790854981.872519434	play	69.780253911972	You Make Loving Fun - 2004 Remaster	playing	28H3wOEKsaEa8NBEYCLl4j	65	You Make Loving Fun - 2004 Remaster
+1790854983.032080843	play	70.9514440288544	You Make Loving Fun - 2004 Remaster	playing	28H3wOEKsaEa8NBEYCLl4j	65	You Make Loving Fun - 2004 Remaster

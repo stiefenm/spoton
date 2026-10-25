@@ -15,10 +15,14 @@ permissions:
 jobs:
   monitor:
     runs-on: [self-hosted, spoton]
-    env:
-      SCRIPTS_DIR: /home/sti/.spoton-forum-monitor/scripts
-      STATE_DIR: /home/sti/.spoton-forum-monitor
     steps:
+      # The runner user's home is not known to the workflow file; resolve it in the shell and hand the
+      # same paths to the later steps (and their working-directory expressions) through GITHUB_ENV.
+      - name: Resolve runner paths
+        run: |
+          echo "SCRIPTS_DIR=$HOME/.spoton-forum-monitor/scripts" >> "$GITHUB_ENV"
+          echo "STATE_DIR=$HOME/.spoton-forum-monitor" >> "$GITHUB_ENV"
+
       - name: Install dependencies
         working-directory: ${{ env.SCRIPTS_DIR }}
         run: npm ci

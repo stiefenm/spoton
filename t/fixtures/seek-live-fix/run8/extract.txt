@@ -1,0 +1,272 @@
+=== extract-run.pl Belegblock ===
+MAC: 02:00:00:5a:11:01
+T0: 09:07:03.478391314
+T1: 09:08:00.675580117
+Fenster (lokale Zeit): 09:07:01.478 .. 09:08:05.676  (T0-2s .. T1+5s)
+Zeitbasis: ANNAHME (vom Skript NICHT vorausgesetzt, sondern unten geprueft): server.log, Daemon-Log und Recorder-ts tragen dieselbe LOKALE Zeit; es wird kein UTC-Offset angewendet. Laeuft LMS unter TZ=UTC (Container-Standard), waere diese Annahme falsch -- siehe Abschnitt 'Zeitbasis-Selbsttest'.
+Quelle server.log: /var/log/squeezeboxserver/server.log
+Quelle Daemon-Log: /var/lib/squeezeboxserver/cache/spoton/0200005a1101-soloist.log
+Quelle Recorder: /tmp/claude-1000/-home-uuu-spoton/e8edd415-58f1-4363-8bb5-0eb4af863780/scratchpad/live-fix/run8/ws.jsonl
+
+Hinweis server.log: 340 Fortsetzungszeile(n) ohne eigenen Zeitstempel (HTTP-Header, Backtraces) uebersprungen -- sie sind keinem Zeitfenster zuzuordnen.
+Abdeckung server.log: erste Zeile @26-09-24 05:05:21.0049 .. letzte Zeile @26-09-24 09:08:00.8076; am 2026-09-24 von 05:05:21.005 bis 09:08:00.808
+
+--- server.log: jumpToTime ---
+[26-09-24 09:07:03.5376] Slim::Player::StreamingController::jumpToTime (2215) 02:00:00:5a:11:01
+
+--- server.log: noteSeekIntent (Anzahl: 2 im Fenster 09:07:01.478..09:08:05.676; davon 0 in T1+/-3s) ---
+[26-09-24 09:07:03.5379] Plugins::SpotOn::Soloist::Control::noteSeekIntent (951) Control: noteSeekIntent(spotify:track:1bj5ZFpxGFP5ooQcctNVB4, 150000) (02:00:00:5a:11:01)
+[26-09-24 09:07:03.5386] Plugins::SpotOn::Soloist::Control::noteSeekIntent (951) Control: noteSeekIntent(spotify:track:1bj5ZFpxGFP5ooQcctNVB4, 150000) (02:00:00:5a:11:01)
+
+--- server.log: Song::open (seek=/time=/canSeek=) [1 von 1 Zeilen tragen KEINE MAC -- fuer sie ist die [ANDERE MAC]-Markierung strukturell unmoeglich, sie zaehlen ueber alle Spieler] ---
+[26-09-24 09:07:03.5389] Slim::Player::Song::open (395) seek=true time=150 canSeek=1
+
+--- server.log: formatOverride (result=) ---
+[26-09-24 09:07:03.5388] Plugins::SpotOn::ProtocolHandler::formatOverride (187) [DIAG] formatOverride: mac=02:00:00:5a:11:01 url=spoton://track:1bj5ZFpxGFP5ooQcctNVB4 result=soc (soloist resolved=pcm)
+
+--- server.log: canDirectStream (result=/reason=) [1 von 1 Zeilen tragen KEINE MAC -- fuer sie ist die [ANDERE MAC]-Markierung strukturell unmoeglich, sie zaehlen ueber alle Spieler] ---
+[26-09-24 09:07:03.5394] Plugins::SpotOn::ProtocolHandler::canDirectStream (263) [DIAG] canDirectStream: soloist browse url=spoton://track:1bj5ZFpxGFP5ooQcctNVB4 result=0 reason=streamingMode_proxy
+
+--- server.log: Request: GET /stream [1 von 1 Zeilen tragen KEINE MAC -- fuer sie ist die [ANDERE MAC]-Markierung strukturell unmoeglich, sie zaehlen ueber alle Spieler] ---
+[26-09-24 09:07:03.5405] Slim::Formats::RemoteStream::request (145) Request: GET /stream?uri=spotify:track:1bj5ZFpxGFP5ooQcctNVB4&g=13 HTTP/1.0
+
+--- server.log: onStream (pos=/seek=) ---
+[26-09-24 09:07:03.5431] Plugins::SpotOn::ProtocolHandler::onStream (995) onStream: spoton://track:1bj5ZFpxGFP5ooQcctNVB4 pos=150000 seek=1 (mac=02:00:00:5a:11:01)
+
+--- server.log: Control: dispatch (armed=) (Anzahl: 10 im Fenster 09:07:01.478..09:08:05.676; davon 0 in T1+/-3s) ---
+[26-09-24 09:07:01.5832] Plugins::SpotOn::Soloist::Control::_execute (2098) Control: dispatch get_state armed=0 uri=- (02:00:00:5a:11:01)
+[26-09-24 09:07:01.7809] Plugins::SpotOn::Soloist::Control::_execute (2098) Control: dispatch get_state armed=0 uri=- (02:00:00:5a:11:01)
+[26-09-24 09:07:01.9806] Plugins::SpotOn::Soloist::Control::_execute (2098) Control: dispatch get_state armed=0 uri=- (02:00:00:5a:11:01)
+[26-09-24 09:07:02.1801] Plugins::SpotOn::Soloist::Control::_execute (2098) Control: dispatch get_state armed=0 uri=- (02:00:00:5a:11:01)
+[26-09-24 09:07:02.4049] Plugins::SpotOn::Soloist::Control::_execute (2098) Control: dispatch get_state armed=0 uri=- (02:00:00:5a:11:01)
+[26-09-24 09:07:02.6033] Plugins::SpotOn::Soloist::Control::_execute (2098) Control: dispatch get_state armed=0 uri=- (02:00:00:5a:11:01)
+[26-09-24 09:07:02.9870] Plugins::SpotOn::Soloist::Control::_execute (2098) Control: dispatch get_state armed=0 uri=- (02:00:00:5a:11:01)
+[26-09-24 09:07:03.1770] Plugins::SpotOn::Soloist::Control::_execute (2098) Control: dispatch get_state armed=0 uri=- (02:00:00:5a:11:01)
+[26-09-24 09:07:03.3927] Plugins::SpotOn::Soloist::Control::_execute (2098) Control: dispatch get_state armed=0 uri=- (02:00:00:5a:11:01)
+[26-09-24 09:07:03.5433] Plugins::SpotOn::Soloist::Control::_execute (2098) Control: dispatch seek armed=1 uri=- (02:00:00:5a:11:01)
+
+--- server.log: Control: loopback POST /seek-arm sent ---
+[26-09-24 09:07:03.5436] Plugins::SpotOn::Soloist::Control::_loopbackPost (3935) Control: loopback POST /seek-arm sent (port 34909, 02:00:00:5a:11:01)
+
+--- server.log: SpotOn G3/G4-INSTR ---
+[26-09-24 09:07:01.5822] Plugins::SpotOn::Soloist::Control::_onFramePlaybackChanged (2782) SpotOn G4-INSTR: status paused -> playing via playback_changed mode=connect pending=- (02:00:00:5a:11:01)
+[26-09-24 09:07:01.5838] Plugins::SpotOn::Soloist::Control::_debugStatusTransition (2432) SpotOn G4-INSTR: status playing -> playing via playback_state item.uri=spotify:track:1bj5ZFpxGFP5ooQcctNVB4 (02:00:00:5a:11:01)
+[26-09-24 09:07:01.6250] Plugins::SpotOn::Soloist::Control::_debugStatusTransition (2432) SpotOn G4-INSTR: status playing -> playing via playback_state item.uri=spotify:track:1bj5ZFpxGFP5ooQcctNVB4 (02:00:00:5a:11:01)
+[26-09-24 09:07:01.6253] Plugins::SpotOn::Soloist::Control::_onFramePlaybackChanged (2782) SpotOn G4-INSTR: status playing -> buffering via playback_changed mode=connect pending=- (02:00:00:5a:11:01)
+[26-09-24 09:07:01.6254] Plugins::SpotOn::Soloist::Control::_debugStatusTransition (2432) SpotOn G4-INSTR: status buffering -> buffering via playback_state item.uri=spotify:track:1bj5ZFpxGFP5ooQcctNVB4 (02:00:00:5a:11:01)
+[26-09-24 09:07:01.6255] Plugins::SpotOn::Soloist::Control::_onFramePositionSync (2861) SpotOn G4-INSTR: status buffering -> paused via position_sync speed=0 applied=1 pending=- (02:00:00:5a:11:01)
+[26-09-24 09:07:01.7799] Plugins::SpotOn::Soloist::Control::_onFramePlaybackChanged (2782) SpotOn G4-INSTR: status paused -> playing via playback_changed mode=connect pending=- (02:00:00:5a:11:01)
+[26-09-24 09:07:01.7814] Plugins::SpotOn::Soloist::Control::_debugStatusTransition (2432) SpotOn G4-INSTR: status playing -> playing via playback_state item.uri=spotify:track:1bj5ZFpxGFP5ooQcctNVB4 (02:00:00:5a:11:01)
+[26-09-24 09:07:01.7820] Plugins::SpotOn::Soloist::Control::_debugStatusTransition (2432) SpotOn G4-INSTR: status playing -> playing via playback_state item.uri=spotify:track:1bj5ZFpxGFP5ooQcctNVB4 (02:00:00:5a:11:01)
+[26-09-24 09:07:01.8240] Plugins::SpotOn::Soloist::Control::_onFramePlaybackChanged (2782) SpotOn G4-INSTR: status playing -> buffering via playback_changed mode=connect pending=- (02:00:00:5a:11:01)
+[26-09-24 09:07:01.8245] Plugins::SpotOn::Soloist::Control::_debugStatusTransition (2432) SpotOn G4-INSTR: status buffering -> buffering via playback_state item.uri=spotify:track:1bj5ZFpxGFP5ooQcctNVB4 (02:00:00:5a:11:01)
+[26-09-24 09:07:01.8247] Plugins::SpotOn::Soloist::Control::_onFramePositionSync (2861) SpotOn G4-INSTR: status buffering -> paused via position_sync speed=0 applied=1 pending=- (02:00:00:5a:11:01)
+[26-09-24 09:07:01.9796] Plugins::SpotOn::Soloist::Control::_onFramePlaybackChanged (2782) SpotOn G4-INSTR: status paused -> playing via playback_changed mode=connect pending=- (02:00:00:5a:11:01)
+[26-09-24 09:07:01.9812] Plugins::SpotOn::Soloist::Control::_debugStatusTransition (2432) SpotOn G4-INSTR: status playing -> playing via playback_state item.uri=spotify:track:1bj5ZFpxGFP5ooQcctNVB4 (02:00:00:5a:11:01)
+[26-09-24 09:07:01.9817] Plugins::SpotOn::Soloist::Control::_debugStatusTransition (2432) SpotOn G4-INSTR: status playing -> playing via playback_state item.uri=spotify:track:1bj5ZFpxGFP5ooQcctNVB4 (02:00:00:5a:11:01)
+[26-09-24 09:07:02.0233] Plugins::SpotOn::Soloist::Control::_onFramePlaybackChanged (2782) SpotOn G4-INSTR: status playing -> buffering via playback_changed mode=connect pending=- (02:00:00:5a:11:01)
+[26-09-24 09:07:02.0239] Plugins::SpotOn::Soloist::Control::_debugStatusTransition (2432) SpotOn G4-INSTR: status buffering -> buffering via playback_state item.uri=spotify:track:1bj5ZFpxGFP5ooQcctNVB4 (02:00:00:5a:11:01)
+[26-09-24 09:07:02.0241] Plugins::SpotOn::Soloist::Control::_onFramePositionSync (2861) SpotOn G4-INSTR: status buffering -> paused via position_sync speed=0 applied=1 pending=- (02:00:00:5a:11:01)
+[26-09-24 09:07:02.1789] Plugins::SpotOn::Soloist::Control::_onFramePlaybackChanged (2782) SpotOn G4-INSTR: status paused -> playing via playback_changed mode=connect pending=- (02:00:00:5a:11:01)
+[26-09-24 09:07:02.1805] Plugins::SpotOn::Soloist::Control::_debugStatusTransition (2432) SpotOn G4-INSTR: status playing -> playing via playback_state item.uri=spotify:track:1bj5ZFpxGFP5ooQcctNVB4 (02:00:00:5a:11:01)
+[26-09-24 09:07:02.1809] Plugins::SpotOn::Soloist::Control::_debugStatusTransition (2432) SpotOn G4-INSTR: status playing -> playing via playback_state item.uri=spotify:track:1bj5ZFpxGFP5ooQcctNVB4 (02:00:00:5a:11:01)
+[26-09-24 09:07:02.2218] Plugins::SpotOn::Soloist::Control::_onFramePlaybackChanged (2782) SpotOn G4-INSTR: status playing -> buffering via playback_changed mode=connect pending=- (02:00:00:5a:11:01)
+[26-09-24 09:07:02.2221] Plugins::SpotOn::Soloist::Control::_debugStatusTransition (2432) SpotOn G4-INSTR: status buffering -> buffering via playback_state item.uri=spotify:track:1bj5ZFpxGFP5ooQcctNVB4 (02:00:00:5a:11:01)
+[26-09-24 09:07:02.2223] Plugins::SpotOn::Soloist::Control::_onFramePositionSync (2861) SpotOn G4-INSTR: status buffering -> paused via position_sync speed=0 applied=1 pending=- (02:00:00:5a:11:01)
+[26-09-24 09:07:02.4042] Plugins::SpotOn::Soloist::Control::_onFramePlaybackChanged (2782) SpotOn G4-INSTR: status paused -> playing via playback_changed mode=connect pending=- (02:00:00:5a:11:01)
+[26-09-24 09:07:02.4053] Plugins::SpotOn::Soloist::Control::_debugStatusTransition (2432) SpotOn G4-INSTR: status playing -> playing via playback_state item.uri=spotify:track:1bj5ZFpxGFP5ooQcctNVB4 (02:00:00:5a:11:01)
+[26-09-24 09:07:02.4460] Plugins::SpotOn::Soloist::Control::_debugStatusTransition (2432) SpotOn G4-INSTR: status playing -> playing via playback_state item.uri=spotify:track:1bj5ZFpxGFP5ooQcctNVB4 (02:00:00:5a:11:01)
+[26-09-24 09:07:02.4490] Plugins::SpotOn::Soloist::Control::_onFramePlaybackChanged (2782) SpotOn G4-INSTR: status playing -> buffering via playback_changed mode=connect pending=- (02:00:00:5a:11:01)
+[26-09-24 09:07:02.4494] Plugins::SpotOn::Soloist::Control::_debugStatusTransition (2432) SpotOn G4-INSTR: status buffering -> buffering via playback_state item.uri=spotify:track:1bj5ZFpxGFP5ooQcctNVB4 (02:00:00:5a:11:01)
+[26-09-24 09:07:02.4495] Plugins::SpotOn::Soloist::Control::_onFramePositionSync (2861) SpotOn G4-INSTR: status buffering -> paused via position_sync speed=0 applied=1 pending=- (02:00:00:5a:11:01)
+[26-09-24 09:07:02.6012] Plugins::SpotOn::Soloist::Control::_onFramePlaybackChanged (2782) SpotOn G4-INSTR: status paused -> playing via playback_changed mode=connect pending=- (02:00:00:5a:11:01)
+[26-09-24 09:07:02.6038] Plugins::SpotOn::Soloist::Control::_debugStatusTransition (2432) SpotOn G4-INSTR: status playing -> playing via playback_state item.uri=spotify:track:1bj5ZFpxGFP5ooQcctNVB4 (02:00:00:5a:11:01)
+[26-09-24 09:07:02.6447] Plugins::SpotOn::Soloist::Control::_onFramePlaybackChanged (2782) SpotOn G4-INSTR: status playing -> buffering via playback_changed mode=connect pending=- (02:00:00:5a:11:01)
+[26-09-24 09:07:02.6450] Plugins::SpotOn::Soloist::Control::_debugStatusTransition (2432) SpotOn G4-INSTR: status buffering -> buffering via playback_state item.uri=spotify:track:1bj5ZFpxGFP5ooQcctNVB4 (02:00:00:5a:11:01)
+[26-09-24 09:07:02.6452] Plugins::SpotOn::Soloist::Control::_onFramePositionSync (2861) SpotOn G4-INSTR: status buffering -> paused via position_sync speed=0 applied=1 pending=- (02:00:00:5a:11:01)
+[26-09-24 09:07:02.6453] Plugins::SpotOn::Soloist::Control::_debugStatusTransition (2432) SpotOn G4-INSTR: status paused -> buffering via playback_state item.uri=spotify:track:1bj5ZFpxGFP5ooQcctNVB4 (02:00:00:5a:11:01)
+[26-09-24 09:07:02.8108] Plugins::SpotOn::Soloist::Control::_onFramePlaybackChanged (2782) SpotOn G4-INSTR: status buffering -> playing via playback_changed mode=connect pending=- (02:00:00:5a:11:01)
+[26-09-24 09:07:02.8111] Plugins::SpotOn::Soloist::Control::_debugStatusTransition (2432) SpotOn G4-INSTR: status playing -> playing via playback_state item.uri=spotify:track:1bj5ZFpxGFP5ooQcctNVB4 (02:00:00:5a:11:01)
+[26-09-24 09:07:02.8143] Plugins::SpotOn::Soloist::Control::_onFramePlaybackChanged (2782) SpotOn G4-INSTR: status playing -> buffering via playback_changed mode=connect pending=- (02:00:00:5a:11:01)
+[26-09-24 09:07:02.8145] Plugins::SpotOn::Soloist::Control::_debugStatusTransition (2432) SpotOn G4-INSTR: status buffering -> buffering via playback_state item.uri=spotify:track:1bj5ZFpxGFP5ooQcctNVB4 (02:00:00:5a:11:01)
+[26-09-24 09:07:02.8147] Plugins::SpotOn::Soloist::Control::_onFramePositionSync (2861) SpotOn G4-INSTR: status buffering -> paused via position_sync speed=0 applied=1 pending=- (02:00:00:5a:11:01)
+[26-09-24 09:07:02.9862] Plugins::SpotOn::Soloist::Control::_onFramePlaybackChanged (2782) SpotOn G4-INSTR: status paused -> playing via playback_changed mode=connect pending=- (02:00:00:5a:11:01)
+[26-09-24 09:07:02.9874] Plugins::SpotOn::Soloist::Control::_debugStatusTransition (2432) SpotOn G4-INSTR: status playing -> playing via playback_state item.uri=spotify:track:1bj5ZFpxGFP5ooQcctNVB4 (02:00:00:5a:11:01)
+[26-09-24 09:07:02.9884] Plugins::SpotOn::Soloist::Control::_debugStatusTransition (2432) SpotOn G4-INSTR: status playing -> playing via playback_state item.uri=spotify:track:1bj5ZFpxGFP5ooQcctNVB4 (02:00:00:5a:11:01)
+[26-09-24 09:07:03.0287] Plugins::SpotOn::Soloist::Control::_onFramePlaybackChanged (2782) SpotOn G4-INSTR: status playing -> buffering via playback_changed mode=connect pending=- (02:00:00:5a:11:01)
+[26-09-24 09:07:03.0290] Plugins::SpotOn::Soloist::Control::_debugStatusTransition (2432) SpotOn G4-INSTR: status buffering -> buffering via playback_state item.uri=spotify:track:1bj5ZFpxGFP5ooQcctNVB4 (02:00:00:5a:11:01)
+[26-09-24 09:07:03.0292] Plugins::SpotOn::Soloist::Control::_onFramePositionSync (2861) SpotOn G4-INSTR: status buffering -> paused via position_sync speed=0 applied=1 pending=- (02:00:00:5a:11:01)
+[26-09-24 09:07:03.1762] Plugins::SpotOn::Soloist::Control::_onFramePlaybackChanged (2782) SpotOn G4-INSTR: status paused -> playing via playback_changed mode=connect pending=- (02:00:00:5a:11:01)
+[26-09-24 09:07:03.1774] Plugins::SpotOn::Soloist::Control::_debugStatusTransition (2432) SpotOn G4-INSTR: status playing -> playing via playback_state item.uri=spotify:track:1bj5ZFpxGFP5ooQcctNVB4 (02:00:00:5a:11:01)
+[26-09-24 09:07:03.1776] Plugins::SpotOn::Soloist::Control::_debugStatusTransition (2432) SpotOn G4-INSTR: status playing -> playing via playback_state item.uri=spotify:track:1bj5ZFpxGFP5ooQcctNVB4 (02:00:00:5a:11:01)
+[26-09-24 09:07:03.2178] Plugins::SpotOn::Soloist::Control::_onFramePlaybackChanged (2782) SpotOn G4-INSTR: status playing -> buffering via playback_changed mode=connect pending=- (02:00:00:5a:11:01)
+[26-09-24 09:07:03.2181] Plugins::SpotOn::Soloist::Control::_debugStatusTransition (2432) SpotOn G4-INSTR: status buffering -> buffering via playback_state item.uri=spotify:track:1bj5ZFpxGFP5ooQcctNVB4 (02:00:00:5a:11:01)
+[26-09-24 09:07:03.2182] Plugins::SpotOn::Soloist::Control::_onFramePositionSync (2861) SpotOn G4-INSTR: status buffering -> paused via position_sync speed=0 applied=1 pending=- (02:00:00:5a:11:01)
+[26-09-24 09:07:03.3916] Plugins::SpotOn::Soloist::Control::_onFramePlaybackChanged (2782) SpotOn G4-INSTR: status paused -> playing via playback_changed mode=connect pending=- (02:00:00:5a:11:01)
+[26-09-24 09:07:03.3931] Plugins::SpotOn::Soloist::Control::_debugStatusTransition (2432) SpotOn G4-INSTR: status playing -> playing via playback_state item.uri=spotify:track:1bj5ZFpxGFP5ooQcctNVB4 (02:00:00:5a:11:01)
+[26-09-24 09:07:03.3933] Plugins::SpotOn::Soloist::Control::_debugStatusTransition (2432) SpotOn G4-INSTR: status playing -> playing via playback_state item.uri=spotify:track:1bj5ZFpxGFP5ooQcctNVB4 (02:00:00:5a:11:01)
+[26-09-24 09:07:03.4337] Plugins::SpotOn::Soloist::Control::_onFramePlaybackChanged (2782) SpotOn G4-INSTR: status playing -> buffering via playback_changed mode=connect pending=- (02:00:00:5a:11:01)
+[26-09-24 09:07:03.4341] Plugins::SpotOn::Soloist::Control::_debugStatusTransition (2432) SpotOn G4-INSTR: status buffering -> buffering via playback_state item.uri=spotify:track:1bj5ZFpxGFP5ooQcctNVB4 (02:00:00:5a:11:01)
+[26-09-24 09:07:03.4342] Plugins::SpotOn::Soloist::Control::_onFramePositionSync (2861) SpotOn G4-INSTR: status buffering -> paused via position_sync speed=0 applied=1 pending=- (02:00:00:5a:11:01)
+[26-09-24 09:07:03.5432] Plugins::SpotOn::Soloist::Control::_execute (2098) SpotOn G4-INSTR: seek-path pos=150000 observed.track=spotify:track:1bj5ZFpxGFP5ooQcctNVB4 observed.status=paused pending=- seekIssued=0 (02:00:00:5a:11:01)
+[26-09-24 09:07:03.5557] Plugins::SpotOn::Soloist::Control::_onFramePositionSync (2861) SpotOn G4-INSTR: status paused -> paused via position_sync speed=0 applied=1 pending=- (02:00:00:5a:11:01)
+
+--- server.log: Stop in <STATE> -> ::_Stop ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: Stop in <STATE> -> ::_Stop
+
+--- server.log: playerTrackStarted / playerStopped / new state ---
+[26-09-24 09:07:03.5446] Slim::Player::StreamingController::_eventAction (301) 02:00:00:5a:11:01: JumpToTime - new state BUFFERING-STREAMING
+[26-09-24 09:07:03.6632] Slim::Player::StreamingController::playerTrackStarted (2253) 02:00:00:5a:11:01
+[26-09-24 09:07:03.6639] Slim::Player::StreamingController::_eventAction (301) 02:00:00:5a:11:01: Started - new state PLAYING-STREAMING
+
+--- server.log: NextTrackError -> _NextIfMore (LMS interner Neustart-Vorlauf, T-3-Ausloeser) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: NextTrackError -> _NextIfMore (LMS interner Neustart-Vorlauf, T-3-Ausloeser)
+
+--- server.log: NextTrackError - new state (LMS-Kern-Fehlschlagverdikt desselben Zyklus) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: NextTrackError - new state (LMS-Kern-Fehlschlagverdikt desselben Zyklus)
+
+--- server.log: end of file or error on socket ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: end of file or error on socket
+
+--- server.log: notifyFromArray / Notifying ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: notifyFromArray / Notifying
+
+--- server.log: [DIAG] *_proxy (http_url=) ---
+[26-09-24 09:07:03.5396] Plugins::SpotOn::ProtocolHandler::new (666) [DIAG] soloist_browse_proxy: mac=02:00:00:5a:11:01 http_url=http://127.0.0.1:34909/stream?uri=spotify:track:1bj5ZFpxGFP5ooQcctNVB4&g=13
+
+--- server.log: Prefetch watchdog -> Soloist::Control (Wachhund Runde 1, Uebergabe; Plugin.pm _prefetchHangCheck) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: Prefetch watchdog -> Soloist::Control (Wachhund Runde 1, Uebergabe; Plugin.pm _prefetchHangCheck)
+
+--- server.log: Control: watchdog forced skip (Wachhund Runde 2, erzwungener Sprung; Control.pm _watchdogRound2) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: Control: watchdog forced skip (Wachhund Runde 2, erzwungener Sprung; Control.pm _watchdogRound2)
+
+--- server.log: ProtocolHandler::getNextTrack (718, LMS fragt SpotOn nach dem naechsten Titel) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] server.log: ProtocolHandler::getNextTrack (718, LMS fragt SpotOn nach dem naechsten Titel)
+
+[1350 von 1434 server.log-Fensterzeilen fallen in keine der Kategorien und sind oben NICHT aufgefuehrt; davon 1277 mit der MAC 02:00:00:5a:11:01]
+
+--- Fenster-Tor-Klassifikation (abgeleitet, kein Verdikt) ---
+[Fenster-Tor] KEIN _Stop-UEBERGANG IM FENSTER GEFUNDEN
+
+Hinweis Daemon-Log: 475250 Zeile(n) ohne eigenen Zeitstempel ([fakepulse] ohne ts: 398039, andere Form: 77211) uebersprungen -- sie sind keinem Zeitfenster zuzuordnen und in der Fensterzahl unten NICHT enthalten.
+!! Abdeckung Daemon-Log: KEINE Zeile vom 2026-09-24 in dieser Quelle (Datei-Abdeckung: 2026-09-06 18:01:25.701 .. 2026-09-23 09:08:02.470). Das Fenster ist damit fuer diese Quelle NICHT GEPRUEFT -- 'nichts gefunden' heisst hier 'nicht protokolliert', nicht 'nicht passiert'.
+
+--- Daemon-Log: client-attach / client-close / flush-disconnect ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] Daemon-Log: client-attach / client-close / flush-disconnect
+
+--- Daemon-Log: pa_stream_flush ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] Daemon-Log: pa_stream_flush
+
+--- Daemon-Log: flush: (BOUNDARY-Detailzeile zum pa_stream_flush -- bytes_written/ring_fill/corked) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] Daemon-Log: flush: (BOUNDARY-Detailzeile zum pa_stream_flush -- bytes_written/ring_fill/corked)
+
+--- Daemon-Log: seek_arm / seek_arm_expired / boundary_planted ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] Daemon-Log: seek_arm / seek_arm_expired / boundary_planted
+
+--- Daemon-Log: cork ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] Daemon-Log: cork
+
+--- Daemon-Log: Ticker (playing/paused/stopped) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] Daemon-Log: Ticker (playing/paused/stopped)
+
+--- Daemon-Log: Sitzungszustand (became active device / no longer active / shutting down / restoring session / ready / login failed) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] Daemon-Log: Sitzungszustand (became active device / no longer active / shutting down / restoring session / ready / login failed)
+
+--- Daemon-Log: underflow ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] underflow
+
+--- Daemon-Log: write_summary (letzte Kategorie -- Rauschunterdrueckung, s.u.) ---
+[MUSTER NICHT GEFUNDEN IM FENSTER] write_summary
+
+[0 von 0 Daemon-Fensterzeilen fallen in keine der Kategorien und sind oben NICHT aufgefuehrt]
+
+--- Zeitbasis-Selbsttest (server.log vs. Daemon-Log) ---
+NICHT DURCHFUEHRBAR: 1 'Request: GET /stream' im Fenster, 0 'client-attach' im Daemon-Log -- ohne Paar ist die Zeitbasis nicht pruefbar. Die Annahme in der Kopfzeile bleibt UNGEPRUEFT.
+
+========================================================================
+Recorder
+========================================================================
+--- Recorder: /tmp/claude-1000/-home-uuu-spoton/e8edd415-58f1-4363-8bb5-0eb4af863780/scratchpad/live-fix/run8/ws.jsonl (Schema erkannt: roh) ---
+Datei-mtime: 2026-09-24 09:07:03.553501128 +0200 (kann bei archivierten/kopierten Belegen die Checkout-/Kopierzeit widerspiegeln, nicht die Aufnahmezeit -- das letzte Ereignis-ts bleibt das aussagekraeftige Signal)
+Abdeckung Recorder: erstes Ereignis @09:07:00.515 .. letztes Ereignis @09:07:03.555 (Fenster: 09:07:01.478 .. 09:08:05.676)
+[meta-Zeilen des Recorders, vollstaendig -- auch ausserhalb des Fensters]
+[META @09:07:00.515] HANDSHAKE-OK
+[keine REANFORDERUNG-Zeile im Mitschnitt -- der WS-Handshake ist bestaetigt (HANDSHAKE-OK), [ABGELEITET aus HANDSHAKE-OK ohne REANFORDERUNG:] der Recorder lief ohne --reannounce-lms, es wurde keine Reanforderung abgesetzt]
+@09:07:01.582 type=playback_changed status=playing
+@09:07:01.582 type=playback_state status=playing uri=spotify:track:1bj5ZFpxGFP5ooQcctNVB4 position_ms=20344 speed=1 is_active=true
+@09:07:01.582 type=position_sync position_ms=20344 speed=1
+@09:07:01.594 type=playback_changed status=buffering
+@09:07:01.594 type=playback_state status=buffering uri=spotify:track:1bj5ZFpxGFP5ooQcctNVB4 position_ms=20546 speed=0 is_active=true
+@09:07:01.594 type=position_sync position_ms=20546 speed=0
+@09:07:01.779 type=playback_changed status=playing
+@09:07:01.779 type=playback_state status=playing uri=spotify:track:1bj5ZFpxGFP5ooQcctNVB4 position_ms=20548 speed=1 is_active=true
+@09:07:01.780 type=position_sync position_ms=20548 speed=1
+@09:07:01.795 type=playback_changed status=buffering
+@09:07:01.795 type=playback_state status=buffering uri=spotify:track:1bj5ZFpxGFP5ooQcctNVB4 position_ms=20773 speed=0 is_active=true
+@09:07:01.795 type=position_sync position_ms=20773 speed=0
+@09:07:01.979 type=playback_changed status=playing
+@09:07:01.979 type=playback_state status=playing uri=spotify:track:1bj5ZFpxGFP5ooQcctNVB4 position_ms=20774 speed=1 is_active=true
+@09:07:01.979 type=position_sync position_ms=20774 speed=1
+@09:07:01.996 type=playback_changed status=buffering
+@09:07:01.996 type=playback_state status=buffering uri=spotify:track:1bj5ZFpxGFP5ooQcctNVB4 position_ms=21004 speed=0 is_active=true
+@09:07:01.996 type=position_sync position_ms=21004 speed=0
+@09:07:02.178 type=playback_changed status=playing
+@09:07:02.179 type=playback_state status=playing uri=spotify:track:1bj5ZFpxGFP5ooQcctNVB4 position_ms=21006 speed=1 is_active=true
+@09:07:02.179 type=position_sync position_ms=21007 speed=1
+@09:07:02.198 type=playback_changed status=buffering
+@09:07:02.198 type=playback_state status=buffering uri=spotify:track:1bj5ZFpxGFP5ooQcctNVB4 position_ms=21233 speed=0 is_active=true
+@09:07:02.198 type=position_sync position_ms=21233 speed=0
+@09:07:02.404 type=playback_changed status=playing
+@09:07:02.404 type=playback_state status=playing uri=spotify:track:1bj5ZFpxGFP5ooQcctNVB4 position_ms=21234 speed=1 is_active=true
+@09:07:02.404 type=position_sync position_ms=21234 speed=1
+@09:07:02.449 type=playback_changed status=buffering
+@09:07:02.449 type=playback_state status=buffering uri=spotify:track:1bj5ZFpxGFP5ooQcctNVB4 position_ms=21529 speed=0 is_active=true
+@09:07:02.449 type=position_sync position_ms=21529 speed=0
+@09:07:02.600 type=playback_changed status=playing
+@09:07:02.601 type=playback_state status=playing uri=spotify:track:1bj5ZFpxGFP5ooQcctNVB4 position_ms=21531 speed=1 is_active=true
+@09:07:02.601 type=position_sync position_ms=21531 speed=1
+@09:07:02.605 type=playback_changed status=buffering
+@09:07:02.605 type=playback_state status=buffering uri=spotify:track:1bj5ZFpxGFP5ooQcctNVB4 position_ms=21725 speed=0 is_active=true
+@09:07:02.605 type=position_sync position_ms=21725 speed=0
+@09:07:02.810 type=playback_changed status=playing
+@09:07:02.810 type=playback_state status=playing uri=spotify:track:1bj5ZFpxGFP5ooQcctNVB4 position_ms=21726 speed=1 is_active=true
+@09:07:02.810 type=position_sync position_ms=21726 speed=1
+@09:07:02.814 type=playback_changed status=buffering
+@09:07:02.814 type=playback_state status=buffering uri=spotify:track:1bj5ZFpxGFP5ooQcctNVB4 position_ms=21914 speed=0 is_active=true
+@09:07:02.814 type=position_sync position_ms=21914 speed=0
+@09:07:02.986 type=playback_changed status=playing
+@09:07:02.986 type=playback_state status=playing uri=spotify:track:1bj5ZFpxGFP5ooQcctNVB4 position_ms=21915 speed=1 is_active=true
+@09:07:02.986 type=position_sync position_ms=21915 speed=1
+@09:07:03.011 type=playback_changed status=buffering
+@09:07:03.011 type=playback_state status=buffering uri=spotify:track:1bj5ZFpxGFP5ooQcctNVB4 position_ms=22141 speed=0 is_active=true
+@09:07:03.011 type=position_sync position_ms=22141 speed=0
+@09:07:03.176 type=playback_changed status=playing
+@09:07:03.176 type=playback_state status=playing uri=spotify:track:1bj5ZFpxGFP5ooQcctNVB4 position_ms=22142 speed=1 is_active=true
+@09:07:03.176 type=position_sync position_ms=22142 speed=1
+@09:07:03.212 type=playback_changed status=buffering
+@09:07:03.212 type=playback_state status=buffering uri=spotify:track:1bj5ZFpxGFP5ooQcctNVB4 position_ms=22375 speed=0 is_active=true
+@09:07:03.213 type=position_sync position_ms=22375 speed=0
+@09:07:03.391 type=playback_changed status=playing
+@09:07:03.391 type=playback_state status=playing uri=spotify:track:1bj5ZFpxGFP5ooQcctNVB4 position_ms=22376 speed=1 is_active=true
+@09:07:03.392 type=position_sync position_ms=22376 speed=1
+@09:07:03.415 type=playback_changed status=buffering
+@09:07:03.415 type=playback_state status=buffering uri=spotify:track:1bj5ZFpxGFP5ooQcctNVB4 position_ms=22582 speed=0 is_active=true
+@09:07:03.415 type=position_sync position_ms=22582 speed=0
+@09:07:03.555 type=position_sync position_ms=150000 speed=0
+[1 Frame(s) anderer Typen in der ganzen Datei nicht einzeln aufgefuehrt: auth_state=1; davon im Fenster 0: keiner]
+Deckung: NICHT PRUEFBAR (--recorder-seconds fehlt -- ohne die erwartete Recorder-Laufzeit ist 'vollstaendig' nicht definiert). Erstes Ereignis @09:07:00.515, letztes Ereignis @09:07:03.555, T1=09:08:00.675580117.
+!! Recorder-Datei /tmp/claude-1000/-home-uuu-spoton/e8edd415-58f1-4363-8bb5-0eb4af863780/scratchpad/live-fix/run8/ws.jsonl: das letzte Ereignis @09:07:03.555 liegt 57.1s VOR T1 (09:08:00.675580117) -- der Mitschnitt endet vor dem Fensterende-Anker dieses Laufs und deckt ihn damit NICHT ab (Ursache -- Prozesstod vs. sparsame WS-Verbindung -- ist aus der Datei allein nicht bestimmbar, dieses Skript faellt darueber kein Urteil).
+
+--- Abgeleitete Felder (Zeitstempel-Differenzen, kein Verdikt) ---
+Paarungsregel: ANKER = Vorkommen innerhalb T1 +/- 3s; PARTNER = Vorkommen innerhalb 3s um den ANKER.
+Liegt kein Anker in T1 +/- 3s, ist die Zuordnung mehrdeutig oder ist der Anker von Partnern auf BEIDEN Seiten eingerahmt, wird KEIN Delta ausgegeben, sondern der Grund genannt.
+[ABGELEITET] Delta(client-attach -> pa_stream_flush): kein Wert -- client-attach im Fenster T0-2s..T1+5s nicht gefunden. pa_stream_flush: im Fenster T0-2s..T1+5s nicht gefunden
+[ABGELEITET] Delta(loopback POST sent -> Request: GET): kein Wert -- kein loopback POST sent im Fenster T1+/-3s (naechstes Vorkommen @09:07:03.5436, 57.132s ausserhalb -- gehoert zu einem anderen Vorgang). Request: GET: kein Vorkommen im Fenster T1+/-3s; naechstes @09:07:03.5405, 57.135s ausserhalb
+[ABGELEITET] Delta(seek_arm: armed= -> pa_stream_flush): kein Wert -- seek_arm: armed= im Fenster T0-2s..T1+5s nicht gefunden. pa_stream_flush: im Fenster T0-2s..T1+5s nicht gefunden
+
+--- Restzaehler: verworfene, unerkannte und nicht kategorisierte Zeilen (Regel 2) ---
+server.log: 25494 Zeile(n) gelesen = 340 ohne eigenen Zeitstempel + 0 mit unlesbarem Zeitstempel + 25154 mit Zeitstempel; von diesen 23720 ausserhalb des Fensters + 0 vom Tagesfilter verworfen + 1434 im Fenster; von den Fensterzeilen 1350 in keiner Kategorie (oben nur als Zahl genannt).
+Daemon-Log: 851183 Zeile(n) gelesen = 475250 ohne eigenen Zeitstempel + 0 mit unlesbarem Zeitstempel + 375933 mit Zeitstempel; von diesen 374767 ausserhalb des Fensters + 1166 vom Tagesfilter verworfen + 0 im Fenster; von den Fensterzeilen 0 in keiner Kategorie (oben nur als Zahl genannt).
+Recorder: 89 Zeile(n) gelesen = 0 nicht als JSON parsbar + 0 in keinem bekannten Schema + 89 auswertbar (89 rohes, 0 flaches Schema); davon 1 meta, 0 tx, 0 Frametext nicht parsbar, 0 ohne Typfeld, 61 bekannter Typ im Fenster (oben aufgefuehrt), 26 bekannter Typ ausserhalb des Fensters, 1 anderer Typ (0 davon im Fenster).
+
+=== Redaktion: 0 Zeilen redigiert ===

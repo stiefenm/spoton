@@ -5,6 +5,7 @@
 		<input type="checkbox" class="stdedit" name="pref_enableSpotifyConnect"
 		       id="pref_enableSpotifyConnect"
 		       value="1" [% IF connectEnabled %]checked[% END %]/>
+		<input type="hidden" name="has_enableSpotifyConnect" value="1">
 		<label for="pref_enableSpotifyConnect">[% 'PLUGIN_SPOTON_CONNECT_ENABLED_LABEL' | string %]</label>
 	[% END %]
 
@@ -18,6 +19,9 @@
 		       id="pref_enableDiscovery"
 		       value="1" [% IF discoveryEnabled %]checked[% END %]
 		       [% IF discoveryByCrashLoop %]disabled[% END %]/>
+		[% UNLESS discoveryByCrashLoop %]
+		<input type="hidden" name="has_enableDiscovery" value="1">
+		[% END %]
 		<label for="pref_enableDiscovery">[% 'PLUGIN_SPOTON_DISCOVERY_ENABLED_LABEL' | string %]</label>
 	[% END %]
 
@@ -26,6 +30,7 @@
 		<input type="checkbox" class="stdedit" name="pref_enableAutoplay"
 		       id="pref_enableAutoplay"
 		       value="1" [% IF autoplayEnabled %]checked[% END %]/>
+		<input type="hidden" name="has_enableAutoplay" value="1">
 		<label for="pref_enableAutoplay">[% 'PLUGIN_SPOTON_AUTOPLAY_ENABLED_LABEL' | string %]</label>
 		[% IF dstmAvailable %]
 		<div style="margin-top:8px; color:#888; font-size:0.9em">
@@ -42,11 +47,24 @@
 	[% WRAPPER setting title="PLUGIN_SPOTON_STREAM_FORMAT" desc="PLUGIN_SPOTON_STREAM_FORMAT_DESC" %]
 		<select class="stdedit" name="pref_streamFormat" id="pref_streamFormat">
 			<option value="auto" [% IF streamFormat == 'auto' %]selected[% END %]>[% 'PLUGIN_SPOTON_STREAM_FORMAT_AUTO' | string %]</option>
+			[%# D-07: OGG passthrough is librespot-only -- hidden for the soloist backend %]
+			[% IF backend != 'soloist' %]
 			<option value="ogg"  [% IF streamFormat == 'ogg'  %]selected[% END %]>[% 'PLUGIN_SPOTON_STREAM_FORMAT_OGG'  | string %]</option>
+			[% END %]
 			<option value="pcm"  [% IF streamFormat == 'pcm'  %]selected[% END %]>[% 'PLUGIN_SPOTON_STREAM_FORMAT_PCM'  | string %]</option>
 			<option value="flac" [% IF streamFormat == 'flac' %]selected[% END %]>[% 'PLUGIN_SPOTON_STREAM_FORMAT_FLAC' | string %]</option>
 			<option value="mp3"  [% IF streamFormat == 'mp3'  %]selected[% END %]>[% 'PLUGIN_SPOTON_STREAM_FORMAT_MP3'  | string %]</option>
 		</select>
+		[%# 74b-02 D-08: what this player really receives - computed in Player.pm, not here %]
+		[% IF streamFormatEffective %]
+		<div style="margin-top:8px; color:#888; font-size:0.9em">[% streamFormatEffective | html %]</div>
+		[% END %]
+		[% IF streamFormatReason %]
+		<div style="margin-top:4px; color:#888; font-size:0.9em">[% streamFormatReason | html %]</div>
+		[% END %]
+		[% IF streamFormatNote %]
+		<div style="margin-top:4px; color:#888; font-size:0.9em">[% streamFormatNote | html %]</div>
+		[% END %]
 	[% END %]
 
 	[% WRAPPER setting title="PLUGIN_SPOTON_STREAMING_MODE" desc="PLUGIN_SPOTON_STREAMING_MODE_DESC" %]
@@ -55,6 +73,32 @@
 			<option value="direct" [% IF streamingMode == 'direct' %]selected[% END %]>[% 'PLUGIN_SPOTON_STREAMING_MODE_DIRECT' | string %]</option>
 			<option value="proxy"  [% IF streamingMode == 'proxy'  %]selected[% END %]>[% 'PLUGIN_SPOTON_STREAMING_MODE_PROXY'  | string %]</option>
 		</select>
+	[% END %]
+
+	[% IF backend == 'soloist' %]
+	[% WRAPPER setting title="PLUGIN_SPOTON_SOLOIST_QUALITY" desc="PLUGIN_SPOTON_SOLOIST_QUALITY_DESC" %]
+		<select class="stdedit" name="pref_soloistQuality"
+		        id="pref_soloistQuality"
+		        [% UNLESS soloistQualityAvailable %]disabled[% END %]>
+			<option value="global" [% IF soloistQuality == 'global' %]selected[% END %]>[% 'PLUGIN_SPOTON_SOLOIST_QUALITY_USE_GLOBAL' | string %]</option>
+			[% FOREACH l IN soloistQualityLevels %]
+			<option value="[% l.value %]" [% IF soloistQuality == l.value %]selected[% END %]>[% l.label | html %]</option>
+			[% END %]
+			[% IF soloistQualityStoredLabel %]
+			<option disabled selected>[% 'PLUGIN_SPOTON_SOLOIST_QUALITY_SET_IN_APP' | string(soloistQualityStoredLabel) | html %]</option>
+			[% END %]
+		</select>
+		<p style="margin:6px 0 0 0; font-size:0.85em; opacity:0.7">[% 'PLUGIN_SPOTON_SOLOIST_QUALITY_NEXT_TRACK' | string %]</p>
+		[% UNLESS soloistQualityAvailable %]
+		<p style="color: orange; margin-top:6px; font-size:0.85em">&#9679; [% 'PLUGIN_SPOTON_SOLOIST_QUALITY_UNAVAILABLE' | string %]</p>
+		[% END %]
+		[% IF soloistQualityDiffers %]
+		<p style="opacity:0.85; margin-top:6px; font-size:0.85em">[% 'PLUGIN_SPOTON_SOLOIST_QUALITY_EFFECTIVE' | string(soloistQualityEffectiveLabel) | html %]</p>
+		[% END %]
+		[% IF soloistQualityNotice %]
+		<p style="color: orange; margin-top:6px; font-size:0.85em">[% soloistQualityNotice | html %]</p>
+		[% END %]
+	[% END %]
 	[% END %]
 
 	[% WRAPPER setting title="PLUGIN_SPOTON_BITRATE_OVERRIDE" desc="PLUGIN_SPOTON_BITRATE_OVERRIDE_DESC" %]

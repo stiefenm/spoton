@@ -63,6 +63,903 @@ PLUGIN_SPOTON_ACCOUNT_SETTINGS
 	PL	Ustawienia konta
 	SV	Kontoinställningar
 
+PLUGIN_SPOTON_BACKEND
+	CS	Přehrávací backend
+	DA	Afspilningsbackend
+	DE	Wiedergabe-Backend
+	EN	Playback Backend
+	ES	Backend de reproducción
+	FR	Moteur de lecture
+	IT	Backend di riproduzione
+	NL	Afspeel-backend
+	NO	Avspillingsbackend
+	PL	Backend odtwarzania
+	SV	Uppspelningsbackend
+
+PLUGIN_SPOTON_BACKEND_DESC
+	CS	Vyberte přehrávací engine použitý pro streamování: librespot (výchozí, dobře otestovaný) nebo Soloist (oficiální binární soubor Spotify, vyžaduje spak-key). Přepnutí restartuje démony.
+	DA	Vælg den afspilningsmotor, der bruges til streaming: librespot (standard, veltestet) eller Soloist (Spotifys officielle binærfil, kræver en spak-nøgle). Skift genstarter dæmonerne.
+	DE	Wähle die für das Streaming verwendete Wiedergabe-Engine: librespot (Standard, gut getestet) oder Soloist (Spotifys offizielles Binary, benötigt einen spak-Key). Der Wechsel startet die Daemons neu.
+	EN	Choose the playback engine used for streaming: librespot (default, well-tested) or Soloist (Spotify's official binary, requires a spak-key). Switching restarts the daemons.
+	ES	Elige el motor de reproducción usado para el streaming: librespot (predeterminado, bien probado) o Soloist (el binario oficial de Spotify, requiere una spak-key). Cambiar reinicia los daemons.
+	FR	Choisissez le moteur de lecture utilisé pour le streaming : librespot (par défaut, bien testé) ou Soloist (le binaire officiel de Spotify, nécessite une spak-key). Le changement redémarre les démons.
+	IT	Scegli il motore di riproduzione usato per lo streaming: librespot (predefinito, ben testato) o Soloist (il binario ufficiale di Spotify, richiede una spak-key). Il cambio riavvia i demoni.
+	NL	Kies de afspeel-engine die wordt gebruikt voor streaming: librespot (standaard, goed getest) of Soloist (Spotify's officiële binaire bestand, vereist een spak-key). Wisselen herstart de daemons.
+	NO	Velg avspillingsmotoren som brukes for strømming: librespot (standard, godt testet) eller Soloist (Spotifys offisielle binærfil, krever en spak-nøkkel). Bytte starter daemonene på nytt.
+	PL	Wybierz silnik odtwarzania używany do strumieniowania: librespot (domyślny, dobrze przetestowany) lub Soloist (oficjalny plik binarny Spotify, wymaga klucza spak). Przełączenie restartuje demony.
+	SV	Välj uppspelningsmotorn som används för streaming: librespot (standard, väl testad) eller Soloist (Spotifys officiella binärfil, kräver en spak-nyckel). Byte startar om demonerna.
+
+PLUGIN_SPOTON_SOLOIST_KEY
+	CS	spak-key
+	DA	spak-nøgle
+	DE	spak-Key
+	EN	spak-Key
+	ES	spak-key
+	FR	spak-key
+	IT	spak-key
+	NL	spak-key
+	NO	spak-nøkkel
+	PL	klucz spak
+	SV	spak-nyckel
+
+PLUGIN_SPOTON_SOLOIST_KEY_DESC
+	CS	Klíč spak potřebný ke spuštění binárního souboru Soloist. Získejte jej ze svého předplatného Spotify Premium podle dokumentace Soloist od Spotify. Ukládá se lokálně, SpotOn jej nikam nepřenáší.
+	DA	Spak-nøglen, der kræves for at køre Soloist-binærfilen. Hentes fra din Spotify Premium-konto ifølge Spotifys Soloist-dokumentation. Gemmes lokalt og overføres aldrig nogen steder af SpotOn.
+	DE	Der spak-Key, der zum Ausführen des Soloist-Binaries benötigt wird. Über dein Spotify-Premium-Konto gemäß Spotifys Soloist-Dokumentation zu beziehen. Wird lokal gespeichert und von SpotOn nirgendwohin übertragen.
+	EN	The spak-key required to run the Soloist binary. Obtain it from your Spotify Premium account per Spotify's Soloist documentation. Stored locally, never transmitted anywhere by SpotOn.
+	ES	La spak-key necesaria para ejecutar el binario Soloist. Obténla desde tu cuenta de Spotify Premium según la documentación de Soloist de Spotify. Se guarda localmente y SpotOn nunca la transmite a ningún sitio.
+	FR	La spak-key nécessaire pour exécuter le binaire Soloist. À obtenir depuis votre compte Spotify Premium selon la documentation Soloist de Spotify. Stockée localement, jamais transmise nulle part par SpotOn.
+	IT	La spak-key necessaria per eseguire il binario Soloist. Ottienila dal tuo account Spotify Premium secondo la documentazione Soloist di Spotify. Salvata localmente, mai trasmessa altrove da SpotOn.
+	NL	De spak-key die nodig is om het Soloist binaire bestand uit te voeren. Verkrijgbaar via je Spotify Premium-account volgens Spotify's Soloist-documentatie. Wordt lokaal opgeslagen en nooit door SpotOn ergens naartoe verzonden.
+	NO	Spak-nøkkelen som kreves for å kjøre Soloist-binærfilen. Hentes fra Spotify Premium-kontoen din i henhold til Spotifys Soloist-dokumentasjon. Lagres lokalt og overføres aldri noe sted av SpotOn.
+	PL	Klucz spak wymagany do uruchomienia pliku binarnego Soloist. Uzyskaj go ze swojego konta Spotify Premium zgodnie z dokumentacją Soloist firmy Spotify. Przechowywany lokalnie, nigdy nie jest wysyłany przez SpotOn.
+	SV	Spak-nyckeln som krävs för att köra Soloist-binärfilen. Hämtas från ditt Spotify Premium-konto enligt Spotifys Soloist-dokumentation. Lagras lokalt och skickas aldrig någonstans av SpotOn.
+
+PLUGIN_SPOTON_SOLOIST_BINARY_MISSING
+	CS	Binární soubor Soloist nebyl nalezen - bude v případě potřeby automaticky stažen.
+	DA	Soloist-binærfilen blev ikke fundet - den downloades automatisk ved behov.
+	DE	Soloist-Binary nicht gefunden - es wird bei Bedarf automatisch heruntergeladen.
+	EN	Soloist binary not found - it will be downloaded automatically when needed.
+	ES	No se encontró el binario de Soloist - se descargará automáticamente cuando sea necesario.
+	FR	Binaire Soloist introuvable - il sera téléchargé automatiquement si nécessaire.
+	IT	Binario Soloist non trovato - verrà scaricato automaticamente quando necessario.
+	NL	Soloist binair bestand niet gevonden - wordt automatisch gedownload indien nodig.
+	NO	Fant ikke Soloist-binærfilen - den lastes ned automatisk ved behov.
+	PL	Nie znaleziono pliku binarnego Soloist - zostanie pobrany automatycznie w razie potrzeby.
+	SV	Soloist-binärfilen hittades inte - den laddas ner automatiskt vid behov.
+
+PLUGIN_SPOTON_SOLOIST_KEY_MISSING
+	CS	Není nakonfigurován žádný klíč spak - Soloist bez něj nemůže spustit.
+	DA	Ingen spak-nøgle konfigureret - Soloist kan ikke starte uden en.
+	DE	Kein spak-Key konfiguriert - Soloist kann ohne diesen nicht starten.
+	EN	No spak-key configured - Soloist cannot start without one.
+	ES	No hay ninguna spak-key configurada - Soloist no puede iniciarse sin una.
+	FR	Aucune spak-key configurée - Soloist ne peut pas démarrer sans.
+	IT	Nessuna spak-key configurata - Soloist non può avviarsi senza.
+	NL	Geen spak-key geconfigureerd - Soloist kan niet starten zonder.
+	NO	Ingen spak-nøkkel konfigurert - Soloist kan ikke starte uten en.
+	PL	Nie skonfigurowano klucza spak - Soloist nie może się uruchomić bez niego.
+	SV	Ingen spak-nyckel konfigurerad - Soloist kan inte starta utan en.
+
+PLUGIN_SPOTON_SOLOIST_HINT
+	CS	Soloist je na tomto systému k dispozici. Pro jeho použití získejte svůj klíč spak od Spotify:
+	DA	Soloist er tilgængelig på dette system. For at bruge det skal du hente din spak-nøgle fra Spotify:
+	DE	Soloist ist auf diesem System verfügbar. Um es zu nutzen, hole dir deinen spak-Key von Spotify:
+	EN	Soloist is available on this system. To use it, get your spak key from Spotify:
+	ES	Soloist está disponible en este sistema. Para usarlo, obtén tu spak-key de Spotify:
+	FR	Soloist est disponible sur ce système. Pour l'utiliser, obtenez votre spak-key auprès de Spotify :
+	IT	Soloist è disponibile su questo sistema. Per usarlo, ottieni la tua spak-key da Spotify:
+	NL	Soloist is beschikbaar op dit systeem. Om het te gebruiken, haal je je spak-key op bij Spotify:
+	NO	Soloist er tilgjengelig på dette systemet. For å bruke det, hent spak-nøkkelen din fra Spotify:
+	PL	Soloist jest dostępny w tym systemie. Aby go używać, pobierz swój klucz spak od Spotify:
+	SV	Soloist är tillgängligt på det här systemet. För att använda det, hämta din spak-nyckel från Spotify:
+
+PLUGIN_SPOTON_SOLOIST_HINT_LINK
+	CS	jak získat klíč
+	DA	sådan får du nøglen
+	DE	so bekommst du den Key
+	EN	how to get the key
+	ES	cómo obtener la clave
+	FR	comment obtenir la clé
+	IT	come ottenere la chiave
+	NL	zo krijg je de key
+	NO	slik får du nøkkelen
+	PL	jak zdobyć klucz
+	SV	så får du nyckeln
+
+PLUGIN_SPOTON_SOLOIST_SWITCH_OFFER
+	CS	Klíč Soloist je uložen. Můžete přepnout na backend Soloist.
+	DA	En Soloist-nøgle er gemt. Du kan skifte til Soloist-backend.
+	DE	Ein Soloist-Key ist gespeichert. Du kannst zum Soloist-Backend wechseln.
+	EN	A Soloist key is stored. You can switch to the Soloist backend.
+	ES	Hay una clave de Soloist guardada. Puedes cambiar al backend Soloist.
+	FR	Une clé Soloist est enregistrée. Vous pouvez passer au backend Soloist.
+	IT	È stata salvata una chiave Soloist. Puoi passare al backend Soloist.
+	NL	Er is een Soloist-key opgeslagen. Je kunt overschakelen naar de Soloist-backend.
+	NO	En Soloist-nøkkel er lagret. Du kan bytte til Soloist-backend.
+	PL	Klucz Soloist został zapisany. Możesz przełączyć się na backend Soloist.
+	SV	En Soloist-nyckel är sparad. Du kan byta till Soloist-backend.
+
+PLUGIN_SPOTON_SOLOIST_SWITCH_BUTTON
+	CS	Přepnout na Soloist
+	DA	Skift til Soloist
+	DE	Zu Soloist wechseln
+	EN	Switch to Soloist
+	ES	Cambiar a Soloist
+	FR	Passer à Soloist
+	IT	Passa a Soloist
+	NL	Overschakelen naar Soloist
+	NO	Bytt til Soloist
+	PL	Przełącz na Soloist
+	SV	Byt till Soloist
+
+PLUGIN_SPOTON_SOLOIST_UNSUPPORTED_OS
+	CS	Soloist je podporován pouze na Linuxu. Na této platformě prosím použijte librespot.
+	DA	Soloist understøttes kun på Linux. Brug venligst librespot på denne platform.
+	DE	Soloist wird nur unter Linux unterstützt. Bitte auf dieser Plattform librespot verwenden.
+	EN	Soloist is only supported on Linux. Please use librespot on this platform.
+	ES	Soloist solo es compatible con Linux. Usa librespot en esta plataforma.
+	FR	Soloist n'est pris en charge que sous Linux. Veuillez utiliser librespot sur cette plateforme.
+	IT	Soloist è supportato solo su Linux. Utilizza librespot su questa piattaforma.
+	NL	Soloist wordt alleen ondersteund op Linux. Gebruik librespot op dit platform.
+	NO	Soloist støttes kun på Linux. Bruk librespot på denne plattformen.
+	PL	Soloist jest obsługiwany tylko w systemie Linux. Na tej platformie użyj librespot.
+	SV	Soloist stöds endast på Linux. Använd librespot på denna plattform.
+
+PLUGIN_SPOTON_SOLOIST_STATUS
+	CS	Soloist připraven
+	DA	Soloist klar
+	DE	Soloist bereit
+	EN	Soloist ready
+	ES	Soloist listo
+	FR	Soloist prêt
+	IT	Soloist pronto
+	NL	Soloist gereed
+	NO	Soloist klar
+	PL	Soloist gotowy
+	SV	Soloist redo
+
+PLUGIN_SPOTON_SOLOIST_KEY_INVALID
+	CS	Klíč spak obsahuje neplatné znaky nebo je příliš krátký - nebyl uložen.
+	DA	Spak-nøglen indeholder ugyldige tegn eller er for kort - den blev ikke gemt.
+	DE	Der spak-Key enthält ungültige Zeichen oder ist zu kurz - er wurde nicht gespeichert.
+	EN	The spak-key contains invalid characters or is too short - it was not saved.
+	ES	La spak-key contiene caracteres no válidos o es demasiado corta - no se guardó.
+	FR	La spak-key contient des caractères non valides ou est trop courte - elle n'a pas été enregistrée.
+	IT	La spak-key contiene caratteri non validi o è troppo corta - non è stata salvata.
+	NL	De spak-key bevat ongeldige tekens of is te kort - deze is niet opgeslagen.
+	NO	Spak-nøkkelen inneholder ugyldige tegn eller er for kort - den ble ikke lagret.
+	PL	Klucz spak zawiera nieprawidłowe znaki lub jest zbyt krótki - nie został zapisany.
+	SV	Spak-nyckeln innehåller ogiltiga tecken eller är för kort - den sparades inte.
+
+PLUGIN_SPOTON_SOLOIST_KEY_WRITE_FAILED
+	CS	Klíč spak se nepodařilo uložit (chyba zápisu) - zkuste to prosím znovu.
+	DA	Spak-nøglen kunne ikke gemmes (skrivefejl) - prøv igen.
+	DE	Der spak-Key konnte nicht gespeichert werden (Schreibfehler) - bitte erneut versuchen.
+	EN	Failed to save the spak-key (write error) - please try again.
+	ES	No se pudo guardar la spak-key (error de escritura) - inténtalo de nuevo.
+	FR	Impossible d'enregistrer la spak-key (erreur d'écriture) - veuillez réessayer.
+	IT	Impossibile salvare la spak-key (errore di scrittura) - riprova.
+	NL	De spak-key kon niet worden opgeslagen (schrijffout) - probeer het opnieuw.
+	NO	Spak-nøkkelen kunne ikke lagres (skrivefeil) - prøv igjen.
+	PL	Nie udało się zapisać klucza spak (błąd zapisu) - spróbuj ponownie.
+	SV	Spak-nyckeln kunde inte sparas (skrivfel) - försök igen.
+
+PLUGIN_SPOTON_SETTINGS_BACKEND_SECTION
+	CS	Přehrávací backend
+	DA	Afspilningsbackend
+	DE	Wiedergabe-Backend
+	EN	Playback Backend
+	ES	Backend de reproducción
+	FR	Backend de lecture
+	IT	Backend di riproduzione
+	NL	Afspeel-backend
+	NO	Avspillingsbackend
+	PL	Backend odtwarzania
+	SV	Uppspelningsbackend
+
+PLUGIN_SPOTON_SOLOIST_PAIRED
+	CS	Spárováno se Spotify
+	DA	Parret med Spotify
+	DE	Mit Spotify gekoppelt
+	EN	Paired with Spotify
+	ES	Emparejado con Spotify
+	FR	Associé à Spotify
+	IT	Associato a Spotify
+	NL	Gekoppeld met Spotify
+	NO	Paret med Spotify
+	PL	Sparowano ze Spotify
+	SV	Parkopplad med Spotify
+
+PLUGIN_SPOTON_SOLOIST_NOT_PAIRED
+	CS	Zatím nespárováno - přehrávání selže, dokud tento přehrávač jednou nevyberete v aplikaci Spotify.
+	DA	Ikke parret endnu - afspilning mislykkes, indtil denne afspiller er valgt én gang i Spotify-appen.
+	DE	Noch nicht gekoppelt - die Wiedergabe schlägt fehl, bis dieses Gerät einmal in der Spotify-App ausgewählt wurde.
+	EN	Not paired yet - playback will fail until this player is selected once in the Spotify app.
+	ES	Aún no emparejado - la reproducción fallará hasta que este reproductor se seleccione una vez en la app de Spotify.
+	FR	Pas encore associé - la lecture échouera tant que ce lecteur n'aura pas été sélectionné une fois dans l'application Spotify.
+	IT	Non ancora associato - la riproduzione fallirà finché questo lettore non verrà selezionato una volta nell'app Spotify.
+	NL	Nog niet gekoppeld - afspelen mislukt totdat deze speler één keer is geselecteerd in de Spotify-app.
+	NO	Ikke paret ennå - avspilling vil mislykkes før denne spilleren er valgt én gang i Spotify-appen.
+	PL	Jeszcze nie sparowano - odtwarzanie nie powiedzie się, dopóki ten odtwarzacz nie zostanie jednorazowo wybrany w aplikacji Spotify.
+	SV	Inte parkopplad ännu - uppspelning misslyckas tills den här spelaren har valts en gång i Spotify-appen.
+
+PLUGIN_SPOTON_SOLOIST_PAIR_HOWTO
+	CS	Zapněte backend Soloist a počkejte, až se spustí daemon, poté jednou vyberte tento přehrávač ve výběru zařízení v aplikaci Spotify. Párování probíhá pro každý přehrávač zvlášť a zcela automaticky - není potřeba žádný příkazový řádek; přihlašovací údaje se ukládají lokálně.
+	DA	Aktivér Soloist-backenden, og vent til daemonen starter, vælg derefter denne afspiller én gang i enhedsvælgeren i din Spotify-app. Parring foregår pr. afspiller og er helt automatisk - ingen kommandolinje nødvendig; loginoplysninger gemmes lokalt.
+	DE	Aktiviere das Soloist-Backend und warte, bis der Daemon gestartet ist, wähle dann dieses Gerät einmal in der Geräteauswahl deiner Spotify-App aus. Das Pairing erfolgt pro Player automatisch - keine Kommandozeile nötig; Anmeldedaten werden lokal gespeichert.
+	EN	Enable the Soloist backend and wait for the daemon to start, then select this player once in your Spotify app's device picker. Pairing is per player and fully automatic - no command line needed; credentials are stored locally.
+	ES	Activa el backend Soloist y espera a que el daemon se inicie, luego selecciona este reproductor una vez en el selector de dispositivos de tu app de Spotify. El emparejamiento es por reproductor y totalmente automático - no se necesita línea de comandos; las credenciales se guardan localmente.
+	FR	Activez le backend Soloist et attendez que le daemon démarre, puis sélectionnez ce lecteur une fois dans le sélecteur d'appareils de votre application Spotify. L'association se fait par lecteur et est entièrement automatique - aucune ligne de commande nécessaire ; les identifiants sont stockés localement.
+	IT	Attiva il backend Soloist e attendi che il daemon si avvii, quindi seleziona questo lettore una volta nel selettore dispositivi della tua app Spotify. L'associazione avviene per singolo lettore ed è completamente automatica - nessuna riga di comando necessaria; le credenziali vengono salvate localmente.
+	NL	Schakel de Soloist-backend in en wacht tot de daemon is gestart, selecteer dan deze speler één keer in de apparaatkiezer van je Spotify-app. Koppelen gebeurt per speler en volledig automatisch - geen opdrachtregel nodig; inloggegevens worden lokaal opgeslagen.
+	NO	Aktiver Soloist-backenden og vent til daemonen starter, velg deretter denne spilleren én gang i enhetsvelgeren i Spotify-appen din. Paring skjer per spiller og er helt automatisk - ingen kommandolinje nødvendig; legitimasjon lagres lokalt.
+	PL	Włącz backend Soloist i poczekaj, aż uruchomi się demon, następnie jednorazowo wybierz ten odtwarzacz w selektorze urządzeń w aplikacji Spotify. Parowanie odbywa się dla każdego odtwarzacza osobno i w pełni automatycznie - nie jest potrzebny wiersz poleceń; dane uwierzytelniające są przechowywane lokalnie.
+	SV	Aktivera Soloist-backend och vänta tills daemonen startar, välj sedan den här spelaren en gång i enhetsväljaren i din Spotify-app. Parkoppling sker per spelare och helt automatiskt - ingen kommandorad behövs; autentiseringsuppgifter sparas lokalt.
+
+PLUGIN_SPOTON_SOLOIST_DAEMON_RUNNING
+	CS	Daemon běží
+	DA	Daemon kører
+	DE	Daemon läuft
+	EN	Daemon running
+	ES	Daemon en ejecución
+	FR	Daemon actif
+	IT	Daemon in esecuzione
+	NL	Daemon actief
+	NO	Daemon kjører
+	PL	Demon działa
+	SV	Daemon körs
+
+PLUGIN_SPOTON_SOLOIST_DAEMON_STOPPED
+	CS	Daemon zastaven
+	DA	Daemon stoppet
+	DE	Daemon gestoppt
+	EN	Daemon stopped
+	ES	Daemon detenido
+	FR	Daemon arrêté
+	IT	Daemon arrestato
+	NL	Daemon gestopt
+	NO	Daemon stoppet
+	PL	Demon zatrzymany
+	SV	Daemon stoppad
+
+PLUGIN_SPOTON_SOLOIST_EXPIRY_DAYS
+	CS	Toto sestavení Soloist vyprší za %s dní
+	DA	Denne Soloist-build udløber om %s dage
+	DE	Dieser Soloist-Build läuft in %s Tagen ab
+	EN	This Soloist build expires in %s days
+	ES	Esta compilación de Soloist caduca en %s días
+	FR	Cette build de Soloist expire dans %s jours
+	IT	Questa build di Soloist scade tra %s giorni
+	NL	Deze Soloist-build verloopt over %s dagen
+	NO	Denne Soloist-bygningen utløper om %s dager
+	PL	Ta wersja Soloist wygaśnie za %s dni
+	SV	Den här Soloist-versionen upphör om %s dagar
+
+PLUGIN_SPOTON_SOLOIST_EXPIRED
+	CS	Toto sestavení Soloist vypršelo - je nutná aktualizace
+	DA	Denne Soloist-build er udløbet - opdatering påkrævet
+	DE	Dieser Soloist-Build ist abgelaufen - Aktualisierung erforderlich
+	EN	This Soloist build has expired - update required
+	ES	Esta compilación de Soloist ha caducado - se requiere una actualización
+	FR	Cette build de Soloist a expiré - une mise à jour est requise
+	IT	Questa build di Soloist è scaduta - è richiesto un aggiornamento
+	NL	Deze Soloist-build is verlopen - update vereist
+	NO	Denne Soloist-bygningen har utløpt - oppdatering kreves
+	PL	Ta wersja Soloist wygasła - wymagana aktualizacja
+	SV	Den här Soloist-versionen har upphört - uppdatering krävs
+
+PLUGIN_SPOTON_SOLOIST_INFO_LINE
+	CS	Soloist %s, vyprší za %s dní
+	DA	Soloist %s, udløber om %s dage
+	DE	Soloist %s, läuft in %s Tagen ab
+	EN	Soloist %s, expires in %s days
+	ES	Soloist %s, caduca en %s días
+	FR	Soloist %s, expire dans %s jours
+	IT	Soloist %s, scade tra %s giorni
+	NL	Soloist %s, verloopt over %s dagen
+	NO	Soloist %s, utløper om %s dager
+	PL	Soloist %s, wygasa za %s dni
+	SV	Soloist %s, upphör om %s dagar
+
+PLUGIN_SPOTON_SOLOIST_RENEW_NOW
+	CS	Obnovit Soloist
+	DA	Forny Soloist
+	DE	Soloist erneuern
+	EN	Renew Soloist
+	ES	Renovar Soloist
+	FR	Renouveler Soloist
+	IT	Rinnova Soloist
+	NL	Soloist vernieuwen
+	NO	Forny Soloist
+	PL	Odnów Soloist
+	SV	Förnya Soloist
+
+PLUGIN_SPOTON_SOLOIST_RENEW_NOW_DESC
+	CS	Stáhne aktuální sestavení Soloist ze stahovací služby Spotify, zkontroluje ho (verze a krátký zkušební start) a přepne na něj každý přehrávač, jakmile zrovna nepřehrává. Automaticky se spouští 14 dní před vypršením.
+	DA	Henter den aktuelle Soloist-build fra Spotifys downloadtjeneste, kontrollerer den (version og en kort teststart) og skifter hver afspiller til den, når afspilleren ikke spiller. Kører automatisk 14 dage før udløb.
+	DE	Lädt den aktuellen Soloist-Build vom Download-Dienst von Spotify herunter, prüft ihn (Version und ein kurzer Teststart) und wechselt jeden Player darauf um, sobald dieser nicht gerade spielt. Läuft automatisch 14 Tage vor Ablauf.
+	EN	Fetches the current Soloist build from Spotify's download service, checks it (version and a short test start) and switches each player to it when that player is not playing. Runs automatically 14 days before expiry.
+	ES	Descarga la compilación actual de Soloist desde el servicio de descargas de Spotify, la comprueba (versión y un breve inicio de prueba) y cambia cada reproductor a ella cuando ese reproductor no está reproduciendo. Se ejecuta automáticamente 14 días antes de la caducidad.
+	FR	Télécharge la build actuelle de Soloist depuis le service de téléchargement de Spotify, la vérifie (version et un court démarrage de test) et bascule chaque lecteur dessus lorsque ce lecteur ne joue pas. S'exécute automatiquement 14 jours avant l'expiration.
+	IT	Scarica la build attuale di Soloist dal servizio di download di Spotify, la verifica (versione e un breve avvio di prova) e passa ogni player ad essa quando quel player non sta riproducendo. Viene eseguito automaticamente 14 giorni prima della scadenza.
+	NL	Haalt de huidige Soloist-build op bij Spotify's downloaddienst, controleert deze (versie en een korte teststart) en schakelt elke speler ernaar over zodra die speler niet aan het afspelen is. Wordt automatisch 14 dagen voor het verlopen uitgevoerd.
+	NO	Henter den gjeldende Soloist-bygningen fra Spotifys nedlastingstjeneste, sjekker den (versjon og en kort teststart) og bytter hver spiller til den når spilleren ikke spiller. Kjøres automatisk 14 dager før utløp.
+	PL	Pobiera aktualną wersję Soloist z usługi pobierania Spotify, sprawdza ją (wersję i krótki test uruchomienia) i przełącza na nią każdy odtwarzacz, gdy ten akurat nie odtwarza. Uruchamia się automatycznie 14 dni przed wygaśnięciem.
+	SV	Hämtar den aktuella Soloist-versionen från Spotifys nedladdningstjänst, kontrollerar den (version och en kort teststart) och växlar varje spelare till den när spelaren inte spelar. Körs automatiskt 14 dagar innan den upphör.
+
+PLUGIN_SPOTON_SOLOIST_RENEW_NOW_BUTTON
+	CS	Obnovit Soloist nyní
+	DA	Forny Soloist nu
+	DE	Soloist jetzt erneuern
+	EN	Renew Soloist now
+	ES	Renovar Soloist ahora
+	FR	Renouveler Soloist maintenant
+	IT	Rinnova Soloist ora
+	NL	Soloist nu vernieuwen
+	NO	Forny Soloist nå
+	PL	Odnów Soloist teraz
+	SV	Förnya Soloist nu
+
+PLUGIN_SPOTON_SOLOIST_RENEWAL_STARTED
+	CS	Obnova zahájena - tato stránka se bude aktualizovat podle průběhu.
+	DA	Fornyelse startet - denne side opdateres, efterhånden som den skrider frem.
+	DE	Erneuerung gestartet - diese Seite aktualisiert sich mit dem Fortschritt.
+	EN	Renewal started -- this page updates as it progresses.
+	ES	Renovación iniciada - esta página se actualiza a medida que avanza.
+	FR	Renouvellement démarré - cette page se met à jour au fur et à mesure.
+	IT	Rinnovo avviato - questa pagina si aggiorna man mano che procede.
+	NL	Vernieuwing gestart - deze pagina wordt bijgewerkt naarmate het vordert.
+	NO	Fornyelse startet - denne siden oppdateres etter hvert som den skrider frem.
+	PL	Odnowienie rozpoczęte - ta strona aktualizuje się w miarę postępu.
+	SV	Förnyelse startad - den här sidan uppdateras allteftersom den fortskrider.
+
+PLUGIN_SPOTON_SOLOIST_RENEWAL_BUSY
+	CS	Obnova již probíhá.
+	DA	En fornyelse kører allerede.
+	DE	Eine Erneuerung läuft bereits.
+	EN	A renewal is already running.
+	ES	Ya hay una renovación en curso.
+	FR	Un renouvellement est déjà en cours.
+	IT	Un rinnovo è già in corso.
+	NL	Er loopt al een vernieuwing.
+	NO	En fornyelse kjører allerede.
+	PL	Odnowienie już trwa.
+	SV	En förnyelse pågår redan.
+
+PLUGIN_SPOTON_SOLOIST_RENEWAL_UNSUPPORTED
+	CS	Soloist není na této platformě k dispozici.
+	DA	Soloist er ikke tilgængelig på denne platform.
+	DE	Soloist ist auf dieser Plattform nicht verfügbar.
+	EN	Soloist is not available on this platform.
+	ES	Soloist no está disponible en esta plataforma.
+	FR	Soloist n'est pas disponible sur cette plateforme.
+	IT	Soloist non è disponibile su questa piattaforma.
+	NL	Soloist is niet beschikbaar op dit platform.
+	NO	Soloist er ikke tilgjengelig på denne plattformen.
+	PL	Soloist nie jest dostępny na tej platformie.
+	SV	Soloist är inte tillgängligt på den här plattformen.
+
+PLUGIN_SPOTON_SOLOIST_RENEWAL_RUNNING
+	CS	Probíhá obnova: %s
+	DA	Fornyelse i gang: %s
+	DE	Erneuerung läuft: %s
+	EN	Renewal in progress: %s
+	ES	Renovación en curso: %s
+	FR	Renouvellement en cours : %s
+	IT	Rinnovo in corso: %s
+	NL	Vernieuwing bezig: %s
+	NO	Fornyelse pågår: %s
+	PL	Trwa odnowienie: %s
+	SV	Förnyelse pågår: %s
+
+PLUGIN_SPOTON_SOLOIST_RENEWAL_DONE
+	CS	Obnoveno na Soloist %s; přehrávače se přepnou, jakmile budou nečinné.
+	DA	Fornyet til Soloist %s; afspillere skifter, når de er inaktive.
+	DE	Auf Soloist %s erneuert; Player wechseln, sobald sie inaktiv sind.
+	EN	Renewed to Soloist %s; players switch when idle.
+	ES	Renovado a Soloist %s; los reproductores cambiarán cuando estén inactivos.
+	FR	Renouvelé vers Soloist %s ; les lecteurs basculeront lorsqu'ils seront inactifs.
+	IT	Rinnovato a Soloist %s; i player passeranno alla nuova versione quando inattivi.
+	NL	Vernieuwd naar Soloist %s; spelers schakelen over zodra ze inactief zijn.
+	NO	Fornyet til Soloist %s; spillere bytter når de er inaktive.
+	PL	Odnowiono do Soloist %s; odtwarzacze przełączą się, gdy będą bezczynne.
+	SV	Förnyad till Soloist %s; spelare växlar när de är inaktiva.
+
+PLUGIN_SPOTON_SOLOIST_RENEWAL_SAME_VERSION
+	CS	Spotify stále poskytuje nainstalovanou verzi %s - není co obnovovat, znovu zkontrolujeme zítra.
+	DA	Spotify leverer stadig den installerede version %s - intet at forny, tjekker igen i morgen.
+	DE	Spotify liefert weiterhin die installierte Version %s aus - nichts zu erneuern, wird morgen erneut geprüft.
+	EN	Spotify still serves the installed version %s -- nothing to renew, will check again tomorrow.
+	ES	Spotify sigue sirviendo la versión instalada %s - nada que renovar, se comprobará de nuevo mañana.
+	FR	Spotify propose toujours la version installée %s - nouvelle vérification demain, rien à renouveler.
+	IT	Spotify continua a fornire la versione installata %s - niente da rinnovare, si ricontrollerà domani.
+	NL	Spotify levert nog steeds de geïnstalleerde versie %s - niets te vernieuwen, wordt morgen opnieuw gecontroleerd.
+	NO	Spotify leverer fortsatt den installerte versjonen %s - ingenting å fornye, sjekker igjen i morgen.
+	PL	Spotify wciąż udostępnia zainstalowaną wersję %s - nie ma czego odnawiać, sprawdzimy ponownie jutro.
+	SV	Spotify levererar fortfarande den installerade versionen %s - inget att förnya, kontrollerar igen imorgon.
+
+PLUGIN_SPOTON_SOLOIST_RENEWAL_FAILED
+	CS	Obnova selhala (%s) - zkusíme to znovu zítra.
+	DA	Fornyelse mislykkedes (%s) - prøver igen i morgen.
+	DE	Erneuerung fehlgeschlagen (%s) - wird morgen erneut versucht.
+	EN	Renewal failed (%s) -- will retry tomorrow.
+	ES	La renovación falló (%s) - se reintentará mañana.
+	FR	Échec du renouvellement (%s) - nouvelle tentative demain.
+	IT	Rinnovo non riuscito (%s) - si riproverà domani.
+	NL	Vernieuwing mislukt (%s) - wordt morgen opnieuw geprobeerd.
+	NO	Fornyelse mislyktes (%s) - prøver igjen i morgen.
+	PL	Odnowienie nie powiodło się (%s) - spróbujemy ponownie jutro.
+	SV	Förnyelsen misslyckades (%s) - försöker igen imorgon.
+
+PLUGIN_SPOTON_SOLOIST_HEALTH_RESTARTED
+	CS	Soloist pro %s restartován: %s (%s)
+	DA	Soloist for %s genstartet: %s (%s)
+	DE	Soloist für %s neu gestartet: %s (%s)
+	EN	Soloist for %s restarted: %s (%s)
+	ES	Soloist para %s reiniciado: %s (%s)
+	FR	Soloist pour %s redémarré : %s (%s)
+	IT	Soloist per %s riavviato: %s (%s)
+	NL	Soloist voor %s opnieuw gestart: %s (%s)
+	NO	Soloist for %s omstartet: %s (%s)
+	PL	Soloist dla %s zrestartowany: %s (%s)
+	SV	Soloist för %s omstartad: %s (%s)
+
+PLUGIN_SPOTON_SOLOIST_HEALTH_REASON_NO_LOGIN
+	CS	nepřihlášen do 30 s
+	DA	ikke logget ind inden for 30 sek.
+	DE	nicht angemeldet innerhalb von 30 s
+	EN	not logged in within 30 s
+	ES	no inició sesión en 30 s
+	FR	non connecté en 30 s
+	IT	non connesso entro 30 s
+	NL	niet ingelogd binnen 30 s
+	NO	ikke logget inn innen 30 sek.
+	PL	brak logowania w ciągu 30 s
+	SV	inte inloggad inom 30 sek.
+
+PLUGIN_SPOTON_SOLOIST_HEALTH_REASON_NO_ANSWER
+	CS	žádná odpověď na dotaz na stav do 5 s
+	DA	intet svar på statusforespørgsel inden for 5 sek.
+	DE	keine Antwort auf eine Statusabfrage innerhalb von 5 s
+	EN	no answer to a status request within 5 s
+	ES	sin respuesta a una solicitud de estado en 5 s
+	FR	aucune réponse à une demande de statut en 5 s
+	IT	nessuna risposta a una richiesta di stato entro 5 s
+	NL	geen antwoord op een statusverzoek binnen 5 s
+	NO	intet svar på en statusforespørsel innen 5 sek.
+	PL	brak odpowiedzi na zapytanie o stan w ciągu 5 s
+	SV	inget svar på en statusförfrågan inom 5 sek.
+
+PLUGIN_SPOTON_SOLOIST_HEALTH_REASON_WS_UNREACHABLE
+	CS	řídicí spojení s daemonem ztraceno a neobnoveno
+	DA	styreforbindelsen til dæmonen tabt og ikke genoprettet
+	DE	Steuerverbindung zum Daemon verloren und nicht wiederhergestellt
+	EN	control connection to the daemon lost and not restored
+	ES	conexión de control con el daemon perdida y no restablecida
+	FR	connexion de contrôle au démon perdue et non rétablie
+	IT	connessione di controllo al demone persa e non ripristinata
+	NL	besturingsverbinding met de daemon verloren en niet hersteld
+	NO	kontrollforbindelsen til daemonen tapt og ikke gjenopprettet
+	PL	połączenie kontrolne z demonem utracone i nieprzywrócone
+	SV	styranslutningen till demonen förlorad och inte återställd
+
+PLUGIN_SPOTON_SOLOIST_EXPIRED_RENEWING
+	CS	Toto sestavení Soloist vypršelo - SpotOn ho obnovuje ze stahovací služby Spotify.
+	DA	Denne Soloist-build er udløbet - SpotOn fornyer den fra Spotifys downloadtjeneste.
+	DE	Dieser Soloist-Build ist abgelaufen - SpotOn erneuert ihn über den Download-Dienst von Spotify.
+	EN	This Soloist build has expired -- SpotOn is renewing it from Spotify's download service.
+	ES	Esta compilación de Soloist ha caducado - SpotOn la está renovando desde el servicio de descargas de Spotify.
+	FR	Cette build de Soloist a expiré - SpotOn la renouvelle depuis le service de téléchargement de Spotify.
+	IT	Questa build di Soloist è scaduta - SpotOn la sta rinnovando dal servizio di download di Spotify.
+	NL	Deze Soloist-build is verlopen - SpotOn vernieuwt deze via Spotify's downloaddienst.
+	NO	Denne Soloist-bygningen har utløpt - SpotOn fornyer den fra Spotifys nedlastingstjeneste.
+	PL	Ta wersja Soloist wygasła - SpotOn odnawia ją z usługi pobierania Spotify.
+	SV	Den här Soloist-versionen har upphört - SpotOn förnyar den från Spotifys nedladdningstjänst.
+
+PLUGIN_SPOTON_SOLOIST_EXPIRED_PLACE_BINARY
+	CS	Automatická obnova se nezdařila. Stáhněte si Soloist z odkazu níže a umístěte ho sami (viz uvedená složka).
+	DA	Automatisk fornyelse lykkedes ikke. Download Soloist fra linket nedenfor, og placer den selv (se den angivne mappe).
+	DE	Die automatische Erneuerung war nicht erfolgreich. Laden Sie Soloist über den Link unten herunter und platzieren Sie es selbst (siehe den dort genannten Ordner).
+	EN	Automatic renewal did not succeed. Download Soloist from the link below and place it yourself (see the folder named there).
+	ES	La renovación automática no tuvo éxito. Descargue Soloist desde el enlace de abajo y colóquelo usted mismo (consulte la carpeta indicada allí).
+	FR	Le renouvellement automatique a échoué. Téléchargez Soloist depuis le lien ci-dessous et placez-le vous-même (voir le dossier indiqué).
+	IT	Il rinnovo automatico non è riuscito. Scarica Soloist dal link sottostante e posizionalo manualmente (vedi la cartella indicata).
+	NL	Automatisch vernieuwen is niet gelukt. Download Soloist via de onderstaande link en plaats het zelf (zie de daar genoemde map).
+	NO	Automatisk fornyelse lyktes ikke. Last ned Soloist fra lenken nedenfor og plasser den selv (se mappen nevnt der).
+	PL	Automatyczne odnowienie nie powiodło się. Pobierz Soloist z poniższego linku i umieść go samodzielnie (zobacz wskazany tam folder).
+	SV	Den automatiska förnyelsen lyckades inte. Ladda ner Soloist via länken nedan och placera den själv (se mappen som nämns där).
+
+PLUGIN_SPOTON_SOLOIST_DOWNLOAD_PAGE
+	CS	Stránka pro stažení Soloist od Spotify
+	DA	Spotifys downloadside for Soloist
+	DE	Spotifys Download-Seite für Soloist
+	EN	Spotify's Soloist download page
+	ES	Página de descarga de Soloist de Spotify
+	FR	Page de téléchargement de Soloist de Spotify
+	IT	Pagina di download di Soloist di Spotify
+	NL	Spotify's downloadpagina voor Soloist
+	NO	Spotifys nedlastingsside for Soloist
+	PL	Strona pobierania Soloist od Spotify
+	SV	Spotifys nedladdningssida för Soloist
+
+PLUGIN_SPOTON_SOLOIST_TERMS_LINE
+	CS	Soloist je software společnosti Spotify. Nesmí být upravován, dekompilován ani zpětně analyzován a jeho archivy ani binární soubory nesmí být šířeny dál (Podmínky pro vývojáře Spotify V.11).
+	DA	Soloist er Spotifys software. Den må ikke ændres, dekompileres eller reverse engineeres, og dens arkiver eller binærfiler må ikke videredistribueres (Spotify Developer Terms V.11).
+	DE	Soloist ist Software von Spotify. Sie darf nicht verändert, dekompiliert oder zurückentwickelt werden, und ihre Archive oder Binärdateien dürfen nicht weiterverbreitet werden (Spotify Developer Terms V.11).
+	EN	Soloist is Spotify's software. It must not be modified, decompiled or reverse engineered, and its archives or binaries must not be redistributed (Spotify Developer Terms V.11).
+	ES	Soloist es software de Spotify. No debe modificarse, descompilarse ni someterse a ingeniería inversa, y sus archivos o binarios no deben redistribuirse (Términos para desarrolladores de Spotify V.11).
+	FR	Soloist est un logiciel de Spotify. Il ne doit pas être modifié, décompilé ni soumis à une ingénierie inverse, et ses archives ou binaires ne doivent pas être redistribués (Conditions pour les développeurs Spotify V.11).
+	IT	Soloist è un software di Spotify. Non deve essere modificato, decompilato o sottoposto a reverse engineering, e i suoi archivi o binari non devono essere ridistribuiti (Termini per sviluppatori Spotify V.11).
+	NL	Soloist is software van Spotify. Het mag niet worden gewijzigd, gedecompileerd of aan reverse engineering worden onderworpen, en de archieven of binaire bestanden ervan mogen niet worden herverspreid (Spotify Developer Terms V.11).
+	NO	Soloist er programvare fra Spotify. Den må ikke endres, dekompileres eller reverses, og arkivene eller binærfilene må ikke videredistribueres (Spotify Developer Terms V.11).
+	PL	Soloist to oprogramowanie Spotify. Nie wolno go modyfikować, dekompilować ani poddawać inżynierii wstecznej, a jego archiwów ani plików binarnych nie wolno redystrybuować (Warunki dla deweloperów Spotify V.11).
+	SV	Soloist är Spotifys programvara. Det får inte modifieras, dekompileras eller utsättas för reverse engineering, och dess arkiv eller binärer får inte vidaredistribueras (Spotify Developer Terms V.11).
+
+PLUGIN_SPOTON_SOLOIST_ROLLED_BACK
+	CS	Soloist %s byl vrácen zpět na %s (%s). Automatická obnova to zkusí znovu zítra.
+	DA	Soloist %s blev rullet tilbage til %s (%s). Automatisk fornyelse prøver igen i morgen.
+	DE	Soloist %s wurde auf %s zurückgesetzt (%s). Die automatische Erneuerung versucht es morgen erneut.
+	EN	Soloist %s was rolled back to %s (%s). Automatic renewal will try again tomorrow.
+	ES	Soloist %s se revirtió a %s (%s). La renovación automática lo volverá a intentar mañana.
+	FR	Soloist %s a été rétabli à %s (%s). Le renouvellement automatique réessaiera demain.
+	IT	Soloist %s è stato ripristinato a %s (%s). Il rinnovo automatico riproverà domani.
+	NL	Soloist %s is teruggedraaid naar %s (%s). Automatisch vernieuwen probeert het morgen opnieuw.
+	NO	Soloist %s ble rullet tilbake til %s (%s). Automatisk fornyelse prøver igjen i morgen.
+	PL	Soloist %s został przywrócony do %s (%s). Automatyczne odnowienie spróbuje ponownie jutro.
+	SV	Soloist %s återställdes till %s (%s). Den automatiska förnyelsen försöker igen imorgon.
+
+PLUGIN_SPOTON_SOLOIST_ROLLBACK_IMPOSSIBLE
+	CS	Nové sestavení Soloist selhalo (%s) a není k dispozici žádné platné předchozí sestavení -- umístěte binární soubor sami (viz níže).
+	DA	Den nye Soloist-build mislykkedes (%s), og der er ingen gyldig tidligere build tilgængelig -- placer selv en binærfil (se nedenfor).
+	DE	Der neue Soloist-Build ist fehlgeschlagen (%s), und es ist kein gültiger vorheriger Build verfügbar -- platzieren Sie selbst eine Binärdatei (siehe unten).
+	EN	The new Soloist build failed (%s) and no valid previous build is available -- place a binary yourself (see below).
+	ES	La nueva compilación de Soloist falló (%s) y no hay ninguna compilación anterior válida disponible -- coloque un binario usted mismo (vea abajo).
+	FR	La nouvelle build de Soloist a échoué (%s) et aucune build précédente valide n'est disponible -- placez un binaire vous-même (voir ci-dessous).
+	IT	La nuova build di Soloist non è riuscita (%s) e non è disponibile alcuna build precedente valida -- posiziona un binario manualmente (vedi sotto).
+	NL	De nieuwe Soloist-build is mislukt (%s) en er is geen geldige eerdere build beschikbaar -- plaats zelf een binair bestand (zie hieronder).
+	NO	Den nye Soloist-bygningen mislyktes (%s), og ingen gyldig tidligere bygning er tilgjengelig -- plasser en binærfil selv (se nedenfor).
+	PL	Nowa wersja Soloist nie powiodła się (%s) i nie jest dostępna żadna prawidłowa poprzednia wersja -- umieść plik binarny samodzielnie (zobacz poniżej).
+	SV	Den nya Soloist-versionen misslyckades (%s) och ingen giltig tidigare version är tillgänglig -- placera en binär själv (se nedan).
+
+PLUGIN_SPOTON_SOLOIST_SWITCH_PENDING
+	CS	přepne na nový Soloist, jakmile se nepřehrává
+	DA	skifter til den nye Soloist, når der ikke afspilles
+	DE	wechselt zum neuen Soloist, sobald nicht wiedergegeben wird
+	EN	switches to the new Soloist when not playing
+	ES	cambiará al nuevo Soloist cuando no esté reproduciendo
+	FR	passera au nouveau Soloist dès qu'il n'y aura plus de lecture en cours
+	IT	passerà al nuovo Soloist quando non è in riproduzione
+	NL	schakelt over naar de nieuwe Soloist zodra er niet wordt afgespeeld
+	NO	bytter til den nye Soloist når det ikke spilles av
+	PL	przełączy się na nowego Soloista, gdy nie trwa odtwarzanie
+	SV	växlar till den nya Soloist när ingenting spelas upp
+
+PLUGIN_SPOTON_SOLOIST_ROLLBACK_HINT
+	CS	Po přepnutí se SpotOn vrátí k předchozímu sestavení, pokud se démon nespustí nebo třikrát havaruje během 30 minut. Sestavení, které běží, ale zůstává tiché, není rozpoznáno -- po obnově zkontrolujte přehrávání.
+	DA	Efter et skift ruller SpotOn tilbage til den forrige build, hvis dæmonen ikke starter eller går ned tre gange inden for 30 minutter. En build, der kører, men forbliver stille, opdages ikke -- tjek afspilningen efter en fornyelse.
+	DE	Nach einem Wechsel setzt SpotOn auf den vorherigen Build zurück, wenn der Daemon nicht startet oder innerhalb von 30 Minuten dreimal abstürzt. Ein Build, der läuft, aber stumm bleibt, wird nicht erkannt -- prüfen Sie die Wiedergabe nach einer Erneuerung.
+	EN	After a switch, SpotOn rolls back to the previous build if the daemon does not start or crashes three times within 30 minutes. A build that runs but stays silent is not detected -- check playback after a renewal.
+	ES	Después de un cambio, SpotOn revierte a la compilación anterior si el demonio no arranca o falla tres veces en 30 minutos. Una compilación que se ejecuta pero permanece silenciosa no se detecta -- compruebe la reproducción después de una renovación.
+	FR	Après un changement, SpotOn revient à la build précédente si le démon ne démarre pas ou plante trois fois en 30 minutes. Une build qui fonctionne mais reste silencieuse n'est pas détectée -- vérifiez la lecture après un renouvellement.
+	IT	Dopo un cambio, SpotOn ripristina la build precedente se il demone non si avvia o si blocca tre volte entro 30 minuti. Una build che funziona ma resta silenziosa non viene rilevata -- controlla la riproduzione dopo un rinnovo.
+	NL	Na een wissel gaat SpotOn terug naar de vorige build als de daemon niet start of binnen 30 minuten drie keer crasht. Een build die draait maar stil blijft, wordt niet gedetecteerd -- controleer de afspeling na een vernieuwing.
+	NO	Etter en bytte ruller SpotOn tilbake til forrige bygning hvis daemonen ikke starter eller krasjer tre ganger innen 30 minutter. En bygning som kjører, men forblir stille, oppdages ikke -- sjekk avspillingen etter en fornyelse.
+	PL	Po przełączeniu SpotOn wraca do poprzedniej wersji, jeśli demon nie uruchamia się lub ulega awarii trzy razy w ciągu 30 minut. Wersja, która działa, ale pozostaje cicha, nie jest wykrywana -- sprawdź odtwarzanie po odnowieniu.
+	SV	Efter en växling återgår SpotOn till den föregående versionen om demonen inte startar eller kraschar tre gånger inom 30 minuter. En version som körs men förblir tyst upptäcks inte -- kontrollera uppspelningen efter en förnyelse.
+
+PLUGIN_SPOTON_SOLOIST_MANUAL_FOLDER_DESC
+	CS	Chcete-li použít vlastní sestavení: stáhněte archiv ze stránky výše a umístěte soubor .tar.gz (nebo rozbalený binární soubor „soloist“) do %s. SpotOn jej zkontroluje do minuty (verze a krátký zkušební start) a přepne se na něj, jakmile přehrávač nehraje. Dokud je přítomno platné umístěné sestavení, automatická obnova je pozastavena -- vyprázdněte složku pro návrat k ní.
+	DA	For at bruge din egen build: download arkivet fra siden ovenfor, og læg .tar.gz-filen (eller den udpakkede 'soloist'-binærfil) i %s. SpotOn kontrollerer den inden for et minut (version og en kort teststart) og skifter til den, når afspilleren ikke spiller. Så længe der findes en gyldig placeret build, er automatisk fornyelse sat på pause -- tøm mappen for at vende tilbage til den.
+	DE	Um Ihren eigenen Build zu verwenden: Laden Sie das Archiv von der obigen Seite herunter und legen Sie die .tar.gz-Datei (oder die entpackte Binärdatei „soloist“) in %s ab. SpotOn prüft sie innerhalb einer Minute (Version und ein kurzer Teststart) und wechselt zu ihr, sobald der Player nicht wiedergibt. Solange ein gültiger platzierter Build vorhanden ist, pausiert die automatische Erneuerung -- leeren Sie den Ordner, um dorthin zurückzukehren.
+	EN	To use your own build: download the archive from the page above and put the .tar.gz (or the extracted 'soloist' binary) into %s. SpotOn checks it within a minute (version and a short test start) and switches to it when the player is not playing. While a valid placed build is present, automatic renewal pauses -- empty the folder to return to it.
+	ES	Para usar tu propia compilación: descarga el archivo de la página de arriba y coloca el .tar.gz (o el binario 'soloist' extraído) en %s. SpotOn lo comprueba en menos de un minuto (versión y un breve inicio de prueba) y cambia a él cuando el reproductor no está reproduciendo. Mientras haya una compilación colocada válida, la renovación automática se pausa -- vacía la carpeta para volver a ella.
+	FR	Pour utiliser votre propre build : téléchargez l'archive depuis la page ci-dessus et placez le fichier .tar.gz (ou le binaire 'soloist' extrait) dans %s. SpotOn le vérifie en moins d'une minute (version et un court démarrage test) et bascule dessus lorsque le lecteur ne joue pas. Tant qu'une build placée valide est présente, le renouvellement automatique est en pause -- videz le dossier pour y revenir.
+	IT	Per usare la tua build: scarica l'archivio dalla pagina sopra e metti il file .tar.gz (o il binario 'soloist' estratto) in %s. SpotOn lo controlla entro un minuto (versione e un breve avvio di prova) e vi passa quando il lettore non è in riproduzione. Finché è presente una build posizionata valida, il rinnovo automatico è in pausa -- svuota la cartella per tornarci.
+	NL	Om je eigen build te gebruiken: download het archief van de pagina hierboven en plaats het .tar.gz-bestand (of het uitgepakte 'soloist'-binaire bestand) in %s. SpotOn controleert het binnen een minuut (versie en een korte teststart) en schakelt ernaar over zodra de speler niet afspeelt. Zolang er een geldige geplaatste build aanwezig is, wordt automatisch vernieuwen gepauzeerd -- maak de map leeg om ernaar terug te keren.
+	NO	For å bruke din egen bygning: last ned arkivet fra siden ovenfor, og legg .tar.gz-filen (eller den utpakkede 'soloist'-binærfilen) i %s. SpotOn sjekker den innen ett minutt (versjon og en kort teststart) og bytter til den når spilleren ikke spiller. Så lenge en gyldig plassert bygning finnes, settes automatisk fornyelse på pause -- tøm mappen for å gå tilbake til den.
+	PL	Aby użyć własnej wersji: pobierz archiwum ze strony powyżej i umieść plik .tar.gz (lub rozpakowany plik binarny „soloist”) w %s. SpotOn sprawdzi go w ciągu minuty (wersja i krótki test uruchomienia) i przełączy się na niego, gdy odtwarzacz nie odtwarza. Dopóki obecna jest prawidłowa umieszczona wersja, automatyczne odnawianie jest wstrzymane -- opróżnij folder, aby do niego wrócić.
+	SV	För att använda din egen version: ladda ner arkivet från sidan ovan och lägg .tar.gz-filen (eller den uppackade 'soloist'-binären) i %s. SpotOn kontrollerar den inom en minut (version och en kort teststart) och växlar till den när spelaren inte spelar upp. Så länge en giltig placerad version finns är automatisk förnyelse pausad -- töm mappen för att återgå till den.
+
+PLUGIN_SPOTON_SOLOIST_MANUAL_ACTIVE
+	CS	Používá se vaše umístěné sestavení Soloist %s -- automatická obnova je pozastavena.
+	DA	Bruger din placerede Soloist %s -- automatisk fornyelse er sat på pause.
+	DE	Verwendet Ihr platziertes Soloist %s -- die automatische Erneuerung ist pausiert.
+	EN	Using your placed Soloist %s -- automatic renewal is paused.
+	ES	Usando tu Soloist colocado %s -- la renovación automática está pausada.
+	FR	Utilisation de votre Soloist placé %s -- le renouvellement automatique est en pause.
+	IT	In uso il tuo Soloist posizionato %s -- il rinnovo automatico è in pausa.
+	NL	Gebruikt je geplaatste Soloist %s -- automatisch vernieuwen is gepauzeerd.
+	NO	Bruker din plasserte Soloist %s -- automatisk fornyelse er satt på pause.
+	PL	Używana jest umieszczona przez Ciebie wersja Soloist %s -- automatyczne odnawianie jest wstrzymane.
+	SV	Använder din placerade Soloist %s -- automatisk förnyelse är pausad.
+
+PLUGIN_SPOTON_SOLOIST_MANUAL_REJECTED
+	CS	Vaše umístěné sestavení Soloist je ignorováno: %s. Automatická obnova pokračuje.
+	DA	Din placerede Soloist ignoreres: %s. Automatisk fornyelse fortsætter.
+	DE	Ihr platziertes Soloist wird ignoriert: %s. Die automatische Erneuerung läuft weiter.
+	EN	Your placed Soloist is ignored: %s. Automatic renewal continues.
+	ES	Tu Soloist colocado se ignora: %s. La renovación automática continúa.
+	FR	Votre Soloist placé est ignoré : %s. Le renouvellement automatique continue.
+	IT	Il tuo Soloist posizionato viene ignorato: %s. Il rinnovo automatico continua.
+	NL	Je geplaatste Soloist wordt genegeerd: %s. Automatisch vernieuwen gaat door.
+	NO	Din plasserte Soloist ignoreres: %s. Automatisk fornyelse fortsetter.
+	PL	Twoja umieszczona wersja Soloist jest ignorowana: %s. Automatyczne odnawianie trwa nadal.
+	SV	Din placerade Soloist ignoreras: %s. Automatisk förnyelse fortsätter.
+
+PLUGIN_SPOTON_SOLOIST_MANUAL_EXPIRED
+	CS	Vaše umístěné sestavení Soloist vypršelo a je ignorováno -- umístěte nové nebo vyprázdněte složku.
+	DA	Din placerede Soloist er udløbet og ignoreres -- placer en ny, eller tøm mappen.
+	DE	Ihr platziertes Soloist ist abgelaufen und wird ignoriert -- platzieren Sie ein neues oder leeren Sie den Ordner.
+	EN	Your placed Soloist has expired and is ignored -- place a new one or empty the folder.
+	ES	Tu Soloist colocado ha caducado y se ignora -- coloca uno nuevo o vacía la carpeta.
+	FR	Votre Soloist placé a expiré et est ignoré -- placez-en un nouveau ou videz le dossier.
+	IT	Il tuo Soloist posizionato è scaduto ed è ignorato -- posizionane uno nuovo o svuota la cartella.
+	NL	Je geplaatste Soloist is verlopen en wordt genegeerd -- plaats een nieuwe of maak de map leeg.
+	NO	Din plasserte Soloist har utløpt og ignoreres -- plasser en ny, eller tøm mappen.
+	PL	Twoja umieszczona wersja Soloist wygasła i jest ignorowana -- umieść nową lub opróżnij folder.
+	SV	Din placerade Soloist har upphört och ignoreras -- placera en ny eller töm mappen.
+
+PLUGIN_SPOTON_SOLOIST_MANUAL_EXPIRING
+	CS	Vaše umístěné sestavení Soloist vyprší za %s dní -- umístěte nové nebo vyprázdněte složku.
+	DA	Din placerede Soloist udløber om %s dage -- placer en ny, eller tøm mappen.
+	DE	Ihr platziertes Soloist läuft in %s Tagen ab -- platzieren Sie ein neues oder leeren Sie den Ordner.
+	EN	Your placed Soloist expires in %s days -- place a new one or empty the folder.
+	ES	Tu Soloist colocado caduca en %s días -- coloca uno nuevo o vacía la carpeta.
+	FR	Votre Soloist placé expire dans %s jours -- placez-en un nouveau ou videz le dossier.
+	IT	Il tuo Soloist posizionato scade tra %s giorni -- posizionane uno nuovo o svuota la cartella.
+	NL	Je geplaatste Soloist verloopt over %s dagen -- plaats een nieuwe of maak de map leeg.
+	NO	Din plasserte Soloist utløper om %s dager -- plasser en ny, eller tøm mappen.
+	PL	Twoja umieszczona wersja Soloist wygaśnie za %s dni -- umieść nową lub opróżnij folder.
+	SV	Din placerade Soloist upphör om %s dagar -- placera en ny eller töm mappen.
+
+PLUGIN_SPOTON_SOLOIST_MANUAL_CHECKING
+	CS	Kontroluje se umístěné sestavení Soloist ...
+	DA	Kontrollerer den placerede Soloist ...
+	DE	Das platzierte Soloist wird geprüft ...
+	EN	Checking the placed Soloist ...
+	ES	Comprobando el Soloist colocado ...
+	FR	Vérification du Soloist placé ...
+	IT	Controllo del Soloist posizionato in corso ...
+	NL	Bezig met controleren van de geplaatste Soloist ...
+	NO	Kontrollerer den plasserte Soloist ...
+	PL	Sprawdzanie umieszczonej wersji Soloist ...
+	SV	Kontrollerar den placerade Soloist ...
+
+PLUGIN_SPOTON_SOLOIST_RENEWAL_BLOCKED_PLACED
+	CS	Obnova pozastavena: používá se platné umístěné sestavení Soloist (pro obnovení vyprázdněte složku).
+	DA	Fornyelse sat på pause: en gyldig placeret Soloist er i brug (tøm mappen for at genoptage).
+	DE	Erneuerung pausiert: Ein gültiges platziertes Soloist wird verwendet (leeren Sie den Ordner, um fortzufahren).
+	EN	Renewal paused: a valid placed Soloist is in use (empty the folder to resume).
+	ES	Renovación pausada: se está usando un Soloist colocado válido (vacía la carpeta para reanudar).
+	FR	Renouvellement en pause : un Soloist placé valide est utilisé (videz le dossier pour reprendre).
+	IT	Rinnovo in pausa: è in uso un Soloist posizionato valido (svuota la cartella per riprendere).
+	NL	Vernieuwen gepauzeerd: er wordt een geldige geplaatste Soloist gebruikt (maak de map leeg om te hervatten).
+	NO	Fornyelse satt på pause: en gyldig plassert Soloist er i bruk (tøm mappen for å gjenoppta).
+	PL	Odnawianie wstrzymane: używana jest prawidłowa umieszczona wersja Soloist (opróżnij folder, aby wznowić).
+	SV	Förnyelse pausad: en giltig placerad Soloist används (töm mappen för att återuppta).
+
+PLUGIN_SPOTON_SOLOIST_QUALITY
+	CS	Kvalita streamování Spotify
+	DA	Spotify-streamingkvalitet
+	DE	Spotify-Streaming-Qualität
+	EN	Spotify streaming quality
+	ES	Calidad de streaming de Spotify
+	FR	Qualité de diffusion Spotify
+	IT	Qualità di streaming Spotify
+	NL	Spotify-streamingkwaliteit
+	NO	Spotify-strømmekvalitet
+	PL	Jakość strumieniowania Spotify
+	SV	Spotify-streamingkvalitet
+
+PLUGIN_SPOTON_SOLOIST_QUALITY_DESC
+	CS	Kvalita, se kterou Spotify streamuje na toto zařízení Soloist - stejné názvy jako v aplikaci Spotify. Bezztrátový režim vyžaduje předplatné Premium s povoleným Lossless.
+	DA	Kvalitet Spotify streamer til denne Soloist-enhed - samme navne som i Spotify-appen. Tabsfri kræver en Premium-plan med lossless aktiveret.
+	DE	Qualität, mit der Spotify an dieses Soloist-Gerät streamt - dieselben Namen wie in der Spotify-App. Verlustfrei benötigt einen Premium-Plan mit aktiviertem Lossless.
+	EN	Quality Spotify streams to this Soloist device - the same names as in the Spotify app. Lossless needs a Premium plan with lossless enabled.
+	ES	Calidad con la que Spotify transmite a este dispositivo Soloist - los mismos nombres que en la app de Spotify. Sin pérdida requiere un plan Premium con lossless activado.
+	FR	Qualité à laquelle Spotify diffuse vers cet appareil Soloist - les mêmes noms que dans l'application Spotify. Sans perte nécessite un abonnement Premium avec le mode sans perte activé.
+	IT	Qualità con cui Spotify trasmette a questo dispositivo Soloist - gli stessi nomi dell'app Spotify. Senza perdita richiede un piano Premium con lossless attivato.
+	NL	Kwaliteit waarmee Spotify naar dit Soloist-apparaat streamt - dezelfde namen als in de Spotify-app. Lossless vereist een Premium-abonnement met lossless ingeschakeld.
+	NO	Kvalitet Spotify strømmer til denne Soloist-enheten - samme navn som i Spotify-appen. Tapsfri krever en Premium-plan med lossless aktivert.
+	PL	Jakość, w jakiej Spotify strumieniuje do tego urządzenia Soloist - te same nazwy co w aplikacji Spotify. Bezstratna wymaga planu Premium z włączonym trybem lossless.
+	SV	Kvalitet Spotify strömmar till den här Soloist-enheten - samma namn som i Spotify-appen. Förlustfri kräver ett Premium-abonnemang med lossless aktiverat.
+
+PLUGIN_SPOTON_SOLOIST_QUALITY_AUTOMATIC
+	CS	Automaticky
+	DA	Automatisk
+	DE	Automatisch
+	EN	Automatic
+	ES	Automático
+	FR	Automatique
+	IT	Automatica
+	NL	Automatisch
+	NO	Automatisk
+	PL	Automatyczna
+	SV	Automatisk
+
+PLUGIN_SPOTON_SOLOIST_QUALITY_LOW
+	CS	Nízká
+	DA	Lav
+	DE	Niedrig
+	EN	Low
+	ES	Baja
+	FR	Faible
+	IT	Bassa
+	NL	Laag
+	NO	Lav
+	PL	Niska
+	SV	Låg
+
+PLUGIN_SPOTON_SOLOIST_QUALITY_NORMAL
+	CS	Normální
+	DA	Normal
+	DE	Normal
+	EN	Normal
+	ES	Normal
+	FR	Normale
+	IT	Normale
+	NL	Normaal
+	NO	Normal
+	PL	Normalna
+	SV	Normal
+
+PLUGIN_SPOTON_SOLOIST_QUALITY_HIGH
+	CS	Vysoká
+	DA	Høj
+	DE	Hoch
+	EN	High
+	ES	Alta
+	FR	Élevée
+	IT	Alta
+	NL	Hoog
+	NO	Høy
+	PL	Wysoka
+	SV	Hög
+
+PLUGIN_SPOTON_SOLOIST_QUALITY_VERY_HIGH
+	CS	Velmi vysoká
+	DA	Meget høj
+	DE	Sehr hoch
+	EN	Very high
+	ES	Muy alta
+	FR	Très élevée
+	IT	Molto alta
+	NL	Zeer hoog
+	NO	Svært høy
+	PL	Bardzo wysoka
+	SV	Mycket hög
+
+PLUGIN_SPOTON_SOLOIST_QUALITY_LOSSLESS
+	CS	Bezztrátová
+	DA	Tabsfri
+	DE	Verlustfrei
+	EN	Lossless
+	ES	Sin pérdida
+	FR	Sans perte
+	IT	Senza perdita
+	NL	Lossless
+	NO	Tapsfri
+	PL	Bezstratna
+	SV	Förlustfri
+
+PLUGIN_SPOTON_SOLOIST_QUALITY_LOSSLESS_24
+	CS	Bezztrátová (24bitová, nastaveno v aplikaci Spotify)
+	DA	Tabsfri (24-bit, indstillet i Spotify-appen)
+	DE	Verlustfrei (24-Bit, in der Spotify-App eingestellt)
+	EN	Lossless (24-bit, set in the Spotify app)
+	ES	Sin pérdida (24 bits, configurado en la app de Spotify)
+	FR	Sans perte (24 bits, défini dans l'application Spotify)
+	IT	Senza perdita (24 bit, impostata nell'app Spotify)
+	NL	Lossless (24-bit, ingesteld in de Spotify-app)
+	NO	Tapsfri (24-bit, angitt i Spotify-appen)
+	PL	Bezstratna (24-bitowa, ustawiona w aplikacji Spotify)
+	SV	Förlustfri (24-bit, inställd i Spotify-appen)
+
+PLUGIN_SPOTON_SOLOIST_QUALITY_USE_GLOBAL
+	CS	Použít globální nastavení
+	DA	Brug global indstilling
+	DE	Globale Einstellung verwenden
+	EN	Use global setting
+	ES	Usar configuración global
+	FR	Utiliser le réglage global
+	IT	Usa l'impostazione globale
+	NL	Globale instelling gebruiken
+	NO	Bruk global innstilling
+	PL	Użyj ustawienia globalnego
+	SV	Använd global inställning
+
+PLUGIN_SPOTON_SOLOIST_QUALITY_NEXT_TRACK
+	CS	Změna se projeví od další skladby.
+	DA	En ændring træder i kraft fra det næste nummer.
+	DE	Eine Änderung gilt ab dem nächsten Track.
+	EN	A change takes effect from the next track.
+	ES	Un cambio se aplica a partir de la siguiente pista.
+	FR	Un changement prend effet à partir de la piste suivante.
+	IT	Una modifica ha effetto dal brano successivo.
+	NL	Een wijziging gaat in vanaf het volgende nummer.
+	NO	En endring trer i kraft fra neste spor.
+	PL	Zmiana obowiązuje od następnego utworu.
+	SV	En ändring gäller från nästa spår.
+
+PLUGIN_SPOTON_SOLOIST_QUALITY_EFFECTIVE
+	CS	Aktuálně platí: %s (změněno v aplikaci Spotify)
+	DA	Aktuelt gældende: %s (ændret i Spotify-appen)
+	DE	Aktuell wirksam: %s (in der Spotify-App geändert)
+	EN	Currently effective: %s (changed in the Spotify app)
+	ES	Actualmente vigente: %s (cambiado en la app de Spotify)
+	FR	Actuellement en vigueur : %s (modifié dans l'application Spotify)
+	IT	Attualmente in vigore: %s (modificata nell'app Spotify)
+	NL	Momenteel actief: %s (gewijzigd in de Spotify-app)
+	NO	Gjeldende nå: %s (endret i Spotify-appen)
+	PL	Obecnie obowiązuje: %s (zmieniona w aplikacji Spotify)
+	SV	Just nu gäller: %s (ändrad i Spotify-appen)
+
+PLUGIN_SPOTON_SOLOIST_QUALITY_SET_IN_APP
+	CS	%s (nastaveno v aplikaci Spotify)
+	DA	%s (indstillet i Spotify-appen)
+	DE	%s (in der Spotify-App eingestellt)
+	EN	%s (set in the Spotify app)
+	ES	%s (configurado en la app de Spotify)
+	FR	%s (défini dans l'application Spotify)
+	IT	%s (impostata nell'app Spotify)
+	NL	%s (ingesteld in de Spotify-app)
+	NO	%s (angitt i Spotify-appen)
+	PL	%s (ustawiona w aplikacji Spotify)
+	SV	%s (inställd i Spotify-appen)
+
+PLUGIN_SPOTON_SOLOIST_QUALITY_REJECTED
+	CS	Spotify nepřijalo hodnotu %s - nastavení bylo obnoveno na %s.
+	DA	Spotify accepterede ikke %s - indstillingen er nulstillet til %s.
+	DE	Spotify hat %s nicht akzeptiert - Einstellung auf %s zurückgesetzt.
+	EN	Spotify did not accept %s - setting reset to %s.
+	ES	Spotify no aceptó %s - el ajuste se restableció a %s.
+	FR	Spotify n'a pas accepté %s - le réglage a été réinitialisé sur %s.
+	IT	Spotify non ha accettato %s - impostazione ripristinata a %s.
+	NL	Spotify heeft %s niet geaccepteerd - instelling teruggezet naar %s.
+	NO	Spotify godtok ikke %s - innstillingen er tilbakestilt til %s.
+	PL	Spotify nie zaakceptowało %s - ustawienie przywrócono do %s.
+	SV	Spotify accepterade inte %s - inställningen återställdes till %s.
+
+PLUGIN_SPOTON_SOLOIST_QUALITY_UNREACHABLE
+	CS	Spotify nebylo dosažitelné - pokus se zopakuje při další změně nebo spuštění démona.
+	DA	Spotify kunne ikke nås - forsøges igen ved næste ændring eller daemon-start.
+	DE	Spotify war nicht erreichbar - wird bei der nächsten Änderung oder dem nächsten Daemon-Start erneut versucht.
+	EN	Spotify could not be reached - will retry on the next change or daemon start.
+	ES	No se pudo contactar con Spotify - se reintentará en el siguiente cambio o inicio del daemon.
+	FR	Impossible de joindre Spotify - nouvelle tentative au prochain changement ou démarrage du démon.
+	IT	Impossibile contattare Spotify - verrà ritentato al prossimo cambiamento o avvio del demone.
+	NL	Spotify was niet bereikbaar - wordt opnieuw geprobeerd bij de volgende wijziging of daemon-start.
+	NO	Fikk ikke kontakt med Spotify - prøves på nytt ved neste endring eller daemon-start.
+	PL	Nie udało się połączyć ze Spotify - spróbujemy ponownie przy następnej zmianie lub starcie demona.
+	SV	Det gick inte att nå Spotify - försöker igen vid nästa ändring eller demonstart.
+
+PLUGIN_SPOTON_SOLOIST_QUALITY_NO_TOKEN
+	CS	Chybí přihlašovací údaje pro přehrávání - nejprve autorizujte přehrávání.
+	DA	Ingen loginoplysninger til afspilning - godkend afspilning først.
+	DE	Keine Wiedergabe-Anmeldedaten - Wiedergabe zuerst autorisieren.
+	EN	No playback credentials - authorize playback first.
+	ES	Sin credenciales de reproducción - autorice primero la reproducción.
+	FR	Aucun identifiant de lecture - autorisez d'abord la lecture.
+	IT	Nessuna credenziale di riproduzione - autorizzare prima la riproduzione.
+	NL	Geen afspeelgegevens - autoriseer eerst het afspelen.
+	NO	Ingen avspillingslegitimasjon - autoriser avspilling først.
+	PL	Brak danych uwierzytelniających odtwarzanie - najpierw autoryzuj odtwarzanie.
+	SV	Inga uppspelningsuppgifter - auktorisera uppspelning först.
+
+PLUGIN_SPOTON_SOLOIST_QUALITY_UNAVAILABLE
+	CS	K dispozici poté, co se démon Soloist tohoto přehrávače alespoň jednou spustí (ID zařízení není známo).
+	DA	Tilgængelig, når denne afspillers Soloist-daemon er startet én gang (enheds-id ukendt).
+	DE	Verfügbar, sobald der Soloist-Daemon dieses Players einmal gestartet wurde (Geräte-ID unbekannt).
+	EN	Available after this player's Soloist daemon has started once (device id unknown).
+	ES	Disponible después de que el daemon de Soloist de este reproductor se haya iniciado una vez (ID de dispositivo desconocido).
+	FR	Disponible une fois que le démon Soloist de ce lecteur a démarré (identifiant de l'appareil inconnu).
+	IT	Disponibile dopo che il demone Soloist di questo lettore si è avviato almeno una volta (ID dispositivo sconosciuto).
+	NL	Beschikbaar zodra de Soloist-daemon van deze speler één keer is gestart (apparaat-ID onbekend).
+	NO	Tilgjengelig når denne spillerens Soloist-daemon har startet én gang (enhets-ID ukjent).
+	PL	Dostępne po tym, jak demon Soloist tego odtwarzacza uruchomi się przynajmniej raz (identyfikator urządzenia nieznany).
+	SV	Tillgänglig när den här spelarens Soloist-demon har startat en gång (enhets-id okänt).
+
 PLUGIN_SPOTON_BITRATE
 	CS	Přenosová rychlost
 	DA	Bithastighed
@@ -115,71 +1012,6 @@ PLUGIN_SPOTON_RATE_LIMIT_HINT
 	PL	Żądania Spotify ograniczone -- proszę czekać
 	SV	Spotify-förfrågningar begränsade -- vänligen vänta
 
-PLUGIN_SPOTON_REAUTH_REQUIRED
-	CS	Platnost autorizace Spotify vypršela -- zkontrolujte nastavení
-	DA	Spotify-godkendelse udløbet -- tjek indstillinger
-	DE	Spotify-Authentifizierung abgelaufen -- siehe Einstellungen
-	EN	Spotify authentication expired -- check Settings
-	ES	La autenticación de Spotify ha caducado -- revisa la configuración
-	FR	Authentification Spotify expirée -- vérifiez les paramètres
-	IT	Autenticazione Spotify scaduta -- controlla le impostazioni
-	NL	Spotify-authenticatie verlopen -- controleer instellingen
-	NO	Spotify-autentisering utløpt -- sjekk innstillinger
-	PL	Autoryzacja Spotify wygasła -- sprawdź ustawienia
-	SV	Spotify-autentiseringen har gått ut -- kontrollera inställningar
-
-PLUGIN_SPOTON_REAUTH_REQUIRED_SETTINGS
-	CS	Jeden nebo více účtů Spotify vyžaduje opětovnou autorizaci. Kliknutím na tlačítko "Připojit účet Spotify" ji obnovíte.
-	DA	En eller flere Spotify-konti kræver fornyet godkendelse. Klik på 'Tilslut Spotify-konto' for at forny.
-	DE	Ein oder mehrere Spotify-Konten erfordern eine erneute Authentifizierung. Klicken Sie auf 'Spotify-Konto verbinden' zum Erneuern.
-	EN	One or more Spotify accounts require re-authentication. Click 'Connect Spotify Account' to renew.
-	ES	Una o más cuentas de Spotify requieren volver a autenticarse. Haz clic en 'Conectar cuenta de Spotify' para renovarla.
-	FR	Un ou plusieurs comptes Spotify nécessitent une nouvelle authentification. Cliquez sur « Connecter un compte Spotify » pour renouveler.
-	IT	Uno o più account Spotify richiedono una nuova autenticazione. Fai clic su "Connetti account Spotify" per rinnovarla.
-	NL	Een of meer Spotify-accounts moeten opnieuw worden geverifieerd. Klik op 'Spotify-account verbinden' om te vernieuwen.
-	NO	En eller flere Spotify-kontoer krever fornyet autentisering. Klikk på «Koble til Spotify-konto» for å fornye.
-	PL	Jedno lub więcej kont Spotify wymaga ponownej autoryzacji. Kliknij "Połącz konto Spotify", aby ją odnowić.
-	SV	Ett eller flera Spotify-konton kräver förnyad autentisering. Klicka på "Anslut Spotify-konto" för att förnya.
-
-PLUGIN_SPOTON_MIGRATION_REQUIRED
-	CS	Pro zapnutí Procházení, Vyhledávání a Knihovny znovu připojte svůj účet Spotify v Nastavení. Přehrávání přes Connect funguje i nadále.
-	DA	Tilslut din Spotify-konto igen i Indstillinger for at aktivere Gennemse, Søg og Bibliotek. Connect-afspilning fortsætter med at fungere.
-	DE	Verbinde dein Spotify-Konto erneut in den Einstellungen, um Durchsuchen, Suche und Bibliothek zu aktivieren. Die Wiedergabe über Connect funktioniert weiterhin.
-	EN	Please reconnect your Spotify account in Settings to enable Browse, Search, and Library. Connect playback continues to work.
-	ES	Vuelve a conectar tu cuenta de Spotify en Ajustes para habilitar Explorar, Buscar y Biblioteca. La reproducción por Connect sigue funcionando.
-	FR	Reconnectez votre compte Spotify dans les Paramètres pour activer Parcourir, Rechercher et Bibliothèque. La lecture via Connect continue de fonctionner.
-	IT	Ricollega il tuo account Spotify nelle Impostazioni per abilitare Esplora, Ricerca e Libreria. La riproduzione tramite Connect continua a funzionare.
-	NL	Verbind uw Spotify-account opnieuw in Instellingen om Bladeren, Zoeken en Bibliotheek in te schakelen. Afspelen via Connect blijft werken.
-	NO	Koble Spotify-kontoen din til på nytt under Innstillinger for å aktivere Bla gjennom, Søk og Bibliotek. Avspilling via Connect fungerer fortsatt.
-	PL	Połącz ponownie swoje konto Spotify w Ustawieniach, aby włączyć Przeglądanie, Wyszukiwanie i Bibliotekę. Odtwarzanie przez Connect nadal działa.
-	SV	Anslut ditt Spotify-konto igen i Inställningar för att aktivera Bläddra, Sök och Bibliotek. Uppspelning via Connect fortsätter att fungera.
-
-PLUGIN_SPOTON_AUTH_REQUIRED
-	CS	Je vyžadována autentizace. Zkontrolujte prosím svůj účet Spotify v Nastavení SpotOn.
-	DA	Godkendelse påkrævet. Tjek venligst din Spotify-konto i SpotOn-indstillinger.
-	DE	Authentifizierung erforderlich. Bitte überprüfe dein Spotify-Konto in den SpotOn-Einstellungen.
-	EN	Authentication required. Please check your Spotify account in SpotOn Settings.
-	ES	Se requiere autenticación. Comprueba tu cuenta de Spotify en los Ajustes de SpotOn.
-	FR	Authentification requise. Veuillez vérifier votre compte Spotify dans les Paramètres de SpotOn.
-	IT	Autenticazione richiesta. Controlla il tuo account Spotify nelle Impostazioni di SpotOn.
-	NL	Verificatie vereist. Controleer uw Spotify-account in de SpotOn-instellingen.
-	NO	Autentisering kreves. Sjekk Spotify-kontoen din i SpotOn-innstillingene.
-	PL	Wymagane uwierzytelnienie. Sprawdź swoje konto Spotify w Ustawieniach SpotOn.
-	SV	Autentisering krävs. Kontrollera ditt Spotify-konto i SpotOns inställningar.
-
-PLUGIN_SPOTON_MIGRATION_SETTINGS_HINT
-	CS	Pro přístup k Procházení a Knihovně je nutné znovu připojit účet Spotify. Klikněte níže na „Připojit účet Spotify".
-	DA	Din Spotify-konto skal tilsluttes igen for adgang til Gennemse og Bibliotek. Klik på 'Tilslut Spotify-konto' nedenfor.
-	DE	Dein Spotify-Konto muss für den Zugriff auf Durchsuchen und Bibliothek erneut verbunden werden. Klicke unten auf „Spotify-Konto verbinden".
-	EN	Your Spotify account needs to be reconnected for Browse and Library access. Click 'Connect Spotify Account' below.
-	ES	Tu cuenta de Spotify debe volver a conectarse para acceder a Explorar y Biblioteca. Haz clic en 'Conectar cuenta de Spotify' abajo.
-	FR	Votre compte Spotify doit être reconnecté pour accéder à Parcourir et à la Bibliothèque. Cliquez sur « Connecter un compte Spotify » ci-dessous.
-	IT	Il tuo account Spotify deve essere ricollegato per accedere a Esplora e Libreria. Fai clic su "Connetti account Spotify" qui sotto.
-	NL	Uw Spotify-account moet opnieuw worden verbonden voor toegang tot Bladeren en Bibliotheek. Klik hieronder op 'Spotify-account verbinden'.
-	NO	Spotify-kontoen din må kobles til på nytt for tilgang til Bla gjennom og Bibliotek. Klikk på «Koble til Spotify-konto» nedenfor.
-	PL	Twoje konto Spotify musi zostać ponownie połączone, aby uzyskać dostęp do Przeglądania i Biblioteki. Kliknij poniżej „Połącz konto Spotify".
-	SV	Ditt Spotify-konto måste anslutas igen för åtkomst till Bläddra och Bibliotek. Klicka på 'Anslut Spotify-konto' nedan.
-
 PLUGIN_SPOTON_DASHBOARD_TITLE
 	CS	Stav ověření
 	DA	Godkendelsesstatus
@@ -192,58 +1024,6 @@ PLUGIN_SPOTON_DASHBOARD_TITLE
 	NO	Autentiseringsstatus
 	PL	Stan uwierzytelniania
 	SV	Autentiseringsstatus
-
-PLUGIN_SPOTON_DASHBOARD_PKCE
-	CS	API token
-	DA	API-token
-	DE	API-Token
-	EN	API Token
-	ES	Token de API
-	FR	Jeton API
-	IT	Token API
-	NL	API-token
-	NO	API-token
-	PL	Token API
-	SV	API-token
-
-PLUGIN_SPOTON_DASHBOARD_PKCE_OK
-	CS	Platný
-	DA	Gyldig
-	DE	Gültig
-	EN	Valid
-	ES	Válido
-	FR	Valide
-	IT	Valido
-	NL	Geldig
-	NO	Gyldig
-	PL	Ważny
-	SV	Giltig
-
-PLUGIN_SPOTON_DASHBOARD_PKCE_REAUTH
-	CS	Vyžadována opětovná autentizace
-	DA	Godkendelse påkrævet igen
-	DE	Erneute Auth erforderlich
-	EN	Re-auth required
-	ES	Se requiere volver a autenticar
-	FR	Nouvelle authentification requise
-	IT	Richiesta nuova autenticazione
-	NL	Opnieuw verifiëren vereist
-	NO	Ny autentisering kreves
-	PL	Wymagane ponowne uwierzytelnienie
-	SV	Ny autentisering krävs
-
-PLUGIN_SPOTON_DASHBOARD_SPDC
-	CS	Made For You
-	DA	Made For You
-	DE	Made For You
-	EN	Made For You
-	ES	Made For You
-	FR	Made For You
-	IT	Made For You
-	NL	Made For You
-	NO	Made For You
-	PL	Made For You
-	SV	Made For You
 
 PLUGIN_SPOTON_DASHBOARD_CONNECT
 	CS	Connect
@@ -283,45 +1063,6 @@ PLUGIN_SPOTON_DASHBOARD_CONNECT_DEAD
 	NO	Stoppet
 	PL	Zatrzymany
 	SV	Stoppad
-
-PLUGIN_SPOTON_DASHBOARD_MIGRATION
-	CS	Migrace
-	DA	Migrering
-	DE	Migration
-	EN	Migration
-	ES	Migración
-	FR	Migration
-	IT	Migrazione
-	NL	Migratie
-	NO	Migrering
-	PL	Migracja
-	SV	Migrering
-
-PLUGIN_SPOTON_DASHBOARD_MIGRATION_NEEDED
-	CS	Je nutné znovu připojit
-	DA	Skal tilsluttes igen
-	DE	Erneute Verbindung erforderlich
-	EN	Reconnect required
-	ES	Es necesario volver a conectar
-	FR	Reconnexion requise
-	IT	Ricollegamento richiesto
-	NL	Opnieuw verbinden vereist
-	NO	Må kobles til på nytt
-	PL	Wymagane ponowne połączenie
-	SV	Återanslutning krävs
-
-PLUGIN_SPOTON_DASHBOARD_MIGRATION_DONE
-	CS	Dokončeno
-	DA	Fuldført
-	DE	Abgeschlossen
-	EN	Complete
-	ES	Completado
-	FR	Terminé
-	IT	Completato
-	NL	Voltooid
-	NO	Fullført
-	PL	Ukończono
-	SV	Slutförd
 
 PLUGIN_SPOTON_DASHBOARD_AUDIOKEY
 	CS	Audio klíče
@@ -661,6 +1402,84 @@ PLUGIN_SPOTON_MADE_FOR_YOU
 	PL	Stworzone dla Ciebie
 	SV	Gjort för dig
 
+PLUGIN_SPOTON_MFY_FALLBACK
+	CS	Domovská stránka Spotify je právě nedostupná: zobrazují se pouze vaše uložené mixy. Podrobnosti na stavové stránce SpotOn.
+	DA	Spotify-startsiden kan ikke nås lige nu: viser kun dine gemte mixes. Detaljer på SpotOn-statussiden.
+	DE	Spotify-Startseite gerade nicht erreichbar: hier nur deine gespeicherten Mixe. Details auf der SpotOn-Statusseite.
+	EN	Spotify home is unreachable right now: showing your saved mixes only. Details on the SpotOn status page.
+	ES	La página de inicio de Spotify no está disponible ahora: se muestran solo tus mezclas guardadas. Detalles en la página de estado de SpotOn.
+	FR	L'accueil Spotify est injoignable pour le moment : seuls vos mix enregistrés sont affichés. Détails sur la page d'état de SpotOn.
+	IT	La home di Spotify non è raggiungibile al momento: vengono mostrati solo i tuoi mix salvati. Dettagli nella pagina di stato di SpotOn.
+	NL	De Spotify-startpagina is nu niet bereikbaar: alleen je opgeslagen mixen worden getoond. Details op de SpotOn-statuspagina.
+	NO	Spotify-startsiden er utilgjengelig akkurat nå: viser bare dine lagrede miks. Detaljer på SpotOn-statussiden.
+	PL	Strona główna Spotify jest teraz niedostępna: widoczne są tylko Twoje zapisane miksy. Szczegóły na stronie stanu SpotOn.
+	SV	Spotifys startsida är inte nåbar just nu: bara dina sparade mixar visas. Detaljer på SpotOns statussida.
+
+PLUGIN_SPOTON_MFY_HASH_BROKEN
+	CS	Made for You je právě nedostupné. Podrobnosti na stavové stránce SpotOn.
+	DA	Made for You kan ikke nås lige nu. Detaljer på SpotOn-statussiden.
+	DE	Made for You ist gerade nicht erreichbar. Details auf der SpotOn-Statusseite.
+	EN	Made for You is unreachable right now. Details on the SpotOn status page.
+	ES	Made for You no está disponible en este momento. Detalles en la página de estado de SpotOn.
+	FR	Made for You est injoignable pour le moment. Détails sur la page d'état de SpotOn.
+	IT	Made for You non è raggiungibile al momento. Dettagli nella pagina di stato di SpotOn.
+	NL	Made for You is nu niet bereikbaar. Details op de SpotOn-statuspagina.
+	NO	Made for You er utilgjengelig akkurat nå. Detaljer på SpotOn-statussiden.
+	PL	Made for You jest teraz niedostępne. Szczegóły na stronie stanu SpotOn.
+	SV	Made for You är inte nåbart just nu. Detaljer på SpotOns statussida.
+
+PLUGIN_SPOTON_TOP_TRACKS_UNAVAILABLE
+	CS	Nejposlouchanější skladby jsou právě nedostupné. Podrobnosti na stavové stránce SpotOn.
+	DA	Dine mest afspillede numre kan ikke nås lige nu. Detaljer på SpotOn-statussiden.
+	DE	Top-Titel sind gerade nicht erreichbar. Details auf der SpotOn-Statusseite.
+	EN	Top Tracks are unreachable right now. Details on the SpotOn status page.
+	ES	Las canciones más escuchadas no están disponibles en este momento. Detalles en la página de estado de SpotOn.
+	FR	Les titres les plus écoutés sont injoignables pour le moment. Détails sur la page d'état de SpotOn.
+	IT	I brani più ascoltati non sono raggiungibili al momento. Dettagli nella pagina di stato di SpotOn.
+	NL	De meest beluisterde nummers zijn nu niet bereikbaar. Details op de SpotOn-statuspagina.
+	NO	De mest spilte sangene er utilgjengelige akkurat nå. Detaljer på SpotOn-statussiden.
+	PL	Najczęściej słuchane utwory są teraz niedostępne. Szczegóły na stronie stanu SpotOn.
+	SV	Dina mest spelade låtar är inte nåbara just nu. Detaljer på SpotOns statussida.
+
+PLUGIN_SPOTON_SEARCH_LIMITED
+	CS	Vyhledávání je právě omezené: pouze skladby. Podrobnosti na stavové stránce SpotOn.
+	DA	Søgningen er begrænset lige nu: kun numre. Detaljer på SpotOn-statussiden.
+	DE	Suche eingeschränkt: gerade nur Titel. Details auf der SpotOn-Statusseite.
+	EN	Search is limited right now: tracks only. Details on the SpotOn status page.
+	ES	La búsqueda está limitada en este momento: solo canciones. Detalles en la página de estado de SpotOn.
+	FR	La recherche est limitée pour le moment : titres uniquement. Détails sur la page d'état de SpotOn.
+	IT	La ricerca è limitata al momento: solo brani. Dettagli nella pagina di stato di SpotOn.
+	NL	Zoeken is nu beperkt: alleen nummers. Details op de SpotOn-statuspagina.
+	NO	Søket er begrenset akkurat nå: bare sanger. Detaljer på SpotOn-statussiden.
+	PL	Wyszukiwanie jest teraz ograniczone: tylko utwory. Szczegóły na stronie stanu SpotOn.
+	SV	Sökningen är begränsad just nu: bara låtar. Detaljer på SpotOns statussida.
+
+PLUGIN_SPOTON_UP_NEXT
+	CS	Další v pořadí
+	DA	Næste i køen
+	DE	Als Nächstes
+	EN	Up Next
+	ES	A continuación
+	FR	À suivre
+	IT	In coda
+	NL	Hierna
+	NO	Neste i køen
+	PL	Następne w kolejce
+	SV	Nästa i kön
+
+PLUGIN_SPOTON_UP_NEXT_EMPTY
+	CS	Žádná aktivní relace Spotify Connect
+	DA	Ingen aktiv Spotify Connect-session
+	DE	Keine aktive Spotify Connect-Sitzung
+	EN	No active Spotify Connect session
+	ES	No hay ninguna sesión activa de Spotify Connect
+	FR	Aucune session Spotify Connect active
+	IT	Nessuna sessione Spotify Connect attiva
+	NL	Geen actieve Spotify Connect-sessie
+	NO	Ingen aktiv Spotify Connect-økt
+	PL	Brak aktywnej sesji Spotify Connect
+	SV	Ingen aktiv Spotify Connect-session
+
 PLUGIN_SPOTON_MAIN_MENU
 	CS	Hlavní nabídka
 	DA	Hovedmenu
@@ -818,17 +1637,17 @@ PLUGIN_SPOTON_NO_RESULTS
 	SV	Inga resultat
 
 PLUGIN_SPOTON_RATE_LIMITED
-	CS	Dočasně omezeno — zkuste to prosím za chvíli znovu
-	DA	Midlertidigt hastighedsbegrænset — prøv venligst igen om lidt
-	DE	Vorübergehend gedrosselt — bitte in Kürze erneut versuchen
-	EN	Temporarily rate limited — please try again shortly
-	ES	Temporalmente limitado — por favor, inténtelo de nuevo en breve
-	FR	Temporairement limité — veuillez réessayer dans un instant
-	IT	Temporaneamente limitato — riprovare tra poco
-	NL	Tijdelijk beperkt — probeer het zo opnieuw
-	NO	Midlertidig hastighetsbegrenset — prøv igjen om litt
-	PL	Tymczasowo ograniczono — spróbuj ponownie za chwilę
-	SV	Tillfälligt hastighetsbegränsad — försök igen om en stund
+	CS	Dočasně omezeno - zkuste to prosím za chvíli znovu
+	DA	Midlertidigt hastighedsbegrænset - prøv venligst igen om lidt
+	DE	Vorübergehend gedrosselt - bitte in Kürze erneut versuchen
+	EN	Temporarily rate limited - please try again shortly
+	ES	Temporalmente limitado - por favor, inténtelo de nuevo en breve
+	FR	Temporairement limité - veuillez réessayer dans un instant
+	IT	Temporaneamente limitato - riprovare tra poco
+	NL	Tijdelijk beperkt - probeer het zo opnieuw
+	NO	Midlertidig hastighetsbegrenset - prøv igjen om litt
+	PL	Tymczasowo ograniczono - spróbuj ponownie za chwilę
+	SV	Tillfälligt hastighetsbegränsad - försök igen om en stund
 
 PLUGIN_SPOTON_ARTIST_VIEW
 	CS	SpotOn: Zobrazit interpreta
@@ -883,17 +1702,17 @@ PLUGIN_SPOTON_NORMALIZATION
 	SV	Volymsnormalisering
 
 PLUGIN_SPOTON_NORMALIZATION_DESC
-	CS	Aktivuje normalizaci hlasitosti (ReplayGain) pro konzistentní úroveň přehrávání. Vyžaduje dekódování PCM — přehrávače nastavené na Auto přepnou z OGG passthrough na PCM.
-	DA	Aktiverer lydstyrkenormalisering (ReplayGain) for ensartet afspilningsstyrke. Kræver PCM-afkodning — afspillere sat til Auto skifter fra OGG passthrough til PCM.
-	DE	Aktiviert Lautstärkenormalisierung (ReplayGain) für gleichmäßige Lautstärke. Erfordert PCM-Dekodierung — Spieler auf Auto wechseln von OGG Passthrough zu PCM.
-	EN	Enables volume normalization (ReplayGain) for consistent playback volume. Requires PCM decoding — players set to Auto will switch from OGG passthrough to PCM.
-	ES	Activa la normalización de volumen (ReplayGain) para un volumen de reproducción uniforme. Requiere decodificación PCM — los reproductores en Auto cambiarán de OGG passthrough a PCM.
-	FR	Active la normalisation du volume (ReplayGain) pour un volume de lecture uniforme. Nécessite le décodage PCM — les lecteurs en Auto passeront de OGG passthrough à PCM.
-	IT	Abilita la normalizzazione del volume (ReplayGain) per un volume di riproduzione uniforme. Richiede decodifica PCM — i lettori impostati su Auto passeranno da OGG passthrough a PCM.
-	NL	Activeert volumenormalisatie (ReplayGain) voor consistent afspeelvolume. Vereist PCM-decodering — spelers op Auto schakelen van OGG passthrough naar PCM.
-	NO	Aktiverer volumnormalisering (ReplayGain) for jevnt avspillingsvolum. Krever PCM-dekoding — spillere satt til Auto bytter fra OGG passthrough til PCM.
-	PL	Włącza normalizację głośności (ReplayGain) dla jednolitego poziomu odtwarzania. Wymaga dekodowania PCM — odtwarzacze ustawione na Auto przełączą się z OGG passthrough na PCM.
-	SV	Aktiverar volymsnormalisering (ReplayGain) för jämn uppspelningsvolym. Kräver PCM-avkodning — spelare inställda på Auto växlar från OGG passthrough till PCM.
+	CS	Aktivuje normalizaci hlasitosti (ReplayGain) pro konzistentní úroveň přehrávání. Vyžaduje dekódování PCM - přehrávače nastavené na Auto přepnou z OGG passthrough na PCM.
+	DA	Aktiverer lydstyrkenormalisering (ReplayGain) for ensartet afspilningsstyrke. Kræver PCM-afkodning - afspillere sat til Auto skifter fra OGG passthrough til PCM.
+	DE	Aktiviert Lautstärkenormalisierung (ReplayGain) für gleichmäßige Lautstärke. Erfordert PCM-Dekodierung - Spieler auf Auto wechseln von OGG Passthrough zu PCM.
+	EN	Enables volume normalization (ReplayGain) for consistent playback volume. Requires PCM decoding - players set to Auto will switch from OGG passthrough to PCM.
+	ES	Activa la normalización de volumen (ReplayGain) para un volumen de reproducción uniforme. Requiere decodificación PCM - los reproductores en Auto cambiarán de OGG passthrough a PCM.
+	FR	Active la normalisation du volume (ReplayGain) pour un volume de lecture uniforme. Nécessite le décodage PCM - les lecteurs en Auto passeront de OGG passthrough à PCM.
+	IT	Abilita la normalizzazione del volume (ReplayGain) per un volume di riproduzione uniforme. Richiede decodifica PCM - i lettori impostati su Auto passeranno da OGG passthrough a PCM.
+	NL	Activeert volumenormalisatie (ReplayGain) voor consistent afspeelvolume. Vereist PCM-decodering - spelers op Auto schakelen van OGG passthrough naar PCM.
+	NO	Aktiverer volumnormalisering (ReplayGain) for jevnt avspillingsvolum. Krever PCM-dekoding - spillere satt til Auto bytter fra OGG passthrough til PCM.
+	PL	Włącza normalizację głośności (ReplayGain) dla jednolitego poziomu odtwarzania. Wymaga dekodowania PCM - odtwarzacze ustawione na Auto przełączą się z OGG passthrough na PCM.
+	SV	Aktiverar volymsnormalisering (ReplayGain) för jämn uppspelningsvolym. Kräver PCM-avkodning - spelare inställda på Auto växlar från OGG passthrough till PCM.
 
 PLUGIN_SPOTON_NORMALIZATION_LABEL
 	CS	Normalizovat hlasitost (ReplayGain)
@@ -998,176 +1817,6 @@ PLUGIN_SPOTON_CONNECT_HINT_ALT
 	NO	Enhetsvelger i Spotify-appen
 	PL	Wybór urządzenia w aplikacji Spotify
 	SV	Enhetsväljare i Spotify-appen
-
-PLUGIN_SPOTON_CLIENT_ID_SETTINGS
-	CS	Vlastní Spotify App
-	DA	Brugerdefineret Spotify App
-	DE	Eigene Spotify App
-	EN	Custom Spotify App
-	ES	App de Spotify personalizada
-	FR	Application Spotify personnalisée
-	IT	App Spotify personalizzata
-	NL	Aangepaste Spotify App
-	NO	Egendefinert Spotify App
-	PL	Własna aplikacja Spotify
-	SV	Anpassad Spotify App
-
-PLUGIN_SPOTON_CLIENT_ID_DESC
-	CS	SpotOn je dodáván s vestavěným Client ID, které funguje bez dalšího nastavení. Vytvoření vlastní Spotify Developer App vám poskytne soukromou kvótu API bez sdílených limitů požadavků.
-	DA	SpotOn leveres med et indbygget Client-ID, der fungerer med det samme. Hvis du opretter din egen Spotify Developer App, får du en privat API-kvote uden delte hastighedsgrænser.
-	DE	SpotOn wird mit einer integrierten Client-ID ausgeliefert, die sofort funktioniert. Wenn du deine eigene Spotify Developer App erstellst, erhältst du ein privates API-Kontingent ohne geteilte Ratenlimits.
-	EN	SpotOn ships a bundled Client ID that works out of the box. Creating your own Spotify Developer App gives you a private API quota with no shared rate limits.
-	ES	SpotOn incluye un Client ID integrado que funciona desde el primer momento. Crear tu propia App de Spotify Developer te da una cuota de API privada sin límites de solicitudes compartidos.
-	FR	SpotOn est livré avec un Client ID intégré qui fonctionne immédiatement. Créer votre propre application Spotify Developer vous donne un quota d'API privé, sans limites de requêtes partagées.
-	IT	SpotOn include un Client ID integrato che funziona subito. Creare la tua Spotify Developer App ti offre una quota API privata senza limiti di richieste condivisi.
-	NL	SpotOn wordt geleverd met een ingebouwd Client-ID dat direct werkt. Als u uw eigen Spotify Developer App aanmaakt, krijgt u een privé API-quotum zonder gedeelde snelheidslimieten.
-	NO	SpotOn leveres med en innebygd Client-ID som fungerer med en gang. Hvis du oppretter din egen Spotify Developer App, får du en privat API-kvote uten delte hastighetsgrenser.
-	PL	SpotOn jest dostarczany z wbudowanym Client ID, które działa od razu. Utworzenie własnej aplikacji Spotify Developer daje ci prywatny limit API bez współdzielonych limitów zapytań.
-	SV	SpotOn levereras med ett inbyggt Client-ID som fungerar direkt. Om du skapar din egen Spotify Developer App får du en privat API-kvot utan delade hastighetsgränser.
-
-PLUGIN_SPOTON_CLIENT_ID_PLACEHOLDER
-	CS	Spotify Client-ID (32 znaků, alfanumerické)
-	DA	Spotify Client-ID (32 tegn, alfanumerisk)
-	DE	Spotify Client-ID (32 Zeichen, alphanumerisch)
-	EN	Spotify Client ID (32 characters, alphanumeric)
-	ES	Spotify Client ID (32 caracteres, alfanumérico)
-	FR	Spotify Client ID (32 caractères, alphanumérique)
-	IT	Spotify Client ID (32 caratteri, alfanumerico)
-	NL	Spotify Client-ID (32 tekens, alfanumeriek)
-	NO	Spotify Client-ID (32 tegn, alfanumerisk)
-	PL	Spotify Client ID (32 znaki, alfanumeryczne)
-	SV	Spotify Client-ID (32 tecken, alfanumeriskt)
-
-PLUGIN_SPOTON_DEGRADED_MODE_WARNING
-	CS	Není nakonfigurováno žádné vlastní Spotify App ID. SpotOn funguje plně bez něj — vlastní ID je potřeba pouze pro starší aplikace s rozšířenou kvótou.
-	DA	Intet brugerdefineret Spotify App-ID konfigureret. SpotOn fungerer fuldt ud uden et — brugerdefineret ID er kun nødvendigt for ældre apps med udvidet kvote.
-	DE	Keine eigene Spotify App-ID konfiguriert. SpotOn funktioniert vollständig ohne — eine eigene ID wird nur für ältere Apps mit erweitertem Kontingent benötigt.
-	EN	No custom Spotify App ID configured. SpotOn works fully without one — a custom ID is only needed for older apps with Extended Quota.
-	ES	No hay ID de App de Spotify personalizado configurado. SpotOn funciona completamente sin uno — un ID personalizado solo se necesita para apps antiguas con cuota extendida.
-	FR	Aucun ID d'application Spotify personnalisé configuré. SpotOn fonctionne pleinement sans — un ID personnalisé n'est nécessaire que pour les anciennes applications avec un quota étendu.
-	IT	Nessun ID app Spotify personalizzato configurato. SpotOn funziona completamente senza — un ID personalizzato è necessario solo per app più vecchie con quota estesa.
-	NL	Geen aangepast Spotify App-ID geconfigureerd. SpotOn werkt volledig zonder — een eigen ID is alleen nodig voor oudere apps met uitgebreid quotum.
-	NO	Ingen egendefinert Spotify App-ID konfigurert. SpotOn fungerer fullt ut uten — et egendefinert ID er kun nødvendig for eldre apper med utvidet kvote.
-	PL	Brak skonfigurowanego własnego identyfikatora Spotify App. SpotOn działa w pełni bez niego — własne ID jest potrzebne tylko dla starszych aplikacji z rozszerzonym limitem.
-	SV	Inget anpassat Spotify App-ID konfigurerat. SpotOn fungerar fullt ut utan — ett anpassat ID behövs bara för äldre appar med utökad kvot.
-
-PLUGIN_SPOTON_REGISTER_APP_LINK
-	CS	Zaregistrovat vlastní aplikaci
-	DA	Registrér din egen app
-	DE	Eigene App registrieren
-	EN	Register your own app
-	ES	Registrar tu propia app
-	FR	Enregistrer votre propre application
-	IT	Registra la tua app
-	NL	Registreer uw eigen app
-	NO	Registrer din egen app
-	PL	Zarejestruj własną aplikację
-	SV	Registrera din egen app
-
-PLUGIN_SPOTON_CUSTOM_APP_TITLE
-	CS	Spravovat vlastní Spotify App
-	DA	Administrer brugerdefineret Spotify App
-	DE	Eigene Spotify App verwalten
-	EN	Manage Custom Spotify App
-	ES	Gestionar App de Spotify personalizada
-	FR	Gérer l'application Spotify personnalisée
-	IT	Gestisci app Spotify personalizzata
-	NL	Aangepaste Spotify App beheren
-	NO	Administrer egendefinert Spotify App
-	PL	Zarządzaj własną aplikacją Spotify
-	SV	Hantera anpassad Spotify App
-
-PLUGIN_SPOTON_CUSTOM_APP_SETUP
-	CS	Doporučeno: Vytvořte si vlastní Spotify Developer App
-	DA	Anbefalet: Opret din egen Spotify Developer App
-	DE	Empfohlen: Eigene Spotify Developer App erstellen
-	EN	Recommended: Create your own Spotify Developer App
-	ES	Recomendado: Crea tu propia App de Spotify Developer
-	FR	Recommandé : créez votre propre application Spotify Developer
-	IT	Consigliato: crea la tua Spotify Developer App
-	NL	Aanbevolen: maak uw eigen Spotify Developer App aan
-	NO	Anbefalt: Opprett din egen Spotify Developer App
-	PL	Zalecane: Utwórz własną aplikację Spotify Developer
-	SV	Rekommenderas: Skapa din egen Spotify Developer App
-
-PLUGIN_SPOTON_PKCE_REAUTH_BANNER
-	CS	Client ID bylo změněno — pro obnovení přístupu k API znovu připojte svůj účet.
-	DA	Client-ID er blevet ændret — forbind din konto igen for at gendanne API-adgang.
-	DE	Die Client-ID wurde geändert — verbinde dein Konto erneut, um den API-Zugriff wiederherzustellen.
-	EN	Client ID was changed — reconnect your account to restore API access.
-	ES	El Client ID ha cambiado — vuelve a conectar tu cuenta para restaurar el acceso a la API.
-	FR	Le Client ID a été modifié — reconnectez votre compte pour rétablir l'accès à l'API.
-	IT	Il Client ID è stato modificato — ricollega il tuo account per ripristinare l'accesso API.
-	NL	De Client-ID is gewijzigd — verbind uw account opnieuw om de API-toegang te herstellen.
-	NO	Client-ID ble endret — koble til kontoen din på nytt for å gjenopprette API-tilgangen.
-	PL	Client ID zostało zmienione — połącz ponownie swoje konto, aby przywrócić dostęp do API.
-	SV	Client-ID har ändrats — anslut ditt konto igen för att återställa API-åtkomst.
-
-PLUGIN_SPOTON_CLIENT_ID_REAUTH_HINT
-	CS	Změna Client ID vyžaduje opětovnou autorizaci všech připojených účtů.
-	DA	Ændring af Client-ID kræver ny godkendelse af alle tilknyttede konti.
-	DE	Eine Änderung der Client-ID erfordert eine erneute Autorisierung aller verbundenen Konten.
-	EN	Changing the Client ID requires re-authorization of all connected accounts.
-	ES	Cambiar el Client ID requiere una nueva autorización de todas las cuentas conectadas.
-	FR	La modification du Client ID nécessite une nouvelle autorisation de tous les comptes connectés.
-	IT	La modifica del Client ID richiede una nuova autorizzazione di tutti gli account collegati.
-	NL	Het wijzigen van de Client-ID vereist opnieuw autoriseren van alle verbonden accounts.
-	NO	Endring av Client-ID krever ny autorisering av alle tilkoblede kontoer.
-	PL	Zmiana Client ID wymaga ponownej autoryzacji wszystkich połączonych kont.
-	SV	Ändring av Client-ID kräver ny auktorisering av alla anslutna konton.
-
-PLUGIN_SPOTON_CUSTOM_APP_REMOVE
-	CS	Odebrat vlastní App ID a použít integrované ID
-	DA	Fjern tilpasset App-ID og brug det integrerede ID
-	DE	Eigene App-ID entfernen und integrierte ID verwenden
-	EN	Remove custom App ID and use bundled ID
-	ES	Eliminar App ID personalizado y usar el ID integrado
-	FR	Supprimer l'ID d'app personnalisé et utiliser l'ID intégré
-	IT	Rimuovi l'ID app personalizzato e usa l'ID integrato
-	NL	Aangepaste App-ID verwijderen en ingebouwde ID gebruiken
-	NO	Fjern tilpasset App-ID og bruk det integrerte ID-et
-	PL	Usuń niestandardowe App ID i użyj wbudowanego ID
-	SV	Ta bort anpassat App-ID och använd det inbyggda ID:t
-
-PLUGIN_SPOTON_BUNDLED_SHARED_QUOTA_HINT
-	CS	Vestavěné Client ID je sdíleno napříč všemi instalacemi SpotOn. Během špičkového vytížení může docházet k omezování rychlosti požadavků. Pro nejlepší zážitek si níže vytvořte vlastní Spotify Developer App.
-	DA	Det medfølgende Client-ID deles på tværs af alle SpotOn-installationer. Der kan forekomme hastighedsbegrænsning i spidsbelastningsperioder. For den bedste oplevelse bør du oprette din egen Spotify Developer App nedenfor.
-	DE	Die integrierte Client-ID wird von allen SpotOn-Installationen gemeinsam genutzt. Bei Spitzenlast kann es zu Ratenbegrenzungen kommen. Für die beste Erfahrung erstelle unten deine eigene Spotify Developer App.
-	EN	The bundled Client ID is shared across all SpotOn installations. Rate limiting may occur during peak usage. For the best experience, create your own Spotify Developer App below.
-	ES	El Client ID incluido se comparte entre todas las instalaciones de SpotOn. Puede producirse limitación de velocidad durante horas de máximo uso. Para la mejor experiencia, crea tu propia App de Spotify Developer a continuación.
-	FR	Le Client ID intégré est partagé entre toutes les installations de SpotOn. Une limitation du débit peut survenir en période de forte affluence. Pour une meilleure expérience, créez votre propre application Spotify Developer ci-dessous.
-	IT	Il Client ID incluso è condiviso tra tutte le installazioni di SpotOn. Durante i picchi di utilizzo può verificarsi una limitazione della velocità. Per la migliore esperienza, crea la tua Spotify Developer App qui sotto.
-	NL	Het meegeleverde Client-ID wordt gedeeld door alle SpotOn-installaties. Tijdens piekgebruik kan snelheidsbeperking optreden. Voor de beste ervaring maakt u hieronder uw eigen Spotify Developer App aan.
-	NO	Det medfølgende Client-ID-et deles på tvers av alle SpotOn-installasjoner. Hastighetsbegrensning kan forekomme ved høy belastning. For den beste opplevelsen bør du opprette din egen Spotify Developer App nedenfor.
-	PL	Wbudowane Client ID jest współdzielone przez wszystkie instalacje SpotOn. W okresach szczytowego obciążenia może wystąpić ograniczanie liczby żądań. Aby uzyskać najlepsze wrażenia, utwórz poniżej własną aplikację Spotify Developer.
-	SV	Det medföljande Client-ID:t delas mellan alla SpotOn-installationer. Hastighetsbegränsning kan förekomma vid hög belastning. För bästa upplevelse, skapa din egen Spotify Developer App nedan.
-
-PLUGIN_SPOTON_CUSTOM_QUOTA_OK
-	CS	Používáte vlastní Client ID — soukromá kvóta API, žádné sdílené limity požadavků.
-	DA	Du bruger dit eget Client-ID — privat API-kvote, ingen delte hastighedsgrænser.
-	DE	Du verwendest deine eigene Client-ID — privates API-Kontingent, keine geteilten Ratenlimits.
-	EN	Using your own Client ID — private API quota, no shared rate limits.
-	ES	Estás usando tu propio Client ID — cuota de API privada, sin límites de solicitudes compartidos.
-	FR	Vous utilisez votre propre Client ID — quota d'API privé, sans limites de requêtes partagées.
-	IT	Stai usando il tuo Client ID — quota API privata, senza limiti di richieste condivisi.
-	NL	U gebruikt uw eigen Client-ID — privé API-quotum, geen gedeelde snelheidslimieten.
-	NO	Du bruker din egen Client-ID — privat API-kvote, ingen delte hastighetsgrenser.
-	PL	Używasz własnego Client ID — prywatny limit API, bez współdzielonych limitów zapytań.
-	SV	Du använder ditt eget Client-ID — privat API-kvot, inga delade hastighetsgränser.
-
-
-PLUGIN_SPOTON_BUNDLED_ID_REVOKED
-	CS	Sdílené Spotify Client ID již není k dispozici. Vytvořte prosím vlastní Spotify Developer App a zadejte její Client ID výše pro obnovení přístupu.
-	DA	Det medfølgende Spotify Client-ID er ikke længere tilgængeligt. Opret venligst din egen Spotify Developer App, og indtast dens Client-ID ovenfor for at gendanne adgangen.
-	DE	Die integrierte Spotify-Client-ID ist nicht mehr verfügbar. Bitte erstelle deine eigene Spotify Developer App und gib ihre Client-ID oben ein, um den Zugriff wiederherzustellen.
-	EN	The bundled Spotify Client ID is no longer available. Please create your own Spotify Developer App and enter its Client ID above to restore access.
-	ES	El Client ID de Spotify incluido ya no está disponible. Crea tu propia App de Spotify Developer e introduce su Client ID arriba para restaurar el acceso.
-	FR	Le Client ID Spotify intégré n'est plus disponible. Veuillez créer votre propre application Spotify Developer et saisir son Client ID ci-dessus pour restaurer l'accès.
-	IT	Il Client ID Spotify incluso non è più disponibile. Crea la tua Spotify Developer App e inserisci il suo Client ID sopra per ripristinare l'accesso.
-	NL	Het meegeleverde Spotify Client-ID is niet langer beschikbaar. Maak uw eigen Spotify Developer App aan en voer het bijbehorende Client-ID hierboven in om de toegang te herstellen.
-	NO	Det medfølgende Spotify Client-ID-et er ikke lenger tilgjengelig. Opprett din egen Spotify Developer App og skriv inn dens Client-ID ovenfor for å gjenopprette tilgangen.
-	PL	Wbudowane Client ID Spotify nie jest już dostępne. Utwórz własną aplikację Spotify Developer i wpisz jej Client ID powyżej, aby przywrócić dostęp.
-	SV	Det medföljande Spotify Client-ID:t är inte längre tillgängligt. Skapa din egen Spotify Developer App och ange dess Client-ID ovan för att återställa åtkomsten.
 
 PLUGIN_SPOTON_CONNECT_ENABLED
 	CS	Spotify Connect
@@ -1430,17 +2079,17 @@ PLUGIN_SPOTON_STREAM_FORMAT
 	SV	Streamingformat
 
 PLUGIN_SPOTON_STREAM_FORMAT_DESC
-	CS	Ovlivňuje pouze Browse mód. Formát pro Connect se nastavuje zvlášť přes Connect OGG Override níže. Auto: OGG pokud je podporováno, jinak PCM. OGG Passthrough: nejnižší zátěž CPU, ale ne všechny přehrávače podporují OGG. FLAC/MP3: vynucené překódování pro přehrávače bez podpory OGG/PCM.
-	DA	Påvirker kun Browse-tilstand. Connect-format indstilles separat via Connect OGG Override nedenfor. Auto: OGG hvis understøttet, ellers PCM. OGG Passthrough: laveste CPU-belastning, men ikke alle afspillere understøtter OGG. FLAC/MP3: tvungen omkodning til afspillere uden OGG/PCM-understøttelse.
-	DE	Gilt nur für den Browse-Modus. Das Connect-Format wird separat über Connect OGG Override eingestellt. Auto: OGG wenn unterstützt, sonst PCM. OGG Passthrough: Geringste CPU-Last, aber nicht alle Player unterstützen OGG. FLAC/MP3: Erzwingt Transkodierung für Player ohne OGG/PCM-Unterstützung.
-	EN	Affects Browse mode only. Connect format is set separately via the Connect OGG Override below. Auto: OGG when supported, PCM as fallback. OGG Passthrough: Lowest CPU load, but not all players support OGG natively. FLAC/MP3: Forces transcoding for players without OGG/PCM support.
-	ES	Solo afecta al modo Browse. El formato de Connect se configura por separado mediante Connect OGG Override. Auto: OGG si es compatible, PCM como alternativa. OGG Passthrough: menor carga de CPU, pero no todos los reproductores soportan OGG. FLAC/MP3: fuerza transcodificación para reproductores sin soporte OGG/PCM.
-	FR	Affecte uniquement le mode Browse. Le format Connect se configure séparément via Connect OGG Override ci-dessous. Auto : OGG si pris en charge, PCM en secours. OGG Passthrough : charge CPU minimale, mais tous les lecteurs ne supportent pas l'OGG. FLAC/MP3 : force le transcodage pour les lecteurs sans support OGG/PCM.
-	IT	Riguarda solo la modalità Browse. Il formato Connect si imposta separatamente tramite Connect OGG Override qui sotto. Auto: OGG se supportato, PCM come fallback. OGG Passthrough: carico CPU minimo, ma non tutti i lettori supportano OGG. FLAC/MP3: forza la transcodifica per lettori senza supporto OGG/PCM.
-	NL	Geldt alleen voor Browse-modus. Het Connect-formaat wordt apart ingesteld via Connect OGG Override hieronder. Auto: OGG indien ondersteund, PCM als terugval. OGG Passthrough: laagste CPU-belasting, maar niet alle spelers ondersteunen OGG. FLAC/MP3: forceert transcodering voor spelers zonder OGG/PCM-ondersteuning.
-	NO	Påvirker kun Browse-modus. Connect-format settes separat via Connect OGG Override nedenfor. Auto: OGG hvis støttet, PCM som reserve. OGG Passthrough: lavest CPU-belastning, men ikke alle spillere støtter OGG. FLAC/MP3: tvinger transkoding for spillere uten OGG/PCM-støtte.
-	PL	Dotyczy tylko trybu Browse. Format Connect ustawia się osobno przez Connect OGG Override poniżej. Auto: OGG jeśli obsługiwane, PCM jako zapas. OGG Passthrough: najniższe obciążenie CPU, ale nie wszystkie odtwarzacze obsługują OGG. FLAC/MP3: wymusza transkodowanie dla odtwarzaczy bez obsługi OGG/PCM.
-	SV	Påverkar bara Browse-läget. Connect-format ställs in separat via Connect OGG Override nedan. Auto: OGG om det stöds, PCM som reserv. OGG Passthrough: lägst CPU-belastning, men inte alla spelare stöder OGG. FLAC/MP3: tvingar transkodning för spelare utan OGG/PCM-stöd.
+	CS	Platí pro přehrávání v režimu Browse i Connect. Auto: se Soloist FLAC 16 na přehrávačích, které umějí FLAC, jinak PCM; s librespot OGG passthrough, kde je to možné, jinak PCM. PCM: nekomprimovaný zvuk, bez převodu. FLAC 16: 16bitový FLAC, převádí LMS; zdroje s více než 16 bity se zredukují na 16 bitů; přehrávače bez FLAC dostanou PCM. MP3: převádí LMS, vyžaduje program lame na serveru. OGG passthrough (pouze librespot) má nejnižší zátěž CPU. Řádek níže ukazuje, co tento přehrávač skutečně dostává.
+	DA	Gælder for både Browse- og Connect-afspilning. Auto: med Soloist FLAC 16 på afspillere, der kan afspille FLAC, ellers PCM; med librespot OGG passthrough, hvor det er muligt, ellers PCM. PCM: ukomprimeret lyd, ingen konvertering. FLAC 16: 16-bit FLAC, konverteret af LMS; kilder med mere end 16 bit reduceres til 16 bit; afspillere uden FLAC får PCM. MP3: konverteres af LMS, kræver lame-programmet på serveren. OGG passthrough (kun librespot) har den laveste CPU-belastning. Linjen nedenfor viser, hvad denne afspiller faktisk modtager.
+	DE	Gilt für Browse- und Connect-Wiedergabe. Auto: mit Soloist FLAC 16 auf Playern, die FLAC abspielen können, sonst PCM; mit librespot OGG Passthrough, wo möglich, sonst PCM. PCM: unkomprimiertes Audio, keine Umwandlung. FLAC 16: 16-Bit-FLAC, von LMS umgewandelt; Quellen mit mehr als 16 Bit werden auf 16 Bit reduziert; Player ohne FLAC erhalten PCM. MP3: wird von LMS umgewandelt, benötigt das Programm lame auf dem Server. OGG Passthrough (nur librespot) hat die geringste CPU-Last. Die Zeile darunter zeigt, was dieser Player tatsächlich erhält.
+	EN	Applies to Browse and Connect playback. Auto: with Soloist, FLAC 16 on players that can play FLAC, otherwise PCM; with librespot, OGG passthrough where possible, otherwise PCM. PCM: uncompressed audio, no conversion. FLAC 16: 16-bit FLAC, converted by LMS; sources with more than 16 bits are reduced to 16 bits; players without FLAC receive PCM. MP3: converted by LMS, needs the lame program on the server. OGG passthrough (librespot only) has the lowest CPU load. The line below shows what this player actually receives.
+	ES	Se aplica a la reproducción en Browse y Connect. Auto: con Soloist, FLAC 16 en reproductores que pueden reproducir FLAC, PCM en caso contrario; con librespot, OGG passthrough cuando es posible, PCM en caso contrario. PCM: audio sin comprimir, sin conversión. FLAC 16: FLAC de 16 bits, convertido por LMS; las fuentes de más de 16 bits se reducen a 16 bits; los reproductores sin FLAC reciben PCM. MP3: convertido por LMS, requiere el programa lame en el servidor. OGG passthrough (solo librespot) tiene la menor carga de CPU. La línea de abajo muestra lo que este reproductor recibe realmente.
+	FR	S'applique à la lecture Browse et Connect. Auto : avec Soloist, FLAC 16 sur les lecteurs capables de lire le FLAC, sinon PCM ; avec librespot, OGG passthrough si possible, sinon PCM. PCM : audio non compressé, sans conversion. FLAC 16 : FLAC 16 bits, converti par LMS ; les sources de plus de 16 bits sont réduites à 16 bits ; les lecteurs sans FLAC reçoivent du PCM. MP3 : converti par LMS, nécessite le programme lame sur le serveur. L'OGG passthrough (librespot uniquement) a la charge CPU la plus faible. La ligne ci-dessous indique ce que ce lecteur reçoit réellement.
+	IT	Si applica alla riproduzione Browse e Connect. Auto: con Soloist, FLAC 16 sui lettori che supportano FLAC, altrimenti PCM; con librespot, OGG passthrough dove possibile, altrimenti PCM. PCM: audio non compresso, nessuna conversione. FLAC 16: FLAC a 16 bit, convertito da LMS; le sorgenti con più di 16 bit vengono ridotte a 16 bit; i lettori senza FLAC ricevono PCM. MP3: convertito da LMS, richiede il programma lame sul server. L'OGG passthrough (solo librespot) ha il carico CPU più basso. La riga qui sotto mostra cosa riceve realmente questo lettore.
+	NL	Geldt voor Browse- en Connect-weergave. Auto: met Soloist FLAC 16 op spelers die FLAC kunnen afspelen, anders PCM; met librespot OGG passthrough waar mogelijk, anders PCM. PCM: ongecomprimeerde audio, geen conversie. FLAC 16: 16-bit FLAC, door LMS omgezet; bronnen met meer dan 16 bit worden teruggebracht naar 16 bit; spelers zonder FLAC krijgen PCM. MP3: door LMS omgezet, vereist het programma lame op de server. OGG passthrough (alleen librespot) heeft de laagste CPU-belasting. De regel hieronder toont wat deze speler daadwerkelijk ontvangt.
+	NO	Gjelder både Browse- og Connect-avspilling. Auto: med Soloist FLAC 16 på spillere som kan spille av FLAC, ellers PCM; med librespot OGG passthrough der det er mulig, ellers PCM. PCM: ukomprimert lyd, ingen konvertering. FLAC 16: 16-bits FLAC, konvertert av LMS; kilder med mer enn 16 bit reduseres til 16 bit; spillere uten FLAC får PCM. MP3: konverteres av LMS, krever lame-programmet på serveren. OGG passthrough (kun librespot) har lavest CPU-belastning. Linjen under viser hva denne spilleren faktisk mottar.
+	PL	Dotyczy odtwarzania w trybie Browse i Connect. Auto: z Soloist FLAC 16 na odtwarzaczach obsługujących FLAC, w przeciwnym razie PCM; z librespot OGG passthrough, gdy to możliwe, w przeciwnym razie PCM. PCM: nieskompresowany dźwięk, bez konwersji. FLAC 16: 16-bitowy FLAC, konwertowany przez LMS; źródła powyżej 16 bitów są redukowane do 16 bitów; odtwarzacze bez FLAC otrzymują PCM. MP3: konwertowany przez LMS, wymaga programu lame na serwerze. OGG passthrough (tylko librespot) ma najniższe obciążenie CPU. Wiersz poniżej pokazuje, co ten odtwarzacz faktycznie otrzymuje.
+	SV	Gäller både Browse- och Connect-uppspelning. Auto: med Soloist FLAC 16 på spelare som kan spela FLAC, annars PCM; med librespot OGG passthrough där det är möjligt, annars PCM. PCM: okomprimerat ljud, ingen konvertering. FLAC 16: 16-bitars FLAC, konverterad av LMS; källor med mer än 16 bitar reduceras till 16 bitar; spelare utan FLAC får PCM. MP3: konverteras av LMS, kräver lame-programmet på servern. OGG passthrough (endast librespot) har lägst CPU-belastning. Raden nedan visar vad den här spelaren faktiskt tar emot.
 
 PLUGIN_SPOTON_STREAM_FORMAT_AUTO
 	CS	Automaticky
@@ -1482,17 +2131,17 @@ PLUGIN_SPOTON_STREAM_FORMAT_PCM
 	SV	PCM
 
 PLUGIN_SPOTON_STREAM_FORMAT_FLAC
-	CS	FLAC (transkódováno)
-	DA	FLAC (transkoderet)
-	DE	FLAC (transkodiert)
-	EN	FLAC (transcoded)
-	ES	FLAC (transcodificado)
-	FR	FLAC (transcodé)
-	IT	FLAC (transcodificato)
-	NL	FLAC (getranscodeerd)
-	NO	FLAC (transkodert)
-	PL	FLAC (transkodowane)
-	SV	FLAC (transkodad)
+	CS	FLAC 16
+	DA	FLAC 16
+	DE	FLAC 16
+	EN	FLAC 16
+	ES	FLAC 16
+	FR	FLAC 16
+	IT	FLAC 16
+	NL	FLAC 16
+	NO	FLAC 16
+	PL	FLAC 16
+	SV	FLAC 16
 
 PLUGIN_SPOTON_STREAM_FORMAT_MP3
 	CS	MP3 (transkódováno)
@@ -1506,6 +2155,97 @@ PLUGIN_SPOTON_STREAM_FORMAT_MP3
 	NO	MP3 (transkodert)
 	PL	MP3 (transkodowane)
 	SV	MP3 (transkodad)
+
+PLUGIN_SPOTON_STREAM_FORMAT_LINE
+	CS	Tento přehrávač dostává: %s -> %s %s
+	DA	Denne afspiller modtager: %s -> %s %s
+	DE	Dieser Player erhält: %s -> %s %s
+	EN	This player receives: %s -> %s %s
+	ES	Este reproductor recibe: %s -> %s %s
+	FR	Ce lecteur reçoit : %s -> %s %s
+	IT	Questo lettore riceve: %s -> %s %s
+	NL	Deze speler ontvangt: %s -> %s %s
+	NO	Denne spilleren mottar: %s -> %s %s
+	PL	Ten odtwarzacz otrzymuje: %s -> %s %s
+	SV	Den här spelaren tar emot: %s -> %s %s
+
+PLUGIN_SPOTON_STREAM_FORMAT_VIA_DIRECT
+	CS	přímo
+	DA	direkte
+	DE	direkt
+	EN	direct
+	ES	directo
+	FR	direct
+	IT	diretto
+	NL	direct
+	NO	direkte
+	PL	bezpośrednio
+	SV	direkt
+
+PLUGIN_SPOTON_STREAM_FORMAT_VIA_PROXY
+	CS	přes proxy
+	DA	via proxy
+	DE	über Proxy
+	EN	via proxy
+	ES	mediante proxy
+	FR	via proxy
+	IT	tramite proxy
+	NL	via proxy
+	NO	via proxy
+	PL	przez proxy
+	SV	via proxy
+
+PLUGIN_SPOTON_STREAM_FORMAT_REASON_NO_FLC
+	CS	FLAC není možný: přehrávač nepodporuje FLAC, odesílá se PCM
+	DA	FLAC er ikke muligt: afspilleren har ikke FLAC, sender PCM
+	DE	FLAC nicht möglich: Der Player hat kein FLAC, es wird PCM gesendet
+	EN	FLAC not possible: the player has no FLAC, sending PCM
+	ES	FLAC no es posible: el reproductor no tiene FLAC, se envía PCM
+	FR	FLAC impossible : le lecteur n'a pas FLAC, envoi en PCM
+	IT	FLAC non possibile: il lettore non supporta FLAC, viene inviato PCM
+	NL	FLAC niet mogelijk: de speler heeft geen FLAC, PCM wordt verzonden
+	NO	FLAC er ikke mulig: spilleren har ikke FLAC, sender PCM
+	PL	FLAC nie jest możliwy: odtwarzacz nie obsługuje FLAC, wysyłany jest PCM
+	SV	FLAC är inte möjligt: spelaren saknar FLAC, skickar PCM
+
+PLUGIN_SPOTON_STREAM_FORMAT_REASON_NO_LAME
+	CS	MP3 není k dispozici: chybí program lame - nainstalujte jej prosím na server
+	DA	MP3 er ikke tilgængeligt: lame mangler - installér det venligst på serveren
+	DE	MP3 nicht verfügbar: lame fehlt - bitte auf dem Server installieren
+	EN	MP3 not available: lame is missing - please install it on the server
+	ES	MP3 no disponible: falta lame - instálelo en el servidor
+	FR	MP3 indisponible : lame est absent - veuillez l'installer sur le serveur
+	IT	MP3 non disponibile: lame manca - installalo sul server
+	NL	MP3 niet beschikbaar: lame ontbreekt - installeer het op de server
+	NO	MP3 er ikke tilgjengelig: lame mangler - installer det på serveren
+	PL	MP3 niedostępne: brak programu lame - zainstaluj go na serwerze
+	SV	MP3 är inte tillgängligt: lame saknas - installera det på servern
+
+PLUGIN_SPOTON_STREAM_FORMAT_REASON_RULE
+	CS	%s není k dispozici: konverzní pravidlo SpotOn je zakázáno nebo není načteno - zkontrolujte Nastavení LMS, Rozšířené, Typy souborů a restartujte LMS
+	DA	%s er ikke tilgængeligt: SpotOn-konverteringsreglen er deaktiveret eller ikke indlæst - tjek LMS-indstillinger, Avanceret, Filtyper og genstart LMS
+	DE	%s nicht verfügbar: Die SpotOn-Konvertierungsregel ist deaktiviert oder nicht geladen - LMS-Einstellungen, Erweitert, Dateitypen prüfen und LMS neu starten
+	EN	%s not available: the SpotOn conversion rule is disabled or not loaded - check LMS Settings, Advanced, File Types and restart LMS
+	ES	%s no disponible: la regla de conversión de SpotOn está desactivada o no se ha cargado - revise Ajustes de LMS, Avanzado, Tipos de archivo y reinicie LMS
+	FR	%s indisponible : la règle de conversion SpotOn est désactivée ou non chargée - vérifiez Réglages LMS, Avancé, Types de fichiers et redémarrez LMS
+	IT	%s non disponibile: la regola di conversione SpotOn è disattivata o non caricata - controlla Impostazioni LMS, Avanzate, Tipi di file e riavvia LMS
+	NL	%s niet beschikbaar: de SpotOn-conversieregel is uitgeschakeld of niet geladen - controleer LMS-instellingen, Geavanceerd, Bestandstypen en herstart LMS
+	NO	%s er ikke tilgjengelig: SpotOn-konverteringsregelen er deaktivert eller ikke lastet - sjekk LMS-innstillinger, Avansert, Filtyper og start LMS på nytt
+	PL	%s niedostępne: reguła konwersji SpotOn jest wyłączona lub nie została załadowana - sprawdź Ustawienia LMS, Zaawansowane, Typy plików i uruchom LMS ponownie
+	SV	%s är inte tillgängligt: SpotOns konverteringsregel är avstängd eller inte inläst - kontrollera LMS-inställningar, Avancerat, Filtyper och starta om LMS
+
+PLUGIN_SPOTON_STREAM_FORMAT_MP3_NOTE
+	CS	Poznámka: MP3 je ztrátový formát. Kvalita Spotify je nastavena na Bezztrátová nebo Velmi vysoká - FLAC 16 se vyhne ztrátě MP3; zdroje s více než 16 bity se zredukují na 16 bitů
+	DA	Bemærk: MP3 er tabsgivende. Din Spotify-kvalitet er sat til Tabsfri eller Meget høj - FLAC 16 undgår MP3-tabet; kilder med mere end 16 bit reduceres til 16 bit
+	DE	Hinweis: MP3 ist verlustbehaftet. Ihre Spotify-Qualität steht auf Verlustfrei oder Sehr hoch - FLAC 16 vermeidet den MP3-Verlust; Quellen mit mehr als 16 Bit werden auf 16 Bit reduziert
+	EN	Note: MP3 is lossy. Your Spotify quality is set to Lossless or Very high - FLAC 16 avoids the MP3 loss; sources with more than 16 bits are reduced to 16 bits
+	ES	Nota: MP3 tiene pérdida. Tu calidad de Spotify está en Sin pérdida o Muy alta - FLAC 16 evita la pérdida del MP3; las fuentes de más de 16 bits se reducen a 16 bits
+	FR	Remarque : le MP3 est avec perte. Votre qualité Spotify est réglée sur Sans perte ou Très élevée - FLAC 16 évite la perte du MP3 ; les sources de plus de 16 bits sont réduites à 16 bits
+	IT	Nota: l'MP3 è con perdita. La qualità Spotify è impostata su Senza perdita o Molto alta - FLAC 16 evita la perdita dell'MP3; le sorgenti con più di 16 bit vengono ridotte a 16 bit
+	NL	Let op: MP3 is verliesgevend. Je Spotify-kwaliteit staat op Lossless of Zeer hoog - FLAC 16 vermijdt het MP3-verlies; bronnen met meer dan 16 bit worden teruggebracht naar 16 bit
+	NO	Merk: MP3 er tapsbringende. Spotify-kvaliteten er satt til Tapsfri eller Svært høy - FLAC 16 unngår MP3-tapet; kilder med mer enn 16 bit reduseres til 16 bit
+	PL	Uwaga: MP3 jest formatem stratnym. Jakość Spotify jest ustawiona na Bezstratna lub Bardzo wysoka - FLAC 16 unika strat MP3; źródła powyżej 16 bitów są redukowane do 16 bitów
+	SV	Obs: MP3 är förlustbehäftat. Din Spotify-kvalitet är inställd på Förlustfri eller Mycket hög - FLAC 16 undviker MP3-förlusten; källor med mer än 16 bitar reduceras till 16 bitar
 
 PLUGIN_SPOTON_STREAMING_MODE
 	CS	Režim streamování
@@ -1650,32 +2390,6 @@ PLUGIN_SPOTON_RECOMMENDATIONS
 	PL	Rekomendacje SpotOn
 	SV	SpotOn-rekommendationer
 
-PLUGIN_SPOTON_CLIENT_ID_WIZARD_TITLE
-	CS	Jak nastavit vlastní Spotify Developer App
-	DA	Sådan opsætter du din Spotify Developer App
-	DE	So richtest du deine Spotify Developer App ein
-	EN	How to set up your Spotify Developer App
-	ES	Cómo configurar tu Spotify Developer App
-	FR	Comment configurer votre Spotify Developer App
-	IT	Come configurare la tua Spotify Developer App
-	NL	Zo stelt u uw Spotify Developer App in
-	NO	Slik setter du opp din Spotify Developer App
-	PL	Jak skonfigurować własną Spotify Developer App
-	SV	Så här konfigurerar du din Spotify Developer App
-
-PLUGIN_SPOTON_SETUP_GUIDE_TITLE
-	CS	Začínáme se SpotOn
-	DA	Kom godt i gang med SpotOn
-	DE	Erste Schritte mit SpotOn
-	EN	Getting Started with SpotOn
-	ES	Primeros pasos con SpotOn
-	FR	Démarrer avec SpotOn
-	IT	Iniziare con SpotOn
-	NL	Aan de slag met SpotOn
-	NO	Kom i gang med SpotOn
-	PL	Pierwsze kroki z SpotOn
-	SV	Kom igång med SpotOn
-
 PLUGIN_SPOTON_SETUP_CONNECT_TITLE
 	CS	Propojit účet
 	DA	Tilknyt konto
@@ -1703,17 +2417,17 @@ PLUGIN_SPOTON_SETUP_CONNECT_DESC
 	SV	Klicka på „Starta upptäckt" nedan, öppna sedan Spotify-appen på din telefon, tryck på enhetsikonen (nere till höger) och välj din LMS-server från listan.
 
 PLUGIN_SPOTON_SETUP_CONNECT_NOTE
-	CS	Poznámka: Animace připojení v aplikaci Spotify se nikdy nezobrazí jako „dokončená" — to je normální. Jakmile je připojení úspěšné, váš účet se automaticky zobrazí na této stránce.
-	DA	Bemærk: Forbindelsesanimationen i Spotify-appen vil aldrig vise sig som „fuldført" — det er normalt. Når forbindelsen er oprettet, vises din konto automatisk på denne side.
-	DE	Hinweis: Die Verbindung in der Spotify App wird nicht als „erfolgreich" angezeigt — das ist normal. Sobald die Verbindung hergestellt wurde, erscheint dein Konto automatisch auf dieser Seite.
-	EN	Note: The connection in the Spotify app will not show as "successful" — this is normal. Once connected, your account will appear automatically on this page.
-	ES	Nota: La conexión en la app de Spotify no se mostrará como „exitosa" — esto es normal. Una vez conectado, tu cuenta aparecerá automáticamente en esta página.
-	FR	Remarque : La connexion dans l'application Spotify ne s'affichera pas comme « réussie » — c'est normal. Une fois connecté, votre compte apparaîtra automatiquement sur cette page.
-	IT	Nota: La connessione nell'app Spotify non verrà mostrata come „riuscita" — è normale. Una volta connesso, il tuo account apparirà automaticamente su questa pagina.
-	NL	Opmerking: De verbinding in de Spotify-app wordt niet als „geslaagd" weergegeven — dat is normaal. Zodra de verbinding is gemaakt, verschijnt uw account automatisch op deze pagina.
-	NO	Merk: Tilkoblingen i Spotify-appen vises aldri som «fullført» — det er normalt. Når tilkoblingen er opprettet, vises kontoen din automatisk på denne siden.
-	PL	Uwaga: Połączenie w aplikacji Spotify nie zostanie pokazane jako „udane" — to normalne. Po nawiązaniu połączenia Twoje konto pojawi się automatycznie na tej stronie.
-	SV	Observera: Anslutningen i Spotify-appen visas aldrig som „lyckad" — det är normalt. När anslutningen är klar visas ditt konto automatiskt på denna sida.
+	CS	Poznámka: Animace připojení v aplikaci Spotify se nikdy nezobrazí jako „dokončená" - to je normální. Jakmile je připojení úspěšné, váš účet se automaticky zobrazí na této stránce.
+	DA	Bemærk: Forbindelsesanimationen i Spotify-appen vil aldrig vise sig som „fuldført" - det er normalt. Når forbindelsen er oprettet, vises din konto automatisk på denne side.
+	DE	Hinweis: Die Verbindung in der Spotify App wird nicht als „erfolgreich" angezeigt - das ist normal. Sobald die Verbindung hergestellt wurde, erscheint dein Konto automatisch auf dieser Seite.
+	EN	Note: The connection in the Spotify app will not show as "successful" - this is normal. Once connected, your account will appear automatically on this page.
+	ES	Nota: La conexión en la app de Spotify no se mostrará como „exitosa" - esto es normal. Una vez conectado, tu cuenta aparecerá automáticamente en esta página.
+	FR	Remarque : La connexion dans l'application Spotify ne s'affichera pas comme « réussie » - c'est normal. Une fois connecté, votre compte apparaîtra automatiquement sur cette page.
+	IT	Nota: La connessione nell'app Spotify non verrà mostrata come „riuscita" - è normale. Una volta connesso, il tuo account apparirà automaticamente su questa pagina.
+	NL	Opmerking: De verbinding in de Spotify-app wordt niet als „geslaagd" weergegeven - dat is normaal. Zodra de verbinding is gemaakt, verschijnt uw account automatisch op deze pagina.
+	NO	Merk: Tilkoblingen i Spotify-appen vises aldri som «fullført» - det er normalt. Når tilkoblingen er opprettet, vises kontoen din automatisk på denne siden.
+	PL	Uwaga: Połączenie w aplikacji Spotify nie zostanie pokazane jako „udane" - to normalne. Po nawiązaniu połączenia Twoje konto pojawi się automatycznie na tej stronie.
+	SV	Observera: Anslutningen i Spotify-appen visas aldrig som „lyckad" - det är normalt. När anslutningen är klar visas ditt konto automatiskt på denna sida.
 
 PLUGIN_SPOTON_SETUP_TROUBLESHOOT_HINT
 	CS	Nefunguje vám nastavení? U Docker kontejnerů nebo nastavení s oddělenými sítěmi (VLAN) nemusí fungovat mDNS rozpoznávání.
@@ -1740,97 +2454,6 @@ PLUGIN_SPOTON_SETUP_TROUBLESHOOT_LINK
 	NO	Se feilsøkingsguiden
 	PL	Zobacz przewodnik rozwiązywania problemów
 	SV	Se felsökningsguiden
-
-PLUGIN_SPOTON_SETUP_PLAYBACK_TITLE
-	CS	Spotify Connect (volitelné)
-	DA	Spotify Connect (valgfrit)
-	DE	Spotify Connect (optional)
-	EN	Spotify Connect (optional)
-	ES	Spotify Connect (opcional)
-	FR	Spotify Connect (optionnel)
-	IT	Spotify Connect (opzionale)
-	NL	Spotify Connect (optioneel)
-	NO	Spotify Connect (valgfritt)
-	PL	Spotify Connect (opcjonalnie)
-	SV	Spotify Connect (valfritt)
-
-PLUGIN_SPOTON_SETUP_PLAYBACK_DESC
-	CS	Klikněte na „Autorizovat přehrávání" a v aplikaci Spotify vyberte zobrazené párovací zařízení. Tím se zapne přehrávání a Spotify Connect. Nutné jednou pro každý účet.
-	DA	Klik på "Godkend afspilning", og vælg den viste parringsenhed i din Spotify-app. Dette aktiverer afspilning og Spotify Connect. Kræves én gang pr. konto.
-	DE	Klicke auf „Wiedergabe autorisieren" und wähle das angezeigte Kopplungsgerät in deiner Spotify App aus. Dadurch werden Wiedergabe und Spotify Connect aktiviert. Einmal pro Konto erforderlich.
-	EN	Click "Authorize Playback" and pick the shown pairing device in your Spotify app. This enables playback and Spotify Connect. Required once per account.
-	ES	Haz clic en "Autorizar reproducción" y elige el dispositivo de emparejamiento mostrado en tu app de Spotify. Esto habilita la reproducción y Spotify Connect. Necesario una vez por cuenta.
-	FR	Cliquez sur « Autoriser la lecture » et choisissez l'appareil d'appairage affiché dans votre application Spotify. Cela active la lecture et Spotify Connect. Nécessaire une fois par compte.
-	IT	Fai clic su "Autorizza la riproduzione" e scegli il dispositivo di abbinamento mostrato nella tua app Spotify. Questo abilita la riproduzione e Spotify Connect. Necessario una volta per account.
-	NL	Klik op "Afspelen autoriseren" en kies het getoonde koppelingsapparaat in uw Spotify-app. Dit schakelt afspelen en Spotify Connect in. Eenmalig vereist per account.
-	NO	Klikk på «Autoriser avspilling» og velg den viste paringsenheten i Spotify-appen din. Dette aktiverer avspilling og Spotify Connect. Kreves én gang per konto.
-	PL	Kliknij „Autoryzuj odtwarzanie" i wybierz pokazane urządzenie parowania w aplikacji Spotify. To włącza odtwarzanie i Spotify Connect. Wymagane raz na konto.
-	SV	Klicka på "Auktorisera uppspelning" och välj den visade parkopplingsenheten i din Spotify-app. Detta aktiverar uppspelning och Spotify Connect. Krävs en gång per konto.
-
-PLUGIN_SPOTON_SETUP_SPDC_TITLE
-	CS	Volitelné: Playlisty Vytvořeno pro vás
-	DA	Valgfrit: Lavet til dig-playlister
-	DE	Optional: Für dich gemacht-Playlists
-	EN	Optional: Made For You playlists
-	ES	Opcional: Playlists Hecho para ti
-	FR	Optionnel : Playlists Fait pour vous
-	IT	Facoltativo: Playlist Fatto per te
-	NL	Optioneel: Gemaakt voor jou-afspeellijsten
-	NO	Valgfritt: Laget for deg-spillelister
-	PL	Opcjonalnie: Playlisty Stworzone dla Ciebie
-	SV	Valfritt: Gjort för dig-spellistor
-
-PLUGIN_SPOTON_SETUP_SPDC_DESC
-	CS	Chcete-li procházet své Daily Mixy a další playlisty Vytvořeno pro vás, přidejte níže v sekci Účet svůj prohlížečový cookie sp_dc. Můžete to udělat kdykoli později.
-	DA	For at gennemse dine Daily Mixes og andre Lavet til dig-playlister skal du tilføje din sp_dc-browsercookie i afsnittet Konto nedenfor. Du kan gøre dette når som helst senere.
-	DE	Um deine Daily Mixes und andere Für dich gemacht-Playlists zu durchsuchen, füge unten im Bereich Konto deinen sp_dc-Browser-Cookie hinzu. Das kannst du auch jederzeit später nachholen.
-	EN	To browse your Daily Mixes and other Made For You playlists, add your sp_dc browser cookie in the Account section below. You can do this anytime later.
-	ES	Para explorar tus Daily Mixes y otras playlists Hecho para ti, añade tu cookie de navegador sp_dc en la sección Cuenta de abajo. Puedes hacerlo en cualquier momento más adelante.
-	FR	Pour parcourir vos Daily Mixes et autres playlists Fait pour vous, ajoutez votre cookie de navigateur sp_dc dans la section Compte ci-dessous. Vous pouvez le faire à tout moment plus tard.
-	IT	Per esplorare i tuoi Daily Mix e altre playlist Fatto per te, aggiungi il tuo cookie del browser sp_dc nella sezione Account qui sotto. Puoi farlo in qualsiasi momento più avanti.
-	NL	Om uw Daily Mixes en andere Gemaakt voor jou-afspeellijsten te bekijken, voegt u hieronder in de sectie Account uw sp_dc-browsercookie toe. U kunt dit ook later altijd nog doen.
-	NO	For å bla gjennom Daily Mixes og andre Laget for deg-spillelister, legg til sp_dc-nettleserinformasjonskapselen din i seksjonen Konto nedenfor. Du kan gjøre dette når som helst senere.
-	PL	Aby przeglądać swoje Daily Mix i inne playlisty Stworzone dla Ciebie, dodaj poniżej w sekcji Konto swoje ciasteczko przeglądarki sp_dc. Możesz to zrobić w dowolnym momencie później.
-	SV	För att bläddra bland dina Daily Mixes och andra Gjort för dig-spellistor, lägg till din sp_dc-webbläsarcookie i avsnittet Konto nedan. Du kan göra det när som helst senare.
-
-PLUGIN_SPOTON_SETUP_PATHFINDER_TITLE
-	CS	Volitelné: Přístup k playlistům Web Player
-	DA	Valgfrit: Adgang til playlister via Web Player
-	DE	Optional: Playlist-Zugriff über den Web Player
-	EN	Optional: Web Player playlist access
-	ES	Opcional: Acceso a playlists del Web Player
-	FR	Optionnel : Accès aux playlists du Web Player
-	IT	Facoltativo: Accesso alle playlist tramite Web Player
-	NL	Optioneel: Toegang tot afspeellijsten via Web Player
-	NO	Valgfritt: Tilgang til spillelister via Web Player
-	PL	Opcjonalnie: Dostęp do playlist przez Web Player
-	SV	Valfritt: Åtkomst till spellistor via Web Player
-
-PLUGIN_SPOTON_SETUP_PATHFINDER_DESC
-	CS	Některé redakční playlisty vyžadují Pathfinder query hash z webového přehrávače Spotify. Přidejte jej pouze v případě, že se určité playlisty nenačítají — viz nápovědu vedle pole níže.
-	DA	Nogle redaktionelle playlister kræver en Pathfinder-forespørgselshash fra Spotifys webafspiller. Tilføj kun dette, hvis bestemte playlister ikke kan indlæses — se hjælpeteksten ved siden af feltet nedenfor.
-	DE	Manche redaktionellen Playlists benötigen einen Pathfinder-Query-Hash aus dem Spotify Web Player. Füge diesen nur hinzu, wenn bestimmte Playlists nicht geladen werden können — siehe den Hilfetext neben dem Feld unten.
-	EN	Some editorial playlists need a Pathfinder query hash from the Spotify Web Player. Only add this if certain playlists fail to load — see the help text next to the field below.
-	ES	Algunas playlists editoriales necesitan un hash de consulta Pathfinder del Web Player de Spotify. Añádelo solo si ciertas playlists no se cargan — consulta el texto de ayuda junto al campo de abajo.
-	FR	Certaines playlists éditoriales nécessitent un hash de requête Pathfinder provenant du Web Player Spotify. N'ajoutez ceci que si certaines playlists ne se chargent pas — consultez le texte d'aide à côté du champ ci-dessous.
-	IT	Alcune playlist editoriali richiedono un hash di query Pathfinder dal Web Player di Spotify. Aggiungilo solo se alcune playlist non si caricano — consulta il testo di aiuto accanto al campo qui sotto.
-	NL	Sommige redactionele afspeellijsten hebben een Pathfinder-queryhash van de Spotify Web Player nodig. Voeg dit alleen toe als bepaalde afspeellijsten niet laden — zie de helptekst naast het veld hieronder.
-	NO	Enkelte redaksjonelle spillelister trenger en Pathfinder-spørringshash fra Spotifys Web Player. Legg bare til dette hvis enkelte spillelister ikke lastes — se hjelpeteksten ved siden av feltet nedenfor.
-	PL	Niektóre playlisty redakcyjne wymagają hasha zapytania Pathfinder z Web Playera Spotify. Dodaj go tylko wtedy, gdy niektóre playlisty się nie ładują — zobacz tekst pomocy obok pola poniżej.
-	SV	Vissa redaktionella spellistor behöver en Pathfinder-frågehash från Spotifys webbspelare. Lägg bara till detta om vissa spellistor inte går att ladda — se hjälptexten bredvid fältet nedan.
-
-PLUGIN_SPOTON_SETUP_DEVAPP_DESC
-	CS	1. Otevřete developer.spotify.com/dashboard a přihlaste se. 2. Vytvořte novou aplikaci (na názvu nezáleží). 3. V nastavení aplikace přidejte níže uvedenou Redirect URI. 4. Zkopírujte Client ID a vložte jej do pole výše.
-	DA	1. Gå til developer.spotify.com/dashboard og log ind. 2. Opret en ny app (navnet er ligegyldigt). 3. Tilføj nedenstående Redirect URI i appens indstillinger. 4. Kopiér Client-ID'et, og indsæt det i feltet ovenfor.
-	DE	1. Öffne developer.spotify.com/dashboard und melde dich an. 2. Erstelle eine neue App (der Name spielt keine Rolle). 3. Füge in den App-Einstellungen die unten angezeigte Redirect-URI hinzu. 4. Kopiere die Client-ID und füge sie in das Feld oben ein.
-	EN	1. Go to developer.spotify.com/dashboard and log in. 2. Create a new app (any name works). 3. In the app's settings, add the Redirect URI shown below. 4. Copy the Client ID and paste it into the field above.
-	ES	1. Ve a developer.spotify.com/dashboard e inicia sesión. 2. Crea una nueva app (el nombre no importa). 3. En la configuración de la app, añade el Redirect URI que se muestra abajo. 4. Copia el Client ID y pégalo en el campo de arriba.
-	FR	1. Rendez-vous sur developer.spotify.com/dashboard et connectez-vous. 2. Créez une nouvelle application (le nom importe peu). 3. Dans les paramètres de l'application, ajoutez le Redirect URI affiché ci-dessous. 4. Copiez le Client ID et collez-le dans le champ ci-dessus.
-	IT	1. Vai su developer.spotify.com/dashboard ed effettua l'accesso. 2. Crea una nuova app (il nome non è importante). 3. Nelle impostazioni dell'app, aggiungi il Redirect URI mostrato qui sotto. 4. Copia il Client ID e incollalo nel campo qui sopra.
-	NL	1. Ga naar developer.spotify.com/dashboard en log in. 2. Maak een nieuwe app aan (de naam maakt niet uit). 3. Voeg in de app-instellingen de hieronder weergegeven Redirect URI toe. 4. Kopieer het Client-ID en plak het in het veld hierboven.
-	NO	1. Gå til developer.spotify.com/dashboard og logg inn. 2. Opprett en ny app (navnet spiller ingen rolle). 3. Legg til Redirect URI-en som vises nedenfor, i appens innstillinger. 4. Kopier Client-ID-en og lim den inn i feltet ovenfor.
-	PL	1. Wejdź na developer.spotify.com/dashboard i zaloguj się. 2. Utwórz nową aplikację (nazwa nie ma znaczenia). 3. W ustawieniach aplikacji dodaj Redirect URI pokazany poniżej. 4. Skopiuj Client ID i wklej je w pole powyżej.
-	SV	1. Gå till developer.spotify.com/dashboard och logga in. 2. Skapa en ny app (namnet spelar ingen roll). 3. Lägg till Redirect URI som visas nedan i appens inställningar. 4. Kopiera Client-ID och klistra in det i fältet ovan.
 
 PLUGIN_SPOTON_DSTM_HINT
 	CS	Tip: Automatické přehrávání (Don't Stop The Music) se konfiguruje v Nastavení přehrávače > Don't Stop The Music. Vyberte „SpotOn doporučení".
@@ -2158,17 +2781,17 @@ PLUGIN_SPOTON_LIKE_ERROR
 	SV	Kunde inte spara spåret
 
 PLUGIN_SPOTON_LIKE_ERROR_SCOPE
-	CS	Nelze uložit skladbu – chybí oprávnění user-library-modify. Přihlaste se znovu v Nastavení.
-	DA	Kunne ikke gemme nummer – mangler user-library-modify tilladelse. Log ind igen via Indstillinger.
-	DE	Track konnte nicht gespeichert werden – fehlende Berechtigung user-library-modify. Erneut anmelden unter Einstellungen.
-	EN	Could not save track – missing user-library-modify scope. Re-authenticate via Settings.
-	ES	No se pudo guardar la pista – falta el permiso user-library-modify. Vuelva a autenticarse en Ajustes.
-	FR	Impossible d'enregistrer le titre – autorisation user-library-modify manquante. Reconnectez-vous via les Paramètres.
-	IT	Impossibile salvare il brano – autorizzazione user-library-modify mancante. Riautenticarsi nelle Impostazioni.
-	NL	Kan nummer niet opslaan – user-library-modify machtiging ontbreekt. Opnieuw aanmelden via Instellingen.
-	NO	Kunne ikke lagre sporet – mangler user-library-modify tillatelse. Logg inn på nytt via Innstillinger.
-	PL	Nie można zapisać utworu – brak uprawnienia user-library-modify. Zaloguj się ponownie w Ustawieniach.
-	SV	Kunde inte spara spåret – behörighet user-library-modify saknas. Logga in igen via Inställningar.
+	CS	Nelze uložit skladbu - Spotify požadavek odmítl. Propojte účet znovu ("Propojit účet").
+	DA	Kunne ikke gemme nummer - Spotify afviste anmodningen. Par kontoen igen ("Par konto").
+	DE	Track konnte nicht gespeichert werden - Spotify hat die Anfrage abgelehnt. Konto erneut koppeln ("Konto koppeln").
+	EN	Could not save track - Spotify refused the request. Pair the account again ("Pair account").
+	ES	No se pudo guardar la pista - Spotify rechazó la solicitud. Vuelva a vincular la cuenta ("Vincular cuenta").
+	FR	Impossible d'enregistrer le titre - Spotify a refusé la requête. Associez à nouveau le compte ("Associer le compte").
+	IT	Impossibile salvare il brano - Spotify ha rifiutato la richiesta. Associa di nuovo l'account ("Associa account").
+	NL	Kan nummer niet opslaan - Spotify heeft het verzoek geweigerd. Koppel het account opnieuw ("Account koppelen").
+	NO	Kunne ikke lagre sporet - Spotify avviste forespørselen. Par kontoen på nytt ("Par konto").
+	PL	Nie można zapisać utworu - Spotify odrzuciło żądanie. Sparuj konto ponownie ("Sparuj konto").
+	SV	Kunde inte spara spåret - Spotify avvisade begäran. Koppla kontot igen ("Koppla konto").
 
 PLUGIN_SPOTON_MANAGE_LIKE
 	CS	SpotOn: Líbit se / Přestat
@@ -2651,345 +3274,6 @@ PLUGIN_SPOTON_ADD_TO_PLAYLIST_ERROR
 	PL	Nie można dodać do playlisty
 	SV	Kunde inte lägga till i spellista
 
-PLUGIN_SPOTON_PKCE_AUTH
-	CS	Autorizace účtu Spotify
-	DA	Spotify-kontogodkendelse
-	DE	Spotify-Konto-Autorisierung
-	EN	Spotify Account Authorization
-	ES	Autorización de cuenta de Spotify
-	FR	Autorisation du compte Spotify
-	IT	Autorizzazione account Spotify
-	NL	Spotify-accountautorisatie
-	NO	Spotify-kontoautorisasjon
-	PL	Autoryzacja konta Spotify
-	SV	Spotify-kontoauktorisering
-
-PLUGIN_SPOTON_PKCE_AUTH_DESC
-	CS	Krok 1 ze 2: propojí váš účet Spotify pro procházení, vyhledávání a přístup ke knihovně. Přehrávání se autorizuje samostatně v dalším kroku.
-	DA	Trin 1 af 2: tilslutter din Spotify-konto til gennemsyn, søgning og biblioteksadgang. Afspilning godkendes separat i næste trin.
-	DE	Schritt 1 von 2: verbindet dein Spotify-Konto für Durchsuchen, Suche und Bibliothekszugriff. Die Wiedergabe wird im nächsten Schritt separat autorisiert.
-	EN	Step 1 of 2: connects your Spotify account for browsing, search and library access. Playback is authorized separately in the next step.
-	ES	Paso 1 de 2: conecta tu cuenta de Spotify para la navegación, la búsqueda y el acceso a la biblioteca. La reproducción se autoriza por separado en el siguiente paso.
-	FR	Étape 1 sur 2 : connecte votre compte Spotify pour la navigation, la recherche et l'accès à la bibliothèque. La lecture est autorisée séparément à l'étape suivante.
-	IT	Passo 1 di 2: collega il tuo account Spotify per navigazione, ricerca e accesso alla libreria. La riproduzione viene autorizzata separatamente nel passo successivo.
-	NL	Stap 1 van 2: verbindt uw Spotify-account voor bladeren, zoeken en bibliotheektoegang. Afspelen wordt in de volgende stap apart geautoriseerd.
-	NO	Trinn 1 av 2: kobler til Spotify-kontoen din for blaing, søk og bibliotekstilgang. Avspilling autoriseres separat i neste trinn.
-	PL	Krok 1 z 2: łączy Twoje konto Spotify na potrzeby przeglądania, wyszukiwania i dostępu do biblioteki. Odtwarzanie jest autoryzowane osobno w kolejnym kroku.
-	SV	Steg 1 av 2: ansluter ditt Spotify-konto för bläddring, sökning och biblioteksåtkomst. Uppspelning auktoriseras separat i nästa steg.
-
-PLUGIN_SPOTON_PKCE_CONNECT_BTN
-	CS	Připojit účet Spotify
-	DA	Tilslut Spotify-konto
-	DE	Spotify-Konto verbinden
-	EN	Connect Spotify Account
-	ES	Conectar cuenta de Spotify
-	FR	Connecter le compte Spotify
-	IT	Connetti account Spotify
-	NL	Spotify-account verbinden
-	NO	Koble til Spotify-konto
-	PL	Połącz konto Spotify
-	SV	Anslut Spotify-konto
-
-PLUGIN_SPOTON_PKCE_NEEDS_CLIENT_ID
-	CS	Pro autorizaci účtu je vyžadováno Spotify Client ID. Nejprve zadejte své Client ID výše.
-	DA	Der kræves et Spotify Client-ID til kontogodkendelse. Indtast dit Client-ID ovenfor først.
-	DE	Für die Konto-Autorisierung wird eine Spotify Client-ID benötigt. Gib zuerst oben deine Client-ID ein.
-	EN	A Spotify Client ID is required for account authorization. Enter your Client ID above first.
-	ES	Se requiere un Client ID de Spotify para autorizar la cuenta. Introduce primero tu Client ID arriba.
-	FR	Un Client ID Spotify est requis pour autoriser le compte. Saisissez d'abord votre Client ID ci-dessus.
-	IT	È necessario un Client ID Spotify per l'autorizzazione dell'account. Inserisci prima il tuo Client ID sopra.
-	NL	Er is een Spotify Client-ID vereist voor accountautorisatie. Voer eerst uw Client-ID hierboven in.
-	NO	Det kreves en Spotify Client-ID for kontoautorisasjon. Skriv inn Client-ID-en din ovenfor først.
-	PL	Do autoryzacji konta wymagane jest Client ID Spotify. Najpierw wpisz powyżej swoje Client ID.
-	SV	Ett Spotify Client-ID krävs för kontoauktorisering. Ange ditt Client-ID ovan först.
-
-PLUGIN_SPOTON_PKCE_OPENING
-	CS	Otevírání autorizace Spotify...
-	DA	Åbner Spotify-godkendelse...
-	DE	Spotify-Autorisierung wird geöffnet...
-	EN	Opening Spotify authorization...
-	ES	Abriendo autorización de Spotify...
-	FR	Ouverture de l'autorisation Spotify...
-	IT	Apertura autorizzazione Spotify...
-	NL	Spotify-autorisatie wordt geopend...
-	NO	Åpner Spotify-autorisasjon...
-	PL	Otwieranie autoryzacji Spotify...
-	SV	Öppnar Spotify-auktorisering...
-
-PLUGIN_SPOTON_PKCE_SUCCESS
-	CS	Účet Spotify byl úspěšně připojen!
-	DA	Spotify-konto tilsluttet!
-	DE	Spotify-Konto erfolgreich verbunden!
-	EN	Spotify account connected successfully!
-	ES	¡Cuenta de Spotify conectada correctamente!
-	FR	Compte Spotify connecté avec succès !
-	IT	Account Spotify connesso con successo!
-	NL	Spotify-account succesvol verbonden!
-	NO	Spotify-kontoen ble koblet til!
-	PL	Konto Spotify zostało pomyślnie połączone!
-	SV	Spotify-kontot anslöts!
-
-PLUGIN_SPOTON_PKCE_ERROR
-	CS	Autorizace se nezdařila. Zkuste to prosím znovu.
-	DA	Godkendelse mislykkedes. Prøv igen.
-	DE	Autorisierung fehlgeschlagen. Bitte versuche es erneut.
-	EN	Authorization failed. Please try again.
-	ES	Error de autorización. Inténtalo de nuevo.
-	FR	Échec de l'autorisation. Veuillez réessayer.
-	IT	Autorizzazione non riuscita. Riprova.
-	NL	Autorisatie mislukt. Probeer het opnieuw.
-	NO	Autorisasjon mislyktes. Prøv igjen.
-	PL	Autoryzacja nie powiodła się. Spróbuj ponownie.
-	SV	Auktoriseringen misslyckades. Försök igen.
-
-PLUGIN_SPOTON_PKCE_POPUP_NOTE
-	CS	Poznámka: Váš prohlížeč musí povolit vyskakovací okna pro tuto stránku. Pokud se nic nestane, zkontrolujte blokování vyskakovacích oken.
-	DA	Bemærk: Din browser skal tillade pop-ups for denne side. Hvis der ikke sker noget, skal du kontrollere din pop-up-blokering.
-	DE	Hinweis: Ihr Browser muss Pop-ups für diese Seite erlauben. Wenn nichts passiert, prüfen Sie den Pop-up-Blocker.
-	EN	Note: Your browser must allow pop-ups for this page. If nothing happens when you click, check your browser's pop-up blocker.
-	ES	Nota: Su navegador debe permitir ventanas emergentes para esta página. Si no pasa nada, compruebe el bloqueador de ventanas emergentes.
-	FR	Remarque : votre navigateur doit autoriser les pop-ups pour cette page. Si rien ne se passe, vérifiez le bloqueur de pop-ups.
-	IT	Nota: il browser deve consentire i pop-up per questa pagina. Se non succede nulla, controllare il blocco dei pop-up.
-	NL	Opmerking: uw browser moet pop-ups toestaan voor deze pagina. Als er niets gebeurt, controleer dan uw pop-upblokkering.
-	NO	Merk: Nettleseren din må tillate popup-vinduer for denne siden. Hvis ingenting skjer, sjekk popup-blokkeringen.
-	PL	Uwaga: przeglądarka musi zezwalać na wyskakujące okna dla tej strony. Jeśli nic się nie dzieje, sprawdź blokowanie wyskakujących okien.
-	SV	Observera: din webbläsare måste tillåta popup-fönster för denna sida. Om inget händer, kontrollera din popup-blockerare.
-
-PLUGIN_SPOTON_PKCE_MANUAL_TITLE
-	CS	Ruční autorizace
-	DA	Manuel godkendelse
-	DE	Manuelle Autorisierung
-	EN	Manual Authorization
-	ES	Autorización manual
-	FR	Autorisation manuelle
-	IT	Autorizzazione manuale
-	NL	Handmatige autorisatie
-	NO	Manuell autorisasjon
-	PL	Autoryzacja ręczna
-	SV	Manuell auktorisering
-
-PLUGIN_SPOTON_PKCE_MANUAL_DESC
-	CS	Pokud váš prohlížeč po potvrzení skončí na nedostupné stránce 127.0.0.1, je to očekávané, když prohlížeč běží na jiném počítači než LMS: zkopírujte celou URL adresu z adresního řádku a vložte ji sem:
-	DA	Hvis din browser efter godkendelsen ender på en utilgængelig 127.0.0.1-side, er det forventet, når browseren kører på en anden maskine end LMS: Kopiér hele URL'en fra adresselinjen, og indsæt den her:
-	DE	Landet dein Browser nach dem Bestätigen auf einer nicht erreichbaren 127.0.0.1-Seite, ist das zu erwarten, wenn der Browser auf einem anderen Rechner als LMS läuft: Kopiere die vollständige URL aus der Adressleiste und füge sie hier ein:
-	EN	If your browser lands on an unreachable 127.0.0.1 page after approving, that is expected when the browser runs on a different machine than LMS: copy the full URL from the address bar and paste it here:
-	ES	Si tu navegador acaba en una página 127.0.0.1 inaccesible tras aprobar, es lo esperado cuando el navegador se ejecuta en una máquina distinta a LMS: copia la URL completa de la barra de direcciones y pégala aquí:
-	FR	Si votre navigateur aboutit sur une page 127.0.0.1 inaccessible après l'approbation, c'est normal lorsque le navigateur s'exécute sur une autre machine que LMS : copiez l'URL complète depuis la barre d'adresse et collez-la ici :
-	IT	Se dopo l'approvazione il browser finisce su una pagina 127.0.0.1 irraggiungibile, è normale quando il browser è su una macchina diversa da LMS: copia l'URL completo dalla barra degli indirizzi e incollalo qui:
-	NL	Als uw browser na goedkeuring op een onbereikbare 127.0.0.1-pagina belandt, is dat normaal wanneer de browser op een andere machine dan LMS draait: kopieer de volledige URL uit de adresbalk en plak deze hier:
-	NO	Hvis nettleseren din havner på en utilgjengelig 127.0.0.1-side etter godkjenning, er det forventet når nettleseren kjører på en annen maskin enn LMS: Kopier hele URL-en fra adressefeltet og lim den inn her:
-	PL	Jeśli po zatwierdzeniu przeglądarka trafi na niedostępną stronę 127.0.0.1, jest to oczekiwane, gdy przeglądarka działa na innym komputerze niż LMS: skopiuj pełny adres URL z paska adresu i wklej go tutaj:
-	SV	Om din webbläsare hamnar på en onåbar 127.0.0.1-sida efter godkännandet är det väntat när webbläsaren körs på en annan maskin än LMS: kopiera hela URL:en från adressfältet och klistra in den här:
-
-PLUGIN_SPOTON_PKCE_MANUAL_BTN
-	CS	Odeslat callback URL
-	DA	Indsend callback-URL
-	DE	Callback-URL senden
-	EN	Submit Callback URL
-	ES	Enviar URL de retorno
-	FR	Envoyer l'URL de rappel
-	IT	Invia URL di callback
-	NL	Callback-URL verzenden
-	NO	Send inn callback-URL
-	PL	Wyślij adres URL zwrotny
-	SV	Skicka callback-URL
-
-
-PLUGIN_SPOTON_SETUP_PKCE_TITLE
-	CS	Připojte svůj účet Spotify
-	DA	Tilslut din Spotify-konto
-	DE	Verbinde dein Spotify-Konto
-	EN	Connect your Spotify Account
-	ES	Conecta tu cuenta de Spotify
-	FR	Connectez votre compte Spotify
-	IT	Connetti il tuo account Spotify
-	NL	Verbind uw Spotify-account
-	NO	Koble til Spotify-kontoen din
-	PL	Połącz swoje konto Spotify
-	SV	Anslut ditt Spotify-konto
-
-PLUGIN_SPOTON_SETUP_PKCE_DESC
-	CS	Klikněte na „Připojit účet Spotify" a potvrďte v okně prohlížeče. Tím se zpřístupní procházení, vyhledávání a vaše knihovna.
-	DA	Klik på "Tilslut Spotify-konto", og godkend i browservinduet. Dette aktiverer gennemsyn, søgning og dit bibliotek.
-	DE	Klicke auf „Spotify-Konto verbinden" und bestätige im Browserfenster. Dadurch werden Durchsuchen, Suche und deine Bibliothek aktiviert.
-	EN	Click "Connect Spotify Account" and approve in the browser window. This enables browsing, search and your library.
-	ES	Haz clic en "Conectar cuenta de Spotify" y aprueba en la ventana del navegador. Esto habilita la navegación, la búsqueda y tu biblioteca.
-	FR	Cliquez sur « Connecter le compte Spotify » et approuvez dans la fenêtre du navigateur. Cela active la navigation, la recherche et votre bibliothèque.
-	IT	Fai clic su "Connetti account Spotify" e approva nella finestra del browser. Questo abilita navigazione, ricerca e la tua libreria.
-	NL	Klik op "Spotify-account verbinden" en keur goed in het browservenster. Dit schakelt bladeren, zoeken en uw bibliotheek in.
-	NO	Klikk på «Koble til Spotify-konto» og godkjenn i nettleservinduet. Dette aktiverer blaing, søk og biblioteket ditt.
-	PL	Kliknij „Połącz konto Spotify" i zatwierdź w oknie przeglądarki. To włącza przeglądanie, wyszukiwanie i Twoją bibliotekę.
-	SV	Klicka på "Anslut Spotify-konto" och godkänn i webbläsarfönstret. Detta aktiverar bläddring, sökning och ditt bibliotek.
-
-PLUGIN_SPOTON_SP_DC
-	CS	Cookie Spotify sp_dc
-	DA	Spotify sp_dc-cookie
-	DE	Spotify sp_dc-Cookie
-	EN	Spotify sp_dc Cookie
-	ES	Cookie sp_dc de Spotify
-	FR	Cookie sp_dc Spotify
-	IT	Cookie sp_dc di Spotify
-	NL	Spotify sp_dc-cookie
-	NO	Spotify sp_dc-informasjonskapsel
-	PL	Ciasteczko sp_dc Spotify
-	SV	Spotify sp_dc-cookie
-
-PLUGIN_SPOTON_SP_DC_DESC
-	CS	Vložte sem svůj Spotify sp_dc cookie a odemkněte personalizovaný obsah Vytvořeno pro vás (Daily Mix, Discover Weekly, Release Radar, Daylist). Ukládá se bezpečně a nikdy se nezobrazuje celý.
-	DA	Indsæt din Spotify sp_dc-cookie her for at låse op for personligt indhold under Lavet til dig (Daily Mix, Discover Weekly, Release Radar, Daylist). Gemmes sikkert og vises aldrig i sin helhed.
-	DE	Füge hier deinen Spotify sp_dc-Cookie ein, um personalisierte „Für dich gemacht“-Inhalte freizuschalten (Daily Mix, Discover Weekly, Release Radar, Daylist). Wird sicher gespeichert und nie vollständig angezeigt.
-	EN	Paste your Spotify sp_dc cookie here to unlock personalized Made For You content (Daily Mix, Discover Weekly, Release Radar, Daylist). Stored securely and never displayed in full.
-	ES	Pega aquí tu cookie sp_dc de Spotify para desbloquear el contenido personalizado de Hecho para ti (Daily Mix, Discover Weekly, Release Radar, Daylist). Se almacena de forma segura y nunca se muestra completa.
-	FR	Collez ici votre cookie sp_dc Spotify pour débloquer le contenu personnalisé Fait pour vous (Daily Mix, Discover Weekly, Release Radar, Daylist). Stocké en toute sécurité et jamais affiché en entier.
-	IT	Incolla qui il tuo cookie sp_dc di Spotify per sbloccare i contenuti personalizzati di Fatto per te (Daily Mix, Discover Weekly, Release Radar, Daylist). Memorizzato in modo sicuro e mai mostrato per intero.
-	NL	Plak hier uw Spotify sp_dc-cookie om gepersonaliseerde Gemaakt voor jou-inhoud te ontgrendelen (Daily Mix, Discover Weekly, Release Radar, Daylist). Wordt veilig opgeslagen en nooit volledig weergegeven.
-	NO	Lim inn Spotify sp_dc-informasjonskapselen din her for å låse opp personlig innhold under Laget for deg (Daily Mix, Discover Weekly, Release Radar, Daylist). Lagres sikkert og vises aldri i sin helhet.
-	PL	Wklej tutaj swoje ciasteczko sp_dc Spotify, aby odblokować spersonalizowaną zawartość Stworzone dla Ciebie (Daily Mix, Discover Weekly, Release Radar, Daylist). Przechowywane bezpiecznie i nigdy nie wyświetlane w całości.
-	SV	Klistra in din Spotify sp_dc-cookie här för att låsa upp personligt innehåll under Gjort för dig (Daily Mix, Discover Weekly, Release Radar, Daylist). Lagras säkert och visas aldrig i sin helhet.
-
-PLUGIN_SPOTON_SP_DC_HOWTO_TITLE
-	CS	Jak najít cookie sp_dc
-	DA	Sådan finder du din sp_dc-cookie
-	DE	So findest du deinen sp_dc-Cookie
-	EN	How to find your sp_dc cookie
-	ES	Cómo encontrar tu cookie sp_dc
-	FR	Comment trouver votre cookie sp_dc
-	IT	Come trovare il tuo cookie sp_dc
-	NL	Zo vindt u uw sp_dc-cookie
-	NO	Slik finner du sp_dc-informasjonskapselen din
-	PL	Jak znaleźć ciasteczko sp_dc
-	SV	Så hittar du din sp_dc-cookie
-
-PLUGIN_SPOTON_SP_DC_HOWTO
-	CS	Jak najít cookie sp_dc: 1) Otevřete open.spotify.com v prohlížeči a přihlaste se. 2) Otevřete nástroje pro vývojáře (F12) a přejděte na Application → Cookies → https://open.spotify.com. 3) Najděte cookie s názvem „sp_dc“ a zkopírujte jeho hodnotu. 4) Vložte ji do pole výše.
-	DA	Sådan finder du din sp_dc-cookie: 1) Åbn open.spotify.com i din browser, og log ind. 2) Åbn udviklerværktøjer (F12), og gå til Application → Cookies → https://open.spotify.com. 3) Find cookien med navnet "sp_dc", og kopiér dens værdi. 4) Indsæt den i feltet ovenfor.
-	DE	So findest du deinen sp_dc-Cookie: 1) Öffne open.spotify.com in deinem Browser und melde dich an. 2) Öffne die Entwicklertools (F12) und gehe zu Application → Cookies → https://open.spotify.com. 3) Suche den Cookie mit dem Namen „sp_dc“ und kopiere seinen Wert. 4) Füge ihn oben in das Feld ein.
-	EN	How to find your sp_dc cookie: 1) Open open.spotify.com in your browser and log in. 2) Open Developer Tools (F12), then go to Application → Cookies → https://open.spotify.com. 3) Find the cookie named "sp_dc" and copy its value. 4) Paste it into the field above.
-	ES	Cómo encontrar tu cookie sp_dc: 1) Abre open.spotify.com en tu navegador e inicia sesión. 2) Abre las herramientas de desarrollador (F12) y ve a Application → Cookies → https://open.spotify.com. 3) Busca la cookie llamada "sp_dc" y copia su valor. 4) Pégalo en el campo de arriba.
-	FR	Comment trouver votre cookie sp_dc : 1) Ouvrez open.spotify.com dans votre navigateur et connectez-vous. 2) Ouvrez les outils de développement (F12), puis allez dans Application → Cookies → https://open.spotify.com. 3) Trouvez le cookie nommé « sp_dc » et copiez sa valeur. 4) Collez-la dans le champ ci-dessus.
-	IT	Come trovare il tuo cookie sp_dc: 1) Apri open.spotify.com nel browser ed esegui l'accesso. 2) Apri gli strumenti per sviluppatori (F12), poi vai su Application → Cookies → https://open.spotify.com. 3) Trova il cookie chiamato "sp_dc" e copiane il valore. 4) Incollalo nel campo qui sopra.
-	NL	Zo vindt u uw sp_dc-cookie: 1) Open open.spotify.com in uw browser en log in. 2) Open de ontwikkelaarstools (F12) en ga naar Application → Cookies → https://open.spotify.com. 3) Zoek de cookie met de naam "sp_dc" en kopieer de waarde. 4) Plak deze in het veld hierboven.
-	NO	Slik finner du sp_dc-informasjonskapselen din: 1) Åpne open.spotify.com i nettleseren og logg inn. 2) Åpne utviklerverktøyene (F12), og gå til Application → Cookies → https://open.spotify.com. 3) Finn informasjonskapselen med navnet «sp_dc», og kopier verdien. 4) Lim den inn i feltet ovenfor.
-	PL	Jak znaleźć ciasteczko sp_dc: 1) Otwórz open.spotify.com w przeglądarce i zaloguj się. 2) Otwórz narzędzia deweloperskie (F12) i przejdź do Application → Cookies → https://open.spotify.com. 3) Znajdź ciasteczko o nazwie „sp_dc” i skopiuj jego wartość. 4) Wklej je w pole powyżej.
-	SV	Så hittar du din sp_dc-cookie: 1) Öppna open.spotify.com i webbläsaren och logga in. 2) Öppna utvecklarverktygen (F12) och gå till Application → Cookies → https://open.spotify.com. 3) Hitta cookien som heter "sp_dc" och kopiera dess värde. 4) Klistra in den i fältet ovan.
-
-PLUGIN_SPOTON_SP_DC_STATUS_VALID
-	CS	Platné
-	DA	Gyldig
-	DE	Gültig
-	EN	Valid
-	ES	Válida
-	FR	Valide
-	IT	Valido
-	NL	Geldig
-	NO	Gyldig
-	PL	Ważne
-	SV	Giltig
-
-PLUGIN_SPOTON_SP_DC_STATUS_EXPIRED
-	CS	Vypršelo
-	DA	Udløbet
-	DE	Abgelaufen
-	EN	Expired
-	ES	Caducada
-	FR	Expiré
-	IT	Scaduto
-	NL	Verlopen
-	NO	Utløpt
-	PL	Wygasłe
-	SV	Utgången
-
-PLUGIN_SPOTON_SP_DC_STATUS_EMPTY
-	CS	Nenakonfigurováno
-	DA	Ikke konfigureret
-	DE	Nicht konfiguriert
-	EN	Not configured
-	ES	No configurada
-	FR	Non configuré
-	IT	Non configurato
-	NL	Niet geconfigureerd
-	NO	Ikke konfigurert
-	PL	Nieskonfigurowane
-	SV	Inte konfigurerad
-
-PLUGIN_SPOTON_SP_DC_EXPIRED_HINT
-	CS	Vytvořeno pro vás: platnost cookie sp_dc vypršela — zadejte ji znovu v nastavení.
-	DA	Lavet til dig: sp_dc-cookien er udløbet — indtast den igen under Indstillinger.
-	DE	Für dich gemacht: sp_dc-Cookie abgelaufen — bitte in den Einstellungen neu eingeben.
-	EN	Made For You: sp_dc cookie expired — re-enter it in Settings.
-	ES	Hecho para ti: la cookie sp_dc ha caducado — vuelve a introducirla en Configuración.
-	FR	Fait pour vous : le cookie sp_dc a expiré — ressaisissez-le dans les Paramètres.
-	IT	Fatto per te: il cookie sp_dc è scaduto — reinseriscilo nelle Impostazioni.
-	NL	Gemaakt voor jou: sp_dc-cookie verlopen — voer deze opnieuw in bij Instellingen.
-	NO	Laget for deg: sp_dc-informasjonskapselen er utløpt — skriv den inn på nytt under Innstillinger.
-	PL	Stworzone dla Ciebie: ciasteczko sp_dc wygasło — wprowadź je ponownie w Ustawieniach.
-	SV	Gjort för dig: sp_dc-cookien har gått ut — ange den igen under Inställningar.
-
-PLUGIN_SPOTON_MFY_SECRETS_DOWN
-	CS	Vytvořeno pro vás je dočasně nedostupné (zdroj TOTP tajemství není dostupný).
-	DA	Lavet til dig er midlertidigt utilgængelig (TOTP-hemmelighedskilden er utilgængelig).
-	DE	„Für dich gemacht“ ist vorübergehend nicht verfügbar (TOTP-Quelle nicht erreichbar).
-	EN	Made For You is temporarily unavailable (TOTP secret source unreachable).
-	ES	Hecho para ti no está disponible temporalmente (fuente del secreto TOTP inaccesible).
-	FR	Fait pour vous est temporairement indisponible (source du secret TOTP inaccessible).
-	IT	Fatto per te non è temporaneamente disponibile (fonte del segreto TOTP non raggiungibile).
-	NL	Gemaakt voor jou is tijdelijk niet beschikbaar (TOTP-geheimbron niet bereikbaar).
-	NO	Laget for deg er midlertidig utilgjengelig (TOTP-hemmelighetskilden er utilgjengelig).
-	PL	Stworzone dla Ciebie jest tymczasowo niedostępne (źródło sekretu TOTP niedostępne).
-	SV	Gjort för dig är tillfälligt otillgängligt (TOTP-hemlighetskällan går inte att nå).
-
-PLUGIN_SPOTON_PATHFINDER_HASH
-	CS	Pathfinder Query Hash (Pokročilé)
-	DA	Pathfinder Query Hash (Avanceret)
-	DE	Pathfinder Query Hash (Erweitert)
-	EN	Pathfinder Query Hash (Advanced)
-	ES	Hash de consulta Pathfinder (Avanzado)
-	FR	Hash de requête Pathfinder (Avancé)
-	IT	Hash query Pathfinder (Avanzato)
-	NL	Pathfinder Query Hash (Geavanceerd)
-	NO	Pathfinder Query Hash (Avansert)
-	PL	Hash zapytania Pathfinder (Zaawansowane)
-	SV	Pathfinder Query Hash (Avancerat)
-
-PLUGIN_SPOTON_PATHFINDER_HASH_DESC
-	CS	Volitelné. Vložte sha256Hash z živého požadavku Pathfinder a povolte tak objevování Vytvořeno pro vás. Tento hash se mění s vydáními Spotify webového přehrávače a může vyžadovat pravidelnou aktualizaci.
-	DA	Valgfrit. Indsæt sha256Hash fra en live Pathfinder-anmodning for at aktivere Lavet til dig-opdagelse. Denne hash roterer med Spotify-webafspillerudgivelser og kan kræve løbende opdatering.
-	DE	Optional. Füge den sha256Hash aus einer Live-Pathfinder-Anfrage ein, um die „Für dich gemacht“-Erkennung zu aktivieren. Dieser Hash rotiert mit den Veröffentlichungen des Spotify-Webplayers und muss möglicherweise regelmäßig aktualisiert werden.
-	EN	Optional. Paste the sha256Hash from a live Pathfinder request to enable Made For You discovery. This hash rotates with Spotify web-player releases and may need periodic updating.
-	ES	Opcional. Pega el sha256Hash de una solicitud Pathfinder en vivo para habilitar el descubrimiento de Hecho para ti. Este hash rota con las versiones del reproductor web de Spotify y puede necesitar actualizaciones periódicas.
-	FR	Facultatif. Collez le sha256Hash d'une requête Pathfinder en direct pour activer la découverte Fait pour vous. Ce hash change avec les versions du lecteur web Spotify et peut nécessiter une mise à jour périodique.
-	IT	Facoltativo. Incolla lo sha256Hash di una richiesta Pathfinder dal vivo per abilitare la scoperta di Fatto per te. Questo hash cambia con le versioni del web player di Spotify e potrebbe richiedere un aggiornamento periodico.
-	NL	Optioneel. Plak de sha256Hash van een live Pathfinder-verzoek om Gemaakt voor jou-ontdekking in te schakelen. Deze hash verandert met releases van de Spotify webspeler en moet mogelijk periodiek worden bijgewerkt.
-	NO	Valgfritt. Lim inn sha256Hash fra en direkte Pathfinder-forespørsel for å aktivere Laget for deg-oppdagelse. Denne hashen endres med utgivelser av Spotify-webspilleren og kan trenge periodisk oppdatering.
-	PL	Opcjonalne. Wklej sha256Hash z aktywnego żądania Pathfinder, aby włączyć odkrywanie Stworzone dla Ciebie. Ten hash zmienia się wraz z wydaniami odtwarzacza internetowego Spotify i może wymagać okresowej aktualizacji.
-	SV	Valfritt. Klistra in sha256Hash från en aktiv Pathfinder-förfrågan för att aktivera upptäckt av Gjort för dig. Denna hash roterar med Spotify webbspelarens utgåvor och kan behöva uppdateras med jämna mellanrum.
-
-PLUGIN_SPOTON_PATHFINDER_HASH_HOWTO_TITLE
-	CS	Jak získat Pathfinder hash
-	DA	Sådan finder du Pathfinder-hashen
-	DE	So findest du den Pathfinder-Hash
-	EN	How to capture the Pathfinder hash
-	ES	Cómo capturar el hash de Pathfinder
-	FR	Comment récupérer le hash Pathfinder
-	IT	Come catturare l'hash Pathfinder
-	NL	Zo achterhaalt u de Pathfinder-hash
-	NO	Slik henter du Pathfinder-hashen
-	PL	Jak przechwycić hash Pathfinder
-	SV	Så hämtar du Pathfinder-hashen
-
-PLUGIN_SPOTON_PATHFINDER_HASH_HOWTO
-	CS	Jak získat hash: 1) Otevřete open.spotify.com v prohlížeči a přihlaste se. 2) Otevřete nástroje pro vývojáře (F12) a přejděte na kartu Síť (Network). 3) Filtrujte podle „pathfinder”. 4) Najděte požadavek, jehož Payload obsahuje „operationName”:”home” — existuje více požadavků pathfinder, ale potřebujete právě tento. 5) V datech požadavku (Payload) najděte extensions.persistedQuery.sha256Hash. 6) Zkopírujte hexadecimální řetězec a vložte jej sem.
-	DA	Sådan finder du hashen: 1) Åbn open.spotify.com i din browser, og log ind. 2) Åbn udviklerværktøjer (F12), og gå til fanen Netværk. 3) Filtrer efter „pathfinder”. 4) Find den anmodning, hvor Payload indeholder „operationName”:”home” — der er flere pathfinder-anmodninger, men du skal bruge netop denne. 5) Find extensions.persistedQuery.sha256Hash i Payload. 6) Kopiér hex-strengen, og indsæt den her.
-	DE	So erfasst du den Hash: 1) Öffne open.spotify.com in deinem Browser und melde dich an. 2) Öffne die Entwicklertools (F12) und gehe zum Tab Netzwerk. 3) Filtere nach „pathfinder”. 4) Finde die Anfrage, deren Payload „operationName”:”home” enthält — es gibt mehrere Pathfinder-Anfragen, du brauchst genau diese. 5) Suche im Payload nach extensions.persistedQuery.sha256Hash. 6) Kopiere die Hex-Zeichenfolge und füge sie hier ein.
-	EN	How to capture the hash: 1) Open open.spotify.com in your browser and log in. 2) Open Developer Tools (F12), go to the Network tab. 3) Filter for 'pathfinder'. 4) Find the request whose Payload contains “operationName”:”home” — there are multiple pathfinder requests, you need this specific one. 5) In the Payload, find extensions.persistedQuery.sha256Hash. 6) Copy the hex string and paste it here.
-	ES	Cómo capturar el hash: 1) Abre open.spotify.com en tu navegador e inicia sesión. 2) Abre las herramientas de desarrollador (F12) y ve a la pestaña Red. 3) Filtra por „pathfinder”. 4) Busca la solicitud cuyo Payload contenga „operationName”:”home” — hay varias solicitudes pathfinder, necesitas exactamente esta. 5) En el Payload, busca extensions.persistedQuery.sha256Hash. 6) Copia la cadena hexadecimal y pégala aquí.
-	FR	Comment récupérer le hash : 1) Ouvrez open.spotify.com dans votre navigateur et connectez-vous. 2) Ouvrez les outils de développement (F12) et allez dans l'onglet Réseau. 3) Filtrez sur « pathfinder ». 4) Trouvez la requête dont le Payload contient « operationName » : « home » — il y a plusieurs requêtes pathfinder, vous avez besoin de celle-ci précisément. 5) Dans le Payload, trouvez extensions.persistedQuery.sha256Hash. 6) Copiez la chaîne hexadécimale et collez-la ici.
-	IT	Come catturare l'hash: 1) Apri open.spotify.com nel browser ed esegui l'accesso. 2) Apri gli strumenti per sviluppatori (F12) e vai alla scheda Rete. 3) Filtra per „pathfinder”. 4) Trova la richiesta il cui Payload contiene „operationName”:”home” — ci sono più richieste pathfinder, ti serve esattamente questa. 5) Nel Payload, trova extensions.persistedQuery.sha256Hash. 6) Copia la stringa esadecimale e incollala qui.
-	NL	Zo achterhaalt u de hash: 1) Open open.spotify.com in uw browser en log in. 2) Open de ontwikkelaarstools (F12) en ga naar het tabblad Netwerk. 3) Filter op „pathfinder”. 4) Zoek het verzoek waarvan de Payload „operationName”:”home” bevat — er zijn meerdere pathfinder-verzoeken, u hebt precies dit nodig. 5) Zoek in de Payload naar extensions.persistedQuery.sha256Hash. 6) Kopieer de hexreeks en plak deze hier.
-	NO	Slik henter du hashen: 1) Åpne open.spotify.com i nettleseren og logg inn. 2) Åpne utviklerverktøyene (F12), og gå til fanen Nettverk. 3) Filtrer etter «pathfinder». 4) Finn forespørselen der nyttelasten inneholder «operationName»:«home» — det finnes flere pathfinder-forespørsler, du trenger akkurat denne. 5) Finn extensions.persistedQuery.sha256Hash i nyttelasten. 6) Kopier heksadesimal-strengen, og lim den inn her.
-	PL	Jak przechwycić hash: 1) Otwórz open.spotify.com w przeglądarce i zaloguj się. 2) Otwórz narzędzia deweloperskie (F12) i przejdź do karty Sieć. 3) Filtruj po „pathfinder”. 4) Znajdź żądanie, którego Payload zawiera „operationName”:”home” — istnieje wiele żądań pathfinder, potrzebujesz dokładnie tego. 5) W Payload znajdź extensions.persistedQuery.sha256Hash. 6) Skopiuj ciąg szesnastkowy i wklej go tutaj.
-	SV	Så hämtar du hashen: 1) Öppna open.spotify.com i webbläsaren och logga in. 2) Öppna utvecklarverktygen (F12) och gå till fliken Nätverk. 3) Filtrera på „pathfinder”. 4) Hitta den förfrågan vars Payload innehåller „operationName”:”home” — det finns flera pathfinder-förfrågningar, du behöver just denna. 5) Hitta extensions.persistedQuery.sha256Hash i Payload. 6) Kopiera hex-strängen och klistra in den här.
-
 PLUGIN_SPOTON_SYNC_GROUP_SUFFIX
 	CS	(Skupina)
 	DA	(Gruppe)
@@ -3030,96 +3314,18 @@ PLUGIN_SPOTON_CLEAR_SEARCH_HISTORY
 	PL	Wyczyść historię wyszukiwania
 	SV	Rensa sökhistorik
 
-PLUGIN_SPOTON_PLAYER_AUTH_TITLE
-	CS	Autorizovat přehrávání
-	DA	Godkend afspilning
-	DE	Wiedergabe autorisieren
-	EN	Authorize Playback
-	ES	Autorizar reproducción
-	FR	Autoriser la lecture
-	IT	Autorizza la riproduzione
-	NL	Afspelen autoriseren
-	NO	Autoriser avspilling
-	PL	Autoryzuj odtwarzanie
-	SV	Auktorisera uppspelning
-
-PLUGIN_SPOTON_PLAYER_AUTH_DESC
-	CS	Povinný krok 2: přehrávání a Spotify Connect potřebují přihlašovací údaje z aplikace Spotify. Spusťte párování a poté v aplikaci Spotify v telefonu nebo počítači vyberte zobrazené zařízení.
-	DA	Påkrævet trin 2: afspilning og Spotify Connect kræver legitimation fra Spotify-appen. Start parring, og vælg derefter den viste enhed i Spotify-appen på din telefon eller computer.
-	DE	Erforderlicher Schritt 2: Wiedergabe und Spotify Connect benötigen Anmeldedaten aus der Spotify App. Starte die Kopplung und wähle dann das angezeigte Gerät in der Spotify App auf deinem Handy oder Computer aus.
-	EN	Required step 2: playback and Spotify Connect need credentials from the Spotify app. Start pairing, then select the shown device in the Spotify app on your phone or computer.
-	ES	Paso 2 obligatorio: la reproducción y Spotify Connect necesitan credenciales de la app de Spotify. Inicia el emparejamiento y luego selecciona el dispositivo mostrado en la app de Spotify en tu teléfono u ordenador.
-	FR	Étape 2 obligatoire : la lecture et Spotify Connect ont besoin d'identifiants provenant de l'application Spotify. Démarrez l'appairage, puis sélectionnez l'appareil affiché dans l'application Spotify sur votre téléphone ou ordinateur.
-	IT	Passo 2 obbligatorio: riproduzione e Spotify Connect richiedono credenziali dall'app Spotify. Avvia l'abbinamento, quindi seleziona il dispositivo mostrato nell'app Spotify sul tuo telefono o computer.
-	NL	Vereiste stap 2: afspelen en Spotify Connect hebben referenties van de Spotify-app nodig. Start de koppeling en selecteer vervolgens het getoonde apparaat in de Spotify-app op uw telefoon of computer.
-	NO	Obligatorisk trinn 2: avspilling og Spotify Connect trenger legitimasjon fra Spotify-appen. Start paringen, og velg deretter enheten som vises i Spotify-appen på telefonen eller datamaskinen din.
-	PL	Wymagany krok 2: odtwarzanie i Spotify Connect wymagają poświadczeń z aplikacji Spotify. Rozpocznij parowanie, a następnie wybierz pokazane urządzenie w aplikacji Spotify na telefonie lub komputerze.
-	SV	Obligatoriskt steg 2: uppspelning och Spotify Connect behöver inloggningsuppgifter från Spotify-appen. Starta parkopplingen och välj sedan den visade enheten i Spotify-appen på din telefon eller dator.
-
-PLUGIN_SPOTON_PLAYER_AUTH_BANNER
-	CS	Je vyžadována autorizace přehrávání: váš účet je připojen, ale přehrávání zatím není autorizováno. Použijte níže „Autorizovat přehrávání".
-	DA	Afspilningsgodkendelse påkrævet: din konto er tilsluttet, men afspilning er endnu ikke godkendt. Brug "Godkend afspilning" nedenfor.
-	DE	Wiedergabe-Autorisierung erforderlich: dein Konto ist verbunden, aber die Wiedergabe ist noch nicht autorisiert. Nutze unten „Wiedergabe autorisieren".
-	EN	Playback authorization required: your account is connected, but playback is not yet authorized. Use "Authorize Playback" below.
-	ES	Se requiere autorización de reproducción: tu cuenta está conectada, pero la reproducción aún no está autorizada. Usa "Autorizar reproducción" abajo.
-	FR	Autorisation de lecture requise : votre compte est connecté, mais la lecture n'est pas encore autorisée. Utilisez « Autoriser la lecture » ci-dessous.
-	IT	Autorizzazione alla riproduzione richiesta: il tuo account è connesso, ma la riproduzione non è ancora autorizzata. Usa "Autorizza la riproduzione" qui sotto.
-	NL	Afspeelautorisatie vereist: uw account is verbonden, maar afspelen is nog niet geautoriseerd. Gebruik hieronder "Afspelen autoriseren".
-	NO	Avspillingsautorisasjon kreves: kontoen din er tilkoblet, men avspilling er ikke autorisert ennå. Bruk «Autoriser avspilling» nedenfor.
-	PL	Wymagana autoryzacja odtwarzania: Twoje konto jest połączone, ale odtwarzanie nie jest jeszcze autoryzowane. Użyj poniżej „Autoryzuj odtwarzanie".
-	SV	Uppspelningsauktorisering krävs: ditt konto är anslutet, men uppspelning är ännu inte auktoriserad. Använd "Auktorisera uppspelning" nedan.
-
-PLUGIN_SPOTON_PLAYER_AUTH_STATUS_OK
-	CS	Přehrávání autorizováno
-	DA	Afspilning godkendt
-	DE	Wiedergabe autorisiert
-	EN	Playback authorized
-	ES	Reproducción autorizada
-	FR	Lecture autorisée
-	IT	Riproduzione autorizzata
-	NL	Afspelen geautoriseerd
-	NO	Avspilling autorisert
-	PL	Odtwarzanie autoryzowane
-	SV	Uppspelning auktoriserad
-
-PLUGIN_SPOTON_PLAYER_AUTH_STATUS_REQUIRED
-	CS	Je vyžadována autorizace přehrávání
-	DA	Afspilningsgodkendelse påkrævet
-	DE	Wiedergabe-Autorisierung erforderlich
-	EN	Playback authorization required
-	ES	Se requiere autorización de reproducción
-	FR	Autorisation de lecture requise
-	IT	Autorizzazione alla riproduzione richiesta
-	NL	Afspeelautorisatie vereist
-	NO	Avspillingsautorisasjon kreves
-	PL	Wymagana autoryzacja odtwarzania
-	SV	Uppspelningsauktorisering krävs
-
 PLUGIN_SPOTON_PLAYER_AUTH_INSTRUCTIONS
-	CS	1) Otevřete aplikaci Spotify na telefonu nebo počítači ve stejné síti jako tento server. 2) Spusťte přehrávání libovolné skladby — seznam zařízení se zobrazí pouze při aktivním přehrávání. 3) Otevřete nabídku zařízení a vyberte zařízení zobrazené níže.
-	DA	1) Åbn Spotify-appen på en telefon eller computer på samme netværk som denne server. 2) Start afspilning af et vilkårligt nummer — enhedslisten vises kun under aktiv afspilning. 3) Åbn enhedsmenuen, og vælg enheden, der vises nedenfor.
-	DE	1) Öffne die Spotify-App auf einem Handy oder Computer im selben Netzwerk wie dieser Server. 2) Starte die Wiedergabe eines beliebigen Titels — die Geräteliste erscheint nur bei aktiver Wiedergabe. 3) Öffne das Gerätemenü und wähle das unten angezeigte Gerät.
-	EN	1) Open the Spotify app on a phone or computer on the same network as this server. 2) Start playing any track — the device list only appears during active playback. 3) Open the devices menu and select the device shown below.
-	ES	1) Abra la aplicación de Spotify en un teléfono u ordenador en la misma red que este servidor. 2) Comience a reproducir cualquier canción — la lista de dispositivos solo aparece durante la reproducción activa. 3) Abra el menú de dispositivos y seleccione el dispositivo que se muestra a continuación.
-	FR	1) Ouvrez l'application Spotify sur un téléphone ou un ordinateur du même réseau que ce serveur. 2) Lancez la lecture d'un titre quelconque — la liste des appareils n'apparaît que pendant une lecture active. 3) Ouvrez le menu des appareils et sélectionnez l'appareil affiché ci-dessous.
-	IT	1) Apri l'app di Spotify su un telefono o computer nella stessa rete di questo server. 2) Avvia la riproduzione di un brano qualsiasi — l'elenco dei dispositivi appare solo durante la riproduzione attiva. 3) Apri il menu dei dispositivi e seleziona il dispositivo mostrato qui sotto.
-	NL	1) Open de Spotify-app op een telefoon of computer in hetzelfde netwerk als deze server. 2) Start het afspelen van een willekeurig nummer — de apparatenlijst verschijnt alleen tijdens actief afspelen. 3) Open het apparatenmenu en selecteer het hieronder getoonde apparaat.
-	NO	1) Åpne Spotify-appen på en telefon eller datamaskin i samme nettverk som denne serveren. 2) Start avspilling av et hvilket som helst spor — enhetslisten vises bare under aktiv avspilling. 3) Åpne enhetsmenyen, og velg enheten som vises nedenfor.
-	PL	1) Otwórz aplikację Spotify na telefonie lub komputerze w tej samej sieci co ten serwer. 2) Rozpocznij odtwarzanie dowolnego utworu — lista urządzeń pojawia się tylko podczas aktywnego odtwarzania. 3) Otwórz menu urządzeń i wybierz urządzenie pokazane poniżej.
-	SV	1) Öppna Spotify-appen på en telefon eller dator i samma nätverk som den här servern. 2) Starta uppspelning av valfri låt — enhetslistan visas bara under aktiv uppspelning. 3) Öppna enhetsmenyn och välj enheten som visas nedan.
-
-PLUGIN_SPOTON_PLAYER_AUTH_START_BTN
-	CS	Zahájit párování
-	DA	Start parring
-	DE	Kopplung starten
-	EN	Start Pairing
-	ES	Iniciar emparejamiento
-	FR	Démarrer l'appairage
-	IT	Avvia abbinamento
-	NL	Koppeling starten
-	NO	Start paring
-	PL	Rozpocznij parowanie
-	SV	Starta parkoppling
+	CS	1) Otevřete aplikaci Spotify na telefonu nebo počítači ve stejné síti jako tento server. 2) Spusťte přehrávání libovolné skladby - seznam zařízení se zobrazí pouze při aktivním přehrávání. 3) Otevřete nabídku zařízení a vyberte zařízení zobrazené níže.
+	DA	1) Åbn Spotify-appen på en telefon eller computer på samme netværk som denne server. 2) Start afspilning af et vilkårligt nummer - enhedslisten vises kun under aktiv afspilning. 3) Åbn enhedsmenuen, og vælg enheden, der vises nedenfor.
+	DE	1) Öffne die Spotify-App auf einem Handy oder Computer im selben Netzwerk wie dieser Server. 2) Starte die Wiedergabe eines beliebigen Titels - die Geräteliste erscheint nur bei aktiver Wiedergabe. 3) Öffne das Gerätemenü und wähle das unten angezeigte Gerät.
+	EN	1) Open the Spotify app on a phone or computer on the same network as this server. 2) Start playing any track - the device list only appears during active playback. 3) Open the devices menu and select the device shown below.
+	ES	1) Abra la aplicación de Spotify en un teléfono u ordenador en la misma red que este servidor. 2) Comience a reproducir cualquier canción - la lista de dispositivos solo aparece durante la reproducción activa. 3) Abra el menú de dispositivos y seleccione el dispositivo que se muestra a continuación.
+	FR	1) Ouvrez l'application Spotify sur un téléphone ou un ordinateur du même réseau que ce serveur. 2) Lancez la lecture d'un titre quelconque - la liste des appareils n'apparaît que pendant une lecture active. 3) Ouvrez le menu des appareils et sélectionnez l'appareil affiché ci-dessous.
+	IT	1) Apri l'app di Spotify su un telefono o computer nella stessa rete di questo server. 2) Avvia la riproduzione di un brano qualsiasi - l'elenco dei dispositivi appare solo durante la riproduzione attiva. 3) Apri il menu dei dispositivi e seleziona il dispositivo mostrato qui sotto.
+	NL	1) Open de Spotify-app op een telefoon of computer in hetzelfde netwerk als deze server. 2) Start het afspelen van een willekeurig nummer - de apparatenlijst verschijnt alleen tijdens actief afspelen. 3) Open het apparatenmenu en selecteer het hieronder getoonde apparaat.
+	NO	1) Åpne Spotify-appen på en telefon eller datamaskin i samme nettverk som denne serveren. 2) Start avspilling av et hvilket som helst spor - enhetslisten vises bare under aktiv avspilling. 3) Åpne enhetsmenyen, og velg enheten som vises nedenfor.
+	PL	1) Otwórz aplikację Spotify na telefonie lub komputerze w tej samej sieci co ten serwer. 2) Rozpocznij odtwarzanie dowolnego utworu - lista urządzeń pojawia się tylko podczas aktywnego odtwarzania. 3) Otwórz menu urządzeń i wybierz urządzenie pokazane poniżej.
+	SV	1) Öppna Spotify-appen på en telefon eller dator i samma nätverk som den här servern. 2) Starta uppspelning av valfri låt - enhetslistan visas bara under aktiv uppspelning. 3) Öppna enhetsmenyn och välj enheten som visas nedan.
 
 PLUGIN_SPOTON_PLAYER_AUTH_CANCEL_BTN
 	CS	Zrušit
@@ -3134,32 +3340,6 @@ PLUGIN_SPOTON_PLAYER_AUTH_CANCEL_BTN
 	PL	Anuluj
 	SV	Avbryt
 
-PLUGIN_SPOTON_PLAYER_AUTH_WAITING
-	CS	Čekání na aplikaci Spotify… vyberte zařízení zobrazené výše a nechte tuto stránku otevřenou.
-	DA	Venter på Spotify-appen … vælg enheden, der vises ovenfor, og hold denne side åben.
-	DE	Warte auf die Spotify-App … wähle das oben angezeigte Gerät und lasse diese Seite geöffnet.
-	EN	Waiting for the Spotify app… select the device shown above, then keep this page open.
-	ES	Esperando la aplicación de Spotify… seleccione el dispositivo que se muestra arriba y mantenga esta página abierta.
-	FR	En attente de l'application Spotify… sélectionnez l'appareil affiché ci-dessus, puis laissez cette page ouverte.
-	IT	In attesa dell'app di Spotify… seleziona il dispositivo mostrato sopra e tieni aperta questa pagina.
-	NL	Wachten op de Spotify-app… selecteer het hierboven getoonde apparaat en houd deze pagina open.
-	NO	Venter på Spotify-appen … velg enheten som vises ovenfor, og hold denne siden åpen.
-	PL	Oczekiwanie na aplikację Spotify… wybierz urządzenie pokazane powyżej i pozostaw tę stronę otwartą.
-	SV	Väntar på Spotify-appen … välj enheten som visas ovan och håll den här sidan öppen.
-
-PLUGIN_SPOTON_PLAYER_AUTH_SUCCESS
-	CS	Přehrávání autorizováno — přehrávače se restartují.
-	DA	Afspilning godkendt — afspillere genstartes.
-	DE	Wiedergabe autorisiert — Player werden neu gestartet.
-	EN	Playback authorized — restarting players.
-	ES	Reproducción autorizada — reiniciando reproductores.
-	FR	Lecture autorisée — redémarrage des lecteurs.
-	IT	Riproduzione autorizzata — riavvio dei lettori in corso.
-	NL	Afspelen geautoriseerd — spelers worden opnieuw gestart.
-	NO	Avspilling autorisert — spillere startes på nytt.
-	PL	Odtwarzanie autoryzowane — trwa ponowne uruchamianie odtwarzaczy.
-	SV	Uppspelning auktoriserad — spelare startas om.
-
 PLUGIN_SPOTON_PLAYER_AUTH_FAILED
 	CS	Párování se nezdařilo. Zkontrolujte, zda jsou tento server a vaše aplikace Spotify ve stejné síti, a zkuste to znovu.
 	DA	Parring mislykkedes. Kontrollér, at denne server og din Spotify-app er på samme netværk, og prøv igen.
@@ -3173,145 +3353,158 @@ PLUGIN_SPOTON_PLAYER_AUTH_FAILED
 	PL	Parowanie nie powiodło się. Sprawdź, czy ten serwer i aplikacja Spotify są w tej samej sieci, a następnie spróbuj ponownie.
 	SV	Parkopplingen misslyckades. Kontrollera att den här servern och din Spotify-app är i samma nätverk och försök igen.
 
-PLUGIN_SPOTON_PLAYER_AUTH_TIMEOUT
-	CS	Časový limit párování vypršel po 15 minutách. Až budete připraveni, spusťte je znovu.
-	DA	Parringen fik timeout efter 15 minutter. Start igen, når du er klar.
-	DE	Zeitüberschreitung bei der Kopplung nach 15 Minuten. Starte sie erneut, wenn du bereit bist.
-	EN	Pairing timed out after 15 minutes. Start again when ready.
-	ES	El emparejamiento expiró después de 15 minutos. Inícielo de nuevo cuando esté listo.
-	FR	L'appairage a expiré après 15 minutes. Relancez-le quand vous êtes prêt.
-	IT	L'abbinamento è scaduto dopo 15 minuti. Riavvialo quando sei pronto.
-	NL	De koppeling is na 15 minuten verlopen. Start opnieuw wanneer u er klaar voor bent.
-	NO	Paringen fikk tidsavbrudd etter 15 minutter. Start på nytt når du er klar.
-	PL	Limit czasu parowania upłynął po 15 minutach. Rozpocznij ponownie, gdy będziesz gotowy.
-	SV	Parkopplingen fick timeout efter 15 minuter. Starta igen när du är redo.
+PLUGIN_SPOTON_STEP_ACCOUNT_TITLE
+	CS	1. Propojit účet Spotify (jednou pro každý účet)
+	DA	1. Par Spotify-konto (én gang pr. konto)
+	DE	1. Spotify-Konto koppeln (einmal pro Konto)
+	EN	1. Pair Spotify account (once per account)
+	ES	1. Vincular la cuenta de Spotify (una vez por cuenta)
+	FR	1. Associer le compte Spotify (une fois par compte)
+	IT	1. Associa l'account Spotify (una volta per account)
+	NL	1. Spotify-account koppelen (eenmaal per account)
+	NO	1. Par Spotify-konto (én gang per konto)
+	PL	1. Sparuj konto Spotify (raz dla każdego konta)
+	SV	1. Koppla Spotify-konto (en gång per konto)
 
-PLUGIN_SPOTON_PLAYER_AUTH_MISMATCH
-	CS	Účet Spotify ve vaší aplikaci neodpovídá vybranému účtu SpotOn. Přepněte účet v aplikaci Spotify nebo v SpotOn a zkuste to znovu.
-	DA	Spotify-kontoen i din app stemmer ikke overens med den valgte SpotOn-konto. Skift konto i Spotify-appen eller i SpotOn, og prøv igen.
-	DE	Das Spotify-Konto in deiner App stimmt nicht mit dem ausgewählten SpotOn-Konto überein. Wechsle das Konto in der Spotify-App oder in SpotOn und versuche es erneut.
-	EN	The Spotify account in your app does not match the selected SpotOn account. Switch accounts in the Spotify app or in SpotOn, then retry.
-	ES	La cuenta de Spotify en su aplicación no coincide con la cuenta de SpotOn seleccionada. Cambie de cuenta en la aplicación de Spotify o en SpotOn e inténtelo de nuevo.
-	FR	Le compte Spotify de votre application ne correspond pas au compte SpotOn sélectionné. Changez de compte dans l'application Spotify ou dans SpotOn, puis réessayez.
-	IT	L'account Spotify nella tua app non corrisponde all'account SpotOn selezionato. Cambia account nell'app di Spotify o in SpotOn, quindi riprova.
-	NL	Het Spotify-account in uw app komt niet overeen met het geselecteerde SpotOn-account. Wissel van account in de Spotify-app of in SpotOn en probeer het opnieuw.
-	NO	Spotify-kontoen i appen din samsvarer ikke med den valgte SpotOn-kontoen. Bytt konto i Spotify-appen eller i SpotOn, og prøv igjen.
-	PL	Konto Spotify w Twojej aplikacji nie zgadza się z wybranym kontem SpotOn. Przełącz konto w aplikacji Spotify lub w SpotOn, a następnie spróbuj ponownie.
-	SV	Spotify-kontot i din app matchar inte det valda SpotOn-kontot. Byt konto i Spotify-appen eller i SpotOn och försök igen.
+PLUGIN_SPOTON_STEP_PLAYER_TITLE
+	CS	2. Propojit přehrávač (pouze Soloist, jednou pro každý přehrávač)
+	DA	2. Par afspiller (kun Soloist, én gang pr. afspiller)
+	DE	2. Player koppeln (nur Soloist, einmal pro Player)
+	EN	2. Pair player (Soloist only, once per player)
+	ES	2. Vincular el reproductor (solo Soloist, una vez por reproductor)
+	FR	2. Associer le lecteur (Soloist uniquement, une fois par lecteur)
+	IT	2. Associa il player (solo Soloist, una volta per player)
+	NL	2. Speler koppelen (alleen Soloist, eenmaal per speler)
+	NO	2. Par spiller (kun Soloist, én gang per spiller)
+	PL	2. Sparuj odtwarzacz (tylko Soloist, raz dla każdego odtwarzacza)
+	SV	2. Koppla spelare (endast Soloist, en gång per spelare)
 
-PLUGIN_SPOTON_PLAYER_AUTH_SOURCE_ZEROCONF
-	CS	Spárováno přes aplikaci Spotify
-	DA	Parret via Spotify-appen
-	DE	Gekoppelt über die Spotify App
-	EN	Paired via Spotify app
-	ES	Emparejado a través de la app de Spotify
-	FR	Appairé via l'application Spotify
-	IT	Abbinato tramite l'app Spotify
-	NL	Gekoppeld via de Spotify-app
-	NO	Paret via Spotify-appen
-	PL	Sparowano przez aplikację Spotify
-	SV	Parkopplad via Spotify-appen
+PLUGIN_SPOTON_STEP_WHY_TWO
+	CS	Dva kroky, protože Soloist nevydává žádné přihlašovací údaje: účet potřebuje vlastní spárování.
+	DA	To trin, fordi Soloist ikke udleverer legitimationsoplysninger: kontoen skal pares særskilt.
+	DE	Zwei Schritte, weil Soloist keine Zugangsdaten herausgibt: das Konto braucht eine eigene Kopplung.
+	EN	Two steps because Soloist does not export any credentials: the account needs its own pairing.
+	ES	Son dos pasos porque Soloist no exporta credenciales: la cuenta necesita su propia vinculación.
+	FR	Deux étapes, car Soloist n'exporte aucun identifiant : le compte nécessite sa propre association.
+	IT	Due passaggi, perché Soloist non esporta alcuna credenziale: l'account richiede un abbinamento a parte.
+	NL	Twee stappen, omdat Soloist geen inloggegevens vrijgeeft: het account heeft een eigen koppeling nodig.
+	NO	To trinn fordi Soloist ikke eksporterer legitimasjon: kontoen trenger sin egen paring.
+	PL	Dwa kroki, ponieważ Soloist nie udostępnia danych logowania: konto wymaga osobnego sparowania.
+	SV	Två steg eftersom Soloist inte lämnar ut några inloggningsuppgifter: kontot behöver en egen koppling.
 
-PLUGIN_SPOTON_PLAYER_AUTH_SOURCE_BROWSER
-	CS	Spárováno pomocí autorizace v prohlížeči
-	DA	Parret via browsergodkendelse
-	DE	Gekoppelt über Browser-Autorisierung
-	EN	Paired via browser authorization
-	ES	Emparejado mediante autorización del navegador
-	FR	Appairé via l'autorisation du navigateur
-	IT	Abbinato tramite autorizzazione del browser
-	NL	Gekoppeld via browserautorisatie
-	NO	Paret via nettleserautorisasjon
-	PL	Sparowano przez autoryzację w przeglądarce
-	SV	Parkopplad via webbläsarauktorisering
+PLUGIN_SPOTON_STEP_PLAYER_NOT_NEEDED
+	CS	U backendu librespot není potřeba: spárování účtu v kroku 1 pokrývá i přehrávání.
+	DA	Ikke nødvendigt med librespot-backenden: kontoparringen i trin 1 dækker også afspilning.
+	DE	Beim librespot-Backend nicht nötig: die Kontokopplung in Schritt 1 deckt auch die Wiedergabe ab.
+	EN	Not needed with the librespot backend: the account pairing in step 1 also covers playback.
+	ES	No es necesario con el backend librespot: la vinculación de la cuenta del paso 1 también cubre la reproducción.
+	FR	Inutile avec le backend librespot : l'association du compte à l'étape 1 couvre aussi la lecture.
+	IT	Non necessario con il backend librespot: l'abbinamento dell'account al passaggio 1 copre anche la riproduzione.
+	NL	Niet nodig met de librespot-backend: de accountkoppeling in stap 1 dekt ook het afspelen.
+	NO	Ikke nødvendig med librespot-backenden: kontoparingen i trinn 1 dekker også avspilling.
+	PL	Niepotrzebne w backendzie librespot: sparowanie konta w kroku 1 obejmuje także odtwarzanie.
+	SV	Behövs inte med librespot-backenden: kontokopplingen i steg 1 täcker även uppspelning.
 
-PLUGIN_SPOTON_PLAYBACK_AUTH_REQUIRED
-	CS	Přehrávání zatím není autorizováno — otevřete Nastavení SpotOn a dokončete „Autorizovat přehrávání"; procházení funguje dál.
-	DA	Afspilning er endnu ikke godkendt — åbn SpotOn-indstillingerne, og gennemfør "Godkend afspilning"; gennemsyn fortsætter med at virke.
-	DE	Wiedergabe noch nicht autorisiert — öffne die SpotOn-Einstellungen und schließe „Wiedergabe autorisieren" ab; Durchsuchen funktioniert weiterhin.
-	EN	Playback not yet authorized — open SpotOn Settings and complete "Authorize Playback"; browsing keeps working.
-	ES	Reproducción aún no autorizada — abre los Ajustes de SpotOn y completa "Autorizar reproducción"; la navegación sigue funcionando.
-	FR	Lecture pas encore autorisée — ouvrez les Paramètres SpotOn et terminez « Autoriser la lecture » ; la navigation continue de fonctionner.
-	IT	Riproduzione non ancora autorizzata — apri le Impostazioni di SpotOn e completa "Autorizza la riproduzione"; la navigazione continua a funzionare.
-	NL	Afspelen nog niet geautoriseerd — open de SpotOn-instellingen en voltooi "Afspelen autoriseren"; bladeren blijft werken.
-	NO	Avspilling er ikke autorisert ennå — åpne SpotOn-innstillingene og fullfør «Autoriser avspilling»; blaing fungerer fortsatt.
-	PL	Odtwarzanie nie jest jeszcze autoryzowane — otwórz Ustawienia SpotOn i dokończ „Autoryzuj odtwarzanie"; przeglądanie nadal działa.
-	SV	Uppspelning är ännu inte auktoriserad — öppna SpotOn-inställningarna och slutför "Auktorisera uppspelning"; bläddring fortsätter att fungera.
+PLUGIN_SPOTON_ACCOUNT_PAIR_BUTTON
+	CS	Propojit účet
+	DA	Par konto
+	DE	Konto koppeln
+	EN	Pair account
+	ES	Vincular cuenta
+	FR	Associer le compte
+	IT	Associa account
+	NL	Account koppelen
+	NO	Par konto
+	PL	Sparuj konto
+	SV	Koppla konto
 
-PLUGIN_SPOTON_PLAYER_AUTH_BROWSER_TITLE
-	CS	Záložní řešení přes prohlížeč (Docker / VLAN / bez mDNS)
-	DA	Browser-nødløsning (Docker / VLAN / ingen mDNS)
-	DE	Browser-Fallback (Docker / VLAN / kein mDNS)
-	EN	Browser fallback (Docker / VLAN / no mDNS)
-	ES	Alternativa por navegador (Docker / VLAN / sin mDNS)
-	FR	Solution de repli par navigateur (Docker / VLAN / pas de mDNS)
-	IT	Alternativa tramite browser (Docker / VLAN / senza mDNS)
-	NL	Browser-alternatief (Docker / VLAN / geen mDNS)
-	NO	Nettleser-reserveløsning (Docker / VLAN / ingen mDNS)
-	PL	Rozwiązanie awaryjne przez przeglądarkę (Docker / VLAN / brak mDNS)
-	SV	Reservlösning via webbläsare (Docker / VLAN / ingen mDNS)
+PLUGIN_SPOTON_ACCOUNT_PAIR_WAITING
+	CS	Čekání na aplikaci Spotify… přehrajte libovolnou skladbu, v nabídce zařízení vyberte výše uvedené zařízení SpotOn Authorization a nechte tuto stránku otevřenou.
+	DA	Venter på Spotify-appen … afspil et vilkårligt nummer, vælg enheden SpotOn Authorization, der vises ovenfor, i enhedsmenuen, og hold denne side åben.
+	DE	Warte auf die Spotify-App … spiele einen beliebigen Titel ab, wähle im Gerätemenü das oben angezeigte Gerät SpotOn Authorization und lasse diese Seite geöffnet.
+	EN	Waiting for the Spotify app… play any track, select the SpotOn Authorization device shown above in the devices menu, and keep this page open.
+	ES	Esperando la aplicación de Spotify… reproduzca cualquier canción, seleccione en el menú de dispositivos el dispositivo SpotOn Authorization que se muestra arriba y mantenga esta página abierta.
+	FR	En attente de l'application Spotify… lancez la lecture d'un titre, sélectionnez dans le menu des appareils l'appareil SpotOn Authorization affiché ci-dessus, puis laissez cette page ouverte.
+	IT	In attesa dell'app di Spotify… avvia la riproduzione di un brano, seleziona nel menu dei dispositivi il dispositivo SpotOn Authorization mostrato sopra e tieni aperta questa pagina.
+	NL	Wachten op de Spotify-app… speel een willekeurig nummer af, selecteer in het apparatenmenu het hierboven getoonde apparaat SpotOn Authorization en houd deze pagina open.
+	NO	Venter på Spotify-appen … spill av et hvilket som helst spor, velg enheten SpotOn Authorization som vises ovenfor, i enhetsmenyen, og hold denne siden åpen.
+	PL	Oczekiwanie na aplikację Spotify… odtwórz dowolny utwór, wybierz w menu urządzeń pokazane powyżej urządzenie SpotOn Authorization i pozostaw tę stronę otwartą.
+	SV	Väntar på Spotify-appen … spela upp valfri låt, välj enheten SpotOn Authorization som visas ovan i enhetsmenyn och håll den här sidan öppen.
 
-PLUGIN_SPOTON_PLAYER_AUTH_BROWSER_DESC
-	CS	Použijte, když aplikace Spotify nevidí párovací zařízení (Docker, VLAN nebo jiná síťová nastavení): autorizujte místo toho v prohlížeči.
-	DA	Brug denne, når Spotify-appen ikke kan se parringsenheden (Docker, VLAN eller andre netværksopsætninger): godkend i browseren i stedet.
-	DE	Verwende dies, wenn die Spotify-App das Kopplungsgerät nicht sehen kann (Docker, VLAN oder andere Netzwerk-Setups): autorisiere stattdessen im Browser.
-	EN	Use this when the Spotify app cannot see the pairing device (Docker, VLAN or other network setups): authorize in the browser instead.
-	ES	Úselo cuando la aplicación de Spotify no pueda ver el dispositivo de emparejamiento (Docker, VLAN u otras configuraciones de red): autorice en el navegador en su lugar.
-	FR	À utiliser lorsque l'application Spotify ne voit pas l'appareil d'appairage (Docker, VLAN ou autres configurations réseau) : autorisez dans le navigateur à la place.
-	IT	Da usare quando l'app di Spotify non riesce a vedere il dispositivo di abbinamento (Docker, VLAN o altre configurazioni di rete): autorizza invece nel browser.
-	NL	Gebruik dit wanneer de Spotify-app het koppelingsapparaat niet kan zien (Docker, VLAN of andere netwerkconfiguraties): autoriseer in plaats daarvan in de browser.
-	NO	Bruk dette når Spotify-appen ikke kan se paringsenheten (Docker, VLAN eller andre nettverksoppsett): autoriser i nettleseren i stedet.
-	PL	Użyj, gdy aplikacja Spotify nie widzi urządzenia parującego (Docker, VLAN lub inne konfiguracje sieci): zamiast tego autoryzuj w przeglądarce.
-	SV	Använd detta när Spotify-appen inte kan se parkopplingsenheten (Docker, VLAN eller andra nätverkskonfigurationer): auktorisera i webbläsaren i stället.
+PLUGIN_SPOTON_ACCOUNT_PAIR_SUCCESS
+	CS	Účet byl propojen - stránka se znovu načítá.
+	DA	Konto parret - siden genindlæses.
+	DE	Konto gekoppelt - Seite wird neu geladen.
+	EN	Account paired - reloading the page.
+	ES	Cuenta vinculada - recargando la página.
+	FR	Compte associé - rechargement de la page.
+	IT	Account associato - ricarico la pagina.
+	NL	Account gekoppeld - pagina wordt opnieuw geladen.
+	NO	Konto paret - siden lastes inn på nytt.
+	PL	Konto sparowane - strona zostanie przeładowana.
+	SV	Kontot är kopplat - sidan laddas om.
 
-PLUGIN_SPOTON_PLAYER_AUTH_BROWSER_START_BTN
-	CS	Autorizovat v prohlížeči
-	DA	Godkend i browser
-	DE	Im Browser autorisieren
-	EN	Authorize in Browser
-	ES	Autorizar en el navegador
-	FR	Autoriser dans le navigateur
-	IT	Autorizza nel browser
-	NL	Autoriseren in browser
-	NO	Autoriser i nettleser
-	PL	Autoryzuj w przeglądarce
-	SV	Auktorisera i webbläsaren
+PLUGIN_SPOTON_ACCOUNT_PAIR_TIMEOUT
+	CS	Časové okno pro spárování (5 minut) vypršelo. Stisknutím tlačítka to zkuste znovu.
+	DA	Parringsvinduet (5 minutter) er udløbet. Tryk på knappen for at prøve igen.
+	DE	Das Kopplungsfenster (5 Minuten) ist abgelaufen. Drücke den Knopf, um es erneut zu versuchen.
+	EN	The pairing window (5 minutes) has expired. Press the button to try again.
+	ES	La ventana de vinculación (5 minutos) ha caducado. Pulse el botón para intentarlo de nuevo.
+	FR	La fenêtre d'association (5 minutes) a expiré. Appuyez sur le bouton pour réessayer.
+	IT	La finestra di abbinamento (5 minuti) è scaduta. Premi il pulsante per riprovare.
+	NL	Het koppelvenster (5 minuten) is verlopen. Druk op de knop om het opnieuw te proberen.
+	NO	Paringsvinduet (5 minutter) har utløpt. Trykk på knappen for å prøve igjen.
+	PL	Okno parowania (5 minut) wygasło. Naciśnij przycisk, aby spróbować ponownie.
+	SV	Kopplingsfönstret (5 minuter) har gått ut. Tryck på knappen för att försöka igen.
 
-PLUGIN_SPOTON_PLAYER_AUTH_BROWSER_PASTE_HINT
-	CS	Po schválení prohlížeč zobrazí nedostupnou stránku 127.0.0.1 — to je očekávané. Zkopírujte celou adresu z adresního řádku a vložte ji níže.
-	DA	Efter godkendelsen viser browseren en utilgængelig 127.0.0.1-side — det er forventet. Kopiér hele adressen fra adresselinjen, og indsæt den nedenfor.
-	DE	Nach der Bestätigung zeigt der Browser eine nicht erreichbare 127.0.0.1-Seite — das ist so vorgesehen. Kopiere die vollständige Adresse aus der Adressleiste und füge sie unten ein.
-	EN	After approving, the browser shows an unreachable 127.0.0.1 page — that is expected. Copy the full address from the address bar and paste it below.
-	ES	Tras aprobar, el navegador muestra una página 127.0.0.1 inaccesible — es lo esperado. Copie la dirección completa de la barra de direcciones y péguela abajo.
-	FR	Après l'approbation, le navigateur affiche une page 127.0.0.1 inaccessible — c'est normal. Copiez l'adresse complète depuis la barre d'adresse et collez-la ci-dessous.
-	IT	Dopo l'approvazione, il browser mostra una pagina 127.0.0.1 irraggiungibile — è previsto. Copia l'indirizzo completo dalla barra degli indirizzi e incollalo qui sotto.
-	NL	Na goedkeuring toont de browser een onbereikbare 127.0.0.1-pagina — dat is de bedoeling. Kopieer het volledige adres uit de adresbalk en plak het hieronder.
-	NO	Etter godkjenning viser nettleseren en utilgjengelig 127.0.0.1-side — det er forventet. Kopier hele adressen fra adresselinjen, og lim den inn nedenfor.
-	PL	Po zatwierdzeniu przeglądarka wyświetli niedostępną stronę 127.0.0.1 — tak ma być. Skopiuj pełny adres z paska adresu i wklej go poniżej.
-	SV	Efter godkännandet visar webbläsaren en onåbar 127.0.0.1-sida — det är väntat. Kopiera hela adressen från adressfältet och klistra in den nedan.
+PLUGIN_SPOTON_ACCOUNT_PAIR_JUST_PAIRED
+	CS	Účet byl právě propojen - načtěte stránku znovu, aby se zobrazil.
+	DA	Kontoen er lige blevet parret - genindlæs siden for at se den.
+	DE	Das Konto wurde gerade gekoppelt - lade die Seite neu, um es zu sehen.
+	EN	The account was just paired - reload the page to see it.
+	ES	La cuenta se acaba de vincular - recargue la página para verla.
+	FR	Le compte vient d'être associé - rechargez la page pour le voir.
+	IT	L'account è stato appena associato - ricarica la pagina per vederlo.
+	NL	Het account is zojuist gekoppeld - laad de pagina opnieuw om het te zien.
+	NO	Kontoen er nettopp paret - last siden på nytt for å se den.
+	PL	Konto zostało właśnie sparowane - odśwież stronę, aby je zobaczyć.
+	SV	Kontot har just kopplats - ladda om sidan för att se det.
 
-PLUGIN_SPOTON_PLAYER_AUTH_BROWSER_SUBMIT_BTN
-	CS	Dokončit autorizaci
-	DA	Fuldfør godkendelse
-	DE	Autorisierung abschließen
-	EN	Complete Authorization
-	ES	Completar autorización
-	FR	Terminer l'autorisation
-	IT	Completa l'autorizzazione
-	NL	Autorisatie voltooien
-	NO	Fullfør autorisering
-	PL	Zakończ autoryzację
-	SV	Slutför auktorisering
+PLUGIN_SPOTON_ACCOUNT_NEEDS_PAIRING
+	CS	Propojte prosím účet jednou
+	DA	Par venligst kontoen én gang
+	DE	Bitte Konto einmal koppeln
+	EN	Please pair this account once
+	ES	Vincule la cuenta una vez
+	FR	Veuillez associer le compte une fois
+	IT	Associa l'account una volta
+	NL	Koppel het account eenmalig
+	NO	Par kontoen én gang
+	PL	Sparuj konto jednorazowo
+	SV	Koppla kontot en gång
 
-PLUGIN_SPOTON_PLAYER_AUTH_BROWSER_FAILED
-	CS	Autorizace se nezdařila. Zkuste to znovu, nebo použijte párování ZeroConf výše.
-	DA	Godkendelse mislykkedes. Prøv igen, eller brug ZeroConf-parring ovenfor.
-	DE	Autorisierung fehlgeschlagen. Bitte versuche es erneut oder nutze die ZeroConf-Kopplung oben.
-	EN	Authorization failed. Please try again, or use ZeroConf pairing above.
-	ES	La autorización falló. Inténtelo de nuevo o use el emparejamiento ZeroConf de arriba.
-	FR	Échec de l'autorisation. Réessayez, ou utilisez l'appairage ZeroConf ci-dessus.
-	IT	Autorizzazione non riuscita. Riprova, oppure usa l'abbinamento ZeroConf qui sopra.
-	NL	Autorisatie mislukt. Probeer het opnieuw of gebruik de ZeroConf-koppeling hierboven.
-	NO	Autorisering mislyktes. Prøv igjen, eller bruk ZeroConf-paring ovenfor.
-	PL	Autoryzacja nie powiodła się. Spróbuj ponownie lub użyj parowania ZeroConf powyżej.
-	SV	Auktoriseringen misslyckades. Försök igen eller använd ZeroConf-parkoppling ovan.
+PLUGIN_SPOTON_DISCOVER_IMPORTED
+	CS	Účet byl převzat ze složky __DISCOVER__.
+	DA	Konto importeret fra mappen __DISCOVER__.
+	DE	Konto aus dem Ordner __DISCOVER__ übernommen.
+	EN	Account imported from the __DISCOVER__ folder.
+	ES	Cuenta importada desde la carpeta __DISCOVER__.
+	FR	Compte importé depuis le dossier __DISCOVER__.
+	IT	Account importato dalla cartella __DISCOVER__.
+	NL	Account geïmporteerd uit de map __DISCOVER__.
+	NO	Konto importert fra mappen __DISCOVER__.
+	PL	Konto zaimportowano z folderu __DISCOVER__.
+	SV	Kontot importerades från mappen __DISCOVER__.
+
+PLUGIN_SPOTON_DISCOVER_INVALID
+	CS	Soubor ve složce __DISCOVER__ není platný soubor credentials.json a zůstal beze změny. Viz TROUBLESHOOTING.md.
+	DA	Filen i mappen __DISCOVER__ er ikke en gyldig credentials.json og blev efterladt uændret. Se TROUBLESHOOTING.md.
+	DE	Die Datei im Ordner __DISCOVER__ ist keine gültige credentials.json und wurde nicht angetastet. Siehe TROUBLESHOOTING.md.
+	EN	The file in the __DISCOVER__ folder is not a valid credentials.json and was left in place. See TROUBLESHOOTING.md.
+	ES	El archivo de la carpeta __DISCOVER__ no es un credentials.json válido y se ha dejado sin tocar. Consulte TROUBLESHOOTING.md.
+	FR	Le fichier du dossier __DISCOVER__ n'est pas un credentials.json valide et a été laissé en place. Voir TROUBLESHOOTING.md.
+	IT	Il file nella cartella __DISCOVER__ non è un credentials.json valido ed è stato lasciato dov'era. Vedi TROUBLESHOOTING.md.
+	NL	Het bestand in de map __DISCOVER__ is geen geldig credentials.json en is ongemoeid gelaten. Zie TROUBLESHOOTING.md.
+	NO	Filen i mappen __DISCOVER__ er ikke en gyldig credentials.json og ble latt urørt. Se TROUBLESHOOTING.md.
+	PL	Plik w folderze __DISCOVER__ nie jest prawidłowym plikiem credentials.json i pozostawiono go bez zmian. Zobacz TROUBLESHOOTING.md.
+	SV	Filen i mappen __DISCOVER__ är inte en giltig credentials.json och lämnades orörd. Se TROUBLESHOOTING.md.

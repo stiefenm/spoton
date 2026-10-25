@@ -2,6 +2,64 @@
 
 Common issues and how to resolve them. Always update to the [latest release](https://github.com/stiefenm/spoton/releases/latest) before troubleshooting — many issues are fixed in newer versions.
 
+## Soloist build expired or renewal failed
+
+Soloist builds from Spotify's CDN expire 90 days after release, so SpotOn keeps track of the remaining lifetime and renews automatically. SpotOn Settings (backend = Soloist) always shows the current state:
+
+- **Expiring soon (14 days or less):** an informational line names the version and days remaining; a renewal starts automatically and retries once a day until it succeeds. A build that exits with error code 10 (already expired) triggers an immediate renewal instead of waiting for the next daily check.
+- **Renewing:** the settings page shows the in-progress phase (downloading, extracting, testing, switching in).
+- **Renewal failed:** the reason is shown, and SpotOn retries the next day. The switch to a freshly renewed build only happens while the player is idle — never during playback — so it may take a little longer to reach a player that never stops.
+- **Rolled back:** if a newly switched-in build fails to start, or crashes three times within 30 minutes of the switch, SpotOn automatically restores the previous (still valid) build and shows the versions and the reason. **Blind spot:** a build that runs but produces silent/broken audio is not detected by this check — always confirm playback after a renewal.
+- **Placed binary active/ignored:** see below.
+
+You can also click **Renew Soloist now** at any time to trigger the same pipeline manually (useful right after Spotify publishes a new build, or to verify the renewal path works at all).
+
+### Placing your own Soloist build
+
+If automatic renewal from Spotify's CDN fails, or you prefer to fetch the build yourself, download the archive from the link on the settings page and place either the `.tar.gz` archive or the extracted `soloist` binary into the folder named there: `<cachedir>/spoton/soloist/manual/`. SpotOn checks the folder about once a minute, runs the same version check and a short test start the automatic path uses, and switches to it (again only while the player is idle).
+
+While a valid placed build is present, automatic renewal from the CDN pauses entirely — the settings page states this and shows the placed build's own version and remaining lifetime. Placing an invalid file (wrong version, fails its test start), or letting the placed build itself expire, makes SpotOn ignore it and resume the automatic CDN renewal on its own; the reason is always shown. To go back to automatic renewal at any time, simply empty the manual folder.
+
+Soloist is Spotify's software: don't modify, decompile, or reverse engineer it, and don't redistribute the archive or binary (Spotify Developer Terms V.11) — the link on the settings page always points to Spotify's own download page.
+
+## Soloist does not start: glibc too old
+
+**Symptoms:** with the Soloist backend selected, Soloist does not start, and the SpotOn status page (and the diagnostic report) shows:
+
+> Soloist cannot run on this system: glibc 2.36 found, Soloist needs glibc 2.38 or newer (Raspberry Pi OS Trixie / Debian 13 or newer). Update the system or select the librespot backend.
+
+The version after "glibc" is the one found on your system. On such a system SpotOn Settings also shows no "Soloist is available on this system" hint.
+
+**Fix:** update the operating system to a release with glibc 2.38 or newer (for example Debian 13 or Raspberry Pi OS Trixie), or select **librespot** in SpotOn Settings. librespot has no glibc floor of this kind. Docker images based on Debian 12 (bookworm, glibc 2.36) are too old for Soloist.
+
+Soloist runs on Linux only. On Windows and macOS SpotOn always uses librespot, whatever is selected.
+
+## Key refused: spak key not saved, or Spotify refuses audio keys
+
+**The spak key was not saved.** SpotOn checks the key before it stores it. If it contains characters a spak key cannot have, or is too short, the settings page says:
+
+> The spak-key contains invalid characters or is too short - it was not saved.
+
+Copy the key again from Spotify (without spaces or line breaks) and save once more. As long as no key is stored, the Soloist fields say "No spak-key configured - Soloist cannot start without one.". Get the key with your Spotify Premium account as described in [Spotify's Soloist documentation](https://developer.spotify.com/documentation/soloist/concepts/authentication).
+
+**Spotify refuses audio keys (librespot).** For some accounts Spotify refuses the audio keys librespot asks for. Playback then cannot work with librespot for that account, and the SpotOn status page shows:
+
+> Spotify refuses audio keys for account abcd**** with the librespot backend (AesKeyError 0x0001) - playback cannot work for this account. Select the Soloist backend in the SpotOn settings.
+
+The way out is the Soloist backend (Linux with glibc 2.38 or newer, own spak key). Rapid skipping can also cause a short throttling warning ("Spotify is throttling audio keys ..."); that one recovers within a few minutes by itself.
+
+## Soloist: pairing a player (tap in the Spotify app)
+
+With the Soloist backend, each player is paired once, in addition to the account pairing (step 1). SpotOn Settings says:
+
+> Enable the Soloist backend and wait for the daemon to start, then select this player once in your Spotify app's device picker. Pairing is per player and fully automatic - no command line needed; credentials are stored locally.
+
+1. Switch the backend to **Soloist** and save. SpotOn downloads Soloist from Spotify and starts one daemon per player.
+2. In the Spotify app on a phone or computer **in the same network**, open the devices menu and tap the player once.
+3. The player's line in SpotOn Settings then reads "Paired with Spotify".
+
+In a sync group only the group's master runs a Soloist daemon; pair and select the master. If the player is not listed in the Spotify app, see [mDNS / ZeroConf and Pairing](#mdns--zeroconf-and-pairing).
+
 ## Collecting Diagnostic Data
 
 SpotOn has a built-in diagnostic system that collects system info, daemon logs, and LMS server log entries into a single downloadable file.
@@ -41,27 +99,36 @@ If the issue persists, collect a diagnostic bundle and include your Docker setup
 - If you experience slow track changes on hardware players (10-20s delay), this is typically caused by the player's audio buffer draining. PCM/FLAC reduces this significantly
 - Collect a diagnostic bundle during the issue and open a ticket
 
-### PKCE authorization fails or never completes
+### Sync groups: one short stutter at the start, or constant stutter on a desktop squeezelite
 
-**Symptoms:** Clicking "Connect to Spotify" in SpotOn Settings opens a popup that closes without finishing, or the Settings page never picks up the new account after you approve access on Spotify's authorization page.
+**Symptoms:** In a sync group, one very brief stutter within the first second after the group starts.
+
+**Cause (known limitation):** LMS re-aligns the group members shortly after a start; with the Soloist backend this can cause a single short hiccup on one member. In our last measurement, skips and title changes inside the group were clean.
+
+**If a squeezelite on PulseAudio/PipeWire stutters in groups:** such a player gets PipeWire's 2 s default buffer, which makes LMS skip it by about 2 s after each start. Use the ALSA build of squeezelite (for example on HiFiBerry hardware), or set `PULSE_LATENCY_MSEC=100` in the player's service environment.
+
+### Spotify-Konto koppeln (pair a Spotify account)
+
+**Symptoms:** SpotOn Settings shows no account, an account is marked "Bitte Konto einmal koppeln" / "Please pair this account once", or the Spotify app never lists the pairing device.
+
+**How pairing works:** open **SpotOn Settings**, step **1. Spotify-Konto koppeln (einmal pro Konto)**, and press **Konto koppeln** (*Pair account*). SpotOn announces a device named `SpotOn Authorization (<your library name>)` on your network for about **5 minutes**; the button shows a countdown and a waiting text. In the Spotify app on a phone or computer **in the same network**:
+
+1. **Play any track first** — the Spotify app only lists devices while something is playing.
+2. Open the devices menu and pick `SpotOn Authorization (...)`.
+3. Keep the settings page open. When SpotOn has received the login, the page reloads itself and step 1 shows a check mark.
+
+One pairing creates the account **and** its playback credentials; there is no separate browser login and no Developer App. The account is whichever Spotify account the app is logged in with: a different user adds a second account, the same user refreshes the existing one. With the **Soloist** backend, step **2. Player koppeln (nur Soloist, einmal pro Player)** additionally pairs each player once, because Soloist exports no credentials — the page shows one line why there are two steps.
 
 **Common causes and fixes:**
-- **Popup blocked** — browsers block `window.open()` popups unless they're triggered directly by a click. Allow pop-ups for your LMS host and try again (SpotOn shows a reminder about this next to the auth button).
-- **No Client ID configured** — SpotOn ships a bundled Client ID that works out of the box. If you prefer your own, enter it in SpotOn Settings before starting the auth flow; the setup wizard walks you through creating one at [developer.spotify.com](https://developer.spotify.com/dashboard).
-- **Redirect doesn't reach LMS** — SpotOn bounces the browser back to your LMS server via a GitHub Pages relay (`https://stiefenm.github.io/spoton/auth/`). If your phone/browser can't reach your LMS host directly (different network, VPN, restrictive firewall), the relay page falls back to a "copy this URL" box — paste it into the manual auth field on the SpotOn Settings page to complete the flow.
-- **Redirect URI mismatch** — the Client ID's app in the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard) must have `https://stiefenm.github.io/spoton/auth/` registered as an allowed Redirect URI, exactly as shown by the setup wizard.
+- **The device is not listed** — the phone is not in the same network or VLAN as the LMS host, the router/firewall blocks mDNS (UDP port 5353), or LMS runs in a Docker bridge network. Use `--network host`, or skip mDNS entirely with the `__DISCOVER__` folder (next section).
+- **"Pairing failed" or the window ran out** — nobody picked the device within 5 minutes. Press **Konto koppeln** again. A second press right after a successful pairing is answered with "the account was just paired"; reload the page.
+- **The wrong account appeared** — pairing takes the account the Spotify app is currently logged in with. Remove it with **Remove** in the account list and pair again after switching accounts in the app.
 
-### Re-authentication needed / token refresh fails
+**LAN guests:** while the pairing window is open, anybody on your network can choose the device in their own Spotify app and add *their* account to your SpotOn. Press **Cancel** as soon as you are done, and remove accounts you do not recognise in the account list.
 
-**Symptoms:** The Auth Health Dashboard (Status page) shows a warning for an account, Browse/Search return errors, or Connect stops working, with a token or credential error in the daemon log.
+**Accounts from an older SpotOn:** SpotOn migrates existing accounts once when LMS starts. An account whose stored login is unusable is kept and marked "Bitte Konto einmal koppeln"; one pairing with the same Spotify account fixes it and keeps the account's settings.
 
-**Cause:** SpotOn refreshes your PKCE access token automatically in the background using the stored refresh token. If that refresh token becomes invalid (access revoked in your Spotify account, a corrupted token file, or an old v2.x account that never migrated), SpotOn can no longer refresh it and flags the account for re-authentication.
-
-**Solution:**
-1. Open **SpotOn Settings** and check the Auth Health Dashboard (also shown on the Status page) for the affected account — it shows Web API Token and Playback Credentials status separately
-2. If the **Web API Token** shows "needs re-authentication," complete the PKCE flow again via "Connect Spotify Account"
-3. If **Playback Credentials** are missing, run "Authorize Playback" — select SpotOn in the Spotify app to pair
-4. If the account still fails after both steps, clear its cache and start fresh:
+**If an account still fails after pairing again**, clear its cache and start fresh:
 
 ```bash
 # 1. Stop LMS
@@ -74,58 +141,74 @@ rm -rf /var/lib/squeezeboxserver/cache/spoton/<accountId>/
 #    Docker (typical path):
 rm -rf /config/cache/spoton/<accountId>/
 
-# 3. Start LMS, then re-add the account via SpotOn Settings
+# 3. Start LMS, then pair the account again in SpotOn Settings
 ```
 
-4. If the issue persists, collect a diagnostic bundle and open an issue.
+If the issue persists, collect a diagnostic bundle and open an issue.
 
-### Browse/Search return HTTP 400 or empty results
+### After the update from 3.5.x: pair an account again
 
-**Symptoms:** Search returns no results, playlists show "No results", or the Status page shows `HTTP 400 for search` / `HTTP 400 for artists/.../albums`. The Auth Health Dashboard shows "Valid" for PKCE.
+SpotOn 4.0 no longer uses the Spotify Web API, its browser login or a Developer App. When LMS starts after the update, SpotOn migrates each account once:
 
-**Likely cause:** Your Spotify Developer App enforces stricter API limits than expected. Spotify's Development Mode caps vary per app — some accept `limit=50`, others reject anything above `limit=10` with HTTP 400.
+- **An account that already had playback credentials** (paired in the Spotify app, or authorized in 3.5.x) is taken over silently with all its settings. Nothing to do.
+- **An account that only had the browser login** cannot be used any more. It stays in the list and is marked "Please pair this account once" (German: "Bitte Konto einmal koppeln"); the SpotOn menu shows the same item.
+- **A custom client ID** entered in 3.5.x is removed without a notice, because nothing uses it any more. Its old login tokens are deleted as well.
 
-**Solutions:**
-1. **Update to v3.1.0 or later** — SpotOn now auto-detects your app's enforced limits across 5 endpoint classes on startup and adapts all API calls accordingly. Check the Status page under "API Limits" to see the detected values. If your app has severe restrictions, you can also remove your Client ID from Settings to use the bundled fallback (see below).
-2. **Check User Management** — in the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard), open your app's **Settings → User Management** and make sure your own Spotify account is on the allowlist. Development Mode apps may restrict API access to listed users only. After adding yourself, re-authenticate in SpotOn Settings.
-3. **Check Redirect URI** — ensure `https://stiefenm.github.io/spoton/auth/` is listed as a Redirect URI in your app settings (the setup wizard shows this).
+To fix a marked account: open **SpotOn Settings**, step **1**, press **Konto koppeln** (*Pair account*) and pick `SpotOn Authorization (...)` in the Spotify app while a track is playing, with the **same** Spotify account. The account keeps its settings, and the mark disappears after the page reloads. If the Spotify app cannot see the device, use the `__DISCOVER__` folder (next section).
 
-If the Status page shows `API Limits: Search 10 | Library 10 | Playlists 20` (or similarly low values), your app has restricted limits — SpotOn will still work, just with smaller page sizes.
+The backend stays librespot after the update. On a Linux system that can run Soloist, SpotOn Settings additionally shows the "Soloist is available on this system" hint; you can ignore it.
 
-### Frequent rate limiting (HTTP 429)
+### Konto ohne mDNS koppeln (Docker/VLAN): der __DISCOVER__-Ordner
 
-**Symptoms:** OPML menus show "Spotify requests throttled -- please wait", the Status page shows a nonzero 429 count, or playback/browsing is intermittently interrupted.
+Use this when the Spotify app cannot see the pairing device (Docker bridge network, separate VLANs, firewalled mDNS, pCP). You produce the login file on **any machine in the phone's network** and hand it to LMS.
 
-**Cause:** By default SpotOn uses a bundled Client ID (`d420a117...`) borrowed from the open-source ncspot project. This ID is shared across all SpotOn installations and all ncspot users worldwide. Under peak usage across that shared population, the aggregate API quota can be exhausted, triggering Spotify's 429 rate limiter — even if your own individual usage is light. A/B testing (same account, same library, identical request pattern) confirmed the bundled ID produces 429s under load where a private Client ID does not.
+**Step 1:** Download the SpotOn binary for that machine's platform from the [latest release](https://github.com/stiefenm/spoton/releases/latest).
 
-**Solutions:**
+**Step 2:** Run the pairing helper there:
 
-1. **Recommended: Create your own Spotify Developer App.** Go to the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard), create an app, and enter its Client ID in SpotOn Settings. Your own app has a private rate-limit bucket that is not shared with anyone else. The setup wizard in SpotOn Settings walks through the required steps (Redirect URI, Client ID entry).
-2. **If 429s are intermittent and brief**, SpotOn automatically backs off and retries — waiting a few seconds usually resolves it without any action needed.
+```bash
+spoton -n "SpotOn Setup" --cache /tmp/spoton-auth --discover-once
+```
 
-**Note:** Recent versions of SpotOn skip the startup API-limit probe when using the bundled Client ID (the limits are known constants), saving 8 requests from the shared quota on every LMS restart.
+**Step 3:** In the Spotify app (same network as that machine), **play a track**, open the devices menu and pick **SpotOn Setup**. The helper writes `/tmp/spoton-auth/credentials.json` and exits.
+
+**Step 4:** Copy that file to `<cachedir>/spoton/__DISCOVER__/credentials.json` on the LMS host **while LMS runs**:
+
+```bash
+# Linux (typical path — adjust if your cache directory differs)
+sudo -u squeezeboxserver mkdir -p /var/lib/squeezeboxserver/cache/spoton/__DISCOVER__
+sudo cp /tmp/spoton-auth/credentials.json /var/lib/squeezeboxserver/cache/spoton/__DISCOVER__/
+sudo chown -R squeezeboxserver:nogroup /var/lib/squeezeboxserver/cache/spoton/__DISCOVER__/
+```
+
+On Windows the cache directory is typically `C:\ProgramData\Lyrion\Cache\spoton\`.
+
+**Step 5:** Open **SpotOn Settings**. The page load takes the file: SpotOn checks it, creates the account, installs its credentials and removes the file and the folder. The account appears in the list and a line "Konto aus dem Ordner __DISCOVER__ übernommen" confirms it. A file that is dropped while LMS is stopped is imported at the next LMS start.
+
+A file SpotOn cannot use (not valid JSON, not a SpotOn `credentials.json`, larger than 64 KB, or a symbolic link) is **left in place** and the settings page says so; the LMS log carries a `Credentials:` warning with the reason. Fix or replace the file and reload the page.
+
+**Docker / Kubernetes notes:**
+- The cache directory (and with it `__DISCOVER__`) must be a **writable volume** — never a ConfigMap, a secret mount or any other read-only mount. SpotOn moves the file out of the folder during the import.
+- Do not place `credentials.json` directly in a hash-named account directory (e.g. `e20xxxxx/`). SpotOn only learns about accounts through the import or a pairing; a file placed by hand is not registered.
+- If you created hash directories by hand earlier, or deleted an account in the list, remove the **stale 8-hex account directories** under `<cachedir>/spoton/` before importing.
+- Pairing started from inside a container may announce an address the phone cannot reach (the helper then runs without knowing the LMS address). That is exactly the case this folder is for.
+
+### SpotOn no longer uses the Web API
+
+Older SpotOn versions needed a Spotify Developer App and a browser login, and showed symptoms such as "Browse/Search return HTTP 400 or empty results" or frequent rate limiting (HTTP 429) tied to that app's quota. SpotOn no longer does: browse and search run over Spotify's own client endpoints (spclient and Pathfinder) with the **account's own login** from the pairing above, rate limits (429) are absorbed by SpotOn's own request limits and retries, and **no Developer App is needed or used**. There is nothing to configure for it. If Browse or Search return errors, check that the account in SpotOn Settings shows a check mark at step 1 (pair it again if not), then collect a diagnostic bundle.
 
 ### "Made For You" playlists missing or empty
 
-**Symptoms:** The "Made For You" section under SpotOn > Home is empty or doesn't appear. Daily Mixes, Discover Weekly, and other algorithmic playlists are not shown.
+**Symptoms:** The "Made For You" section under SpotOn > Home is empty, shows only a single line of text, or shows fewer mixes than the Spotify app. Daily Mixes, Discover Weekly, and other algorithmic playlists are not all shown.
 
-**Context:** Spotify blocks access to algorithmic playlists (`37i9...` IDs) for Development Mode apps. SpotOn uses a separate "Pathfinder" pathway with your browser's `sp_dc` cookie to access these playlists. This is best-effort — it depends on two values that Spotify rotates periodically.
+**Context:** Made for You needs **no setup**: there is nothing to copy from your browser and nothing to enter in SpotOn Settings. SpotOn reads the list from Spotify's own home page with the account's pairing login (step 1 in SpotOn Settings). It is best-effort — Spotify can change that page without notice, and SpotOn then says so in the menu instead of showing an empty list silently.
 
-**Setup:**
+**What the visible lines mean:**
 
-1. **sp_dc cookie** — Open [open.spotify.com](https://open.spotify.com) in your browser and log in. Open Developer Tools (F12) → Application → Cookies → `open.spotify.com` → find `sp_dc`. Copy the full value and paste it into SpotOn Settings under "Made For You Setup."
+- **"Spotify home is unreachable right now: showing your saved mixes only. Details on the SpotOn status page."** (`MFY_FALLBACK`) — a degraded state. Spotify's home page did not answer as expected, so SpotOn lists only the mixes it finds in your own library (the saved `Daily Mix`, `Discover Weekly`, ... playlists). Nothing is broken on your side; the full list returns by itself once the home page answers again.
+- **"Made for You is unreachable right now. Details on the SpotOn status page."** (`MFY_HASH_BROKEN`) — neither the home page nor your library yielded a mix. Check that the account shows a check mark at step 1 in SpotOn Settings (pair it again if not), then open the SpotOn status page: its Made for You card shows whether the home page answered, which operation is missing, and whether the saved-mixes list is active.
 
-2. **Pathfinder Query Hash** — This is the hardest part. The hash identifies a specific Spotify web player GraphQL query. To capture it:
-   - Open Developer Tools (F12) → Network tab
-   - Filter for `pathfinder`
-   - **Log out** of open.spotify.com, then **log back in** — the `home` query fires during the login redirect and is easy to miss during normal browsing
-   - Find the request whose Payload contains `operationName: "home"`
-   - In the Payload, copy `extensions.persistedQuery.sha256Hash`
-   - Paste it into SpotOn Settings under "Pathfinder Query Hash"
-
-**If you can't find the `home` query:** Spotify occasionally renames the operation (e.g. `homeSection`). If you see a different name, try its hash — but it may not return the right data format. This is a known fragility of the Pathfinder approach.
-
-**Note:** The hash and sp_dc cookie can expire or rotate when Spotify updates their web player. If Made For You stops working after it previously worked, repeat the capture process.
+**If it stays that way:** wait a few minutes and open the section again; if it persists for a day, collect a diagnostic bundle and report it. A mix you never saved or followed cannot appear in the degraded list, so follow it once in the Spotify app.
 
 ### Tracks skip or fail with "404" in logs (CDN errors)
 
@@ -137,24 +220,22 @@ If the Status page shows `API Limits: Search 10 | Library 10 | Playlists 20` (or
 - **Update to v2.1.6 or later** — includes an upgraded librespot with CDN fallback (automatically tries the next CDN URL on 404) plus SpotOn's own 404 retry layer (3 attempts with 2s delay)
 - If errors persist after updating, you can block specific bad CDN hosts via `/etc/hosts` — see the [forum thread](https://forums.lyrion.org/forum/user-forums/3rd-party-software/1826188-announce-spoton) for known problematic hosts
 
-## mDNS / ZeroConf and Playback Authorization
+## mDNS / ZeroConf and Pairing
 
 SpotOn uses mDNS (ZeroConf) for two purposes:
 
-1. **Authorize Playback (setup step 2)** — after connecting your Spotify account via browser login, you need to authorize playback by selecting SpotOn's pairing device in the Spotify app. This uses mDNS so the Spotify app can discover the pairing device on your local network. This is a one-time step per account.
+1. **Pairing an account (setup step 1)** — you press **Konto koppeln** in SpotOn Settings and pick SpotOn's pairing device in the Spotify app. This uses mDNS so the Spotify app can discover the pairing device on your local network. It is a one-time step per account; see "Spotify-Konto koppeln" above.
 
 2. **Guest Spotify Connect discovery** — lets someone else on your LAN see your LMS player in their Spotify app's device list and hand off playback to it, without needing a SpotOn account of their own.
 
 ### If the Spotify app can't find the pairing device
 
 This happens when mDNS doesn't work between your phone/computer and the LMS host:
-- **Docker** — use `--network host`, or use the **browser fallback** (nested inside the Authorize Playback section in SpotOn Settings)
-- **Different VLANs/subnets** — use the browser fallback
-- **Firewall** blocks mDNS (UDP port 5353) — open it, or use the browser fallback
+- **Docker** — use `--network host`, or use the `__DISCOVER__` folder (see above)
+- **Different VLANs/subnets** — use the `__DISCOVER__` folder
+- **Firewall** blocks mDNS (UDP port 5353) — open it, or use the `__DISCOVER__` folder
 
-The browser fallback authorizes playback without mDNS by opening a browser window on the LMS host. It works in any network topology.
-
-**Note:** Step 1 (Connect Spotify Account) never needs mDNS — it runs entirely through the browser, regardless of network setup.
+The `__DISCOVER__` folder adds an account without mDNS on the LMS host: you create the login file on any machine in the phone's network and copy it over. It works in any network topology.
 
 ## Windows: Daemon Timeout or "Binary not found"
 

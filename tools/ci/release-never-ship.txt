@@ -1,0 +1,20 @@
+# Paths that never ship in a public release tree (79-03).
+# One pattern per line, "#" starts a comment, blank lines are ignored.
+#
+# Shared by tools/ci/literal-gate.sh (these paths are not scanned: they do not
+# ship), tools/ci/release-backstop.sh (these paths must not appear in a release
+# candidate) and the release builder of 79-09.
+#
+# Matching: a pattern ending in "/" is a directory at the repository root.
+# Any other pattern is a shell glob matched against the whole path, against
+# every path component and against the base name, at any depth.
+.planning/
+CLAUDE.md
+.claude/
+obsidian/
+win-vm/
+soloist-releases/
+signal-desktop*
+test_*.py
+tmp*/
+*.key

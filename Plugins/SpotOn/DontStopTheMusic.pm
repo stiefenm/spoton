@@ -56,10 +56,7 @@ sub dontStopTheMusic {
         return;
     }
 
-    require Plugins::SpotOn::API::Client;
-
-    # D1: if search is blocked (getLimit returns 0), skip search entirely
-    my $searchAvailable = Plugins::SpotOn::API::Client->getLimit('search') > 0;
+    require Plugins::SpotOn::API::SpClient;
 
     # Build seed exclusion set from current playlist (D3: prevent self-queueing)
     my %seedExclude;
@@ -98,13 +95,12 @@ sub dontStopTheMusic {
     _withDiversityPool($accountId, sub {
         my ($pool) = @_;
 
-        if (@seedArtists && $searchAvailable) {
+        if (@seedArtists) {
             main::INFOLOG && $log->info("SpotOn DSTM: mixing from artists: " . join(', ', @seedArtists));
             _searchArtists($client, $accountId, \@seedArtists, 0, [], $pool, \%seedExclude, $cb);
         }
         else {
-            main::INFOLOG && $log->info("SpotOn DSTM: " .
-                (!$searchAvailable ? "search blocked" : "no organic seeds") . ", using pool only");
+            main::INFOLOG && $log->info("SpotOn DSTM: no organic seeds, using pool only");
             _finalizeResults($client, [], $pool, \%seedExclude, $cb);
         }
     });
@@ -117,7 +113,7 @@ sub _withDiversityPool {
     if ($pool && ref $pool eq 'ARRAY' && @$pool) {
         return $cb->($pool);
     }
-    Plugins::SpotOn::API::Client->getTopTracks($accountId, {
+    Plugins::SpotOn::API::SpClient->getTopTracks($accountId, {
         time_range => 'medium_term',
         limit      => 50,
     }, sub {
@@ -137,7 +133,7 @@ sub _searchArtists {
     }
 
     my $artist = $artists->[$idx];
-    my $limit  = Plugins::SpotOn::API::Client->getLimit('search') || 10;
+    my $limit  = Plugins::SpotOn::API::SpClient->pageLimit('search') || 10;
     my $perArtist = int(DSTM_MAX_TRACKS / scalar(@$artists)) + 1;
     $limit = min($limit, $perArtist);
     my $offset = int(rand(3)) * $perArtist;
@@ -145,7 +141,7 @@ sub _searchArtists {
     # D5: escape quotes in artist names
     (my $safeArtist = $artist) =~ s/"//g;
 
-    Plugins::SpotOn::API::Client->search($accountId, {
+    Plugins::SpotOn::API::SpClient->search($accountId, {
         q      => sprintf('artist:"%s"', $safeArtist),
         type   => 'track',
         limit  => $limit,
@@ -157,7 +153,7 @@ sub _searchArtists {
 
         # D6: only retry on successful-but-empty, not on errors
         if (!@$tracks && $offset > 0 && $result && $result->{tracks}) {
-            Plugins::SpotOn::API::Client->search($accountId, {
+            Plugins::SpotOn::API::SpClient->search($accountId, {
                 q      => sprintf('artist:"%s"', $safeArtist),
                 type   => 'track',
                 limit  => $limit,

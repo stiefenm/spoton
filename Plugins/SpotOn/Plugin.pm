@@ -14,6 +14,7 @@ use Slim::Utils::Timers;
 use Slim::Utils::Cache;
 use Digest::MD5 qw(md5_hex);
 use JSON::XS qw(encode_json);
+use Scalar::Util qw(blessed);
 use Time::HiRes;
 use Time::Local qw(timelocal);
 use File::Basename;
@@ -29,6 +30,9 @@ my $cache = Slim::Utils::Cache->new('spoton', SPOTON_CACHE_VERSION);
 
 my %_playAllItemCache;
 my %_pauseRequestedAt;
+# 79-32 (D-27): [playlist index, url] of the playing song at the moment the guard armed, per player id; compared in
+# _pauseGuardCheck so a pause is never re-applied once the song changed after the pause request.
+my %_pauseRequestedSong;
 sub _evictPlayAllCache {
     my $now = time();
     delete @_playAllItemCache{ grep { $now - $_playAllItemCache{$_}{ts} > 120 } keys %_playAllItemCache };
@@ -120,6 +124,12 @@ sub initPlugin {
         streamingMode        => 'direct', # COMPAT-01: global streaming mode default (direct|proxy); per-player override lives in same-name client pref (GH #96)
         recentSearches => [],
         credProvenanceMigrated => 0,   # GH #147 plan 65-03: one-shot legacy-credential provenance migration marker
+        authChainMigrated    => 0,     # 85-10 (D-02/D-03): one-shot account migration to the ZeroConf identity, set once the re-key journal is empty
+        authChainRekeyPending => {},   # 85-10 (D-03): write-ahead re-key journal { oldId => newId }, finished by the next start
+        spDcRemoved          => 0,     # 85-12 (decision-D17 cookie-free, D-19): one-shot wipe of stored sp_dc values and the manual Pathfinder hash pref
+        pkceRemoved          => 0,     # 85-14 (D-01/D-02): one-shot wipe of every pkce_tokens.json, the clientId pref and the PKCE cache keys
+        backend              => 'librespot', # D-08/Phase 71: playback daemon backend ('librespot'|'soloist'), default librespot
+        soloistQuality       => 0,  # 83.3 D-13: Spotify streaming quality for the Soloist backend, global default Automatic; per-player override with 'global' sentinel in the same-name client pref
     });
 
     # D-02: cacheSchemaVersion guard — log when cache namespace version was bumped
@@ -131,22 +141,43 @@ sub initPlugin {
     require Plugins::SpotOn::Helper;
     Plugins::SpotOn::Helper->init();
 
+    # 84-08 (SEAM-6.2): the active backend bootstraps itself through its
+    # role -- the class comes from the registry by the validated backend
+    # name, never named here. The Soloist role registers its `backend`
+    # watcher (cached binary/version invalidation, Phase 71 D-08) and runs
+    # ensureBinary() (download/version check, self-guarding, WR-07 in-flight
+    # guard) on every boot outside the scanner -- the same cache-clear-then-
+    # restart recovery case Phase 72 had; the librespot role registers its
+    # binary paths (Helper->init, once-guarded inside Helper.pm).
+    require Plugins::SpotOn::Backend;
+    require Plugins::SpotOn::Unified::DaemonManager;
+    Plugins::SpotOn::Backend::classFor(Plugins::SpotOn::Unified::DaemonManager::backendName())->bootstrap();
+
     require Plugins::SpotOn::API::TokenManager;
-    require Plugins::SpotOn::API::Client;
+    require Plugins::SpotOn::API::SpClient;
+    require Plugins::SpotOn::API::Login5;
 
-    # Reset API client inflight counter (Pitfall 2 prevention — stale counter on reload)
-    Plugins::SpotOn::API::Client->reset();
+    # D-08: reset SpClient's own inflight counter/rate-limit/host caches and
+    # Login5's token cache (Pitfall 2 prevention -- stale counter on reload).
+    Plugins::SpotOn::API::SpClient->reset();
+    Plugins::SpotOn::API::Login5->reset();
+    # 85-08: Pathfinder's queue, in-flight count, scrape state and its 429 pool
+    # key (PF_RATE_LIMIT_KEY). Since 85-15 deleted API/Client.pm, whose reset
+    # used to clear the same key, this is the only startup clear of it.
+    require Plugins::SpotOn::API::Pathfinder;
+    Plugins::SpotOn::API::Pathfinder->reset();
 
-    require Plugins::SpotOn::API::WebPlayer;
-    Plugins::SpotOn::API::WebPlayer->reset();
-
-    # Start proactive token refresh timer — T-02-15: killTimers first to prevent duplicates
+    # 85-14 (D-01): the proactive PKCE token refresh timer (_refreshAllTokens)
+    # is gone with the PKCE module.
     if ( !main::SCANNER ) {
-        Slim::Utils::Timers::killTimers($class, \&_refreshAllTokens);
+        # 85-06 (D-05, RESEARCH P2): login5 health tick -- display-name repair
+        # and the network-recovered edge. killTimers first so a plugin reload
+        # never leaves two ticks pending; the tick re-arms itself.
+        Slim::Utils::Timers::killTimers('Plugins::SpotOn::API::Login5', \&Plugins::SpotOn::API::Login5::healthTick);
         Slim::Utils::Timers::setTimer(
-            $class,
-            Time::HiRes::time() + 10,
-            \&_refreshAllTokens
+            'Plugins::SpotOn::API::Login5',
+            Time::HiRes::time() + 20,
+            \&Plugins::SpotOn::API::Login5::healthTick
         );
 
         # Start orphaned-process cleanup timer (STR-10)
@@ -156,25 +187,6 @@ sub initPlugin {
             Time::HiRes::time() + KILL_PROCESS_INTERVAL,
             \&_killOrphanedProcesses
         );
-    }
-
-    # Probe API limits after token refresh has had time to populate cache.
-    # Retries once at +60s if no account is available at +15s (fresh installs).
-    if ( !main::SCANNER ) {
-        my $probeLimits;
-        $probeLimits = sub {
-            my $delay = shift;
-            Slim::Utils::Timers::setTimer(undef, Time::HiRes::time() + $delay, sub {
-                return if Plugins::SpotOn::API::Client->limitsProbed();
-                my $accountId = $prefs->get('activeAccount') || '';
-                if ($accountId) {
-                    Plugins::SpotOn::API::Client->probeEndpointLimits($accountId, sub {});
-                } elsif ($delay < 60) {
-                    $probeLimits->(60);
-                }
-            });
-        };
-        $probeLimits->(15);
     }
 
     $VERSION = $class->_pluginDataFor('version');
@@ -212,7 +224,7 @@ sub initPlugin {
         $prefs->setChange( sub {
             if ($INC{'Plugins/SpotOn/Unified/DaemonManager.pm'}) {
                 require Plugins::SpotOn::Unified::DaemonManager;
-                Plugins::SpotOn::Unified::DaemonManager->shutdown();
+                Plugins::SpotOn::Unified::DaemonManager->shutdown('restart');
                 Slim::Utils::Timers::killTimers('Plugins::SpotOn::Unified::DaemonManager', \&Plugins::SpotOn::Unified::DaemonManager::initHelpers);
                 Slim::Utils::Timers::setTimer(
                     'Plugins::SpotOn::Unified::DaemonManager',
@@ -227,6 +239,8 @@ sub initPlugin {
     # at the end because the next track's pipeline failed (unavailable, audio key
     # error, timeout). Forces skip after duration + 5s if player is still stuck.
     Slim::Control::Request::subscribe(\&_onNewSongWatchdog, [['playlist'], ['newsong']]);
+    # 79-27 D-20: a Browse track that starts playing is fetched fresh and its NowPlaying record rewritten.
+    Slim::Control::Request::subscribe(\&_onNewSongRefreshMeta, [['playlist'], ['newsong']]);
     Slim::Control::Request::subscribe(\&_onModeChange, [['playlist'], ['pause']]);
     Slim::Control::Request::subscribe(\&_onPauseCommand, [['pause']]);
 
@@ -267,10 +281,28 @@ sub initPlugin {
     Slim::Control::Request::addDispatch(['spoton', 'recentsearches'],
                                                                 [0, 1, 1, \&_recentSearchesCLI]
     );
+
+    # GH #94: browse More menu routed through the TrackInfo framework so the
+    # OPML context menu and the Now Playing TrackInfo menu render the same
+    # item set (LMS standard items + every registered provider). Dispatched
+    # by the `info` itemAction on _trackItem/_albumTrackItem/_episodeItem.
+    Slim::Control::Request::addDispatch(['spotoninfo', 'items', '_index', '_quantity'],
+                                                                [0, 1, 1, \&_trackInfoItemsCLI]
+    );
 }
 
 sub shutdownPlugin {
     my $class = shift;
+
+    # WR-04/WR-09: stop the Login5 health tick FIRST. It re-arms itself, so it
+    # is latched off (a tick with a mint in flight has no timer to kill and
+    # would re-arm from the mint callback) and the pending timer is killed --
+    # before any of the shutdown calls below, none of which is eval-guarded.
+    Slim::Utils::Timers::killTimers('Plugins::SpotOn::API::Login5', \&Plugins::SpotOn::API::Login5::healthTick);
+    if ($INC{'Plugins/SpotOn/API/Login5.pm'}) {
+        eval { Plugins::SpotOn::API::Login5->shutdown; 1 }
+            or $log->warn("Login5 shutdown failed: $@");
+    }
 
     require Plugins::SpotOn::Connect;
     Plugins::SpotOn::Connect->shutdown();
@@ -278,6 +310,7 @@ sub shutdownPlugin {
     # Unsubscribe watchdog registered in initPlugin — prevents duplicate handler
     # accumulation across plugin reloads (each reload calls shutdown then init).
     Slim::Control::Request::unsubscribe(\&_onNewSongWatchdog);
+    Slim::Control::Request::unsubscribe(\&_onNewSongRefreshMeta);
     Slim::Control::Request::unsubscribe(\&_onModeChange);
     Slim::Control::Request::unsubscribe(\&_onPauseCommand);
 
@@ -287,6 +320,7 @@ sub shutdownPlugin {
         Slim::Utils::Timers::killTimers($client, \&_pauseGuardCheck) if $client;
     }
     %_pauseRequestedAt = ();
+    %_pauseRequestedSong = ();
 
     if ($INC{'Plugins/SpotOn/API/Credentials.pm'}) {
         Plugins::SpotOn::API::Credentials->cancelPairing();
@@ -298,15 +332,7 @@ sub shutdownPlugin {
     }
 
     Slim::Utils::Timers::killTimers($class, \&_killOrphanedProcesses);
-    Slim::Utils::Timers::killTimers($class, \&_refreshAllTokens);
     Slim::Utils::Timers::killTimers($class, \&_startUnifiedDaemons);
-
-    # WR-02: TokenManager's refreshAllTokens re-arms itself with its own class
-    # as invocant, not Plugin — kill that timer too to prevent background refresh
-    # loops surviving plugin disable.
-    require Plugins::SpotOn::API::TokenManager;
-    Slim::Utils::Timers::killTimers('Plugins::SpotOn::API::TokenManager',
-        \&Plugins::SpotOn::API::TokenManager::refreshAllTokens);
 }
 
 # postinitPlugin($class)
@@ -346,12 +372,6 @@ sub _deployMaterialSkinIcon {
     $log->warn("Material Skin icon deploy failed: $@") if $@;
 }
 
-# _refreshAllTokens()
-# Thin timer callback wrapper — Slim::Utils::Timers passes $class as first arg.
-sub _refreshAllTokens {
-    Plugins::SpotOn::API::TokenManager->refreshAllTokens();
-}
-
 # _startUnifiedDaemons()
 # Phase 29: Timer callback — starts Unified daemon manager at LMS boot.
 # 4s delay: after Connect and Browse timers to ensure player list populated.
@@ -382,8 +402,127 @@ sub _startUnifiedDaemons {
         $prefs->set('credProvenanceMigrated', 1);
     }
 
+    # 85-10 (D-02/D-03, decided by the user 2026-10-17: at LMS start): one-shot
+    # account migration to the ZeroConf identity (id = md5 prefix of the
+    # credentials.json username). Runs once, BEFORE the first DaemonManager->init()
+    # so no playback helper starts against a stale account id. The marker is
+    # set only when the journal is empty.
+    #
+    # WR-01: an interrupted re-key (journal entry) is finished on EVERY start,
+    # independent of the marker -- a runtime re-key from DaemonManager can be
+    # interrupted long after the one-shot ran. resumeJournal is a no-op on an
+    # empty journal, and run() resumes it first as well.
+    require Plugins::SpotOn::API::AccountMigration;
+    eval { Plugins::SpotOn::API::AccountMigration->resumeJournal(); 1 }
+        or $log->error("Auth chain journal resume failed: $@");
+    unless ( $prefs->get('authChainMigrated') ) {
+        eval { Plugins::SpotOn::API::AccountMigration->run(); 1 }
+            or $log->error("Auth chain migration failed: $@");
+        $prefs->set('authChainMigrated', 1)
+            unless %{ $prefs->get('authChainRekeyPending') || {} };
+    }
+
+    # 85-12 (decision-D17 pathfinder-login5-plus-rootlist, cookie-free; T-85-30):
+    # wipe the sp_dc values and the manual Pathfinder hash that older versions
+    # stored. Once, and before the first init() so nothing starts with them.
+    _removeSpDcOnce();
+
+    # 85-11 (D-23): a credentials.json waiting in the discover folder becomes an
+    # account now -- after the migration (so a freshly imported account is never
+    # re-keyed by it) and before the first init(), so its daemon starts with the
+    # first pass instead of waiting for the next one.
+    require Plugins::SpotOn::API::Credentials;
+    eval { Plugins::SpotOn::API::Credentials->intakeDiscoverFolder(); 1 }
+        or $log->error("Discover folder intake failed: $@");
+
+    # 85-14 (D-01/D-02, T-85-27): the PKCE module is gone, so its leftovers are
+    # too: stored refresh tokens, the Client-ID pref and the token cache keys.
+    # Once, after the account migration and the discover intake (both may still
+    # look at the account dirs) and before the first init().
+    _removePkceOnce();
+
     require Plugins::SpotOn::Unified::DaemonManager;
     Plugins::SpotOn::Unified::DaemonManager->init();
+}
+
+# _removePkceOnce()
+# 85-14 (D-01/D-02, T-85-27): deletes what the removed PKCE module left behind --
+# every pkce_tokens.json (and an interrupted write's pkce_tokens.json.tmp.<pid>)
+# under <cachedir>/spoton/ and its account directories, the stored 'clientId'
+# pref, and the spoton_token_<id> / spoton_needs_reauth_<id> cache keys of every
+# account -- then sets pkceRemoved. Idempotent: with the marker set a second call
+# changes nothing. An account directory is only touched when its name is a plain
+# id (no separators, dots or spaces) and it is a real directory, never a symlink,
+# so a planted link cannot point the deletion elsewhere. credentials.json is
+# never touched.
+sub _removePkceOnce {
+    return if $prefs->get('pkceRemoved');
+
+    my $root = catdir(preferences('server')->get('cachedir'), 'spoton');
+    my $accounts = $prefs->get('accounts');
+    my %ids = ref $accounts eq 'HASH' ? map { $_ => 1 } keys %{$accounts} : ();
+
+    my @dirs = ($root);
+    if ( opendir(my $dh, $root) ) {
+        for my $name ( readdir $dh ) {
+            next unless $name =~ /\A[A-Za-z0-9_-]+\z/;
+            my $dir = catdir($root, $name);
+            next if -l $dir || !-d $dir;
+            push @dirs, $dir;
+        }
+        closedir $dh;
+    }
+
+    my $removed = 0;
+    for my $dir (@dirs) {
+        next unless -d $dir && !-l $dir;
+        opendir(my $dh, $dir) or next;
+        for my $name ( readdir $dh ) {
+            next unless $name =~ /\Apkce_tokens\.json(?:\.tmp\.\d+)?\z/;
+            my $file = catfile($dir, $name);
+            next if -l $file || !-f $file;
+            $removed++ if unlink $file;
+        }
+        closedir $dh;
+    }
+
+    for my $id ( keys %ids ) {
+        next unless defined $id && length $id;
+        $cache->remove("spoton_token_${id}");
+        $cache->remove("spoton_needs_reauth_${id}");
+    }
+
+    $prefs->remove('clientId');
+    $prefs->set('pkceRemoved', 1);
+    $log->info("PKCE cleanup: removed $removed stored token file(s), the Client-ID pref and the token cache keys");
+    return;
+}
+
+# _removeSpDcOnce()
+# 85-12 (decision-D17 pathfinder-login5-plus-rootlist is cookie-free; T-85-30,
+# D-19): deletes accounts->{id}{sp_dc} for every account and the stored manual
+# 'pathfinderHash' pref value that older versions kept, then sets spDcRemoved.
+# Idempotent: with the marker set a second call changes nothing. Nothing reads
+# either value any more, so a copy left in prefs.js would only be a stored secret.
+sub _removeSpDcOnce {
+    return if $prefs->get('spDcRemoved');
+
+    my $accounts = $prefs->get('accounts');
+    if ( ref $accounts eq 'HASH' ) {
+        my $removed = 0;
+        for my $id (keys %{$accounts}) {
+            next unless ref $accounts->{$id} eq 'HASH' && exists $accounts->{$id}{sp_dc};
+            delete $accounts->{$id}{sp_dc};
+            $removed++;
+        }
+        if ($removed) {
+            $prefs->set('accounts', $accounts);
+            $log->info("Cookie-free cleanup: removed the stored sp_dc value from $removed account(s)");
+        }
+    }
+    $prefs->remove('pathfinderHash');
+    $prefs->set('spDcRemoved', 1);
+    return;
 }
 
 # _killOrphanedProcesses($class)
@@ -421,52 +560,41 @@ sub _killOrphanedProcesses {
     }
 
     unless ($isBusy) {
-        my ($helper) = Plugins::SpotOn::Helper->get();
-        if ($helper) {
-            eval {
-                if (main::ISWINDOWS) {
-                    my $name = basename($helper);
-                    $name =~ s/[^A-Za-z0-9._-]//g;
-                    if ($name) {
-                        my %unifiedPids;
-                        if ($INC{'Plugins/SpotOn/Unified/DaemonManager.pm'}) {
-                            %unifiedPids = map { $_ => 1 }
-                                Plugins::SpotOn::Unified::DaemonManager->helperPids();
-                        }
-                        my @pids = map { /^"[^"]*","(\d+)"/ ? $1 : () }
-                            `tasklist /FI "IMAGENAME eq $name" /FO CSV /NH 2>nul`;
-                        for my $pid (@pids) {
-                            next if $activePids{$pid};
-                            next if $unifiedPids{$pid};
-                            kill 'KILL', $pid;
-                            main::DEBUGLOG && $log->is_debug && $log->debug("Killed orphaned spoton process PID $pid (Windows)");
-                        }
-                    }
-                } else {
-                    # CR-01: Use PID-based kill to avoid killing active transcoding processes.
-                    # Find all matching PIDs, exclude active ones, kill only orphans.
-                    # CON-09: Exclude Unified daemon PIDs from orphan cleanup.
-                    my %unifiedPids;
-                    if ($INC{'Plugins/SpotOn/Unified/DaemonManager.pm'}) {
-                        %unifiedPids = map { $_ => 1 }
-                            Plugins::SpotOn::Unified::DaemonManager->helperPids();
-                    }
+        # CON-09: Exclude Unified daemon PIDs from orphan cleanup -- this
+        # already includes every live daemon's PID, whatever its backend
+        # (helperPids() iterates all helper instances), so the soloist
+        # sweep below only ever kills genuine orphans.
+        my %unifiedPids;
+        if ($INC{'Plugins/SpotOn/Unified/DaemonManager.pm'}) {
+            %unifiedPids = map { $_ => 1 }
+                Plugins::SpotOn::Unified::DaemonManager->helperPids();
+        }
 
-                    # M6: pgrep -f treats the pattern as an extended regex —
-                    # quotemeta the helper path FIRST so dots and other
-                    # metacharacters cannot match (and kill) foreign processes,
-                    # THEN apply the single-quote shell escaping.
-                    (my $safeHelper = quotemeta($helper)) =~ s/'/'\\''/g;
-                    my @pids = map { /^\s*(\d+)/ ? $1 : () } `pgrep -f '$safeHelper'`;
-                    for my $pid (@pids) {
-                        next if $activePids{$pid};
-                        next if $unifiedPids{$pid};    # CON-09: protect Unified daemon PIDs
-                        kill 'TERM', $pid;
-                        main::DEBUGLOG && $log->is_debug && $log->debug("Killed orphaned spoton process PID $pid");
-                    }
-                }
-            };
-            $@ && $log->warn("Could not kill orphaned spoton processes: $@");
+        my ($helper) = Plugins::SpotOn::Helper->get();
+        _killOrphansForBinary($helper, \%activePids, \%unifiedPids) if $helper;
+
+        # WR-09: orphan cleanup previously only targeted the librespot
+        # helper binary name -- die_upon_destroy does not survive a
+        # SIGKILLed/OOM-killed/crashed LMS, so a leftover soloist process
+        # kept its per-player data-dir lock, WS port, and HTTP port. After
+        # LMS restarted, the fresh spawn for the same player collided with
+        # the survivor -- exactly the zombie-daemon/data-dir-lock failure
+        # class this project (and Phase 73's Model B specifically) set out
+        # to eliminate.
+        # 84-13 (SEAM-6.2): every AVAILABLE backend's binary through its
+        # role's binaryPath (class method, read-only -- 83.3 plan 08 gap 2,
+        # WR-01: installedBinaryPath() for Soloist, never the activating
+        # get()); available() already answers "is this side present". The
+        # helper path swept just above is skipped, so no binary is swept
+        # twice. eval-guarded: a failing read must not cost the hourly
+        # reschedule below.
+        require Plugins::SpotOn::Backend;
+        for my $name (Plugins::SpotOn::Backend::available()) {
+            my $path = eval { Plugins::SpotOn::Backend::classFor($name)->binaryPath };
+            $log->warn("Orphan sweep: binaryPath of backend '$name' failed: $@") if $@;
+            next unless defined $path && length $path;
+            next if defined $helper && $path eq $helper;
+            _killOrphansForBinary($path, \%activePids, \%unifiedPids);
         }
     }
 
@@ -476,6 +604,48 @@ sub _killOrphanedProcesses {
         Time::HiRes::time() + KILL_PROCESS_INTERVAL,
         \&_killOrphanedProcesses
     );
+}
+
+# _killOrphansForBinary($binary, \%activePids, \%unifiedPids) -- WR-09:
+# shared by the librespot-helper and soloist-binary sweeps in
+# _killOrphanedProcesses above. Windows is a structural no-op for the
+# soloist call today (soloist is Linux-only), but kept parallel to the Unix
+# branch so the guard stays structural if that ever changes.
+sub _killOrphansForBinary {
+    my ($binary, $activePids, $unifiedPids) = @_;
+
+    eval {
+        if (main::ISWINDOWS) {
+            my $name = basename($binary);
+            $name =~ s/[^A-Za-z0-9._-]//g;
+            if ($name) {
+                my @pids = map { /^"[^"]*","(\d+)"/ ? $1 : () }
+                    `tasklist /FI "IMAGENAME eq $name" /FO CSV /NH 2>nul`;
+                for my $pid (@pids) {
+                    next if $activePids->{$pid};
+                    next if $unifiedPids->{$pid};
+                    kill 'KILL', $pid;
+                    main::DEBUGLOG && $log->is_debug && $log->debug("Killed orphaned spoton process PID $pid (Windows)");
+                }
+            }
+        } else {
+            # CR-01: Use PID-based kill to avoid killing active transcoding processes.
+            # Find all matching PIDs, exclude active ones, kill only orphans.
+            # M6: pgrep -f treats the pattern as an extended regex — quotemeta
+            # the binary path FIRST so dots and other metacharacters cannot
+            # match (and kill) foreign processes, THEN apply the single-quote
+            # shell escaping.
+            (my $safeBinary = quotemeta($binary)) =~ s/'/'\\''/g;
+            my @pids = map { /^\s*(\d+)/ ? $1 : () } `pgrep -f '$safeBinary'`;
+            for my $pid (@pids) {
+                next if $activePids->{$pid};
+                next if $unifiedPids->{$pid};    # CON-09: protect Unified daemon PIDs
+                kill 'TERM', $pid;
+                main::DEBUGLOG && $log->is_debug && $log->debug("Killed orphaned spoton process PID $pid");
+            }
+        }
+    };
+    $@ && $log->warn("Could not kill orphaned spoton processes ($binary): $@");
 }
 
 sub handleFeed {
@@ -493,64 +663,33 @@ sub handleFeed {
 
     my @items;
 
-    # D-04 Channel 1: OPML proactive migration hint — show when the ACTIVE
-    # account is a v2.x ZeroConf user who has never completed PKCE auth
-    # (accountNeedsMigration: credentials.json present, pkce_tokens.json
-    # absent). Proactive and filesystem-based, independent of the reactive
-    # needsReauth flag checked below. OPML checks only the active account
-    # (via _getAccountId) since Browse/Library always operates on it --
-    # deliberate asymmetry vs. Settings.pm's anyAccountNeedsMigration() global
-    # check (RESEARCH.md, review finding: hint scope asymmetry).
+    # 85-14 (D-01, D-02): ONE pairing hint replaces the PKCE re-auth, v2.x
+    # migration and playback-authorization hints. It shows when the ACTIVE
+    # account (Browse/Library always operate on it) has no valid login -- no
+    # verifiable credentials.json, a playback-auth flag, or a Login5 verdict of
+    # invalid_credentials (TokenManager->hasValidLogin) -- or when the 85-10
+    # migration marked it needsPairing. Only the hint changes: the rest of the
+    # menu stays, because whatever still works for the account keeps working.
     require Plugins::SpotOn::API::TokenManager;
     my $activeAccountId = _getAccountId($client);
-    my $showingMigrationHint =
-        Plugins::SpotOn::API::TokenManager->accountNeedsMigration($activeAccountId);
-    if ($showingMigrationHint) {
-        push @items, {
-            name => cstring($client, 'PLUGIN_SPOTON_MIGRATION_REQUIRED'),
-            type => 'textarea',
-        };
-    }
-
-    # D-08 Channel 1: OPML re-auth warning — show when any account needs
-    # re-authentication. Precedence rule (RESEARCH.md Open Question 1
-    # resolution): only shown when the migration hint above is NOT showing,
-    # since a migration account cannot yet have hit the reactive reauth path
-    # -- avoids double-stacking two warning items for the same account.
-    if ( !$showingMigrationHint
-        && Plugins::SpotOn::API::TokenManager->anyAccountNeedsReauth())
-    {
-        push @items, {
-            name => cstring($client, 'PLUGIN_SPOTON_REAUTH_REQUIRED'),
-            type => 'textarea',
-        };
-    }
-
-    # GH #147 plan 65-03 (scope item 7): playback-authorization hint -- shown
-    # when the ACTIVE account has working PKCE tokens (Browse/Search/Library
-    # keep working) but its playback credentials are flagged (crash escalation
-    # or legacy provenance migration) or missing entirely (fresh PKCE auth
-    # after the D-04 eager-derivation removal). Follows the precedence
-    # discipline above: never stacks with the migration hint (a migration
-    # account has no PKCE tokens yet, so the loadTokens gate also excludes it).
-    # The rest of the menu stays -- only playback is affected, and the hint
-    # says so.
-    if ( !$showingMigrationHint && $activeAccountId ) {
-        require Plugins::SpotOn::API::Credentials;
-        require Plugins::SpotOn::API::PKCE;
-        if ( Plugins::SpotOn::API::PKCE::loadTokens($activeAccountId)
-            && ( Plugins::SpotOn::API::Credentials->needsPlaybackAuth($activeAccountId)
-                || !-f Plugins::SpotOn::API::Credentials->credentialsPathFor($activeAccountId) ) )
+    if ($activeAccountId) {
+        my $accounts = $prefs->get('accounts') || {};
+        my $entry    = $accounts->{$activeAccountId};
+        if ( ( ref $entry eq 'HASH' && $entry->{needsPairing} )
+            || !Plugins::SpotOn::API::TokenManager->hasValidLogin($activeAccountId) )
         {
             push @items, {
-                name => cstring($client, 'PLUGIN_SPOTON_PLAYBACK_AUTH_REQUIRED'),
+                name => cstring($client, 'PLUGIN_SPOTON_ACCOUNT_NEEDS_PAIRING'),
                 type => 'textarea',
             };
         }
     }
 
-    # Rate-limit hint (D-12): show when the API is throttled
-    if ( $cache->get('spoton_rate_limit') ) {
+    # Rate-limit hint (D-12): show while spclient is throttled. WR-03: the
+    # source is SpClient's own 429 key (SPCLIENT_RATE_LIMIT_KEY, set in
+    # SpClient::_request on a 429); the Client.pm key it used to read is gone.
+    require Plugins::SpotOn::API::SpClient;
+    if ( $cache->get( Plugins::SpotOn::API::SpClient::SPCLIENT_RATE_LIMIT_KEY() ) ) {
         push @items, {
             name => cstring($client, 'PLUGIN_SPOTON_RATE_LIMIT_HINT'),
             type => 'textarea',
@@ -848,7 +987,7 @@ sub SpotOnManageLike {
     }
 
     # D-06: On-demand API call only on cache miss
-    Plugins::SpotOn::API::Client->checkTracks($accountId, [$trackUri], sub {
+    Plugins::SpotOn::API::SpClient->checkTracks($accountId, [$trackUri], sub {
         my ($result, $err) = @_;
         my $isLiked = ($result && ref $result eq 'ARRAY' && $result->[0]) ? 1 : 0;
         $cache->set($cacheKey, $isLiked, 60) unless $err;
@@ -886,7 +1025,7 @@ sub _doLibraryAction {
     my $errorKey  = $opts->{errorKey} // 'PLUGIN_SPOTON_LIKE_ERROR';
     my $saveMethod = $opts->{saveMethod} // 'saveTracks';
 
-    Plugins::SpotOn::API::Client->$apiMethod($accountId, [$uri], sub {
+    Plugins::SpotOn::API::SpClient->$apiMethod($accountId, [$uri], sub {
         my ($result, $err) = @_;
         if ($err) {
             my $msg = (ref $err eq 'HASH' && $err->{code} && $err->{code} == 403)
@@ -943,7 +1082,7 @@ sub SpotOnManageFollow {
     }
 
     # On-demand API call only on cache miss
-    Plugins::SpotOn::API::Client->checkShows($accountId, [$showUri], sub {
+    Plugins::SpotOn::API::SpClient->checkShows($accountId, [$showUri], sub {
         my ($result, $err) = @_;
         my $isFollowed = ($result && ref $result eq 'ARRAY' && $result->[0]) ? 1 : 0;
         $cache->set($cacheKey, $isFollowed, 60) unless $err;
@@ -995,9 +1134,9 @@ sub SpotOnAddToPlaylist {
         accountId   => $accountId,
         apiFn       => sub {
             my ($acct, $params2, $cb2) = @_;
-            Plugins::SpotOn::API::Client->getUserPlaylists($acct, $params2, $cb2);
+            Plugins::SpotOn::API::SpClient->getUserPlaylists($acct, $params2, $cb2);
         },
-        pageLimit   => Plugins::SpotOn::API::Client->getLimit('library'),
+        pageLimit   => Plugins::SpotOn::API::SpClient->pageLimit('library'),
         startOffset => $offset,
         maxItems    => $qty,
         done        => sub {
@@ -1034,7 +1173,7 @@ sub _doAddToPlaylist {
     my $spotifyUri   = $args->{spotifyUri};
     my $accountId    = $args->{accountId};
 
-    Plugins::SpotOn::API::Client->addToPlaylist($accountId, $playlistId, [$spotifyUri], sub {
+    Plugins::SpotOn::API::SpClient->addToPlaylist($accountId, $playlistId, [$spotifyUri], sub {
         my ($result, $err) = @_;
         if ($err) {
             $cb->({ items => [{ name => cstring($client, 'PLUGIN_SPOTON_ADD_TO_PLAYLIST_ERROR') }] });
@@ -1169,7 +1308,7 @@ sub _trackItem {
 
     # T-04.1-01: Extract path from Spotify URI to prevent double-prefix.
     # spotify:track:ID -> track:ID; fallback preserves original URI if no match.
-    my ($track_path) = ($track->{uri} // '') =~ /^spotify:((?:track|episode):.+)/;
+    my ($track_path) = ($track->{uri} // '') =~ /^spotify:((?:track|episode):[A-Za-z0-9]+)$/;
     $track_path //= ($track->{uri} // '');
     my $spoton_url = 'spoton://' . $track_path;
 
@@ -1208,8 +1347,8 @@ sub _trackItem {
     }
 
     my %item = (
-        name            => "$title \x{2014} $artist",    # em-dash fallback for older clients
-        favorites_title => "$title \x{2014} $artist",
+        name            => "$title - $artist",    # plain title - artist fallback for older clients
+        favorites_title => "$title - $artist",
         title           => $title,
         artist          => $artist,
         album           => $album,
@@ -1224,6 +1363,15 @@ sub _trackItem {
         type          => 'audio',
         # spoton:// URL for LMS Favorites playback
         favorites_url => $spoton_url,
+        # GH #94: More menu routed through the TrackInfo framework -- one
+        # menu source for browse and Now Playing. @contextItems stays as the
+        # Default-skin drill-down (`items`); jive/Material clients use this.
+        itemActions   => {
+            info => {
+                command     => ['spotoninfo', 'items'],
+                fixedParams => { url => $spoton_url },
+            },
+        },
     );
     $item{items} = \@contextItems if @contextItems;
 
@@ -1234,18 +1382,22 @@ sub _trackItem {
 # Shared OPML error-branch helper (D-04 Channel 3, AUTH-07, Plan 03 Task 2).
 # Called from the ~17 feed-function `unless ($data)` sites in place of the
 # old hardcoded PLUGIN_SPOTON_NO_RESULTS item construction. Distinguishes
-# "authentication required" (v2.x migration pending OR PKCE refresh
-# rejected) from a genuine empty result set.
+# "this account has to be paired" from a genuine empty result set.
+# 85-14 (D-01): the PKCE re-auth / migration / revoked-Client-ID texts are gone.
+# Pairing is needed when the error says there is no usable login
+# (no_credentials, invalid_credentials, no_token) or the account has none
+# (TokenManager->hasValidLogin).
 # SECURITY (T-53-05, mirrors T-51-10/T-52-02): $err->{error} is matched
-# against known constants (rate_limited*), never interpolated into the
-# returned name/string -- only fixed, pre-translated cstring() keys are
-# returned.
+# against known constants, never interpolated into the returned name/string --
+# only fixed, pre-translated cstring() keys are returned.
 sub _authRequiredItem {
     my ($client, $accountId, $err) = @_;
 
+    my $errCode = ($err && ref $err eq 'HASH') ? ($err->{error} // '') : '';
+
     # GH #155: surface rate-limit errors as a clear message instead of
     # the confusing "No results" that gives zero diagnostic clue.
-    if ($err && ref $err eq 'HASH' && ($err->{error} || '') =~ /^rate_limited/) {
+    if ($errCode =~ /^rate_limited/) {
         return {
             name => cstring($client, 'PLUGIN_SPOTON_RATE_LIMITED'),
             type => 'textarea',
@@ -1254,18 +1406,11 @@ sub _authRequiredItem {
 
     require Plugins::SpotOn::API::TokenManager;
 
-    my $needsAuth = Plugins::SpotOn::API::TokenManager->accountNeedsMigration($accountId)
-                 || Plugins::SpotOn::API::TokenManager->needsReauth($accountId);
-
-    # D-06: distinguish a revoked bundled Client-ID from a generic reauth
-    # need -- shows a targeted "create your own app" message instead of the
-    # generic PLUGIN_SPOTON_AUTH_REQUIRED string.
     my $stringKey = 'PLUGIN_SPOTON_NO_RESULTS';
-    if ($needsAuth) {
-        my $reason = Plugins::SpotOn::API::TokenManager->reauthReason($accountId) || '';
-        $stringKey = ($reason eq 'bundled_id_unavailable')
-            ? 'PLUGIN_SPOTON_BUNDLED_ID_REVOKED'
-            : 'PLUGIN_SPOTON_AUTH_REQUIRED';
+    if ($errCode =~ /\A(?:no_credentials|invalid_credentials|no_token)\z/
+        || !Plugins::SpotOn::API::TokenManager->hasValidLogin($accountId))
+    {
+        $stringKey = 'PLUGIN_SPOTON_ACCOUNT_NEEDS_PAIRING';
     }
 
     return {
@@ -1316,21 +1461,17 @@ sub _artistItem {
 # _playlistItem($client, $playlist, $opts)
 # Builds an OPML link item for playlist navigation.
 # url => \&_playlistFeed is defined in Plan 03-03 (resolved at runtime by Perl).
-# $opts->{webPlayer} (Phase 52, D-07/Pitfall 3): when set, the passthrough
-# flag tells _playlistFeed to fetch tracks via Client->getWebPlayerPlaylistItems
-# (Web-Player bearer token) instead of Client->getPlaylistItems (PKCE token) --
-# Dev-Mode PKCE tokens 404 on ALL Spotify-owned (37i9...) playlists regardless
-# of ID validity. Used exclusively by the Made For You feed (_madeForYouFeed).
+# Every playlist -- Spotify-made 37i9 mixes included -- is read through spclient
+# playlist/v2 (SpClient->getPlaylistItems), so there is no per-item routing flag.
 sub _playlistItem {
     my ($client, $playlist, $opts) = @_;
     # spoton:// URL for LMS Favorites playback (explodePlaylist resolves to tracks)
     my $pl_spoton = 'spoton://playlist:' . ($playlist->{id} // '');
-    my $webPlayer = ($opts && ref $opts eq 'HASH' && $opts->{webPlayer}) ? 1 : 0;
 
     return {
         name          => $playlist->{name} // '',
         url           => \&_playlistFeed,
-        passthrough   => [{ playlistId => $playlist->{id}, webPlayer => $webPlayer }],
+        passthrough   => [{ playlistId => $playlist->{id} }],
         image         => _largestImage($playlist->{images}) || 'html/images/playlists.png',
         line2         => $playlist->{owner}{display_name} // '',
         favorites_url => $pl_spoton,
@@ -1343,17 +1484,14 @@ sub _playlistItem {
 # ============================================================
 
 # _homeFeed($client, $callback, $args)
-# Returns navigation items: Recently Played, (conditional) Made For You, Top Tracks.
-# Per D-02: each item opens its own sub-feed.
+# Returns navigation items: Recently Played, (conditional) Up Next, Made For You,
+# Top Tracks. Per D-02: each item opens its own sub-feed.
 #
-# Phase 52 (D-03/D-04/D-05): the Made For You item's visibility is gated on
-# Plugins::SpotOn::API::WebPlayer->state($accountId), the OPML degradation
-# channel (third of the three D-04 channels -- Settings/Status are Plan 03):
-#   empty        (D-03, no sp_dc)        -> item hidden entirely, distinct INFO log
-#   secrets_down (D-05, xyloflake down)  -> item hidden entirely, distinct INFO log
-#   expired      (D-04, sp_dc expired)   -> item shown, drills into an "sp_dc
-#                                            expired" hint instead of fetching
-#   valid                                -> item shown, drills into the normal feed
+# Made For You (85-08, decision-D17 pathfinder-login5-plus-rootlist) is listed
+# whenever the account has login5-capable credentials -- the same login5 bearer
+# that Pathfinder uses -- and is hidden otherwise. There is no cookie state to
+# degrade on: when Pathfinder fails, the feed itself falls back to the
+# Spotify-made mixes of the rootlist, or says it is unreachable.
 sub _homeFeed {
     my ($client, $callback, $args) = @_;
 
@@ -1361,69 +1499,48 @@ sub _homeFeed {
         {
             name  => cstring($client, 'PLUGIN_SPOTON_RECENTLY_PLAYED'),
             url   => \&_recentlyPlayedFeed,
-            type  => 'link',
+            type  => 'playlist',   # GH #161: flat track list -> playlist type for Play All / Add hover actions
             image => 'plugins/SpotOn/html/images/MTL_icon_history.png',
         },
     );
 
-    require Plugins::SpotOn::API::WebPlayer;
-    my $accountId = _getAccountId($client);
-    my $mfyState  = Plugins::SpotOn::API::WebPlayer->state($accountId);
-
-    if ($mfyState eq 'empty') {
-        main::INFOLOG && $log->is_info && $log->info(
-            'Plugin: Made For You hidden -- no sp_dc configured for account '
-            . _mfyMaskAccount($accountId) . ' (D-03)');
-    } elsif ($mfyState eq 'secrets_down') {
-        main::INFOLOG && $log->is_info && $log->info(
-            'Plugin: Made For You hidden -- TOTP secrets unavailable for account '
-            . _mfyMaskAccount($accountId) . ' (D-05)');
-    } elsif ($mfyState eq 'expired') {
+    # 85-07 D-09: Up Next exists only where the playback backend has a queue
+    # source (the Soloist helper announces its queue). With librespot,
+    # query('queue') is undef and the item is not shown.
+    require Plugins::SpotOn::Unified::DaemonManager;
+    my $backend = Plugins::SpotOn::Unified::DaemonManager->backendFor($client);
+    if ($backend && defined $backend->query('queue')) {
         push @items, {
-            name  => cstring($client, 'PLUGIN_SPOTON_MADE_FOR_YOU'),
-            url   => \&_madeForYouExpiredFeed,
+            name  => cstring($client, 'PLUGIN_SPOTON_UP_NEXT'),
+            url   => \&_upNextFeed,
+            # GH #135: live-status list, deliberately NOT 'playlist' -- the
+            # GH #161 convention does not apply here since Play All on an
+            # already-playing Connect queue would double-play.
             type  => 'link',
-            image => 'plugins/SpotOn/html/images/MTL_icon_auto_awesome.png',
+            image => 'plugins/SpotOn/html/images/playlist.png',
         };
-    } else {
+    }
+
+    my $accountId = _getAccountId($client);
+    if (Plugins::SpotOn::API::SpClient->_hasLogin5Creds($accountId)) {
         push @items, {
             name  => cstring($client, 'PLUGIN_SPOTON_MADE_FOR_YOU'),
             url   => \&_madeForYouFeed,
             type  => 'link',
             image => 'plugins/SpotOn/html/images/MTL_icon_auto_awesome.png',
         };
+    } else {
+        main::INFOLOG && $log->is_info && $log->info('Plugin: Made For You hidden -- no login5 credentials for the account');
     }
 
     push @items, {
         name  => cstring($client, 'PLUGIN_SPOTON_TOP_TRACKS'),
         url   => \&_topTracksFeed,
-        type  => 'link',
+        type  => 'playlist',   # GH #161: flat track list -> playlist type for Play All / Add hover actions
         image => 'plugins/SpotOn/html/images/toptracks.png',
     };
 
     $callback->({ items => \@items });
-}
-
-# _mfyMaskAccount($accountId)
-# T-29-07 masking convention for the two Made For You D-03/D-05 log lines
-# above -- mirrors API::WebPlayer::_mask / API::TokenManager::_mask.
-sub _mfyMaskAccount {
-    my ($accountId) = @_;
-    return 'unknown' unless defined $accountId && length $accountId;
-    return substr($accountId, 0, 4) . '****';
-}
-
-# _madeForYouExpiredFeed($client, $callback, $args)
-# D-04 OPML channel: sp_dc has expired. Renders a fixed hint instead of
-# attempting a Pathfinder fetch that would only fail -- Settings.pm and
-# Status.pm carry the other two D-04 channels (Plan 03). Never reflects any
-# raw error/reason into the menu (Security V7/T-52-02).
-sub _madeForYouExpiredFeed {
-    my ($client, $callback, $args) = @_;
-    $callback->({ items => [{
-        name => cstring($client, 'PLUGIN_SPOTON_SP_DC_EXPIRED_HINT'),
-        type => 'textarea',
-    }] });
 }
 
 # _recentlyPlayedFeed($client, $callback, $args)
@@ -1434,7 +1551,7 @@ sub _recentlyPlayedFeed {
 
     my $accountId = _getAccountId($client);
 
-    Plugins::SpotOn::API::Client->getRecentlyPlayed($accountId, { limit => Plugins::SpotOn::API::Client->getLimit('library') }, sub {
+    Plugins::SpotOn::API::SpClient->getRecentlyPlayed($accountId, { limit => Plugins::SpotOn::API::SpClient->pageLimit('library') }, sub {
         my ($data, $err) = @_;
         unless ($data) {
             $callback->({ items => [ _authRequiredItem($client, $accountId, $err) ] });
@@ -1446,6 +1563,54 @@ sub _recentlyPlayedFeed {
                     @{ $data->{items} || [] };
         $callback->({ items => \@items });
     });
+}
+
+# _upNextFeed($client, $callback, $args)
+# GH #135: renders the Spotify Connect queue ("Up Next") -- the currently
+# playing track followed by the upcoming tracks -- when the menu is opened.
+# 85-07 D-09: the data comes from the playback helper through the backend
+# role (query('queue')), never from the Web API: the Soloist daemon announces
+# its queue itself and answers get_queue, the backend answers from that
+# cache. This invocation is the ONLY trigger: no timers, no Request
+# subscriptions, no polling (the helper-side request is rate limited to one
+# per few seconds). With a backend that has no queue source (librespot) the
+# Home item is not shown at all (see _homeFeed); a direct call renders the
+# empty state. Single page, no pagination -- the queue is bounded (20).
+sub _upNextFeed {
+    my ($client, $callback, $args) = @_;
+
+    require Plugins::SpotOn::Unified::DaemonManager;
+    my $backend = Plugins::SpotOn::Unified::DaemonManager->backendFor($client);
+    my $queue   = $backend ? $backend->query('queue') : undef;
+
+    # T-76-14: untrusted payload -- type-check every level before use. A
+    # malformed answer, or an idle account, renders the empty state: "no
+    # active session" is a normal condition here, not a failure.
+    my $now = (ref $queue eq 'HASH' && ref $queue->{current} eq 'HASH') ? $queue->{current} : undef;
+    my @queue = (ref $queue eq 'HASH' && ref $queue->{upcoming} eq 'ARRAY')
+        ? grep { ref $_ eq 'HASH' && $_->{uri} } @{ $queue->{upcoming} }
+        : ();
+
+    my @items;
+    if ($now && $now->{uri}) {
+        # Rendering goes through the established _trackItem pipeline
+        # (escaping/metadata handling); name-prefix with the LMS core
+        # NOW_PLAYING string so the head row reads as "now playing".
+        my $item = _trackItem($client, $now);
+        $item->{name} = cstring($client, 'NOW_PLAYING') . ': ' . $item->{name};
+        push @items, $item;
+    }
+    push @items, map { _trackItem($client, $_) } @queue;
+
+    unless (@items) {
+        $callback->({ items => [{
+            name => cstring($client, 'PLUGIN_SPOTON_UP_NEXT_EMPTY'),
+            type => 'textarea',
+        }] });
+        return;
+    }
+
+    $callback->({ items => \@items });
 }
 
 # Priority tiers for Made For You sorting (matched against English names).
@@ -1466,65 +1631,51 @@ sub _madeForYouPriority {
     return scalar @MFY_PRIORITY;
 }
 
-# _fetchAllPersonalMixes($accountId, $locale, $cb)
-# Fetches all pages of personal mixes. $locale is optional (undef = user default).
-# Calls $cb->(\@playlists) with valid (non-null) items from all pages.
-sub _fetchAllPersonalMixes {
-    my ($accountId, $locale, $cb) = @_;
-    my $lim = Plugins::SpotOn::API::Client->getLimit('library');
-    my %params = (limit => $lim);
-    $params{_locale} = $locale if $locale;
-
-    Plugins::SpotOn::API::Client->getPersonalMixes($accountId, \%params, sub {
-        my $data = shift;
-        my $items = $data && $data->{playlists} ? $data->{playlists}{items} : [];
-        my @valid = grep { $_ && $_->{id} && ($_->{name} // '') =~ /\S/ } @$items;
-        my $total = $data && $data->{playlists} ? ($data->{playlists}{total} || 0) : 0;
-
-        if ($total > $lim) {
-            my %p2 = (limit => $lim, offset => $lim);
-            $p2{_locale} = $locale if $locale;
-            Plugins::SpotOn::API::Client->getPersonalMixes($accountId, \%p2, sub {
-                my $page2 = shift;
-                if ($page2 && $page2->{playlists} && $page2->{playlists}{items}) {
-                    push @valid, grep { $_ && $_->{id} && ($_->{name} // '') =~ /\S/ } @{ $page2->{playlists}{items} };
-                }
-                $cb->(\@valid);
-            });
-        } else {
-            $cb->(\@valid);
-        }
-    });
-}
-
 # _madeForYouFeed($client, $callback, $args)
-# Discovers algorithmic ("Made for You") playlists via pathfinderHome
-# (Pathfinder Home Feed GraphQL). pathfinderHome returns hashrefs with
-# {id, name, images} extracted from PlaylistResponseWrapper items, so
-# each OPML entry shows the real playlist name and artwork.
+# Made for You (85-08, decision-D17 pathfinder-login5-plus-rootlist): the
+# user's Made-for-You hub from Pathfinder homeSection with SpotOn's own login5
+# bearer (SpClient->getMadeForYou), in the order Pathfinder lists it; when
+# Pathfinder fails, the Spotify-made mixes of the rootlist, sorted by
+# @MFY_PRIORITY. The feed never consults the playback backend (D-20) and
+# sends no browse/categories request (D-08).
 sub _madeForYouFeed {
     my ($client, $callback, $args) = @_;
     my $accountId = _getAccountId($client);
 
-    Plugins::SpotOn::API::Client->pathfinderHome($accountId, {}, sub {
-        my ($playlists, $err) = @_;
+    Plugins::SpotOn::API::SpClient->getMadeForYou($accountId, sub {
+        my ($result, $err) = @_;
 
+        # D-19: never a silent empty menu. Nothing to list -- Pathfinder and
+        # the rootlist both came up empty, or the call failed -- says so; the
+        # raw error reason is not reflected into the menu (Security V7/T-52-02).
+        my $playlists = ($result && ref $result eq 'HASH') ? $result->{items} : undef;
         unless ($playlists && @$playlists) {
-            my $reason = ($err && ref $err eq 'HASH') ? ($err->{error} // '') : '';
-            my $name = $reason eq 'no_secrets' ? cstring($client, 'PLUGIN_SPOTON_MFY_SECRETS_DOWN')
-                     : $reason eq 'expired'    ? cstring($client, 'PLUGIN_SPOTON_SP_DC_EXPIRED_HINT')
-                     :                           cstring($client, 'PLUGIN_SPOTON_NO_RESULTS');
-            $callback->({ items => [{ name => $name, type => 'textarea' }] });
+            # WR-13: Pathfinder answered and the rootlist holds no Spotify-made
+            # mix either -- that is "nothing here", not "unreachable". The
+            # unreachable line stays for a failed Pathfinder section and for an
+            # error from the call itself.
+            my $answeredEmpty = ($result && ref $result eq 'HASH' && !$result->{pathfinderError}) ? 1 : 0;
+            $callback->({ items => [{
+                name => cstring($client, $answeredEmpty ? 'PLUGIN_SPOTON_NO_RESULTS' : 'PLUGIN_SPOTON_MFY_HASH_BROKEN'),
+                type => 'textarea',
+            }] });
             return;
         }
 
-        my @sorted = sort {
-            _madeForYouPriority($a->{name}) <=> _madeForYouPriority($b->{name})
-        } @$playlists;
+        my @sorted = @$playlists;
+        my @items;
+        if (($result->{source} // '') eq 'rootlist-fallback') {
+            @sorted = sort {
+                _madeForYouPriority($a->{name}) <=> _madeForYouPriority($b->{name})
+            } @sorted;
+            # the marker line: this is the saved-mixes list, not the Spotify home
+            push @items, {
+                name => cstring($client, 'PLUGIN_SPOTON_MFY_FALLBACK'),
+                type => 'textarea',
+            };
+        }
 
-        my @items = map {
-            _playlistItem($client, $_, { webPlayer => 1 })
-        } @sorted;
+        push @items, map { _playlistItem($client, $_) } @sorted;
 
         $callback->({ items => \@items });
     });
@@ -1537,13 +1688,23 @@ sub _topTracksFeed {
 
     my $accountId = _getAccountId($client);
 
-    Plugins::SpotOn::API::Client->getTopTracks($accountId, {
+    Plugins::SpotOn::API::SpClient->getTopTracks($accountId, {
         time_range => 'medium_term',
         limit      => 50,
     }, sub {
         my ($data, $err) = @_;
         unless ($data) {
-            $callback->({ items => [ _authRequiredItem($client, $accountId, $err) ] });
+            # D-07 (85-08): top tracks come from Pathfinder only, and no
+            # rootlist-style substitute exists -- say so, never an empty menu.
+            # A rate limit keeps its own, more specific line.
+            if ($err && ref $err eq 'HASH' && ($err->{error} || '') =~ /^rate_limited/) {
+                $callback->({ items => [ _authRequiredItem($client, $accountId, $err) ] });
+            } else {
+                $callback->({ items => [{
+                    name => cstring($client, 'PLUGIN_SPOTON_TOP_TRACKS_UNAVAILABLE'),
+                    type => 'textarea',
+                }] });
+            }
             return;
         }
         my @items = map { _trackItem($client, $_) } @{ $data->{items} || [] };
@@ -1566,7 +1727,7 @@ sub _libraryFeed {
             name  => cstring($client, 'PLUGIN_SPOTON_LIKED_SONGS'),
             url   => \&_savedTracksFeed,
             image => 'plugins/SpotOn/html/images/song.png',
-            type  => 'link',
+            type  => 'playlist',   # GH #161: flat track list -> playlist type for Play All / Add hover actions
         },
         {
             name  => cstring($client, 'PLUGIN_SPOTON_ALBUMS'),
@@ -1615,7 +1776,7 @@ sub _savedTracksFeed {
 
     my $apiFn = sub {
         my ($acct, $params, $cb) = @_;
-        Plugins::SpotOn::API::Client->getSavedTracks($acct, $params, $cb);
+        Plugins::SpotOn::API::SpClient->getSavedTracks($acct, $params, $cb);
     };
 
     if ($isPlayAll && $offset == 0) {
@@ -1623,7 +1784,9 @@ sub _savedTracksFeed {
         _fetchAllPages({
             accountId    => $accountId,
             apiFn        => $apiFn,
-            pageLimit    => 50,
+            # 79-27 D-22: one page = one extended-metadata batch (trackBatchSize); play-all still loads
+            # every page before the single callback.
+            pageLimit    => Plugins::SpotOn::API::SpClient->trackBatchSize,
             extractItems => sub { $_[0]->{items} || [] },
             done         => sub {
                 my ($allItems, $err) = @_;
@@ -1657,7 +1820,7 @@ sub _savedTracksFeed {
         _fetchPages({
             accountId    => $accountId,
             apiFn        => $apiFn,
-            pageLimit    => Plugins::SpotOn::API::Client->getLimit('library'),
+            pageLimit    => Plugins::SpotOn::API::SpClient->pageLimit('library'),
             startOffset  => $offset,
             maxItems     => $qty,
             extractItems => sub { $_[0]->{items} || [] },
@@ -1699,14 +1862,14 @@ sub _savedAlbumsFeed {
 
     my $apiFn = sub {
         my ($acct, $params, $cb) = @_;
-        Plugins::SpotOn::API::Client->getSavedAlbums($acct, $params, $cb);
+        Plugins::SpotOn::API::SpClient->getSavedAlbums($acct, $params, $cb);
     };
 
     if ($isPlayAll && $offset == 0) {
         _fetchAllPages({
             accountId    => $accountId,
             apiFn        => $apiFn,
-            pageLimit    => Plugins::SpotOn::API::Client->getLimit('library'),
+            pageLimit    => Plugins::SpotOn::API::SpClient->pageLimit('library'),
             extractItems => sub { $_[0]->{items} || [] },
             done         => sub {
                 my ($allItems, $err) = @_;
@@ -1736,7 +1899,7 @@ sub _savedAlbumsFeed {
         _fetchPages({
             accountId    => $accountId,
             apiFn        => $apiFn,
-            pageLimit    => Plugins::SpotOn::API::Client->getLimit('library'),
+            pageLimit    => Plugins::SpotOn::API::SpClient->pageLimit('library'),
             startOffset  => $offset,
             maxItems     => $qty,
             extractItems => sub { $_[0]->{items} || [] },
@@ -1784,10 +1947,10 @@ sub _followedArtistsFeed {
 sub _fetchAllFollowedArtists {
     my ($client, $accountId, $after, $accumulated, $done) = @_;
 
-    my %params = (limit => Plugins::SpotOn::API::Client->getLimit('library'));
+    my %params = (limit => Plugins::SpotOn::API::SpClient->pageLimit('library'));
     $params{after} = $after if defined $after;
 
-    Plugins::SpotOn::API::Client->getFollowedArtists($accountId, \%params, sub {
+    Plugins::SpotOn::API::SpClient->getFollowedArtists($accountId, \%params, sub {
         my ($data, $err) = @_;
         unless ($data) {
             $done->($accumulated, $err);
@@ -1820,8 +1983,8 @@ sub _fetchAllFollowedArtists {
 #   apiFn        - coderef: $apiFn->($accountId, $params, $cb)
 #                  $params contains offset and limit; $cb receives ($data, $err)
 #   pageLimit    - max items per API page (50 for tracks/albums/episodes, 100 for
-#                  playlist items). A falsy value (e.g. 0 from a blocked-endpoint
-#                  Client->getLimit()) never reaches the API — falls back to 50 (JVL-07).
+#                  playlist items). A falsy value (e.g. 0) never reaches the API —
+#                  falls back to 50 (JVL-07).
 #   extractItems - coderef: $extractItems->($data) returns arrayref of raw items
 #                  Default: sub { $_[0]->{items} || [] }
 #   extractTotal - coderef: $extractTotal->($data) returns the API's reported total
@@ -1941,14 +2104,14 @@ sub _userPlaylistsFeed {
 
     my $apiFn = sub {
         my ($acct, $params, $cb) = @_;
-        Plugins::SpotOn::API::Client->getUserPlaylists($acct, $params, $cb);
+        Plugins::SpotOn::API::SpClient->getUserPlaylists($acct, $params, $cb);
     };
 
     if ($isPlayAll && $offset == 0) {
         _fetchAllPages({
             accountId    => $accountId,
             apiFn        => $apiFn,
-            pageLimit    => Plugins::SpotOn::API::Client->getLimit('library'),
+            pageLimit    => Plugins::SpotOn::API::SpClient->pageLimit('library'),
             extractItems => sub { $_[0]->{items} || [] },
             done         => sub {
                 my ($allItems, $err) = @_;
@@ -1976,7 +2139,7 @@ sub _userPlaylistsFeed {
         _fetchPages({
             accountId    => $accountId,
             apiFn        => $apiFn,
-            pageLimit    => Plugins::SpotOn::API::Client->getLimit('library'),
+            pageLimit    => Plugins::SpotOn::API::SpClient->pageLimit('library'),
             startOffset  => $offset,
             maxItems     => $qty,
             extractItems => sub { $_[0]->{items} || [] },
@@ -2042,14 +2205,14 @@ sub _savedShowsFeed {
 
     my $apiFn = sub {
         my ($acct, $params, $cb) = @_;
-        Plugins::SpotOn::API::Client->getSavedShows($acct, { %$params, _noCache => 1 }, $cb);
+        Plugins::SpotOn::API::SpClient->getSavedShows($acct, { %$params, _noCache => 1 }, $cb);
     };
 
     if ($isPlayAll && $offset == 0) {
         _fetchAllPages({
             accountId    => $accountId,
             apiFn        => $apiFn,
-            pageLimit    => Plugins::SpotOn::API::Client->getLimit('library'),
+            pageLimit    => Plugins::SpotOn::API::SpClient->pageLimit('library'),
             extractItems => sub { $_[0]->{items} || [] },
             done         => sub {
                 my ($allItems, $err) = @_;
@@ -2079,7 +2242,7 @@ sub _savedShowsFeed {
         _fetchPages({
             accountId    => $accountId,
             apiFn        => $apiFn,
-            pageLimit    => Plugins::SpotOn::API::Client->getLimit('library'),
+            pageLimit    => Plugins::SpotOn::API::SpClient->pageLimit('library'),
             startOffset  => $offset,
             maxItems     => $qty,
             extractItems => sub { $_[0]->{items} || [] },
@@ -2152,7 +2315,7 @@ sub _showFeed {
 
     my $apiFn = sub {
         my ($acct, $params, $cb) = @_;
-        Plugins::SpotOn::API::Client->getShowEpisodes($acct, $showId, $params, $cb);
+        Plugins::SpotOn::API::SpClient->getShowEpisodes($acct, $showId, $params, $cb);
     };
 
     if ($isPlayAll && $offset == 0) {
@@ -2192,7 +2355,7 @@ sub _showFeed {
         _fetchPages({
             accountId    => $accountId,
             apiFn        => $apiFn,
-            pageLimit    => Plugins::SpotOn::API::Client->getLimit('library'),
+            pageLimit    => Plugins::SpotOn::API::SpClient->pageLimit('library'),
             startOffset  => $apiOffset,
             maxItems     => $wantItems,
             extractItems => sub { $_[0]->{items} || [] },
@@ -2256,7 +2419,7 @@ sub _episodeItem {
 
     my $line2 = _formatEpisodeLine2($client, $duration, $date);
 
-    my ($ep_path) = ($episode->{uri} // '') =~ /^spotify:((?:track|episode):.+)/;
+    my ($ep_path) = ($episode->{uri} // '') =~ /^spotify:((?:track|episode):[A-Za-z0-9]+)$/;
     $ep_path //= ($episode->{uri} // '');
     my $spoton_url = 'spoton://' . $ep_path;
 
@@ -2337,6 +2500,14 @@ sub _episodeItem {
         type          => 'audio',
         # spoton:// URL for LMS Favorites playback
         favorites_url => $spoton_url,
+        # GH #94: More menu routed through the TrackInfo framework (episode
+        # parity -- shows/episodes discrepancy called out in the issue).
+        itemActions   => {
+            info => {
+                command     => ['spotoninfo', 'items'],
+                fixedParams => { url => $spoton_url },
+            },
+        },
     );
     $item{items} = \@contextItems;
 
@@ -2409,7 +2580,7 @@ sub _episodeInfoFeed {
     }
 
     # Cache miss: fetch full episode to extract show context
-    Plugins::SpotOn::API::Client->getEpisode($accountId, $episodeId, sub {
+    Plugins::SpotOn::API::SpClient->getEpisode($accountId, $episodeId, sub {
         my ($ep, $err) = @_;
         if ($ep && $ep->{show} && $ep->{show}{id}) {
             my $ctx = {
@@ -2569,8 +2740,8 @@ sub _podcastSearchFeed {
 # _podcastSearchTypeFeed($client, $callback, $args, $passthrough)
 # GH #157: bounded multi-page fill for fixed-size JiveLite blocks — a
 # 210-item block against Spotify's dev-mode search limit (10) needs up to
-# 21 sequential calls; accepted per T-70-05, throttled by Client.pm's
-# inflight=1 sequencing.
+# 21 sequential calls; accepted per T-70-05, throttled by SpClient's
+# central request gate.
 sub _podcastSearchTypeFeed {
     my ($client, $callback, $args, $passthrough) = @_;
 
@@ -2588,14 +2759,14 @@ sub _podcastSearchTypeFeed {
         accountId    => $accountId,
         apiFn        => sub {
             my ($acct, $params, $cb) = @_;
-            Plugins::SpotOn::API::Client->search($acct, {
+            Plugins::SpotOn::API::SpClient->search($acct, {
                 q      => $query,
                 type   => $type,
                 limit  => $params->{limit},
                 offset => $params->{offset},
             }, $cb);
         },
-        pageLimit    => Plugins::SpotOn::API::Client->getLimit('search'),
+        pageLimit    => Plugins::SpotOn::API::SpClient->pageLimit('search'),
         startOffset  => $offset,
         maxItems     => $qty,
         extractItems => sub { ($_[0]->{$key} || {})->{items} || [] },
@@ -2638,45 +2809,38 @@ sub _podcastSearchTypeFeed {
 # ============================================================
 
 # _multiTypeSearch($accountId, $query, $types, $doneCb)
-# Shared aggregator that fires N parallel single-type search requests (one per
-# entry in $types) and delivers the merged results to $doneCb once every
-# request has completed.
+# Shared aggregator: ONE SpClient->search call with the comma-separated type
+# list (one Pathfinder searchDesktop request for the whole overview, 85-08) and
+# the merged results delivered to $doneCb.
 #
 # Contract:
 #   $types   — arrayref of Spotify type names (e.g. ['track','album','artist','playlist'])
-#   $doneCb  — called once with (\%results, $firstErr) when ALL requests have returned.
+#   $doneCb  — called once with (\%results, $err, $limited).
 #              %results is keyed by singular type name, each value is { total, items }.
-#              $firstErr is the first error seen if ANY request failed, undef otherwise.
-#
-# Implementation note: $remaining is initialized BEFORE firing any request —
-# Client.pm caches search responses, so a callback may fire synchronously on a
-# cache hit; initializing the counter after the fire loop would deliver $doneCb
-# early or never.  LMS runs a single-threaded event loop, so no locking is needed.
+#              $err is the search error, undef on success.
+#              $limited is true when Pathfinder could not answer and only the
+#              degraded (tracks only) result is delivered.
 sub _multiTypeSearch {
     my ($accountId, $query, $types, $doneCb) = @_;
 
-    my $remaining = scalar @$types;
-    my %results;
-    my $firstErr;
-
-    for my $type (@$types) {
-        Plugins::SpotOn::API::Client->search($accountId, {
-            q      => $query,
-            type   => $type,
-            limit  => Plugins::SpotOn::API::Client->getLimit('search'),
-            offset => 0,
-        }, sub {
-            my ($data, $err) = @_;
-            if ($data) {
-                $results{$type} = $data->{"${type}s"} || {};
-            } else {
-                $firstErr //= $err;
-            }
-            if (--$remaining == 0) {
-                $doneCb->(\%results, $firstErr);
-            }
-        });
-    }
+    # 85-08 (decision-SEARCH pathfinder-search): ONE call with the type list --
+    # one searchDesktop request instead of one request per type (P-01 burst
+    # prevention). The result is keyed by singular type name as before; the
+    # third callback argument is true when Pathfinder could not answer and the
+    # result is the degraded (tracks only) one.
+    Plugins::SpotOn::API::SpClient->search($accountId, {
+        q      => $query,
+        type   => join(',', @$types),
+        limit  => Plugins::SpotOn::API::SpClient->pageLimit('search'),
+        offset => 0,
+    }, sub {
+        my ($data, $err) = @_;
+        my %results;
+        if ($data) {
+            $results{$_} = $data->{"${_}s"} || {} for @$types;
+        }
+        $doneCb->(\%results, $data ? undef : $err, ($data && $data->{limited}) ? 1 : 0);
+    });
 }
 
 # Search History Helpers
@@ -2814,6 +2978,77 @@ sub _recentSearchesCLI {
     $request->setStatusDone;
 }
 
+# _trackInfoItemsCLI($request)
+# GH #94: CLI backend for the browse items' `info` itemAction
+# (['spotoninfo','items'] with a url fixedParam). Builds the SAME feed as
+# the Now Playing More menu via Slim::Menu::TrackInfo->menu() -- LMS
+# standard items (favorites, More Info, ...) plus every registered
+# provider (spotonTrackInfo: Artist View / Album View / Like / Add to
+# Playlist; GH-93 url override) -- and serves it through XMLBrowser.
+#
+# LMS 8.x gap bridged here: TrackInfo::menu() requires a track object, but
+# Slim::Schema::RemoteTrack->fetch() is cache-only (RemoteTrack.pm), so a
+# browse item that has never been PLAYED has no RemoteTrack yet and
+# Slim::Schema->objectForUrl() returns undef. A RemoteTrack is therefore
+# created on demand from the spoton_meta cache before building the menu --
+# display data still flows from ProtocolHandler::getMetadataFor via the
+# same cache, the object mainly has to exist.
+sub _trackInfoItemsCLI {
+    my $request = shift;
+
+    if ($request->isNotQuery([['spotoninfo'], ['items']])) {
+        $request->setStatusBadDispatch();
+        return;
+    }
+
+    my $client = $request->client;
+    my $url    = $request->getParam('url') || '';
+
+    # T-76-08: spoton:// urls carry public track/episode ids only; strict
+    # shape check before the url reaches Schema/TrackInfo.
+    unless ($url =~ m{^spoton://(?:track|episode):[A-Za-z0-9]+$}) {
+        $request->setStatusBadParams();
+        return;
+    }
+
+    require Slim::Schema;
+    require Slim::Menu::TrackInfo;
+    require Slim::Control::XMLBrowser;
+
+    my $track = Slim::Schema->objectForUrl({ url => $url });
+    unless (blessed($track)) {
+        my $meta = $cache->get('spoton_meta_' . md5_hex($url)) || {};
+        $track = Slim::Schema->updateOrCreate({
+            url        => $url,
+            attributes => {
+                title  => $meta->{title},
+                artist => $meta->{artist},
+                album  => $meta->{album},
+                secs   => $meta->{duration},
+            },
+        });
+    }
+
+    unless (blessed($track)) {
+        main::INFOLOG && $log->is_info && $log->info("spotoninfo: no track object for $url (GH #94)");
+        $request->setStatusBadParams();
+        return;
+    }
+
+    my $tags = {
+        menuMode    => $request->getParam('menu') || 0,
+        menuContext => $request->getParam('context') || 'normal',
+    };
+
+    my $feed = Slim::Menu::TrackInfo->menu($client, $url, $track, $tags);
+    unless ($feed) {
+        $request->setStatusBadParams();
+        return;
+    }
+
+    Slim::Control::XMLBrowser::cliQuery('spotoninfo', $feed, $request);
+}
+
 # _searchFromHistoryFeed($client, $callback, $args, $passthrough)
 # Thin shim that replays a recent search without re-adding it to history.
 # Called when the user taps a history entry from _searchPageFeed.
@@ -2829,9 +3064,9 @@ sub _searchFromHistoryFeed {
 # Per D-10: Top Result shown prominently above category sections.
 # Categories with 0 results are hidden entirely (D-10).
 # Per NAV-11: limit=10 per type (Dev Mode maximum).
-# Totals come from single-type calls via _multiTypeSearch so overview counts match
-# _searchTypeFeed drill-in totals (GH #130).  This issues 4 requests instead of 1;
-# all flow through Client.pm's central throttle (P-01/NFL-03).
+# Totals come from the same Pathfinder section as the _searchTypeFeed drill-in
+# totals (GH #130); the whole overview is ONE searchDesktop request (P-01/NFL-03).
+# When Pathfinder cannot answer, the overview says so (PLUGIN_SPOTON_SEARCH_LIMITED).
 sub _searchFeed {
     my ($client, $callback, $args) = @_;
 
@@ -2844,13 +3079,21 @@ sub _searchFeed {
     my $accountId = _getAccountId($client);
 
     _multiTypeSearch($accountId, $query, ['track', 'album', 'artist', 'playlist'], sub {
-        my ($results, $err) = @_;
+        my ($results, $err, $limited) = @_;
         if ($err) {
             $callback->({ items => [ _authRequiredItem($client, $accountId, $err) ] });
             return;
         }
 
         my @items;
+
+        # D-19-style visible line: search runs in the degraded (tracks only) mode.
+        if ($limited) {
+            push @items, {
+                name => cstring($client, 'PLUGIN_SPOTON_SEARCH_LIMITED'),
+                type => 'textarea',
+            };
+        }
 
         # D-10: Top Result — first track from search results, shown inline (not as sub-menu).
         my $trackItems = $results->{track}{items} || [];
@@ -2916,7 +3159,7 @@ sub _searchFeed {
             };
         }
 
-        if (!@items) {
+        if (!grep { ($_->{type} // '') ne 'textarea' } @items) {
             push @items, { name => cstring($client, 'PLUGIN_SPOTON_NO_RESULTS'), type => 'textarea' };
         } else {
             # Store successful search in history (skip if called from history replay)
@@ -2933,8 +3176,8 @@ sub _searchFeed {
 # _searchTypeFeed($client, $callback, $args, $passthrough)
 # GH #157: bounded multi-page fill for fixed-size JiveLite blocks — a
 # 210-item block against Spotify's dev-mode search limit (10) needs up to
-# 21 sequential calls; accepted per T-70-05, throttled by Client.pm's
-# inflight=1 sequencing.
+# 21 sequential calls; accepted per T-70-05, throttled by SpClient's
+# central request gate.
 sub _searchTypeFeed {
     my ($client, $callback, $args, $passthrough) = @_;
 
@@ -2953,18 +3196,25 @@ sub _searchTypeFeed {
     );
     my $key = $typeToKey{$type} // "${type}s";
 
+    # 85-08: set when any page came from the degraded search (Pathfinder down)
+    my $limited = 0;
+
     _fetchPages({
         accountId    => $accountId,
         apiFn        => sub {
             my ($acct, $params, $cb) = @_;
-            Plugins::SpotOn::API::Client->search($acct, {
+            Plugins::SpotOn::API::SpClient->search($acct, {
                 q      => $query,
                 type   => $type,
                 limit  => $params->{limit},
                 offset => $params->{offset},
-            }, $cb);
+            }, sub {
+                my ($data, $e) = @_;
+                $limited = 1 if $data && ref $data eq 'HASH' && $data->{limited};
+                $cb->($data, $e);
+            });
         },
-        pageLimit    => Plugins::SpotOn::API::Client->getLimit('search'),
+        pageLimit    => Plugins::SpotOn::API::SpClient->pageLimit('search'),
         startOffset  => $offset,
         maxItems     => $qty,
         extractItems => sub { ($_[0]->{$key} || {})->{items} || [] },
@@ -2993,7 +3243,8 @@ sub _searchTypeFeed {
 
             my $realCount = grep { !$_->{ignore} } @items;
             if (!$realCount && !$offset) {
-                push @items, { name => cstring($client, 'PLUGIN_SPOTON_NO_RESULTS'), type => 'textarea' };
+                # an empty page of the degraded search says why instead of "no results"
+                push @items, { name => cstring($client, $limited ? 'PLUGIN_SPOTON_SEARCH_LIMITED' : 'PLUGIN_SPOTON_NO_RESULTS'), type => 'textarea' };
             }
 
             # R-5: Spotify search rejects offset >= 1000 — cap advertised total.
@@ -3072,7 +3323,7 @@ sub _artistAlbumsFeed {
 
     my $apiFn = sub {
         my ($acct, $params, $cb) = @_;
-        Plugins::SpotOn::API::Client->getArtistAlbums($acct, $artistId, {
+        Plugins::SpotOn::API::SpClient->getArtistAlbums($acct, $artistId, {
             include_groups => $includeGroups,
             offset         => $params->{offset},
             limit          => $params->{limit},
@@ -3083,7 +3334,7 @@ sub _artistAlbumsFeed {
         _fetchAllPages({
             accountId    => $accountId,
             apiFn        => $apiFn,
-            pageLimit    => Plugins::SpotOn::API::Client->getLimit('artist_albums'),
+            pageLimit    => Plugins::SpotOn::API::SpClient->pageLimit('artist_albums'),
             extractItems => sub { $_[0]->{items} || [] },
             done         => sub {
                 my ($allItems, $err) = @_;
@@ -3110,7 +3361,7 @@ sub _artistAlbumsFeed {
         _fetchPages({
             accountId    => $accountId,
             apiFn        => $apiFn,
-            pageLimit    => Plugins::SpotOn::API::Client->getLimit('artist_albums'),
+            pageLimit    => Plugins::SpotOn::API::SpClient->pageLimit('artist_albums'),
             startOffset  => $offset,
             maxItems     => $qty,
             extractItems => sub { $_[0]->{items} || [] },
@@ -3165,12 +3416,12 @@ sub _albumFeed {
     # play-all branch's inline paginator stays independent/untouched (JVL-08).
     my $apiFn = sub {
         my ($acct, $params, $cb) = @_;
-        Plugins::SpotOn::API::Client->getAlbumTracks($acct, $albumId, $params, $cb);
+        Plugins::SpotOn::API::SpClient->getAlbumTracks($acct, $albumId, $params, $cb);
     };
 
     if ($isPlayAll && $offset == 0) {
         # Play-all mode: first fetch full album for metadata + seed tracks, then paginate remaining
-        Plugins::SpotOn::API::Client->getAlbum($accountId, $albumId, sub {
+        Plugins::SpotOn::API::SpClient->getAlbum($accountId, $albumId, sub {
             my $album = shift;
             unless ($album) {
                 $callback->({ items => [{ name => cstring($client, 'PLUGIN_SPOTON_NO_RESULTS'), type => 'textarea' }] });
@@ -3205,9 +3456,9 @@ sub _albumFeed {
             my $fetchPage;
             $fetchPage = sub {
                 my ($pageOffset) = @_;
-                Plugins::SpotOn::API::Client->getAlbumTracks($accountId, $albumId, {
+                Plugins::SpotOn::API::SpClient->getAlbumTracks($accountId, $albumId, {
                     offset => $pageOffset,
-                    limit  => Plugins::SpotOn::API::Client->getLimit('album_tracks'),
+                    limit  => Plugins::SpotOn::API::SpClient->pageLimit('album_tracks'),
                 }, sub {
                     # NON-UNIFORM site (review finding #4): on fetch failure, fall back to
                     # any accumulated tracks from prior pages -- only replace the inner
@@ -3263,7 +3514,7 @@ sub _albumFeed {
         # Initial browse load: fetch full album (includes first page of tracks in tracks.items).
         # GH #157: if quantity exceeds the embedded seed tracks and the album has
         # more, continue fetching via getAlbumTracks (embedded-seed + continuation).
-        Plugins::SpotOn::API::Client->getAlbum($accountId, $albumId, sub {
+        Plugins::SpotOn::API::SpClient->getAlbum($accountId, $albumId, sub {
             my $album = shift;
             unless ($album) {
                 $callback->({ items => [{ name => cstring($client, 'PLUGIN_SPOTON_NO_RESULTS'), type => 'textarea' }] });
@@ -3297,7 +3548,7 @@ sub _albumFeed {
             _fetchPages({
                 accountId   => $accountId,
                 apiFn       => $apiFn,
-                pageLimit   => Plugins::SpotOn::API::Client->getLimit('album_tracks'),
+                pageLimit   => Plugins::SpotOn::API::SpClient->pageLimit('album_tracks'),
                 startOffset => $seedCount,
                 maxItems    => $qty - $seedCount,
                 done        => sub {
@@ -3326,7 +3577,7 @@ sub _albumFeed {
         _fetchPages({
             accountId   => $accountId,
             apiFn       => $apiFn,
-            pageLimit   => Plugins::SpotOn::API::Client->getLimit('album_tracks'),
+            pageLimit   => Plugins::SpotOn::API::SpClient->pageLimit('album_tracks'),
             startOffset => $offset,
             maxItems    => $qty,
             done        => sub {
@@ -3409,7 +3660,7 @@ sub _albumTrackItem {
 
     # T-04.1-01: Extract path from Spotify URI to prevent double-prefix.
     # spotify:track:ID -> track:ID; fallback preserves original URI if no match.
-    my ($track_path) = ($track->{uri} // '') =~ /^spotify:((?:track|episode):.+)/;
+    my ($track_path) = ($track->{uri} // '') =~ /^spotify:((?:track|episode):[A-Za-z0-9]+)$/;
     $track_path //= ($track->{uri} // '');
     my $spoton_url = 'spoton://' . $track_path;
 
@@ -3463,6 +3714,14 @@ sub _albumTrackItem {
         image     => $image || 'html/images/cover.png',
         duration  => $duration,
         type      => 'audio',
+        # GH #94: More menu routed through the TrackInfo framework -- one
+        # menu source for browse and Now Playing.
+        itemActions => {
+            info => {
+                command     => ['spotoninfo', 'items'],
+                fixedParams => { url => $spoton_url },
+            },
+        },
     );
     $item{items} = \@contextItems if @contextItems;
 
@@ -3481,18 +3740,12 @@ sub _albumTrackItem {
 # Play-all detection: if quantity is undef (CLI/Material Skin "Play now") OR
 # $qty >= 500 (Classic/Web UI "Play All"), AND $offset == 0, fetches ALL tracks
 # via _fetchAllPages (Option D, Phase 54 Plan 04).
-# Phase 52 (D-07/Pitfall 3): $passthrough->{webPlayer} (set by _playlistItem
-# for Made For You / 37i9... playlists) routes the track fetch through
-# Client->getWebPlayerPlaylistItems (Web-Player bearer token) instead of
-# Client->getPlaylistItems (PKCE token) -- Dev-Mode PKCE tokens 404 on ALL
-# Spotify-owned playlists regardless of ID validity. Same pagination
-# offset/limit shape either way, so the play-all/_fetchAllPages path below
-# is unchanged.
+# Every playlist, Spotify-made 37i9 mixes included, is read through spclient
+# playlist/v2 (SpClient->getPlaylistItems, 85-08).
 sub _playlistFeed {
     my ($client, $callback, $args, $passthrough) = @_;
 
     my $playlistId = $passthrough->{playlistId} // '';
-    my $webPlayer  = $passthrough->{webPlayer} ? 1 : 0;
 
     my $offset    = $args->{index}    // 0;
     my $isPlayAll = !defined($args->{quantity}) || ($args->{quantity} >= 500);
@@ -3500,16 +3753,12 @@ sub _playlistFeed {
 
     my $accountId = _getAccountId($client);
 
-    my $fetchItems = $webPlayer
-        ? sub { Plugins::SpotOn::API::Client->getWebPlayerPlaylistItems(@_) }
-        : sub { Plugins::SpotOn::API::Client->getPlaylistItems(@_) };
-
     my $apiFn = sub {
         my ($acct, $params, $cb) = @_;
-        $fetchItems->($acct, $playlistId, $params, $cb);
+        Plugins::SpotOn::API::SpClient->getPlaylistItems($acct, $playlistId, $params, $cb);
     };
 
-    my $plCacheKey = ($webPlayer ? 'mfyplaylist:' : 'playlist:') . "$accountId:$playlistId";
+    my $plCacheKey = "playlist:$accountId:$playlistId";
 
     if ($isPlayAll && $offset == 0) {
         # Play-all mode: fetch all playlist tracks via full pagination
@@ -3550,13 +3799,13 @@ sub _playlistFeed {
         _fetchPages({
             accountId    => $accountId,
             apiFn        => $apiFn,
-            pageLimit    => Plugins::SpotOn::API::Client->getLimit('playlist_items'),
+            pageLimit    => Plugins::SpotOn::API::SpClient->pageLimit('playlist_items'),
             startOffset  => $offset,
             maxItems     => $qty,
             extractItems => sub { $_[0]->{items} || [] },
             done         => sub {
-                # NON-UNIFORM site (review finding #4): error source may be
-                # sp_dc/Pathfinder (webPlayer mode) rather than PKCE.
+                # NON-UNIFORM site (review finding #4): the error source is
+                # spclient playlist/v2 here, not the Web API.
                 # _authRequiredItem still works correctly here -- it checks
                 # accountNeedsMigration/needsReauth state, not the error source.
                 # Existing graceful-degradation behavior (no partial-cache
@@ -3640,31 +3889,32 @@ sub _typeString {
 
     $client = $client->master if $client && $client->can('master');
 
-    my $fmt = $client
-        ? ($prefs->client($client)->get('streamFormat')
-           || $prefs->client($client)->get('connectOggOverride')
-           || 'auto')
-        : 'auto';
+    my $fmt;
 
-    # D-09: resolve via shared capability resolver for formats where
-    # sync-group aggregation can change the actual daemon output.
-    # 'auto': resolver determines OGG vs PCM based on player capabilities.
-    # 'ogg': resolver catches sync-group downgrade (explicit OGG + hardware slave → PCM).
-    # pcm/flac/mp3: always PCM in unified daemon, no sync-group concern.
-    if ($fmt eq 'auto' || $fmt eq 'ogg') {
-        if ($client) {
-            eval {
-                require Plugins::SpotOn::Unified::DaemonManager;
-                $fmt = Plugins::SpotOn::Unified::DaemonManager->resolvePassthroughForClient($client)
-                     ? 'ogg' : 'pcm';
-            };
-            if ($@) {
-                main::INFOLOG && $log->is_info && $log->info("resolvePassthroughForClient failed: $@");
-                $fmt = 'pcm';
-            }
-        } else {
+    # 74b-02 (D-08, supersedes WR-03 / D-09): the label comes from the SAME
+    # mapping playback uses (DaemonManager->effectiveFormat ->
+    # ProtocolHandler->contentTypeFor), so the type written into every
+    # spoton_meta_* cache entry is what LMS will really stream: a FLAC choice
+    # the player cannot play (D-15) and Auto before the 74b-06 flip are
+    # labelled PCM, sync-group downgrades included. The cheap read is used on
+    # purpose: _typeString runs once per menu item, and effectiveOutput's
+    # checkBin diagnosis would log a warning per item when lame is missing.
+    # Eval-guarded: an undef client or a resolver that cannot run labels PCM.
+    if ($client) {
+        my $effective = eval {
+            require Plugins::SpotOn::Unified::DaemonManager;
+            (Plugins::SpotOn::Unified::DaemonManager->effectiveFormat($client))[0];
+        };
+        if ($@) {
+            main::INFOLOG && $log->is_info && $log->info("effectiveFormat failed: $@");
             $fmt = 'pcm';
         }
+        else {
+            $fmt = $effective || 'pcm';
+        }
+    }
+    else {
+        $fmt = 'pcm';
     }
 
     my %LABEL = (ogg => 'OGG', flac => 'FLAC', mp3 => 'MP3', pcm => 'PCM');
@@ -3693,13 +3943,20 @@ sub _onNewSongWatchdog {
         if ($prefs->get('diagnosticMode')) {
             my $streaming = $client->streamingSong();
             my $sUrl = $streaming ? ($streaming->track->url || '?') : 'none';
-            $log->warn("[DIAG] Watchdog: newsong but playingSong=undef (streamingSong=$sUrl) — deferring 0.5s");
+            $log->warn("[DIAG] Watchdog: newsong but playingSong=undef (streamingSong=$sUrl) - deferring 0.5s");
         }
         Slim::Utils::Timers::setTimer($client, Time::HiRes::time() + 0.5, sub {
             my $c = shift;
             my $s = $c->playingSong() || return;
             my $u = $s->track->url || '';
             return unless $u =~ m{^spoton://(?!connect-)};
+            # Pitfall 3: under D-04, spoton://track: URLs match both Browse
+            # and Connect.  The URL gate no longer encodes Browse-vs-Connect;
+            # guard against watchdog arming on a Connect session.
+            # 83.1-07: verified correct after claim binding (plan 02) --
+            # the URL scheme still does not discriminate, D-C3 group B.
+            require Plugins::SpotOn::Connect;
+            return if Plugins::SpotOn::Connect->isSpotifyConnect($c);
             my $d = $s->duration || 0;
             $log->warn("[DIAG] Watchdog: deferred newsong url=$u duration=${d}s") if $prefs->get('diagnosticMode');
             return unless $d > 0;
@@ -3710,6 +3967,12 @@ sub _onNewSongWatchdog {
     my $url = $song->track->url || '';
 
     return unless $url =~ m{^spoton://(?!connect-)};
+    # Pitfall 3: under D-04, spoton://track: URLs match both Browse
+    # and Connect.  Guard against watchdog arming on a Connect session.
+    # 83.1-07: verified correct after claim binding (plan 02) -- the URL
+    # scheme still does not discriminate, D-C3 group B.
+    require Plugins::SpotOn::Connect;
+    return if Plugins::SpotOn::Connect->isSpotifyConnect($client);
 
     my $duration = $song->duration || 0;
 
@@ -3724,6 +3987,75 @@ sub _onNewSongWatchdog {
     );
 }
 
+# ============================================================
+# Fresh metadata on track start (79-27 D-20)
+# ============================================================
+# A track list is hydrated from a cache that lives 90 days (D-19), so a renamed track would show its old title
+# in NowPlaying. When a Browse track starts, that ONE track is fetched fresh (SpClient->getTrack with
+# { refresh => 1 }: no cache read, the result overwrites the entry) and an existing spoton_meta_<md5 url> record
+# gets the fresh title/artist/album/duration/cover/icon; its other fields (type, bitrate, ids, year) stay.
+#   - Connect sessions are skipped: Connect.pm _fetchTrackMetadata refreshes those track starts itself.
+#   - spoton://connect-* and spoton://episode:* never match (only spoton://track:<22 base62> does).
+#   - Debounced per track id for META_REFRESH_DEBOUNCE seconds (T-79-91: no storm from repeated newsong events).
+#   - A sync group fires newsong per member; only the master asks (one fetch per track start).
+use constant META_REFRESH_DEBOUNCE => 60;
+my %_metaRefreshedAt;
+
+sub _onNewSongRefreshMeta {
+    my $request = shift;
+    my $client = $request->client() || return;
+    _refreshMetaForClient($client->master || $client, 0);
+}
+
+sub _refreshMetaForClient {
+    my ($client, $deferred) = @_;
+
+    my $song = $client->playingSong();
+    unless ($song) {
+        # newsong can fire before playingSong is set (the watchdog above has the same case): look once more shortly after
+        Slim::Utils::Timers::setTimer($client, Time::HiRes::time() + 0.5, sub { _refreshMetaForClient($_[0], 1) }) unless $deferred;
+        return;
+    }
+    my $url  = ($song->track && $song->track->url) || '';
+    my ($trackId) = $url =~ m{^spoton://track:([0-9A-Za-z]{22})\z} or return;
+
+    require Plugins::SpotOn::Connect;
+    return if Plugins::SpotOn::Connect->isSpotifyConnect($client);
+
+    my $now = time();
+    if (keys %_metaRefreshedAt > 200) {
+        delete @_metaRefreshedAt{ grep { $now - $_metaRefreshedAt{$_} >= META_REFRESH_DEBOUNCE } keys %_metaRefreshedAt };
+    }
+    return if defined $_metaRefreshedAt{$trackId} && $now - $_metaRefreshedAt{$trackId} < META_REFRESH_DEBOUNCE;
+    $_metaRefreshedAt{$trackId} = $now;
+
+    require Plugins::SpotOn::API::SpClient;
+    Plugins::SpotOn::API::SpClient->getTrack(_getAccountId($client), $trackId, sub {
+        my ($track, $err) = @_;
+
+        unless ($track && !$err) {
+            main::INFOLOG && $log->is_info && $log->info(
+                "Track start refresh for $trackId failed (" . (ref $err eq 'HASH' ? ($err->{error} // '?') : '?') . ") - cached metadata kept"
+            );
+            return;
+        }
+
+        my $key = 'spoton_meta_' . md5_hex($url);
+        my $rec = $cache->get($key) or return;   # no NowPlaying record yet -> nothing to refresh
+        my $image = _largestImage(($track->{album} || {})->{images});
+
+        my %fresh = (
+            %$rec,
+            title    => $track->{name} // $rec->{title},
+            artist   => join(', ', map { $_->{name} } @{ $track->{artists} || [] }),
+            album    => ($track->{album} || {})->{name} // '',
+            duration => ($track->{duration_ms} || 0) / 1000,
+        );
+        $fresh{cover} = $fresh{icon} = $image if $image;
+        $cache->set($key, \%fresh, 604800);
+    }, { refresh => 1 });
+}
+
 sub _onModeChange {
     my $request = shift;
     my $client = $request->client() || return;
@@ -3731,14 +4063,22 @@ sub _onModeChange {
     my $song = $client->playingSong();
     my $url = $song ? ($song->track->url || '') : 'none';
     return unless $url =~ m{^spoton://(?!connect-)};
+    # Pitfall 3: under D-04, spoton://track: URLs match both Browse
+    # and Connect.  Guard against pause-guard on a Connect session.
+    # 83.1-07: verified correct after claim binding (plan 02) -- the URL
+    # scheme still does not discriminate, D-C3 group B.
+    require Plugins::SpotOn::Connect;
+    return if Plugins::SpotOn::Connect->isSpotifyConnect($client);
     my $mode = Slim::Player::Source::playmode($client) || '?';
 
     if ($mode eq 'pause' && !$_pauseRequestedAt{_reapplying}) {
         $_pauseRequestedAt{$id} = Time::HiRes::time();
+        $_pauseRequestedSong{$id} = [ $song->index, $url ];    # 79-32 D-27
         Slim::Utils::Timers::killTimers($client, \&_pauseGuardCheck);
         Slim::Utils::Timers::setTimer($client, Time::HiRes::time() + 2.5, \&_pauseGuardCheck);
     } elsif ($mode eq 'play') {
         delete $_pauseRequestedAt{$id};
+        delete $_pauseRequestedSong{$id};
         Slim::Utils::Timers::killTimers($client, \&_pauseGuardCheck);
     }
 
@@ -3756,6 +4096,7 @@ sub _onPauseCommand {
     my $newvalue = $request->getRequest(1);
     if (defined $newvalue && $newvalue eq '0') {
         delete $_pauseRequestedAt{$id};
+        delete $_pauseRequestedSong{$id};
         Slim::Utils::Timers::killTimers($client, \&_pauseGuardCheck);
     }
 }
@@ -3768,17 +4109,42 @@ sub _pauseGuardCheck {
 
     my $song = $client->playingSong();
     my $url = $song ? ($song->track->url || '') : '';
-    unless ($url =~ m{^spoton://(?!connect-)}) {
+    # Pitfall 3: under D-04, spoton://track: URLs match both Browse and
+    # Connect.  Integrate the Connect check into the cleanup gate so the
+    # pending-state delete still runs when the URL is wrong or Connect.
+    # 83.1-07: verified correct after claim binding (plan 02) -- the URL
+    # scheme still does not discriminate, D-C3 group B.
+    require Plugins::SpotOn::Connect;
+    unless ($url =~ m{^spoton://(?!connect-)}
+            && !Plugins::SpotOn::Connect->isSpotifyConnect($client))
+    {
         delete $_pauseRequestedAt{$id};
+        delete $_pauseRequestedSong{$id};
         return;
+    }
+
+    # 79-32 (D-27): the guard exists for a pause swallowed on the SAME song (459c1dfd). Once the playing song changed after
+    # the pause request (a skip, a replaced playlist) a Play is the user's, not a swallowed pause: drop the guard and never
+    # re-apply. [index, url] instead of the Song object: a resume may rebuild the object for the same title.
+    my $req = $_pauseRequestedSong{$id};
+    if ($req) {
+        my $now = $song->index;
+        if (!defined $now || !defined $req->[0] || $now != $req->[0] || $url ne $req->[1]) {
+            delete $_pauseRequestedAt{$id};
+            delete $_pauseRequestedSong{$id};
+            $log->warn(sprintf('[DIAG] PauseGuard: dropped, song changed since the pause request (%s:%s -> %s:%s) mac=%s',
+                $req->[0] // '?', $req->[1], $now // '?', $url, $id)) if $prefs->get('diagnosticMode');
+            return;
+        }
     }
 
     my $mode = Slim::Player::Source::playmode($client) || '';
     my $age = Time::HiRes::time() - $_pauseRequestedAt{$id};
 
     if ($mode eq 'play') {
-        $log->warn("[DIAG] PauseGuard: re-applying pause (swallowed ${age}s ago)") if $prefs->get('diagnosticMode');
+        $log->warn("[DIAG] PauseGuard: re-applying pause (swallowed ${age}s ago) mac=$id") if $prefs->get('diagnosticMode');
         delete $_pauseRequestedAt{$id};
+        delete $_pauseRequestedSong{$id};
         $_pauseRequestedAt{_reapplying} = 1;
         Slim::Control::Request::executeRequest($client, ['pause', '1']);
         delete $_pauseRequestedAt{_reapplying};
@@ -3786,6 +4152,7 @@ sub _pauseGuardCheck {
         Slim::Utils::Timers::setTimer($client, Time::HiRes::time() + 1.0, \&_pauseGuardCheck);
     } else {
         delete $_pauseRequestedAt{$id};
+        delete $_pauseRequestedSong{$id};
     }
 }
 
@@ -3796,7 +4163,22 @@ sub _prefetchWatchdog {
     my $song = $client->playingSong() || return;
     my $url = $song->track->url || '';
     return unless $url =~ m{^spoton://(?!connect-)};
+    # Pitfall 3: under D-04, spoton://track: URLs match both Browse
+    # and Connect.  Guard against watchdog arming on a Connect session.
+    # 83.1-07: verified correct after claim binding (plan 02) -- the URL
+    # scheme still does not discriminate, D-C3 group B.
+    require Plugins::SpotOn::Connect;
+    return if Plugins::SpotOn::Connect->isSpotifyConnect($client);
     return unless Slim::Player::Source::playmode($client) eq 'play';
+
+    # Guard 1: playmode 'play' includes BUFFERING — after an LMS restart
+    # with squeezelite still connected, STMt play-point data refers to the
+    # previous stream (or is jiffies-extrapolation garbage) until the new
+    # track reaches PLAYING. isPlaying(1) is false during BUFFERING.
+    unless ($client->isPlaying(1)) {
+        Slim::Utils::Timers::setTimer($client, Time::HiRes::time() + 2, \&_prefetchWatchdog);
+        return;
+    }
 
     my $duration = $song->duration || 0;
     return unless $duration > 0;
@@ -3805,10 +4187,19 @@ sub _prefetchWatchdog {
     my $startOffset = $song->startOffset || 0;
     my $elapsed = $rawElapsed + $startOffset;
 
+    # Guard 2: the 2s poll cadence catches a real near-end hang within
+    # ~3s of crossing duration-3, so elapsed > duration+30 cannot come
+    # from real playback of this track.
+    if ($elapsed > $duration + 30) {
+        $log->warn("Prefetch watchdog: implausible elapsed ${elapsed}s for ${duration}s track - ignoring stale play point");
+        Slim::Utils::Timers::setTimer($client, Time::HiRes::time() + 2, \&_prefetchWatchdog);
+        return;
+    }
+
     if ($elapsed >= $duration - 3) {
         my $id = $client->id;
         $_watchdogTriggerUrl{$id} = $url;
-        $log->warn("[DIAG] Watchdog: near end (elapsed=${elapsed}s, duration=${duration}s) — arming 10s hang check") if $prefs->get('diagnosticMode');
+        $log->warn("[DIAG] Watchdog: near end (elapsed=${elapsed}s, duration=${duration}s) - arming 10s hang check") if $prefs->get('diagnosticMode');
         Slim::Utils::Timers::setTimer(
             $client,
             Time::HiRes::time() + 10,
@@ -3831,11 +4222,39 @@ sub _prefetchHangCheck {
 
     my $triggerUrl = delete $_watchdogTriggerUrl{$id} || return;
 
+    # Pitfall 3: _prefetchHangCheck has no URL gate — it fires from a
+    # timer armed by _prefetchWatchdog.  Guard against the race where the
+    # session becomes Connect between _prefetchWatchdog arming the timer
+    # and this callback firing (trigger state already consumed above so
+    # the pending state is cleaned up regardless).
+    # 83.1-07 (D-C3 group B): verified correct after claim binding (plan
+    # 02) -- for a Control-backed (Soloist) player this guard is now
+    # defense-in-depth (watchdogRing itself also gates on mode='browse'),
+    # but for a librespot player (no Control instance) it remains the ONLY
+    # brake against a blind `playlist jump +1` landing on a live Connect
+    # session -- KEEP.
+    require Plugins::SpotOn::Connect;
+    return if Plugins::SpotOn::Connect->isSpotifyConnect($client);
+
     my $song = $client->playingSong();
     my $currentUrl = $song ? ($song->track->url || '') : '';
 
     if ($currentUrl eq $triggerUrl && Slim::Player::Source::playmode($client) eq 'play') {
-        $log->warn("Prefetch watchdog: still on same track after 10s past end — forcing skip");
+        # D-02/D-03 (82-06): the watchdog is a timer, never a second
+        # decider (S-01 Setup B: the blind jump below overwrote the
+        # daemon's own result in 6/6 runs before it reached LMS). On a
+        # player with a player engine, hand the ring to it and let its
+        # reconcile primitives decide (84-08: notify('watchdogRing') on the
+        # backend role); the jump below is UNCHANGED for 'unsupported'
+        # (librespot) and 'down' (no engine instance). The warn text is
+        # kept verbatim: extract-run.pl's watchdog Runde-1 category
+        # (quick-260923-hgj) and t/46 match it.
+        require Plugins::SpotOn::Unified::DaemonManager;
+        if (Plugins::SpotOn::Unified::DaemonManager->backendFor($client)->notify('watchdogRing', url => $triggerUrl) eq 'ok') {
+            $log->warn("Prefetch watchdog: still on same track after 10s past end - handing to Soloist::Control (D-02)");
+            return;
+        }
+        $log->warn("Prefetch watchdog: still on same track after 10s past end - forcing skip");
         $client->execute(['playlist', 'jump', '+1']);
     }
 }

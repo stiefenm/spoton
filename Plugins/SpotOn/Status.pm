@@ -23,6 +23,14 @@ my $cache = Slim::Utils::Cache->new('spoton', Plugins::SpotOn::Plugin::SPOTON_CA
 my @_errorHistory;
 use constant MAX_ERROR_HISTORY => 30;
 
+# 84-19 F-04-02-CLAIM: a 'warn' entry is a one-shot "this happened" notice
+# (claim-conflict, refused-action, watchdog, 429 ...) whose condition is
+# over by itself; left in the ring it reads as a standing fault for the
+# rest of the LMS session. It expires WARN_TTL_S after it was recorded.
+# 'error' entries (a standing condition such as 'unpaired') keep their
+# lifetime: they leave only through clearError or ring eviction.
+use constant WARN_TTL_S => 3600;
+
 # System info cache (D-03): loaded once per LMS session
 my $_systemInfo;
 
@@ -54,18 +62,73 @@ sub new {
 # Public class method: recordError
 # ============================================================
 
-sub recordError {
-    my ($class, $level, $module, $message) = @_;
+# _now() -- the clock seam (t/13 overrides it; no sleeping in tests).
+sub _now { return time() }
 
+# _expireWarnings() -- drops 'warn' entries older than WARN_TTL_S. Called
+# from every reader (and the writer), so an expired entry is never visible
+# and hasError() -- which Control._recordErrorOnce asks before trusting its
+# dedupe lock -- reports it gone, letting a recurrence be recorded again.
+sub _expireWarnings {
+    my $now = _now();
+    @_errorHistory = grep {
+        !(($_->{level} // '') eq 'warn' && ($now - ($_->{ts} // $now)) >= WARN_TTL_S)
+    } @_errorHistory;
+}
+
+sub recordError {
+    my ($class, $level, $module, $message, $key) = @_;
+
+    _expireWarnings();
     push @_errorHistory, {
-        ts      => time(),
+        ts      => _now(),
         level   => $level,
         module  => $module,
         message => $message,
+        (defined $key ? (key => $key) : ()),
     };
 
     # Trim oldest entries beyond MAX_ERROR_HISTORY
     shift @_errorHistory while scalar @_errorHistory > MAX_ERROR_HISTORY;
+}
+
+# clearError($class, $module, $key) -- 82-11 (Todo
+# errors-startup-falschmeldung-nicht-paired): the ring above is
+# intentionally thin (MAX_ERROR_HISTORY) and has no dedupe -- every write
+# therefore needs a NAMED removal path, or a transient condition (a daemon
+# still restoring its session at LMS startup, a drift retry that later
+# catches up) becomes indistinguishable from a permanent one for the rest
+# of the LMS session. Removes every entry whose module AND key both match
+# $key; a no-op when nothing matches (e.g. $key undef, or a foreign
+# module/key pair).
+sub clearError {
+    my ($class, $module, $key) = @_;
+    return unless defined $key;
+
+    @_errorHistory = grep {
+        !(($_->{module} // '') eq $module && defined($_->{key}) && $_->{key} eq $key)
+    } @_errorHistory;
+}
+
+# hasError($class, $module, $key) -- 82-28 (WR-02, Review Runde 3): a pure
+# query, no state change, same module+key comparison as clearError. The
+# ring is the source of truth for whether an entry is still visible;
+# Control.pm's _recordErrorOnce dedupe lock (observed->{errorsReported})
+# does not know when the ring above has evicted an entry via
+# MAX_ERROR_HISTORY's shift, so the lock can outlive the entry it mirrors.
+# This lets the caller ask the ring directly instead of trusting a lock
+# that may be stale.
+# 74b WR-01: an optional $level narrows the match to entries of that level
+# (a standing 'warn' under a key must not read as the 'error' under it).
+sub hasError {
+    my ($class, $module, $key, $level) = @_;
+    return 0 unless defined $key;
+
+    _expireWarnings();
+    return scalar grep {
+        ($_->{module} // '') eq $module && defined($_->{key}) && $_->{key} eq $key
+            && (!defined $level || ($_->{level} // '') eq $level)
+    } @_errorHistory;
 }
 
 # ============================================================
@@ -98,11 +161,22 @@ sub _statusDataHandler {
     }
 
     # --- API telemetry ---
-    require Plugins::SpotOn::API::Client;
-    $data{api} = eval { Plugins::SpotOn::API::Client->statusSnapshot() } // {};
+    require Plugins::SpotOn::API::SpClient;
+    $data{api} = eval { Plugins::SpotOn::API::SpClient->statusSnapshot() } // {};
     if ($@) {
         main::INFOLOG && $log->is_info && $log->info("Status: statusSnapshot failed: $@");
     }
+
+    # --- Standing conditions (74b-03, D-09): re-assert before the list is
+    # read, so an entry evicted from the ring (or lost with an LMS restart)
+    # is back in this very response. can-guarded so a DaemonManager that
+    # predates the method (or a test double) keeps working.
+    eval {
+        require Plugins::SpotOn::Unified::DaemonManager;
+        Plugins::SpotOn::Unified::DaemonManager->assertStandingConditions()
+            if Plugins::SpotOn::Unified::DaemonManager->can('assertStandingConditions');
+        1;
+    } or main::INFOLOG && $log->is_info && $log->info("Status: assertStandingConditions failed: $@");
 
     # --- Errors (newest first) ---
     $data{errors} = eval { _errorHistory() } // [];
@@ -113,18 +187,13 @@ sub _statusDataHandler {
         main::INFOLOG && $log->is_info && $log->info("Status: _collectTokens failed: $@");
     }
 
-    # --- Made For You (Web-Player) state (D-04 channel 3) ---
-    require Plugins::SpotOn::API::WebPlayer;
-    $data{madeForYou} = eval { Plugins::SpotOn::API::WebPlayer->statusSnapshot() } // {};
+    # --- Made For You: the Pathfinder health (85-09, D-19; decision-D17
+    # pathfinder-login5-plus-rootlist is cookie-free, so no WebPlayer state
+    # here). SpClient->madeForYouStatus carries eleven plain keys, no secret.
+    $data{madeForYou} = eval { Plugins::SpotOn::API::SpClient->madeForYouStatus() } // {};
     if ($@) {
-        main::INFOLOG && $log->is_info && $log->info("Status: WebPlayer statusSnapshot failed: $@");
+        main::INFOLOG && $log->is_info && $log->info("Status: madeForYouStatus failed: $@");
     }
-
-    # CR-01 gap closure (Plan 52-06): hashConfigured lets the Status page
-    # distinguish "Pathfinder hash not set" (admin action needed) from other
-    # Made For You degradation states. Reads the pref directly -- no need to
-    # require Client.pm for this.
-    $data{madeForYou}{hashConfigured} = (length($prefs->get('pathfinderHash') || '') > 0) ? 1 : 0;
 
     # --- System info (D-05: cached, computed once) ---
     $data{system} = eval { _systemInfo() } // {};
@@ -133,7 +202,7 @@ sub _statusDataHandler {
     }
 
     # --- Auth Health (D-01/D-02/D-03, moved from Settings.pm) — per-account
-    # 5-indicator aggregation. Every read inside _collectAuthHealth is a
+    # 4-indicator aggregation (login5, connect, audio key, playback). Every read inside _collectAuthHealth is a
     # passive cache/prefs/accessor query -- zero outbound API calls triggered
     # by page render (T-54-02/T-54-06).
     require Plugins::SpotOn::API::TokenManager;
@@ -161,6 +230,25 @@ sub _collectDaemons {
     for my $helper (Plugins::SpotOn::Unified::DaemonManager->helperInstances()) {
         my $mac  = $helper->mac;
         my $name = $mac;
+
+        # T-7 (Phase 82): paired/wsConnected are signals of a backend with a
+        # pairing concept -- the librespot role (Backend::Librespot, Phase
+        # 84) has neither settings/Users nor a WS transport, so both stay
+        # undef for it and $playing is untouched by the gate below.
+        # 84-08 (SEAM-6.2): read from the backend role's state(). For the
+        # backend that has them they are always defined (0|1) and carry the
+        # SAME truth its player engine's reconcile decisions run on (82-11
+        # WR-05: the observed field when the engine made the observation,
+        # else the filesystem pairing / the live WS socket -- an unmade
+        # observation is not a statement, not even a false one). Eval-
+        # guarded: a load failure must not take the status page down.
+        my $st = eval {
+            Plugins::SpotOn::Unified::DaemonManager->backendFor($mac)->state;
+        } || {};
+        main::INFOLOG && $log->is_info && $log->info("Status: backend state failed for $mac: $@") if $@;
+        my $paired      = $st->{paired};
+        my $wsConnected = $st->{wsConnected};
+        my $hasPairing  = defined $paired ? 1 : 0;
 
         my $client = Slim::Player::Client::getClient($mac);
         $name = $client->name if $client && $client->can('name');
@@ -191,6 +279,16 @@ sub _collectDaemons {
             }
         }
 
+        # T-7 (Phase 82): a Soloist daemon that is unpaired or whose WS
+        # path is dead is not actually playing -- even if LMS itself says
+        # isPlaying (todos *ispaired-heuristik-falschpositiv*,
+        # *soloistws-veralteter-ws-port-nach-respawn*). 82-11 WR-05: $paired/
+        # $wsConnected above carry the player engine's own observation when
+        # it made one -- this gate blocks the display on the SAME signal
+        # that blocks requests, not on an independent filesystem read that
+        # could (and live did) disagree.
+        $playing = 0 if $hasPairing && !($paired && $wsConnected);
+
         push @daemons, {
             mac            => $mac,
             name           => $name,
@@ -203,6 +301,16 @@ sub _collectDaemons {
             currentTrack   => $currentTrack,
             syncGroup      => $syncGroup,
             sessionHealth  => $helper->_lastHealthSession,
+            paired         => $paired,
+            wsConnected    => $wsConnected,
+            # 84.1 plan 03 (D-04/D-05/D-06): controlMode/health exist only
+            # for the backend with a player engine (undef for librespot --
+            # its state has no mode, and soloistHealthFor only ever gets
+            # vivified by DaemonManager's Soloist health tick).
+            controlMode    => $st->{mode},
+            health         => $hasPairing
+                ? Plugins::SpotOn::Unified::DaemonManager->soloistHealthFor($mac)
+                : undef,
         };
     }
 
@@ -218,41 +326,36 @@ sub _collectTokens {
 
 # ============================================================
 # _collectAuthHealth($accountId)
-# D-01/D-02/D-03/D-08 (moved from Settings.pm): passive, read-only
-# aggregation of the 6 per-account auth chain health indicators consumed by
-# the Status page's Auth Health card (status.html). Every value here comes
-# from a cache/prefs/accessor query -- this helper NEVER makes an outbound
-# HTTP/API call (T-54-02/T-54-06 threat mitigation). Returns a hashref with
-# keys: pkce, spDc, connect, migration, audioKey, playback. Self-contained
-# (require's its own collaborators) rather than relying on
-# _statusDataHandler's requires.
+# D-13 (85-09): passive, read-only aggregation of the per-account auth chain
+# health indicators consumed by the Status page's Auth Health card
+# (status.html). Every value here comes from a cache/prefs/accessor query --
+# this helper NEVER makes an outbound HTTP/API call (T-54-02/T-54-06 threat
+# mitigation). Returns a hashref with keys: login, connect, audioKey,
+# playback. Self-contained (require's its own collaborators) rather than
+# relying on _statusDataHandler's requires.
 # ============================================================
 sub _collectAuthHealth {
     my ($accountId) = @_;
 
-    require Plugins::SpotOn::API::PKCE;
-    require Plugins::SpotOn::API::TokenManager;
-    require Plugins::SpotOn::API::WebPlayer;
+    require Plugins::SpotOn::API::Login5;
     require Plugins::SpotOn::API::Credentials;
     require Plugins::SpotOn::Unified::DaemonManager;
 
     my %health;
 
-    # 1. PKCE Status (D-01) -- token present, refresh valid, last API call time.
-    $health{pkce} = {
-        hasToken    => Plugins::SpotOn::API::PKCE::loadTokens($accountId) ? 1 : 0,
-        needsReauth => Plugins::SpotOn::API::TokenManager->needsReauth($accountId),
-        lastApiCall => $cache->get("spoton_last_api_call_" . $accountId) || undef,
+    # 1. Account login (login5, D-13): the last state a mint observed
+    # ('ok' | 'invalid_credentials' | 'no_credentials' | 'transient', else
+    # 'unknown'), whether usable credentials exist, and whether the account
+    # still has to be paired (85-10 sets needsPairing). Never the username or
+    # auth_data (T-85-29).
+    my $acct = ($prefs->get('accounts') || {})->{$accountId} || {};
+    $health{login} = {
+        state          => Plugins::SpotOn::API::Login5->loginState($accountId) // 'unknown',
+        hasCredentials => (Plugins::SpotOn::API::Credentials->verifyCredentials($accountId) ? 1 : 0),
+        needsPairing   => ($acct->{needsPairing} ? 1 : 0),
     };
 
-    # 2. sp_dc Cookie Status (Made For You, D-04/D-08) -- masked preview only,
-    # never the raw cookie (T-54-02).
-    $health{spDc} = {
-        state         => Plugins::SpotOn::API::WebPlayer->state($accountId),
-        maskedPreview => Plugins::SpotOn::API::WebPlayer->spDcMaskedPreview($accountId),
-    };
-
-    # 3. Connect Status -- a single account may drive multiple daemons
+    # 2. Connect Status -- a single account may drive multiple daemons
     # (multi-player setups). Report the first alive helper for this account,
     # falling back to the first helper found at all if none are alive.
     my @matching = grep { ($_->_accountId || '') eq $accountId }
@@ -270,28 +373,21 @@ sub _collectAuthHealth {
     }
     $health{connect} = \%connect;
 
-    # 4. Migration Status (D-05) -- v2.x ZeroConf accounts without PKCE tokens.
-    $health{migration} = {
-        needed => Plugins::SpotOn::API::TokenManager->accountNeedsMigration($accountId),
-    };
-
-    # 5. Audio-Key Cohort (D-02, passive) -- innocent-until-proven-guilty
-    # default 'ok' (matches needsReauth/WebPlayer::state defaults). 'throttled'
-    # has a 600s TTL and auto-clears back to 'ok' (absence = ok); 'denied'
-    # persists permanently (TTL 'never', written by DaemonManager Plan 54-01).
+    # 3. Audio-Key Cohort (D-02, passive) -- innocent-until-proven-guilty
+    # default 'ok'. 'throttled' has a 600s TTL and auto-clears back to 'ok'
+    # (absence = ok); 'denied' persists permanently (TTL 'never', written by
+    # DaemonManager Plan 54-01).
     $health{audioKey} = {
         state => $cache->get("spoton_audiokey_state_" . $accountId) || 'ok',
     };
 
-    # 6. Playback Credentials (D-08, GH #147 plan 66-02) -- the Web API
-    # token (indicator 1 above) and the librespot playback credentials are
-    # two independent halves of SpotOn's auth chain; this indicator answers
-    # "can this account actually stream" separately from "can this account
-    # call the Web API". hasCredentials is a passive local file read
-    # (verifyCredentials never touches the network); source is the
-    # provenance marker written by _installPairedCredentials ('zeroconf' |
-    # 'keymaster' | '' for unset/legacy accounts). Never include username or
-    # auth_data from the credentials file in this payload (T-66-05).
+    # 4. Playback Credentials (D-08, GH #147 plan 66-02) -- the librespot
+    # playback credentials, the other half of the chain next to the login5
+    # state above: "can this account actually stream". hasCredentials is a
+    # passive local file read (verifyCredentials never touches the network);
+    # source is the provenance marker written by _installPairedCredentials
+    # ('zeroconf' | 'keymaster' | '' for unset/legacy accounts). Never include
+    # username or auth_data from the credentials file in this payload (T-66-05).
     my $accountsPref = $prefs->get('accounts') || {};
     $health{playback} = {
         hasCredentials => (Plugins::SpotOn::API::Credentials->verifyCredentials($accountId) ? 1 : 0),
@@ -304,6 +400,7 @@ sub _collectAuthHealth {
 }
 
 sub _errorHistory {
+    _expireWarnings();
     return [ reverse @_errorHistory ];
 }
 

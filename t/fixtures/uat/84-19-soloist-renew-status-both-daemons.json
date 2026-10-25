@@ -1,0 +1,55 @@
+{
+ "active_version": "1.3.8.102",
+ "expiry_days": 88,
+ "generation": {
+  "active_version": "1.3.8.102",
+  "previous_expiry_days": 89,
+  "previous_version": "1.3.8.101",
+  "proven": 1,
+  "proven_at": 1790883774,
+  "proven_by": "02:00:00:5a:11:03",
+  "reason": "manual",
+  "switched_at": 1790881889,
+  "unproven_since": 1790881889
+ },
+ "manual_dir": "/var/lib/squeezeboxserver/cache/spoton/soloist/manual",
+ "pending_switches": {},
+ "placed": {
+  "checked_at": 1791044485,
+  "status": "absent"
+ },
+ "players": [
+  {
+   "alive": 1,
+   "control_mode": "idle",
+   "crash": null,
+   "health": null,
+   "mac": "02:00:00:5a:11:01",
+   "name": "lavender-UAT",
+   "pid": 172132,
+   "switch_pending": 0,
+   "switched_at": null
+  },
+  {
+   "alive": 1,
+   "control_mode": "connect",
+   "crash": null,
+   "health": null,
+   "mac": "02:00:00:5a:11:03",
+   "name": "lavender-pa",
+   "pid": 106397,
+   "switch_pending": 0,
+   "switched_at": null
+  }
+ ],
+ "renewal": {
+  "at": 1790881888,
+  "candidate_version": "1.3.8.102",
+  "detail": null,
+  "from_version": "1.3.8.82",
+  "last_attempt_at": 1790881889,
+  "phase": "done",
+  "reason": "manual",
+  "to_version": "1.3.8.79"
+ }
+}

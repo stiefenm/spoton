@@ -2,7 +2,7 @@ name: Perl Tests
 
 on:
   push:
-    branches: [main]
+    branches: [main, soloist, develop]
   pull_request:
     branches: [main]
 
@@ -29,5 +29,103 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y -qq libssl-dev > /dev/null 2>&1
           cpanm --notest --quiet Crypt::OpenSSL::Random HTTP::Date URI
 
-      - name: Run test suite
-        run: prove t/
+      # One step per test group (BAIL_OUT isolation). `prove -lr` on an empty
+      # or mis-typed directory ends `Result: NOTESTS` with exit 0, so every
+      # step asserts a Files= floor derived at run time from the group dir.
+      - name: Test group t/core
+        run: |
+          set -o pipefail
+          n=$(ls t/core/*.t | wc -l)
+          prove -lr t/core 2>&1 | tee prove-core.log
+          f=$(sed -nE 's/^Files=([0-9]+),.*/\1/p' prove-core.log)
+          echo "floor=$n files=${f:-none}"
+          test -n "$f" && test "$f" -ge "$n"
+
+      - name: Test group t/librespot
+        run: |
+          set -o pipefail
+          n=$(ls t/librespot/*.t | wc -l)
+          prove -lr t/librespot 2>&1 | tee prove-librespot.log
+          f=$(sed -nE 's/^Files=([0-9]+),.*/\1/p' prove-librespot.log)
+          echo "floor=$n files=${f:-none}"
+          test -n "$f" && test "$f" -ge "$n"
+
+      - name: Test group t/soloist
+        run: |
+          set -o pipefail
+          n=$(ls t/soloist/*.t | wc -l)
+          prove -lr t/soloist 2>&1 | tee prove-soloist.log
+          f=$(sed -nE 's/^Files=([0-9]+),.*/\1/p' prove-soloist.log)
+          echo "floor=$n files=${f:-none}"
+          test -n "$f" && test "$f" -ge "$n"
+
+      - name: Full suite
+        run: prove -lr t/
+
+  # Backend amputation (SEAM-6.3.2): remove one backend side for real, then
+  # the static reference gate and the remaining test groups must pass. Each
+  # leg runs in its own checkout, so the two legs never touch a shared tree.
+  amputation:
+    name: Amputation ${{ matrix.side }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        side: [librespot, soloist]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Perl 5.38
+        uses: shogo82148/actions-setup-perl@v1
+        with:
+          perl-version: "5.38"
+
+      - name: Install test dependencies
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq libssl-dev > /dev/null 2>&1
+          cpanm --notest --quiet Crypt::OpenSSL::Random HTTP::Date URI
+
+      # comm compares bytewise; sort must use the same collation (LC_ALL=C on
+      # both), or an overlap where the orders diverge is silently missed.
+      - name: Manifests are disjoint
+        run: |
+          o=$(LC_ALL=C comm -12 \
+                <(grep -v '^#' tools/ci/amputation/librespot.files | LC_ALL=C sort) \
+                <(grep -v '^#' tools/ci/amputation/soloist.files | LC_ALL=C sort))
+          if [ -n "$o" ]; then echo "manifest overlap: $o"; exit 1; fi
+
+      - name: Collect removed package names
+        run: perl tools/ci/refcheck.pl --collect ${{ matrix.side }}
+
+      - name: Amputate ${{ matrix.side }}
+        run: bash tools/ci/amputate.sh ${{ matrix.side }}
+
+      - name: Static reference gate
+        run: perl tools/ci/refcheck.pl ${{ matrix.side }}
+
+      - name: Test the remaining groups
+        run: |
+          set -o pipefail
+          if [ "${{ matrix.side }}" = librespot ]; then other=soloist; else other=librespot; fi
+          n=$(( $(ls t/core/*.t | wc -l) + $(ls t/$other/*.t | wc -l) ))
+          prove -lr t/core t/$other 2>&1 | tee prove-amputation.log
+          f=$(sed -nE 's/^Files=([0-9]+),.*/\1/p' prove-amputation.log)
+          echo "floor=$n files=${f:-none}"
+          test -n "$f" && test "$f" -ge "$n"
+          # Expected skips, built at run time: t/librespot/06 always on the
+          # soloist leg (its binary is untracked, no checkout has it);
+          # t/soloist/48 only without a C compiler; t/core/42 only without node.
+          exp=""
+          command -v node >/dev/null 2>&1 || exp="$exp t/core/42_soloist_settings_js_toggle.t"
+          if [ $other = soloist ]; then
+            { command -v gcc >/dev/null 2>&1 || command -v cc >/dev/null 2>&1; } || exp="$exp t/soloist/48_fake_libpulse_harness.t"
+          else
+            exp="$exp t/librespot/06_binary_check.t"
+          fi
+          want=$(printf '%s\n' $exp | sed '/^$/d' | LC_ALL=C sort | tr '\n' ' ')
+          got=$(sed -nE 's/^(t\/[^ ]+\.t) .*skipped:.*/\1/p' prove-amputation.log | LC_ALL=C sort | tr '\n' ' ')
+          echo "expected skips: [$want]"
+          echo "actual skips:   [$got]"
+          test "$got" = "$want"

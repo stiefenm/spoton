@@ -1,0 +1,157 @@
+# daemon-log window, raw lines (no interpretation). source: /var/lib/squeezeboxserver/cache/spoton/0200005a1101-soloist.log
+# read with: sudo -n cat <log> | command grep -E '^\[fakepulse |start_reason' | command grep -v 'underflow:' | python3 (window filter)
+# window epoch 1790855670 .. 1790855705; [fakepulse] lines are local time, start_reason lines are UTC
+[fakepulse BOUNDARY ts=13:54:30.623] write_summary: bytes_written=93522432 ring_fill=17664 calls=90 bytes_since=417792 corked=1 drops=0
+[fakepulse BOUNDARY ts=13:54:31.623] write_summary: bytes_written=93923840 ring_fill=5152 calls=82 bytes_since=401408 corked=1 drops=0
+[fakepulse BOUNDARY ts=13:54:32.624] write_summary: bytes_written=94333440 ring_fill=1664 calls=87 bytes_since=409600 corked=1 drops=0
+[fakepulse 13:54:36.214] pa_stream_flush(stream=0x7a788015c8e0)
+[fakepulse BOUNDARY ts=13:54:36.214] flush: stream=0x7a788015c8e0 bytes_written=94480704 ring_fill=0 corked=1
+[fakepulse BOUNDARY ts=13:54:36.250] write_summary: bytes_written=94488896 ring_fill=8192 calls=32 bytes_since=155456 corked=1 drops=0
+[fakepulse 13:54:36.250] flush-disconnect cancelled by queued seek-arm (via=write-wait)
+[fakepulse BOUNDARY ts=13:54:36.250] seek_arm: consumed by pending flush-disconnect via=write-wait armed=0
+[fakepulse 13:54:36.250] client-close: write error/disconnect
+[fakepulse 13:54:36.250] client-attach: new /stream client fd=9
+[fakepulse BOUNDARY ts=13:54:36.252] seek_arm: armed=1
+[fakepulse 13:54:36.254] pa_stream_flush(stream=0x7a788015c8e0)
+[fakepulse BOUNDARY ts=13:54:36.254] flush: stream=0x7a788015c8e0 bytes_written=94873920 ring_fill=303104 corked=1
+[fakepulse BOUNDARY ts=13:54:37.266] write_summary: bytes_written=97093952 ring_fill=1286144 calls=318 bytes_since=2605056 corked=1 drops=0
+[fakepulse BOUNDARY ts=13:54:38.282] write_summary: bytes_written=99191104 ring_fill=2400256 calls=260 bytes_since=2097152 corked=1 drops=0
+[fakepulse BOUNDARY ts=13:54:39.293] write_summary: bytes_written=99600704 ring_fill=1826816 calls=70 bytes_since=409600 corked=1 drops=0
+[fakepulse BOUNDARY ts=13:54:40.304] write_summary: bytes_written=100010304 ring_fill=1204224 calls=70 bytes_since=409600 corked=1 drops=0
+[fakepulse BOUNDARY ts=13:54:41.315] write_summary: bytes_written=100428096 ring_fill=638976 calls=71 bytes_since=417792 corked=1 drops=0
+[fakepulse BOUNDARY ts=13:54:42.322] write_summary: bytes_written=100837696 ring_fill=65536 calls=70 bytes_since=409600 corked=1 drops=0
+[fakepulse BOUNDARY ts=13:54:43.325] write_summary: bytes_written=101263680 ring_fill=20896 calls=85 bytes_since=425984 corked=1 drops=0
+[fakepulse BOUNDARY ts=13:54:44.346] write_summary: bytes_written=101681472 ring_fill=15200 calls=91 bytes_since=417792 corked=1 drops=0
+[fakepulse BOUNDARY ts=13:54:45.348] write_summary: bytes_written=102091072 ring_fill=5472 calls=86 bytes_since=409600 corked=1 drops=0
+[fakepulse BOUNDARY ts=13:54:46.351] write_summary: bytes_written=102508864 ring_fill=17248 calls=86 bytes_since=417792 corked=1 drops=0
+[fakepulse BOUNDARY ts=13:54:47.352] write_summary: bytes_written=102918016 ring_fill=27040 calls=91 bytes_since=409152 corked=1 drops=0
+[fakepulse BOUNDARY ts=13:54:48.000] seek_arm: armed=1
+[fakepulse BOUNDARY ts=13:54:48.002] cork: stream=0x7a788015c8e0 1->0 bytes_written=103176768 ring_fill=0
+[fakepulse BOUNDARY ts=13:54:48.002] cork: stream=0x7a788015c8e0 0->1 bytes_written=103176768 ring_fill=0
+[fakepulse 13:54:48.002] pa_stream_flush(stream=0x7a788015c8e0)
+[fakepulse BOUNDARY ts=13:54:48.002] flush: stream=0x7a788015c8e0 bytes_written=103176768 ring_fill=0 corked=1
+[fakepulse 13:54:48.156] client-close: superseded by new connection (takeover)
+[fakepulse 13:54:48.157] client-attach: new /stream client fd=33
+[fakepulse BOUNDARY ts=13:54:48.199] seek_arm: armed=1
+[fakepulse BOUNDARY ts=13:54:48.426] write_summary: bytes_written=104135232 ring_fill=950272 calls=174 bytes_since=1217216 corked=1 drops=0
+[fakepulse BOUNDARY ts=13:54:49.439] write_summary: bytes_written=106592832 ring_fill=3407872 calls=300 bytes_since=2457600 corked=1 drops=0
+[fakepulse BOUNDARY ts=13:54:49.506] seek_arm: armed=2
+[fakepulse BOUNDARY ts=13:54:49.509] cork: stream=0x7a788015c8e0 1->0 bytes_written=106887744 ring_fill=3702784
+[fakepulse BOUNDARY ts=13:54:49.509] cork: stream=0x7a788015c8e0 0->1 bytes_written=106887744 ring_fill=3702784
+[fakepulse 13:54:49.509] pa_stream_flush(stream=0x7a788015c8e0)
+[fakepulse BOUNDARY ts=13:54:49.509] flush: stream=0x7a788015c8e0 bytes_written=106887744 ring_fill=3702784 corked=1
+[fakepulse 13:54:49.562] client-close: superseded by new connection (takeover)
+[fakepulse 13:54:49.562] client-attach: new /stream client fd=9
+[fakepulse BOUNDARY ts=13:54:49.566] seek_arm: armed=2
+[fakepulse 13:54:49.568] pa_stream_flush(stream=0x7a788015c8e0)
+[fakepulse BOUNDARY ts=13:54:49.568] flush: stream=0x7a788015c8e0 bytes_written=107387456 ring_fill=499712 corked=1
+[fakepulse BOUNDARY ts=13:54:50.456] write_summary: bytes_written=110262848 ring_fill=2875392 calls=448 bytes_since=3670016 corked=1 drops=0
+[fakepulse BOUNDARY ts=13:54:51.025] seek_arm: armed=2
+[fakepulse BOUNDARY ts=13:54:51.028] cork: stream=0x7a788015c8e0 1->0 bytes_written=111497856 ring_fill=4110400
+[fakepulse BOUNDARY ts=13:54:51.028] cork: stream=0x7a788015c8e0 0->1 bytes_written=111497856 ring_fill=4110400
+[fakepulse 13:54:51.028] pa_stream_flush(stream=0x7a788015c8e0)
+[fakepulse BOUNDARY ts=13:54:51.028] flush: stream=0x7a788015c8e0 bytes_written=111497856 ring_fill=4110400 corked=1
+[fakepulse BOUNDARY ts=13:54:51.075] seek_arm: armed=2
+[fakepulse 13:54:51.078] pa_stream_flush(stream=0x7a788015c8e0)
+[fakepulse BOUNDARY ts=13:54:51.078] flush: stream=0x7a788015c8e0 bytes_written=111948416 ring_fill=450560 corked=1
+[fakepulse 13:54:51.079] client-close: superseded by new connection (takeover)
+[fakepulse 13:54:51.079] client-attach: new /stream client fd=45
+[fakepulse BOUNDARY ts=13:54:51.458] write_summary: bytes_written=113259136 ring_fill=1310720 calls=369 bytes_since=2996288 corked=1 drops=0
+[fakepulse BOUNDARY ts=13:54:52.459] write_summary: bytes_written=115470976 ring_fill=3522560 calls=270 bytes_since=2211840 corked=1 drops=0
+[fakepulse BOUNDARY ts=13:54:52.553] seek_arm: armed=2
+[fakepulse BOUNDARY ts=13:54:52.556] cork: stream=0x7a788015c8e0 1->0 bytes_written=115544704 ring_fill=3596288
+[fakepulse BOUNDARY ts=13:54:52.556] cork: stream=0x7a788015c8e0 0->1 bytes_written=115544704 ring_fill=3596288
+[fakepulse 13:54:52.556] pa_stream_flush(stream=0x7a788015c8e0)
+[fakepulse BOUNDARY ts=13:54:52.556] flush: stream=0x7a788015c8e0 bytes_written=115544704 ring_fill=3596288 corked=1
+[fakepulse 13:54:52.622] client-close: superseded by new connection (takeover)
+[fakepulse 13:54:52.622] client-attach: new /stream client fd=49
+[fakepulse BOUNDARY ts=13:54:52.626] seek_arm: armed=2
+[fakepulse 13:54:52.630] pa_stream_flush(stream=0x7a788015c8e0)
+[fakepulse BOUNDARY ts=13:54:52.630] flush: stream=0x7a788015c8e0 bytes_written=116380288 ring_fill=835584 corked=1
+[fakepulse BOUNDARY ts=13:54:53.460] write_summary: bytes_written=118157952 ring_fill=1777664 calls=328 bytes_since=2686976 corked=1 drops=0
+[fakepulse BOUNDARY ts=13:54:54.068] seek_arm: armed=2
+[fakepulse BOUNDARY ts=13:54:54.071] cork: stream=0x7a788015c8e0 1->0 bytes_written=119886464 ring_fill=3506176
+[fakepulse BOUNDARY ts=13:54:54.071] cork: stream=0x7a788015c8e0 0->1 bytes_written=119886464 ring_fill=3506176
+[fakepulse 13:54:54.071] pa_stream_flush(stream=0x7a788015c8e0)
+[fakepulse BOUNDARY ts=13:54:54.071] flush: stream=0x7a788015c8e0 bytes_written=119886464 ring_fill=3506176 corked=1
+[fakepulse BOUNDARY ts=13:54:54.114] seek_arm: armed=2
+[fakepulse 13:54:54.115] pa_stream_flush(stream=0x7a788015c8e0)
+[fakepulse BOUNDARY ts=13:54:54.115] flush: stream=0x7a788015c8e0 bytes_written=119984768 ring_fill=98304 corked=1
+[fakepulse 13:54:54.117] client-close: superseded by new connection (takeover)
+[fakepulse 13:54:54.117] client-attach: new /stream client fd=45
+[fakepulse BOUNDARY ts=13:54:54.462] write_summary: bytes_written=121221760 ring_fill=1236992 calls=374 bytes_since=3063808 corked=1 drops=0
+[fakepulse BOUNDARY ts=13:54:55.462] write_summary: bytes_written=123433600 ring_fill=3448832 calls=270 bytes_since=2211840 corked=1 drops=0
+[fakepulse BOUNDARY ts=13:54:55.585] seek_arm: armed=2
+[fakepulse BOUNDARY ts=13:54:55.588] cork: stream=0x7a788015c8e0 1->0 bytes_written=123867776 ring_fill=3883008
+[fakepulse BOUNDARY ts=13:54:55.588] cork: stream=0x7a788015c8e0 0->1 bytes_written=123867776 ring_fill=3883008
+[fakepulse 13:54:55.588] pa_stream_flush(stream=0x7a788015c8e0)
+[fakepulse BOUNDARY ts=13:54:55.588] flush: stream=0x7a788015c8e0 bytes_written=123867776 ring_fill=3883008 corked=1
+[fakepulse BOUNDARY ts=13:54:55.755] seek_arm: armed=2
+[fakepulse 13:54:55.758] client-close: superseded by new connection (takeover)
+[fakepulse 13:54:55.758] client-attach: new /stream client fd=33
+[fakepulse BOUNDARY ts=13:54:56.464] write_summary: bytes_written=125956736 ring_fill=2088960 calls=308 bytes_since=2523136 corked=1 drops=0
+[fakepulse BOUNDARY ts=13:54:57.097] seek_arm: armed=3
+[fakepulse 13:54:57.100] pa_stream_flush(stream=0x7a788015c8e0)
+[fakepulse BOUNDARY ts=13:54:57.100] flush: stream=0x7a788015c8e0 bytes_written=127357568 ring_fill=3489792 corked=1
+[fakepulse BOUNDARY ts=13:54:57.240] seek_arm: armed=3
+[fakepulse 13:54:57.242] client-close: superseded by new connection (takeover)
+[fakepulse 13:54:57.242] client-attach: new /stream client fd=45
+[fakepulse 13:54:57.242] pa_stream_flush(stream=0x7a788015c8e0)
+[fakepulse BOUNDARY ts=13:54:57.242] flush: stream=0x7a788015c8e0 bytes_written=127840896 ring_fill=483328 corked=1
+[fakepulse BOUNDARY ts=13:54:57.465] write_summary: bytes_written=129290880 ring_fill=1449984 calls=407 bytes_since=3334144 corked=1 drops=0
+[fakepulse BOUNDARY ts=13:54:58.466] write_summary: bytes_written=131502720 ring_fill=3661824 calls=270 bytes_since=2211840 corked=1 drops=0
+[fakepulse BOUNDARY ts=13:54:59.468] write_summary: bytes_written=132248192 ring_fill=4407296 calls=108 bytes_since=745472 corked=1 drops=0
+[fakepulse BOUNDARY ts=13:55:00.258] seek_arm_expired: armed=2
+[fakepulse BOUNDARY ts=13:55:00.470] write_summary: bytes_written=132665984 ring_fill=4579328 calls=71 bytes_since=417792 corked=1 drops=0
+[fakepulse BOUNDARY ts=13:55:01.473] write_summary: bytes_written=133083776 ring_fill=4014080 calls=71 bytes_since=417792 corked=1 drops=0
+[fakepulse BOUNDARY ts=13:55:02.474] write_summary: bytes_written=133501568 ring_fill=3497984 calls=71 bytes_since=417792 corked=1 drops=0
+[fakepulse BOUNDARY ts=13:55:03.477] write_summary: bytes_written=133911168 ring_fill=2924544 calls=70 bytes_since=409600 corked=1 drops=0
+[fakepulse BOUNDARY ts=13:55:04.479] write_summary: bytes_written=134328960 ring_fill=2359296 calls=71 bytes_since=417792 corked=1 drops=0
+11:54:36.215 I [f:2178                          ] current track is not ad, resetting last_start_reason
+11:54:36.215 I [f:1600                          ] playPendingTrack storing last_start_reason: playbtn
+11:54:36.215 I [f:1647                          ] current track is unplayable, marking last_start_reason unusable
+11:54:36.245 I [f:1600                          ] playPendingTrack storing last_start_reason: playbtn
+11:54:36.245 I [f:997                           ]     start_reason: playbtn
+11:54:36.246 I [f:2178                          ] current track is not ad, resetting last_start_reason
+11:54:48.002 I [f:2178                          ] current track is not ad, resetting last_start_reason
+11:54:48.003 I [f:1600                          ] playPendingTrack storing last_start_reason: playbtn
+11:54:48.003 I [f:1647                          ] current track is unplayable, marking last_start_reason unusable
+11:54:48.102 I [f:1600                          ] playPendingTrack storing last_start_reason: playbtn
+11:54:48.102 I [f:997                           ]     start_reason: playbtn
+11:54:48.102 I [f:2178                          ] current track is not ad, resetting last_start_reason
+11:54:49.509 I [f:2178                          ] current track is not ad, resetting last_start_reason
+11:54:49.509 I [f:1600                          ] playPendingTrack storing last_start_reason: playbtn
+11:54:49.509 I [f:1647                          ] current track is unplayable, marking last_start_reason unusable
+11:54:49.547 I [f:1600                          ] playPendingTrack storing last_start_reason: playbtn
+11:54:49.548 I [f:997                           ]     start_reason: playbtn
+11:54:49.557 I [f:2178                          ] current track is not ad, resetting last_start_reason
+11:54:51.028 I [f:2178                          ] current track is not ad, resetting last_start_reason
+11:54:51.029 I [f:1600                          ] playPendingTrack storing last_start_reason: playbtn
+11:54:51.029 I [f:1647                          ] current track is unplayable, marking last_start_reason unusable
+11:54:51.063 I [f:1600                          ] playPendingTrack storing last_start_reason: playbtn
+11:54:51.063 I [f:997                           ]     start_reason: playbtn
+11:54:51.073 I [f:2178                          ] current track is not ad, resetting last_start_reason
+11:54:52.556 I [f:2178                          ] current track is not ad, resetting last_start_reason
+11:54:52.556 I [f:1600                          ] playPendingTrack storing last_start_reason: playbtn
+11:54:52.556 I [f:1647                          ] current track is unplayable, marking last_start_reason unusable
+11:54:52.608 I [f:1600                          ] playPendingTrack storing last_start_reason: playbtn
+11:54:52.608 I [f:997                           ]     start_reason: playbtn
+11:54:52.618 I [f:2178                          ] current track is not ad, resetting last_start_reason
+11:54:54.071 I [f:2178                          ] current track is not ad, resetting last_start_reason
+11:54:54.071 I [f:1600                          ] playPendingTrack storing last_start_reason: playbtn
+11:54:54.071 I [f:1647                          ] current track is unplayable, marking last_start_reason unusable
+11:54:54.102 I [f:1600                          ] playPendingTrack storing last_start_reason: playbtn
+11:54:54.102 I [f:997                           ]     start_reason: playbtn
+11:54:54.112 I [f:2178                          ] current track is not ad, resetting last_start_reason
+11:54:55.588 I [f:2178                          ] current track is not ad, resetting last_start_reason
+11:54:55.589 I [f:1600                          ] playPendingTrack storing last_start_reason: playbtn
+11:54:55.589 I [f:1647                          ] current track is unplayable, marking last_start_reason unusable
+11:54:55.742 I [f:1600                          ] playPendingTrack storing last_start_reason: playbtn
+11:54:55.742 I [f:997                           ]     start_reason: playbtn
+11:54:55.752 I [f:2178                          ] current track is not ad, resetting last_start_reason
+11:54:57.100 I [f:2178                          ] current track is not ad, resetting last_start_reason
+11:54:57.100 I [f:1600                          ] playPendingTrack storing last_start_reason: playbtn
+11:54:57.100 I [f:1647                          ] current track is unplayable, marking last_start_reason unusable
+11:54:57.227 I [f:1600                          ] playPendingTrack storing last_start_reason: playbtn
+11:54:57.227 I [f:997                           ]     start_reason: playbtn
+11:54:57.237 I [f:2178                          ] current track is not ad, resetting last_start_reason

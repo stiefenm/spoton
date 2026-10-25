@@ -16,7 +16,15 @@ my $log   = logger('plugin.spoton');
 
 my ($helper, $helperVersion, $helperCapabilities);
 
+# 84-08 (BLOCKER 3): init is once-guarded HERE, so every caller -- the
+# librespot role's bootstrap (boot and backend switch), Plugin.pm's boot
+# call, 84-13's binaryPath -- shares ONE guard: the find-bin paths and the
+# `binary` watcher are registered exactly once per LMS run.
+my $_initDone;
+
 sub init {
+    return if $_initDone++;
+
     # aarch64 can fall back to armhf binaries
     if ( !main::ISWINDOWS && !main::ISMAC
          && Slim::Utils::OSDetect::details()->{osArch} =~ /^aarch64/i ) {

@@ -1,0 +1,36 @@
+[2026-10-21T09:29:00Z DEBUG librespot_connect::spirc] handling: 'endpoint: pause' from 0000000000000000000000000000000000000000
+[2026-10-21T09:29:00Z DEBUG librespot_core::dealer::manager] replying to ws request: Success
+[2026-10-21T09:29:00Z DEBUG spoton::connect] [spoton] Paused: current_track=Some("2374M0fQpWi3dLnB54qaLX")
+[2026-10-21T09:29:00Z DEBUG librespot_connect::state] updated connect play status playing: true, paused: true, buffering: true
+[2026-10-21T09:29:00Z DEBUG librespot_core::http_client] Requesting https://gew4-spclient.spotify.com:443/connect-state/v1/devices/0000000000000000?product=0&country=DE&salt=4078066932
+[2026-10-21T09:29:51Z DEBUG librespot_connect::spirc] handling: 'endpoint: skip_prev' from 0000000000000000000000000000000000000000
+[2026-10-21T09:29:51Z DEBUG librespot_core::dealer::manager] replying to ws request: Success
+[2026-10-21T09:29:51Z DEBUG spoton::connect] [spoton] Seeked: position_ms=0
+[2026-10-21T09:29:51Z DEBUG librespot_connect::state] updated connect play status playing: true, paused: true, buffering: true
+[2026-10-21T09:29:51Z DEBUG librespot_core::http_client] Requesting https://gew4-spclient.spotify.com:443/connect-state/v1/devices/0000000000000000?product=0&country=DE&salt=1597478850
+[2026-10-21T09:29:57Z DEBUG librespot_connect::spirc] handling: 'endpoint: resume' from 0000000000000000000000000000000000000000
+[2026-10-21T09:29:57Z DEBUG librespot_connect::spirc] SpircTask::set_volume(39321)
+[2026-10-21T09:29:57Z DEBUG librespot_core::dealer::manager] replying to ws request: Success
+[2026-10-21T09:29:57Z DEBUG spoton::connect] [spoton] Playing: track_id=2374M0fQpWi3dLnB54qaLX, position_ms=0
+[2026-10-21T09:29:57Z DEBUG librespot_connect::state] updated connect play status playing: true, paused: false, buffering: false
+[2026-10-21T09:29:57Z DEBUG librespot_connect::state] update position to 0:00 at 9:29:57.6
+[2026-10-21T09:29:57Z DEBUG librespot_core::http_client] Requesting https://gew4-spclient.spotify.com:443/connect-state/v1/devices/0000000000000000?product=0&country=DE&salt=393988646
+[2026-10-21T09:29:59Z DEBUG librespot_connect::state] updated connect play status playing: true, paused: false, buffering: false
+[2026-10-21T09:29:59Z DEBUG librespot_connect::state] update position to 0:00 at 9:29:59.615
+[2026-10-21T09:29:59Z DEBUG librespot_core::http_client] Requesting https://gew4-spclient.spotify.com:443/connect-state/v1/devices/0000000000000000?product=0&country=DE&salt=2889930019
+[2026-10-21T09:30:00Z DEBUG librespot_core::session] Session strong=6 weak=8
+[2026-10-21T09:30:13Z DEBUG librespot_connect::state] updated connect play status playing: true, paused: true, buffering: true
+[2026-10-21T09:30:13Z DEBUG librespot_core::http_client] Requesting https://gew4-spclient.spotify.com:443/connect-state/v1/devices/0000000000000000?product=0&country=DE&salt=1258243385
+[2026-10-21T09:30:13Z DEBUG spoton::connect] [spoton] Paused: current_track=Some("2374M0fQpWi3dLnB54qaLX")
+[2026-10-21T09:30:14Z DEBUG librespot_connect::state] updated connect play status playing: true, paused: true, buffering: true
+[2026-10-21T09:30:14Z DEBUG librespot_core::http_client] Requesting https://gew4-spclient.spotify.com:443/connect-state/v1/devices/0000000000000000?product=0&country=DE&salt=3432925462
+[2026-10-21T09:30:14Z DEBUG librespot_connect::spirc] handling: 'endpoint: resume' from 0000000000000000000000000000000000000000
+[2026-10-21T09:30:14Z DEBUG librespot_connect::spirc] SpircTask::set_volume(39321)
+[2026-10-21T09:30:14Z DEBUG librespot_core::dealer::manager] replying to ws request: Success
+[2026-10-21T09:30:14Z DEBUG spoton::connect] [spoton] Playing: track_id=2374M0fQpWi3dLnB54qaLX, position_ms=14528
+[2026-10-21T09:30:14Z DEBUG librespot_connect::state] updated connect play status playing: true, paused: false, buffering: false
+[2026-10-21T09:30:14Z DEBUG librespot_connect::state] update position to 0:14 at 9:30:14.996
+[2026-10-21T09:30:14Z DEBUG librespot_core::http_client] Requesting https://gew4-spclient.spotify.com:443/connect-state/v1/devices/0000000000000000?product=0&country=DE&salt=3281769123
+[2026-10-21T09:30:17Z DEBUG librespot_connect::state] updated connect play status playing: true, paused: false, buffering: false
+[2026-10-21T09:30:17Z DEBUG librespot_connect::state] update position to 0:14 at 9:30:17.02
+[2026-10-21T09:30:17Z DEBUG librespot_core::http_client] Requesting https://gew4-spclient.spotify.com:443/connect-state/v1/devices/0000000000000000?product=0&country=DE&salt=106468561

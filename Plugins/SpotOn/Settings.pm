@@ -10,14 +10,24 @@ use File::Basename qw(basename);
 use File::Glob qw(bsd_glob);
 use File::Spec::Functions qw(catdir catfile);
 use JSON::XS::VersionOneAndTwo;
-use URI;
 
 use Slim::Utils::Log;
 use Slim::Utils::Prefs;
 use Slim::Utils::Strings qw(string);
-use Plugins::SpotOn::Helper;
+# 84-08 (SEAM-6.2, G3): no compile-time `use` of a backend or helper module
+# -- the librespot binary status comes from its role's settingsInfo (below),
+# backend modules are loaded only through the registry.
 
 use constant SETTINGS_URL => 'plugins/SpotOn/settings/basic.html';
+
+# T-71-02/D-11: the Soloist key store exposes no read-back API for the stored
+# spak-key (by design -- the role's keyState/storeKey/clearKey only, 84-13),
+# so the template can only ever show this fixed placeholder when a key is
+# present (no partial preview of the stored value). Shared between the
+# template-value assignment and the save-handler's unchanged-resubmit guard
+# below -- an unrelated settings save must never overwrite/clear an existing
+# key just because this field round-tripped its own masked placeholder.
+use constant SOLOIST_KEY_MASKED_PREVIEW => '********';
 
 my $log   = Slim::Utils::Log->logger('plugin.spoton');
 my $prefs = preferences('plugin.spoton');
@@ -40,26 +50,11 @@ sub new {
         \&_clearLogsHandler
     );
 
-    # Register PKCE OAuth endpoints (AUTH-01, AUTH-02)
-    Slim::Web::Pages->addRawFunction(
-        'plugins/SpotOn/settings/pkce/start',
-        \&_pkceStartHandler
-    );
-    Slim::Web::Pages->addRawFunction(
-        'plugins/SpotOn/settings/pkce/callback',
-        \&_pkceCallbackHandler
-    );
-    Slim::Web::Pages->addRawFunction(
-        'plugins/SpotOn/settings/pkce/manual',
-        \&_pkceManualHandler
-    );
-    # Spotify loopback redirect URIs use the `/login` path (both the bundled
-    # default identity and the playerauth Keymaster fallback whitelist only
-    # this path). Route it to the PKCE callback handler.
-    Slim::Web::Pages->addRawFunction(
-        'login',
-        \&_pkceCallbackHandler
-    );
+    # 85-13 (D-01): the three PKCE routes and the raw
+    # route `login` are gone. `login` was registered as an UNANCHORED regex
+    # key (Tie::RegexpHash, RESEARCH P10) and so matched any path containing
+    # "login"; it existed only for the PKCE loopback redirect. Accounts now
+    # come from ZeroConf pairing (85-10) -- there is no emergency path.
 
     # Register ZeroConf playback-authorization pairing endpoints
     # (GH #147 plan 65-02, D-02 primary path)
@@ -76,17 +71,47 @@ sub new {
         \&_playerAuthCancelHandler
     );
 
-    # Keymaster browser-fallback playback authorization for mDNS-unreachable
-    # environments -- Docker, VLANs, pCP/IPv6 (GH #147 plan 65-03, D-02
-    # secondary path)
-    Slim::Web::Pages->addRawFunction(
-        'plugins/SpotOn/settings/playerauth/browser/start',
-        \&_playerAuthBrowserStartHandler
-    );
-    Slim::Web::Pages->addRawFunction(
-        'plugins/SpotOn/settings/playerauth/browser/manual',
-        \&_playerAuthBrowserManualHandler
-    );
+    # 85-13 (D-01, assumption A11): the Keymaster browser fallback
+    # (the two former browser routes) was a PKCE flow and is removed with it;
+    # the mDNS-free substitute is the discover folder (85-11, D-23).
+
+    # Backend routes (Phase 83.3 plan 03, D-04: the Soloist "Renew now"
+    # button's manual trigger + status poll; 84-13 SEAM-6.2: owned by the
+    # backend role). Every AVAILABLE backend's routes() are registered,
+    # whatever the `backend` pref says -- a switch without LMS restart must
+    # still find its routes (W7). Each entry gets its own generic wrapper:
+    # _csrfCheck runs for every entry whose method is not 'GET' (fail-
+    # closed: an unlabeled or misspelled method is still checked), then
+    # _jsonResponse answers with the role's plain data -- the role never
+    # sees the HTTP objects (B6).
+    #
+    # Registration ORDER matters here (Phase 83.3 plan 06 live-check fix,
+    # Rule 1 -- bug): Slim::Web::Pages->addRawFunction stores its regexp key
+    # in a Tie::RegexpHash (Slim/Web/Pages.pm %rawFunctions), which resolves
+    # BOTH inserts and lookups via UNANCHORED substring regex matching
+    # (Tie/RegexpHash.pm _find: "$key !~ m/$storedRegex/"), not literal
+    # string equality. 'soloistRenewStatus' contains 'soloistRenew' as a
+    # prefix, so registering the shorter path FIRST meant the second
+    # addRawFunction call for 'soloistRenewStatus' matched the ALREADY-
+    # stored 'soloistRenew' regex at add() time and silently OVERWROTE its
+    # handler -- both routes then dispatched to the status handler,
+    # discovered live against the real server. The role's routes() list
+    # therefore carries the LONGER, more specific path first, and the
+    # entries are registered in list order.
+    require Plugins::SpotOn::Backend;
+    for my $name (Plugins::SpotOn::Backend::available()) {
+        my $role = Plugins::SpotOn::Backend::classFor($name);
+        for my $entry (@{ $role->routes() || [] }) {
+            my $route = $entry;
+            Slim::Web::Pages->addRawFunction($route->{path}, sub {
+                my ($httpClient, $response) = @_;
+                if (($route->{method} // '') ne 'GET') {
+                    return unless _csrfCheck($httpClient, $response);
+                }
+                _jsonResponse($httpClient, $response, $route->{handler}->());
+            });
+        }
+    }
 
     return $self;
 }
@@ -104,37 +129,52 @@ sub page {
 }
 
 sub prefs {
-    # clientId is saved manually with sanitization in handler() — not listed here
-    # to prevent Slim::Web::Settings::handler from overwriting with raw form input.
-    return ($prefs, 'bitrate', 'binary', 'normalization', 'diagnosticMode');
+    # backend is saved manually with sanitization in handler() -- not listed
+    # here to prevent Slim::Web::Settings::handler from overwriting with raw
+    # form input (backend: whitelist against %valid_backends, D-08/T-71-05).
+    # binary is not listed either (74b-04): no form field renders it, so the
+    # LMS base handler would store undef on every save and blank a custom
+    # binary path (Helper.pm is its only reader). bitrate and normalization
+    # stay listed because the template reads them back from prefs.pref_*;
+    # handler() writes the sanitized values into pref_bitrate and
+    # pref_normalization before the base handler stores them (T-74b-12).
+    return ($prefs, 'bitrate', 'normalization', 'diagnosticMode');
 }
 
 sub handler {
     my ($class, $client, $paramRef, $callback, $httpClient, $response) = @_;
 
-    my ($helperPath, $helperVersion) = Plugins::SpotOn::Helper->get();
+    # 85-11 (D-23, 3fd1632 layer 2): a credentials.json dropped into the discover
+    # folder (Docker/VLAN setups without mDNS) becomes an account on this page
+    # load. FIRST statement on purpose: the intake must finish before any other
+    # handling, so the accounts read further down already contain the new
+    # account and a save in the same request cannot race it. The result only
+    # drives the one-line notice under step 1; (0, 'none') is the normal case.
+    require Plugins::SpotOn::API::Credentials;
+    my ($discoverOk, $discoverResult) = Plugins::SpotOn::API::Credentials->intakeDiscoverFolder();
+    $paramRef->{discoverResult} = $discoverOk ? 1 : 0;
+    $paramRef->{discoverError}  = (!$discoverOk && ($discoverResult // 'none') ne 'none') ? $discoverResult : '';
 
-    # Pass binary status to template
-    $paramRef->{helperMissing} = string('PLUGIN_SPOTON_BINARY_MISSING') unless $helperPath;
-    $paramRef->{binaryVersion} = $helperVersion || '';
-    $paramRef->{binaryPath}    = $helperPath    || '';
+    # 84-08: the binary status (helperMissing/binaryVersion/binaryPath) is
+    # filled by the backend roles' settingsInfo further down.
     $paramRef->{isMac}         = main::ISMAC ? 1 : 0;
 
-    # D-08 Channel 2: Settings page re-auth warning banner — show when any
-    # account needs re-authentication. Uses the LMS core $paramRef->{'warning'}
-    # idiom, rendered automatically by the settings/header.html template.
-    require Plugins::SpotOn::API::TokenManager;
-    if (Plugins::SpotOn::API::TokenManager->anyAccountNeedsReauth()) {
-        $paramRef->{'warning'} = string('PLUGIN_SPOTON_REAUTH_REQUIRED_SETTINGS');
+    # 85-13 (D-01): the banner no longer speaks of re-authentication (a PKCE
+    # notion). An account the 85-10 migration flagged because it has no usable
+    # credentials gets the pairing hint instead. Uses the LMS core
+    # $paramRef->{'warning'} idiom, rendered by the settings/header.html template.
+    {
+        my $accts = $prefs->get('accounts') || {};
+        if (grep { ref $accts->{$_} eq 'HASH' && $accts->{$_}{needsPairing} } keys %{$accts}) {
+            $paramRef->{'warning'} = string('PLUGIN_SPOTON_ACCOUNT_NEEDS_PAIRING');
+        }
     }
-
-    # D-06/D-08: Made For You (sp_dc) — save handling + status params below
-    # both go through WebPlayer, never a raw pref key (T-52-02).
-    require Plugins::SpotOn::API::WebPlayer;
 
     if ($paramRef->{saveSettings}) {
         my %valid_bitrates = map { $_ => 1 } (96, 160, 320);
-        my $bitrate = $paramRef->{'pref_bitrate'} // 320;
+        # A POST without the bitrate field keeps the stored bitrate (320 only
+        # when nothing is stored); a value outside 96/160/320 becomes 320.
+        my $bitrate = $paramRef->{'pref_bitrate'} // $prefs->get('bitrate') // 320;
         $bitrate = 320 unless $valid_bitrates{$bitrate};
         $prefs->set('bitrate', $bitrate);
 
@@ -143,81 +183,144 @@ sub handler {
         my $norm = $paramRef->{'pref_normalization'} ? 1 : 0;
         $prefs->set('normalization', $norm);
 
+        # 74b-04 (T-74b-12): the LMS base handler runs later and stores
+        # pref_NAME for every name in prefs() unconditionally, so hand it the
+        # sanitized values; the template reads them back from prefs.pref_*.
+        $paramRef->{'pref_bitrate'}       = $bitrate;
+        $paramRef->{'pref_normalization'} = $norm;
+
         # Normalization change flips passthrough mode (OGG↔PCM) — restart daemons
         # immediately so formatOverride() and daemon output stay in sync.
         require Plugins::SpotOn::Unified::DaemonManager;
         Plugins::SpotOn::Unified::DaemonManager->scheduleInit();
 
-        # Save Client-ID pref (D-02, T-04.4-01)
-        # T-04.4-01: Input validation — alphanumeric only, max 32 chars.
-        # Spotify Client-IDs are exactly 32 hex chars — regex + length check
-        # eliminates shell metacharacter injection vectors for --client-id flag.
-        if (defined $paramRef->{pref_clientId}) {
-            my $id = $paramRef->{pref_clientId} // '';
-            $id =~ s/[^a-zA-Z0-9]//g;  # T-04.4-01: alphanumeric only (injection guard)
-            $id = substr($id, 0, 32);   # T-04.4-01: max 32 chars (Spotify Client-ID format)
-            my $oldId = $prefs->get('clientId') || '';
-            $prefs->set('clientId', $id);
-
-            if ($id ne $oldId) {
-                require Plugins::SpotOn::API::TokenManager;
-                require Plugins::SpotOn::API::PKCE;
-                for my $acctId (Plugins::SpotOn::API::TokenManager->getAccountIds()) {
-                    Plugins::SpotOn::API::PKCE::deleteTokens($acctId);
-                    Plugins::SpotOn::API::TokenManager->clearCachedToken($acctId);
-                }
-                Plugins::SpotOn::API::Client->reset();
-                $log->warn("Settings: Client ID changed — PKCE tokens invalidated, API limits reset, re-auth required");
+        # 79-05 (D-12, T-79-09): the one-click switch from librespot to Soloist.
+        # The default backend stays librespot and SpotOn never switches on its
+        # own: only a POSTed switchBackendSoloist (the button of the offer)
+        # gets here, and the server re-checks everything the offer showed --
+        # 'soloist' in available(), the role's platformFit and a stored key --
+        # before it hands pref_backend=soloist to the whitelist/bootstrap path
+        # right below. Anything else is ignored. The role is reached by its
+        # registry name only (the core names no Soloist package, refcheck).
+        if (delete $paramRef->{'switchBackendSoloist'}) {
+            require Plugins::SpotOn::Backend;
+            my $allowed = eval {
+                (grep { $_ eq 'soloist' } Plugins::SpotOn::Backend::available())
+                    && do {
+                        my $role = Plugins::SpotOn::Backend::classFor('soloist');
+                        $role->platformFit && $role->keyState->{present} ? 1 : 0;
+                    };
+            } ? 1 : 0;
+            if ($allowed) {
+                $paramRef->{'pref_backend'} = 'soloist';
+            }
+            else {
+                main::INFOLOG && $log->is_info && $log->info('Settings: switchBackendSoloist ignored (not available, not fit, or no key stored)');
             }
         }
 
-        # Save sp_dc cookie for Made For You (D-08/D-09). Deliberately NOT
-        # part of the base prefs() list (mirrors pref_clientId) -- sanitized
-        # here and routed through WebPlayer->storeSpDc rather than a raw
-        # $prefs->set() so masking/cache-invalidation stay centralized in
-        # WebPlayer (T-52-02). The template only ever echoes back a masked
-        # preview (spDcMasked below, containing literal '*' characters), so
-        # the "unchanged" comparison MUST happen against the raw
-        # (whitespace-trimmed only) submitted value BEFORE charset
-        # sanitization strips those asterisks -- otherwise a resubmit of an
-        # untouched field would never equal the placeholder and would
-        # incorrectly overwrite the stored cookie.
-        if (defined $paramRef->{pref_spDc}) {
-            my $raw = $paramRef->{pref_spDc} // '';
+        # Save backend pref (D-08/Phase 71, T-71-05): whitelist against the
+        # known enum before persisting — an unknown/tampered POST value falls
+        # back to 'librespot'. NOT part of the base prefs() list (see comment
+        # there) so Slim::Web::Settings::handler cannot overwrite this with
+        # unsanitized raw form input. A backend switch restarts daemons via
+        # the same scheduleInit() pattern used above for normalization.
+        if (defined $paramRef->{'pref_backend'}) {
+            # 84-13 (B3, T-84-162): the enum is the set of AVAILABLE backends
+            # (Backend::available() -- registered AND role module loads), not
+            # every registered name: on an amputated install (§6.3.2) an
+            # absent backend must never be saved, nor reach classFor (which
+            # dies on an unloadable name) through its bootstrap below.
+            require Plugins::SpotOn::Backend;
+            my %valid_backends = map { $_ => 1 } Plugins::SpotOn::Backend::available();
+            my $backend = $paramRef->{'pref_backend'} // '';
+            $backend = 'librespot' unless $valid_backends{$backend};
+            $prefs->set('backend', $backend);
+
+            # CR-01: trigger the newly selected backend's bootstrap the moment
+            # it is activated -- for Soloist the auto-download pipeline (D-03;
+            # ensureBinary() is a no-op when a working, version-matched
+            # binary is already cached, D-04). Without this call the backend
+            # could never leave the soloist_missing_binary state (startHelper()
+            # only ever reads the prerequisite state, it never triggers a
+            # download). 84-08: through the role of the VALIDATED name;
+            # 84-13: only for a name in available().
+            Plugins::SpotOn::Backend::classFor($backend)->bootstrap()
+                if $valid_backends{$backend};
+
+            Plugins::SpotOn::Unified::DaemonManager->scheduleInit();
+        }
+
+        # Save spak-key for the Soloist backend (D-11, T-71-06). Fail-closed
+        # format validation before the role's storeKey persists it: trim
+        # whitespace, restrict to a conservative token charset (also strips
+        # newlines and shell metacharacters), cap length. Deliberately NOT
+        # part of the base prefs() list (a raw secret is never a flat pref) —
+        # the raw key must never round-trip into $paramRef/the rendered
+        # template (T-71-02); only the fixed masked placeholder or an empty
+        # field is ever shown. The "unchanged" comparison MUST happen against
+        # the raw (whitespace-trimmed only) submitted value BEFORE charset
+        # sanitization strips the placeholder's asterisks — otherwise every
+        # unrelated settings save would resubmit the placeholder, have it
+        # charset-filtered down to empty, and incorrectly clear the real
+        # stored key.
+        # Empty submission clears an existing key (WR-03 pattern).
+        # 84-13 (SEAM-6.2): the key store is a role capability of the ACTIVE
+        # backend (keyState/storeKey/clearKey through backendClass()); a
+        # backend without one (librespot: supported 0) skips the block and
+        # loads no backend module of the other side.
+        #
+        # 79-05 (D-12, T-79-71): the hint under librespot has its own key input.
+        # It is read into a local exactly once and removed from $paramRef right
+        # away (the page re-renders from $paramRef; a left-over would echo the
+        # raw key), so every outcome below -- stored, invalid, empty, unfit,
+        # amputated, superseded -- has already dropped it.
+        my $hintKey = delete $paramRef->{'soloistHintKey'};
+        $hintKey = '' unless defined $hintKey;
+        $hintKey =~ s/^\s+|\s+$//g;
+
+        my $keyRole  = (defined $paramRef->{'pref_soloistKey'} || length $hintKey)
+            ? Plugins::SpotOn::Unified::DaemonManager->backendClass() : undef;
+        my $keyState = $keyRole ? $keyRole->keyState : undef;
+        if ($keyState && $keyState->{supported}) {
+            my $raw = $paramRef->{'pref_soloistKey'} // '';
             $raw =~ s/^\s+|\s+$//g;    # trim whitespace only, for comparison
+            # An empty pref_soloistKey does not clear when the hint input carries
+            # a key (the select was switched to Soloist before saving).
+            $raw = $hintKey if !length $raw && length $hintKey;
 
-            my $activeAccountId = $prefs->get('activeAccount') || '';
-            if ($activeAccountId && length $raw) {
-                my $currentMasked = Plugins::SpotOn::API::WebPlayer->spDcMaskedPreview($activeAccountId);
-                if ($raw ne $currentMasked) {
-                    my $spdc = $raw;
-                    $spdc =~ s/[^A-Za-z0-9_\-\.]//g;    # restrict to sp_dc's known charset
-                    $spdc = substr($spdc, 0, 512);      # length cap
-                    Plugins::SpotOn::API::WebPlayer->storeSpDc($activeAccountId, $spdc) if length $spdc;
-                }
+            if (length $raw) {
+                my $currentMasked = $keyState->{present} ? SOLOIST_KEY_MASKED_PREVIEW : '';
+                _storeSpakKey($paramRef, $keyRole, $raw) if $raw ne $currentMasked;
             }
-            elsif ($activeAccountId && !length($raw)) {
-                # WR-03: empty submission clears a previously stored sp_dc.
-                # Only act if there IS a stored cookie to clear (avoid no-op
-                # storeSpDc calls on accounts that never had sp_dc).
-                if (Plugins::SpotOn::API::WebPlayer->hasSpDc($activeAccountId)) {
-                    Plugins::SpotOn::API::WebPlayer->storeSpDc($activeAccountId, '');
+            elsif ($keyState->{present}) {
+                $keyRole->clearKey();
+            }
+        }
+        elsif (length $hintKey) {
+            # The active backend has no key store (librespot): store the key
+            # through the Soloist role, but only where Soloist can run. No
+            # pref write, no bootstrap, no scheduleInit -- the backend stays
+            # as it is; the next render offers the switch. Never clears.
+            require Plugins::SpotOn::Backend;
+            if (grep { $_ eq 'soloist' } Plugins::SpotOn::Backend::available()) {
+                my $soloistRole = eval { Plugins::SpotOn::Backend::classFor('soloist') };
+                if ($soloistRole && eval { $soloistRole->platformFit }) {
+                    _storeSpakKey($paramRef, $soloistRole, $hintKey);
+                    main::INFOLOG && $log->is_info && $log->info('Settings: Soloist key submitted in the hint, backend unchanged');
                 }
             }
         }
 
-        # Save Pathfinder GraphQL persisted-query hash (D-07, CR-01 gap
-        # closure -- Plan 52-06). Hex-only charset validation + length cap
-        # (128 chars, T-52-GC-02): the hash is not a secret, just a query
-        # identifier, but validation still guards against storing unexpected
-        # bytes in the pref. An empty submission clears the pref.
-        if (defined $paramRef->{pref_pathfinderHash}) {
-            my $hash = $paramRef->{pref_pathfinderHash} // '';
-            $hash =~ s/^\s+|\s+$//g;        # trim whitespace
-            $hash =~ s/[^0-9a-fA-F]//g;     # hex-only charset guard
-            $hash = substr($hash, 0, 128);  # length cap
-            $prefs->set('pathfinderHash', $hash);
-        }
+        # 85-13 (D-01): no Client-ID pref. A stale settings page that still posts
+        # the old Client-ID field is simply not read -- nothing is stored.
+
+        # 85-12 (decision-D17 pathfinder-login5-plus-rootlist, cookie-free; D-19):
+        # Made for You needs neither a cookie nor a hand-entered Pathfinder hash,
+        # so a stale settings page that still posts the two old fields (the cookie
+        # and the hand-entered hash) is simply not read -- nothing is stored,
+        # nothing dies (T-85-53). The hashes are scraped into the
+        # spoton_pf_hash_<op> cache keys, not a pref.
 
         # Account remove (CR-03, WR-03).
         # WR-03: validate that removeId is an 8-char hex string that actually
@@ -299,6 +402,32 @@ sub handler {
             $mode = 'direct' unless $mode =~ /^(?:direct|proxy)$/;
             $prefs->set('streamingMode', $mode);
         }
+
+        # Save global Spotify streaming-quality default (83.3 D-12/D-13).
+        # Deliberately NOT in the prefs() return list (see comment there) --
+        # whitelisted here and written directly, then applied async so the
+        # save handler never blocks on a network round-trip (RESEARCH
+        # Pitfall 4). Only writes to the server when the value actually
+        # changed (change-detect, D-12: never fight the app on every save).
+        # D-17 (84-08): validated against and written through the active
+        # backend role (qualityInfo / quality); a backend without the
+        # Spotify quality control answers supported => 0 and nothing is
+        # stored or sent.
+        if (defined $paramRef->{'pref_soloistQuality'}) {
+            require Plugins::SpotOn::Unified::DaemonManager;
+            my $role = Plugins::SpotOn::Unified::DaemonManager->backendClass();
+            my $qi   = $role->qualityInfo;
+            if ($qi->{supported}) {
+                my %valid = map { $_ => 1 } @{ $qi->{validLevels} || [] };
+                my $raw = $paramRef->{'pref_soloistQuality'};
+                my $q = (defined $raw && $valid{$raw}) ? $raw : 0;
+                my $old = $prefs->get('soloistQuality') // 0;
+                if ($q ne $old) {
+                    $prefs->set('soloistQuality', $q);
+                    $role->quality(scope => 'global', level => $q);
+                }
+            }
+        }
     }
 
     my $serverPrefs = preferences('server');
@@ -307,52 +436,21 @@ sub handler {
     $paramRef->{accounts}         = $prefs->get('accounts') || {};
     $paramRef->{activeAccount}    = $prefs->get('activeAccount') || '';
 
-    # Client-ID and mode status for template (D-05: bundled=full-access,
-    # custom+devmode=degraded -- semantics inverted from the old
-    # degradedMode flag).
-    $paramRef->{customClientId} = $prefs->get('clientId') || '';
-    $paramRef->{clientIdMode}   = $prefs->get('clientId') ? 'custom' : 'bundled';
-
-    if ($paramRef->{clientIdMode} eq 'bundled') {
-        $paramRef->{quotaState} = 'extended';
-    } else {
-        require Plugins::SpotOn::API::Client;
-        $paramRef->{quotaState} =
-            (Plugins::SpotOn::API::Client->limitsProbed() && Plugins::SpotOn::API::Client->getLimit('search') <= 10)
-            ? 'devmode' : 'extended';
-    }
-
-    # D-06: reason for the active account's reauth flag (if any), e.g.
-    # 'bundled_id_unavailable' when the bundled ncspot Client-ID is revoked --
-    # lets the template show a targeted message instead of the generic one.
-    $paramRef->{reauthReason} = Plugins::SpotOn::API::TokenManager->reauthReason($paramRef->{activeAccount}) || '';
-
-    # PKCE auth status for template (AUTH-01): has any account completed the
-    # PKCE OAuth flow (has a pkce_tokens.json)? Drives which setup guide/CTA
-    # the template shows.
-    $paramRef->{pkceConfigured} = _isPkceConfigured();
-
-    # Accounts exist but no PKCE tokens → user changed Client ID and needs
-    # to re-authorize.  Drives a prominent orange banner at the top.
-    $paramRef->{needsPkceReauth} =
-        (keys %{$paramRef->{accounts}} && !$paramRef->{pkceConfigured}) ? 1 : 0;
-
     # GH #147 plan 65-02: playback-authorization state for the ACTIVE account.
     # 'none'     -- no accounts at all (setup guide handles this case)
-    # 'required' -- flagged by the crash escalation (plan 65-01), OR the
-    #               account has PKCE tokens but no credentials.json yet
-    #               (fresh auth after the D-04 eager-derivation removal)
+    # 'required' -- flagged by the crash escalation (plan 65-01)
     # 'ok'       -- otherwise
+    # 85-13 (D-01): the former "has PKCE tokens but no credentials.json" arm is
+    # gone with the PKCE token files; a credential-less account is the 85-10
+    # migration's needsPairing flag, surfaced by the banner above.
     require Plugins::SpotOn::API::Credentials;
-    require Plugins::SpotOn::API::PKCE;
+    require Plugins::SpotOn::API::TokenManager;
     {
         my $activeId = $paramRef->{activeAccount};
         if (!$activeId) {
             $paramRef->{playbackAuthState} = 'none';
         }
-        elsif (Plugins::SpotOn::API::Credentials->needsPlaybackAuth($activeId)
-            || (!-f Plugins::SpotOn::API::Credentials->credentialsPathFor($activeId)
-                && Plugins::SpotOn::API::PKCE::loadTokens($activeId))) {
+        elsif (Plugins::SpotOn::API::Credentials->needsPlaybackAuth($activeId)) {
             $paramRef->{playbackAuthState} = 'required';
         }
         else {
@@ -373,30 +471,56 @@ sub handler {
     # on-page instructions show the exact device label the user must pick.
     $paramRef->{pairingDeviceName} = Plugins::SpotOn::API::Credentials->pairingDeviceName();
 
-    # D-04 Channel 2 (AUTH-07, Plan 03 Task 3): Settings migration banner --
-    # global check across ALL known accounts (deliberate asymmetry vs.
-    # Plugin.pm's OPML hint, which checks only the active account since
-    # Browse/Library always operates on it; Settings is a global config page
-    # where any account's migration state is relevant).
-    require Plugins::SpotOn::API::TokenManager;
-    $paramRef->{needsMigration} = Plugins::SpotOn::API::TokenManager->anyAccountNeedsMigration();
+    # 85-11 (D-21/D-24/D-02): the two-step setup block.
+    # pairingWindowSeconds drives the countdown, accountStepOk the step-1
+    # check mark (any account whose login chain is usable), and
+    # needsPairingAccounts the "Bitte Konto einmal koppeln" hint (accounts the
+    # 85-10 migration flagged because they have no usable credentials).
+    # playerStepOk (step 2) is filled after the backend roles ran, since the
+    # Soloist role builds the per-player list.
+    $paramRef->{pairingWindowSeconds} = Plugins::SpotOn::API::Credentials::PAIRING_WINDOW_SECONDS();
+    $paramRef->{accountStepOk} =
+        (grep { Plugins::SpotOn::API::TokenManager->hasValidLogin($_) } keys %{ $paramRef->{accounts} })
+        ? 1 : 0;
+    $paramRef->{needsPairingAccounts} =
+        [ sort grep { $paramRef->{accounts}{$_}{needsPairing} } keys %{ $paramRef->{accounts} } ];
 
-    # D-13: redirect URI for the Client-ID PKCE setup wizard, read from the
-    # single-source-of-truth constant (never a second hardcoded literal --
-    # Pitfall 4).
-    require Plugins::SpotOn::API::PKCE;
-    $paramRef->{redirectUri} = Plugins::SpotOn::API::PKCE::GITHUB_PAGES_REDIRECT_URI();
+    # D-08/D-09 (Phase 71): backend selection + per-backend status for the
+    # template. `backend` (the SAVED pref) drives the select#pref_backend
+    # pre-selection. 84-08 (SEAM-6.2): every registered backend fills its
+    # own template keys through its role's settingsInfo -- the other
+    # backend's div is rendered hidden and shown by the select's listener,
+    # so its status lines need their keys whatever backend is saved. A
+    # backend whose files are absent (the §6.3.2 amputation) is skipped:
+    # its role fails to load, the page still renders (T-84-28).
+    $paramRef->{backend} = $prefs->get('backend') || 'librespot';
+    # 84-13 (B3): the backend <select> offers only the available backends
+    # (registered AND role module loads) -- basic.html loops over this list.
+    require Plugins::SpotOn::Backend;
+    $paramRef->{availableBackends} = [ Plugins::SpotOn::Backend::available() ];
+    {
+        require Plugins::SpotOn::Backend;
+        for my $name (Plugins::SpotOn::Backend::names()) {
+            my $role = eval { Plugins::SpotOn::Backend::classFor($name) } or do {
+                main::INFOLOG && $log->is_info && $log->info("Settings: backend '$name' not available: $@");
+                next;
+            };
+            eval {
+                $role->settingsInfo($paramRef,
+                    formatHealthNotice  => \&_formatHealthNotice,
+                    keyMaskedPreview    => SOLOIST_KEY_MASKED_PREVIEW,
+                );
+                1;
+            } or $log->warn("Settings: settingsInfo of backend '$name' failed: $@");
+        }
+    }
 
-    # D-04/D-08: Made For You (sp_dc) status for template -- masked preview
-    # (never the raw cookie, T-52-02) and the empty/valid/expired/secrets_down
-    # degradation state (Settings channel of the 3-channel D-04 display).
-    $paramRef->{spDcMasked}      = Plugins::SpotOn::API::WebPlayer->spDcMaskedPreview($paramRef->{activeAccount});
-    $paramRef->{madeForYouState} = Plugins::SpotOn::API::WebPlayer->state($paramRef->{activeAccount});
-
-    # D-07/CR-01: Pathfinder GraphQL persisted-query hash for template --
-    # exposes the currently stored value (or empty string) so the Settings
-    # field can be pre-filled (Plan 52-06).
-    $paramRef->{pathfinderHash} = $prefs->get('pathfinderHash') || '';
+    # 85-11 (D-24) step 2: only Soloist needs a per-player pairing (it exports
+    # no tokens); the librespot backend is covered by the account pairing.
+    $paramRef->{playerStepOk} =
+        ($paramRef->{backend} eq 'soloist')
+        ? ((grep { !$_->{paired} } @{ $paramRef->{soloistPlayers} || [] }) ? 0 : 1)
+        : 1;
 
     # Diagnostic mode status for template (#3)
     $paramRef->{diagnosticEnabled} = $prefs->get('diagnosticMode') ? 1 : 0;
@@ -406,7 +530,9 @@ sub handler {
 
     my $logTotal = 0;
     my $spotonDir = catdir($serverPrefs->get('cachedir'), 'spoton');
-    for my $pattern ('*-connect.log', '*-unified.log') {
+    # 74b-04: the Soloist log (<id>-soloist.log) and its one rotated
+    # generation (.1) count as well.
+    for my $pattern ('*-connect.log', '*-unified.log', '*-soloist.log', '*-soloist.log.1') {
         for my $f (bsd_glob(catfile($spotonDir, $pattern))) {
             $logTotal += -s $f || 0;
         }
@@ -419,230 +545,11 @@ sub handler {
 }
 
 # ============================================================
-# PKCE OAuth: /plugins/SpotOn/settings/pkce/start
-# AJAX endpoint (AUTH-01, T-49-08). Generates a fresh code_verifier/challenge
-# pair, stashes the verifier under a nonce (bridges this request to the
-# later /pkce/callback or /pkce/manual request), and returns the Spotify
-# authorization URL for the browser to open in a new tab. The verifier
-# itself never leaves LMS (edge case A, urknall #176).
-# ============================================================
-sub _pkceStartHandler {
-    my ($httpClient, $response) = @_;
-
-    return unless _csrfCheck($httpClient, $response);
-
-    # clientId pref empty => default (bundled ncspot Extended-Quota identity)
-    # mode, filled => custom mode (GH #147 plan 66-01, D-01).
-    my $clientId  = _pkceClientId();
-    my $isBundled = $prefs->get('clientId') ? 0 : 1;
-
-    require Plugins::SpotOn::API::PKCE;
-
-    # Default mode uses the dynamic loopback redirect pointing at LMS's own
-    # pkce/callback endpoint: the redirect CAN reach LMS when the browser
-    # runs on the LMS host; copy-paste remains the path for remote browsers.
-    # Custom mode keeps the GitHub Pages relay (custom Developer Apps
-    # register it as their redirect URI, per user decision). Scopes stay the
-    # full PKCE_SCOPES default -- the 'streaming' scope is still required by
-    # the playerauth browser fallback's derive path (D-03), not by this flow;
-    # this account-PKCE flow never derives playback credentials from its own
-    # token (D-02).
-    my $redirectUri = $isBundled
-        ? Plugins::SpotOn::API::PKCE::loopbackCallbackRedirectUri()
-        : Plugins::SpotOn::API::PKCE::GITHUB_PAGES_REDIRECT_URI();
-
-    my $verifier  = Plugins::SpotOn::API::PKCE::generateCodeVerifier();
-    my $challenge = Plugins::SpotOn::API::PKCE::generateCodeChallenge($verifier);
-
-    # Nonce keys the one-time verifier cache and round-trips through the
-    # state parameter across the GitHub Pages relay. WR-04: use
-    # cryptographic randomness — the nonce->verifier binding is the CSRF
-    # guard for the callback endpoint (RFC 6749 sec 10.12).
-    require Crypt::OpenSSL::Random;
-    my $nonce = unpack('H16', Crypt::OpenSSL::Random::random_bytes(8));
-
-    my $request = $response->request;
-    my $host    = ($request && $request->header('Host')) || 'localhost';
-    my $scheme  = ($request && $request->header('X-Forwarded-Proto')) || 'http';
-    my $callbackUrl = $scheme . '://' . $host . '/plugins/SpotOn/settings/pkce/callback';
-
-    my $state = Plugins::SpotOn::API::PKCE::buildState($callbackUrl, $nonce);
-
-    # D-04: enrich the verifier cache with redirect_uri + client_id so the
-    # callback/manual handlers are race-free if the user switches bundled/
-    # custom mode mid-flow (they read these cached values instead of
-    # re-deriving them from live prefs at callback time).
-    Plugins::SpotOn::API::PKCE::storeVerifier($nonce,
-        { verifier => $verifier, redirect_uri => $redirectUri, client_id => $clientId });
-
-    my $authUrl = Plugins::SpotOn::API::PKCE::buildAuthorizationUrl($clientId, $challenge, $state, $redirectUri);
-
-    main::INFOLOG && $log->is_info && $log->info(
-        "Settings: PKCE auth flow started [nonce=" . substr($nonce, 0, 8) . "..."
-        . ", mode=" . ($isBundled ? 'bundled' : 'custom') . "]");
-
-    # 'bundled' means the ncspot Extended-Quota default identity again
-    # (D-01). The dynamic loopback redirect CAN reach LMS (browser on the
-    # LMS host), so the JS always arms the reload timer and no longer
-    # branches on this flag -- kept for payload compatibility only.
-    _jsonResponse($httpClient, $response, { url => $authUrl, nonce => $nonce, bundled => ($isBundled ? 1 : 0) });
-}
-
-# ============================================================
-# PKCE OAuth: /plugins/SpotOn/settings/pkce/callback
-# Browser redirect target (AUTH-01, AUTH-02) reached via the GitHub Pages
-# relay after the user authorizes on accounts.spotify.com. This is a plain
-# browser GET navigation, NOT an AJAX call — there is no X-Requested-With
-# header to check, so it is intentionally exempt from _csrfCheck (T-49-09).
-# Security instead comes from the one-time-use verifier cache: a request
-# can only succeed once per /pkce/start call.
-# ============================================================
-sub _pkceCallbackHandler {
-    my ($httpClient, $response) = @_;
-
-    require Plugins::SpotOn::API::PKCE;
-
-    my $request = $response->request;
-    my %params  = $request ? $request->uri->query_form : ();
-
-    if (my $err = $params{error}) {
-        $log->warn("Settings: PKCE callback returned OAuth error: $err");
-        _renderPkceResultPage($httpClient, $response, string('PLUGIN_SPOTON_PKCE_ERROR'),
-            string('PLUGIN_SPOTON_PKCE_ERROR'), 1);
-        return;
-    }
-
-    my $code  = $params{code};
-    my $state = $params{state};
-
-    unless ($code) {
-        $log->warn("Settings: PKCE callback missing authorization code");
-        _renderPkceResultPage($httpClient, $response, string('PLUGIN_SPOTON_PKCE_ERROR'),
-            'No authorization code received.', 1);
-        return;
-    }
-
-    my $verifierData = _pkceLoadVerifierDataFromState($state);
-    unless ($verifierData) {
-        $log->warn("Settings: PKCE callback — no verifier found for state (expired/reused)");
-        _renderPkceResultPage($httpClient, $response, string('PLUGIN_SPOTON_PKCE_ERROR'),
-            'Authorization session expired or already used. Please try again from the Settings page.', 1);
-        return;
-    }
-
-    # T-65-11/T-65-13 (plan 65-03): reject purpose-tagged nonces -- a
-    # playerauth (Keymaster browser fallback) authorization must never
-    # complete through the account PKCE flow, whose finish path would
-    # overwrite the account's working Web API token file with the
-    # streaming-only Keymaster token pair.
-    if (($verifierData->{purpose} // '') ne '') {
-        $log->warn("Settings: PKCE callback — nonce belongs to the playback-authorization flow, rejected");
-        _renderPkceResultPage($httpClient, $response, string('PLUGIN_SPOTON_PKCE_ERROR'),
-            'This authorization belongs to the playback-authorization flow. Please paste it into the Authorize Playback section instead.', 1);
-        return;
-    }
-
-    # D-04: read verifier/client_id/redirect_uri from the enriched cache
-    # entry (stored at /pkce/start), not from live prefs -- race-free if the
-    # user toggled bundled/custom mode mid-flow.
-    my $verifier    = $verifierData->{verifier};
-    my $clientId    = $verifierData->{client_id};
-    my $redirectUri = $verifierData->{redirect_uri};
-
-    Plugins::SpotOn::API::PKCE::exchangeCode($code, $clientId, $verifier, $redirectUri, sub {
-        my ($tokenData, $err) = @_;
-
-        unless ($tokenData) {
-            $log->error("Settings: PKCE token exchange failed: " . ($err || 'unknown'));
-            _renderPkceResultPage($httpClient, $response, string('PLUGIN_SPOTON_PKCE_ERROR'),
-                string('PLUGIN_SPOTON_PKCE_ERROR'), 1);
-            return;
-        }
-
-        _pkceFinishAuth($httpClient, $response, $tokenData, $clientId, 0);
-    });
-}
-
-# ============================================================
-# PKCE OAuth: /plugins/SpotOn/settings/pkce/manual
-# AJAX copy-paste fallback (edge case D, urknall #176) for when the browser
-# auto-redirect from the GitHub Pages relay never reaches LMS (e.g. relay
-# cannot resolve/reach a private-network LMS host from the user's phone).
-# The pasted URL is only ever parsed for its code/state query parameters —
-# it is never fetched or redirected to (T-49-10).
-# ============================================================
-sub _pkceManualHandler {
-    my ($httpClient, $response) = @_;
-
-    return unless _csrfCheck($httpClient, $response);
-
-    require Plugins::SpotOn::API::PKCE;
-
-    my $callbackUrl = _postParam($response->request, 'callback_url');
-    unless ($callbackUrl) {
-        _jsonResponse($httpClient, $response, { status => 'error', message => 'No callback URL provided' });
-        return;
-    }
-
-    my %params = eval { URI->new($callbackUrl)->query_form };
-    if ($@ || !%params) {
-        _jsonResponse($httpClient, $response, { status => 'error', message => 'Could not parse callback URL' });
-        return;
-    }
-
-    my $code  = $params{code};
-    my $state = $params{state};
-
-    unless ($code && $state) {
-        _jsonResponse($httpClient, $response,
-            { status => 'error', message => 'Callback URL is missing code or state parameters' });
-        return;
-    }
-
-    my $verifierData = _pkceLoadVerifierDataFromState($state);
-    unless ($verifierData) {
-        _jsonResponse($httpClient, $response,
-            { status => 'error', message => 'Authorization session expired or already used' });
-        return;
-    }
-
-    # T-65-11/T-65-13 (plan 65-03): reject purpose-tagged nonces -- see the
-    # matching guard in _pkceCallbackHandler. Without this, pasting the
-    # playerauth loopback URL into THIS field would store the streaming-only
-    # Keymaster token pair over the account's working Web API tokens.
-    if (($verifierData->{purpose} // '') ne '') {
-        _jsonResponse($httpClient, $response,
-            { status => 'error', message => 'This URL belongs to the playback-authorization flow — paste it into the Authorize Playback section instead' });
-        return;
-    }
-
-    # D-04: read verifier/client_id/redirect_uri from the enriched cache
-    # entry (stored at /pkce/start), not from live prefs -- race-free if the
-    # user toggled bundled/custom mode mid-flow.
-    my $verifier    = $verifierData->{verifier};
-    my $clientId    = $verifierData->{client_id};
-    my $redirectUri = $verifierData->{redirect_uri};
-
-    Plugins::SpotOn::API::PKCE::exchangeCode($code, $clientId, $verifier, $redirectUri, sub {
-        my ($tokenData, $err) = @_;
-
-        unless ($tokenData) {
-            $log->error("Settings: PKCE manual token exchange failed: " . ($err || 'unknown'));
-            _jsonResponse($httpClient, $response, { status => 'error', message => 'Token exchange failed' });
-            return;
-        }
-
-        _pkceFinishAuth($httpClient, $response, $tokenData, $clientId, 1);
-    });
-}
-
-# ============================================================
 # ZeroConf playback-authorization pairing (GH #147 plan 65-02)
 # /plugins/SpotOn/settings/playerauth/start (POST, CSRF-guarded)
-# Starts a --discover-once pairing helper for the given (or active) account.
-# accountId is validated with the same WR-03 discipline as removeAccount:
-# 8-char hex AND existence in the accounts pref, before it reaches any
-# filesystem path construction. Responses carry the symbolic reason enum
+# Starts a --discover-once pairing helper (85-10, D-05: account-less -- the
+# account is created from the credentials the Spotify app hands over, so the
+# request carries no accountId). Responses carry the symbolic reason enum
 # only, never raw stderr (T-65-07).
 # ============================================================
 sub _playerAuthStartHandler {
@@ -652,25 +559,15 @@ sub _playerAuthStartHandler {
 
     require Plugins::SpotOn::API::Credentials;
 
-    my $accountId = _postParam($response->request, 'accountId');
-    $accountId = $prefs->get('activeAccount')
-        unless defined $accountId && length $accountId;
-
-    my $accounts = $prefs->get('accounts') || {};
-    unless (defined $accountId
-        && $accountId =~ /\A[0-9a-f]{8}\z/
-        && exists $accounts->{$accountId}) {
-        _jsonResponse($httpClient, $response,
-            { status => 'error', reason => 'unknown_account' });
-        return;
-    }
-
-    my ($ok, $reason) = Plugins::SpotOn::API::Credentials->startPairing($accountId);
+    # 85-10 (D-05): account-less. The account is created from the credentials
+    # the Spotify app hands over, so no accountId is read from the request.
+    my ($ok, $reason) = Plugins::SpotOn::API::Credentials->startPairing();
 
     if ($ok) {
         _jsonResponse($httpClient, $response, {
-            status     => 'ok',
-            deviceName => Plugins::SpotOn::API::Credentials->pairingDeviceName(),
+            status        => 'ok',
+            deviceName    => Plugins::SpotOn::API::Credentials->pairingDeviceName(),
+            windowSeconds => Plugins::SpotOn::API::Credentials::PAIRING_WINDOW_SECONDS(),
         });
     } else {
         _jsonResponse($httpClient, $response,
@@ -708,489 +605,89 @@ sub _playerAuthCancelHandler {
 }
 
 # ============================================================
-# Keymaster browser fallback (GH #147 plan 65-03, D-02 secondary path)
-# /plugins/SpotOn/settings/playerauth/browser/start (POST, CSRF-guarded)
-# For environments where mDNS pairing cannot work (Docker, VLANs, pCP/IPv6):
-# starts a PKCE authorization against Spotify's Keymaster client_id with
-# scope=streaming ONLY (the MA-verified recipe -- the 15 Web API scopes
-# belong to the account's own PKCE flow, not this one) and the loopback
-# redirect URI (gotcha 4: Spotify rejects non-loopback redirect URIs for
-# the Keymaster client_id, so the GitHub Pages relay is unusable here by
-# design). The resulting access token has the provenance Login5 accepts,
-# so --token-login derivation works again (deriveCredentialsFromToken).
+# _storeSpakKey($paramRef, $role, $raw)
+# 79-05 (D-12): the one validate-and-store step of the spak key, shared by the
+# active-role key block and the hint-key fallback. $raw is the trimmed,
+# not-the-masked-placeholder value. WR-03: reject instead of silently
+# stripping disallowed characters (a charset-filtered key was previously
+# stored with no user-visible error, only discoverable later when pairing
+# failed with no traceable cause). The real spak-key alphabet is unverified
+# (RESEARCH.md A1/A5); this whitelist + minimum length is a conservative
+# placeholder pending empirical confirmation against a real key (T-71-06).
+# WR-08: storeKey() returns (0, 'write_failed') on a print/close/rename
+# failure; surface it through the same warning channel as the invalid-format
+# path. The raw key is never logged and never copied into $paramRef.
 # ============================================================
-sub _playerAuthBrowserStartHandler {
-    my ($httpClient, $response) = @_;
+sub _storeSpakKey {
+    my ($paramRef, $role, $raw) = @_;
 
-    return unless _csrfCheck($httpClient, $response);
-
-    require Plugins::SpotOn::API::PKCE;
-
-    # Resolve target account like playerauth/start: validated param or
-    # activeAccount (WR-03 discipline -- 8-char hex AND existence check
-    # before the id reaches any downstream use).
-    my $accountId = _postParam($response->request, 'accountId');
-    $accountId = $prefs->get('activeAccount')
-        unless defined $accountId && length $accountId;
-
-    my $accounts = $prefs->get('accounts') || {};
-    unless (defined $accountId
-        && $accountId =~ /\A[0-9a-f]{8}\z/
-        && exists $accounts->{$accountId}) {
-        _jsonResponse($httpClient, $response,
-            { status => 'error', reason => 'unknown_account' });
-        return;
+    if ($raw =~ /^[A-Za-z0-9_\-\.]{16,8192}\z/) {
+        my ($ok) = $role->storeKey($raw);
+        $paramRef->{'warning'} = string('PLUGIN_SPOTON_SOLOIST_KEY_WRITE_FAILED')
+            unless $ok;
     }
-
-    # WR-04 discipline: cryptographic randomness for verifier and nonce --
-    # the nonce->verifier binding is the CSRF guard for the manual endpoint.
-    my $verifier  = Plugins::SpotOn::API::PKCE::generateCodeVerifier();
-    my $challenge = Plugins::SpotOn::API::PKCE::generateCodeChallenge($verifier);
-
-    require Crypt::OpenSSL::Random;
-    my $nonce = unpack('H16', Crypt::OpenSSL::Random::random_bytes(8));
-
-    # State only needs to round-trip the nonce back through the pasted URL;
-    # the embedded callback_url is never navigated to (the loopback redirect
-    # never reaches LMS -- copy-paste is the only completion path).
-    my $request = $response->request;
-    my $host    = ($request && $request->header('Host')) || 'localhost';
-    my $scheme  = ($request && $request->header('X-Forwarded-Proto')) || 'http';
-    my $callbackUrl = $scheme . '://' . $host . '/plugins/SpotOn/settings/pkce/callback';
-    my $state = Plugins::SpotOn::API::PKCE::buildState($callbackUrl, $nonce);
-
-    # purpose='playerauth' tags this nonce for the browser/manual handler
-    # ONLY (T-65-11): the regular PKCE flow's handlers reject it, and the
-    # manual handler below rejects untagged (regular-PKCE) nonces -- one-time
-    # verifiers can never be replayed across the two flows.
-    Plugins::SpotOn::API::PKCE::storeVerifier($nonce, {
-        verifier     => $verifier,
-        redirect_uri => Plugins::SpotOn::API::PKCE::LOOPBACK_REDIRECT_URI(),
-        client_id    => Plugins::SpotOn::API::PKCE::KEYMASTER_CLIENT_ID(),
-        account_id   => $accountId,
-        purpose      => 'playerauth',
-    });
-
-    my $authUrl = Plugins::SpotOn::API::PKCE::buildAuthorizationUrl(
-        Plugins::SpotOn::API::PKCE::KEYMASTER_CLIENT_ID(),
-        $challenge,
-        $state,
-        Plugins::SpotOn::API::PKCE::LOOPBACK_REDIRECT_URI(),
-        ['streaming'],
-    );
-
-    main::INFOLOG && $log->is_info && $log->info(
-        "Settings: playerauth browser fallback started [nonce=" . substr($nonce, 0, 8) . "...]");
-
-    _jsonResponse($httpClient, $response, { url => $authUrl, nonce => $nonce });
-}
-
-# ============================================================
-# /plugins/SpotOn/settings/playerauth/browser/manual (POST, CSRF-guarded)
-# Completion endpoint for the browser fallback: the user pastes the
-# 127.0.0.1 URL their browser landed on after approving. The pasted URL is
-# only ever parsed for its code/state query parameters -- never fetched or
-# redirected to (T-49-10). Exchanges the code with the cached Keymaster
-# client_id/verifier/redirect_uri, then derives Login5-accepted credentials
-# via deriveCredentialsFromToken.
-#
-# CRITICAL (T-65-13): the Keymaster token pair is used once for derivation
-# and discarded -- it must NEVER be persisted to the account's token file,
-# which holds the still-working Web API refresh token. There is deliberately
-# no token-persistence call anywhere in this handler (region gate in
-# t/09_settings.t / plan verify enforces this).
-# ============================================================
-sub _playerAuthBrowserManualHandler {
-    my ($httpClient, $response) = @_;
-
-    return unless _csrfCheck($httpClient, $response);
-
-    require Plugins::SpotOn::API::PKCE;
-
-    my $callbackUrl = _postParam($response->request, 'callback_url');
-    unless ($callbackUrl) {
-        _jsonResponse($httpClient, $response,
-            { status => 'error', reason => 'missing_url' });
-        return;
+    else {
+        $paramRef->{'warning'} = string('PLUGIN_SPOTON_SOLOIST_KEY_INVALID');
     }
-
-    my %params = eval { URI->new($callbackUrl)->query_form };
-    if ($@ || !%params) {
-        _jsonResponse($httpClient, $response,
-            { status => 'error', reason => 'parse_error' });
-        return;
-    }
-
-    my $code  = $params{code};
-    my $state = $params{state};
-
-    unless ($code && $state) {
-        _jsonResponse($httpClient, $response,
-            { status => 'error', reason => 'missing_code' });
-        return;
-    }
-
-    my $verifierData = _pkceLoadVerifierDataFromState($state);
-
-    # REQUIRE purpose eq 'playerauth' (T-65-11): a nonce minted by the
-    # regular PKCE flow must never complete through this endpoint -- the two
-    # flows' one-time verifiers cannot be replayed across purposes.
-    unless ($verifierData && ($verifierData->{purpose} // '') eq 'playerauth') {
-        $log->warn("Settings: playerauth browser/manual -- no matching verifier for state "
-            . "(expired/reused/wrong flow)");
-        _jsonResponse($httpClient, $response,
-            { status => 'error', reason => 'session_expired' });
-        return;
-    }
-
-    my $verifier    = $verifierData->{verifier};
-    my $clientId    = $verifierData->{client_id};      # KEYMASTER_CLIENT_ID, cached at browser/start
-    my $redirectUri = $verifierData->{redirect_uri};   # loopback, cached at browser/start
-    my $accountId   = $verifierData->{account_id};
-
-    Plugins::SpotOn::API::PKCE::exchangeCode($code, $clientId, $verifier, $redirectUri, sub {
-        my ($tokenData, $err) = @_;
-
-        unless ($tokenData) {
-            $log->error("Settings: playerauth browser token exchange failed: " . ($err || 'unknown'));
-            _jsonResponse($httpClient, $response,
-                { status => 'error', reason => 'exchange_failed' });
-            return;
-        }
-
-        require Plugins::SpotOn::API::Credentials;
-        Plugins::SpotOn::API::Credentials->clearRateLimit($accountId);
-        Plugins::SpotOn::API::Credentials->deriveCredentialsFromToken(
-            $accountId, $tokenData->{access_token}, sub {
-                my ($ok, $reason) = @_;
-
-                if ($ok) {
-                    _jsonResponse($httpClient, $response, { status => 'ok' });
-                } else {
-                    # Symbolic reason enum only (T-65-07) -- never stderr.
-                    _jsonResponse($httpClient, $response,
-                        { status => 'error', reason => $reason });
-                }
-            });
-    });
+    return;
 }
 
 # ============================================================
-# _pkceLoadVerifierDataFromState($state)
-# Parses the state parameter and pops the matching verifier-data hashref
-# {verifier, redirect_uri, client_id} (D-04) from the one-time-use cache.
-# Returns undef (safely) on any malformed/missing input.
+# _formatHealthNotice($mac)
+# 84.1 plan 03 (D-04): renders DaemonManager->soloistHealthFor($mac) into
+# the pre-formatted string the soloistPlayers row displays (next to
+# qualityNotice), or '' when the health tick has never stopped this MAC.
+# T-84.1-02: built ONLY from the player name, a fixed reason string, and a
+# clock time -- no argv, no data-dir path, no MAC-derived filesystem path.
 # ============================================================
-sub _pkceLoadVerifierDataFromState {
-    my ($state) = @_;
-    return undef unless $state;
+sub _formatHealthNotice {
+    my ($mac) = @_;
 
-    my $stateData = Plugins::SpotOn::API::PKCE::parseState($state);
-    my $nonce = $stateData ? $stateData->{nonce} : undef;
-    return undef unless $nonce;
+    require Plugins::SpotOn::Unified::DaemonManager;
+    my $health = Plugins::SpotOn::Unified::DaemonManager->soloistHealthFor($mac) or return '';
 
-    my $data = Plugins::SpotOn::API::PKCE::loadAndDeleteVerifier($nonce);
-    return undef unless ref $data eq 'HASH';
-    return $data;
-}
+    my $client     = Slim::Player::Client::getClient($mac);
+    my $playerName = ($client && $client->can('name')) ? ($client->name // $mac) : $mac;
 
-# ============================================================
-# _pkceFinishAuth($httpClient, $response, $tokenData, $clientId, $isJson)
-# Shared tail of the callback/manual handlers: looks up the Spotify user
-# profile to derive a stable accountId, persists the PKCE tokens, and
-# creates/updates the account in prefs. Responds with JSON (manual, AJAX
-# fallback) or an HTML result page (callback, browser redirect).
-# ============================================================
-sub _pkceFinishAuth {
-    my ($httpClient, $response, $tokenData, $clientId, $isJson) = @_;
+    # 84.1-08 (WR-03 notice, D-04): a three-way choice -- ws_unreachable
+    # gets its own reason key instead of falling through to NO_LOGIN with
+    # every other non-no_answer reason.
+    my $lastReason = $health->{last_reason} // '';
+    my $reasonKey  = $lastReason eq 'no_answer'      ? 'PLUGIN_SPOTON_SOLOIST_HEALTH_REASON_NO_ANSWER'
+                    : $lastReason eq 'ws_unreachable' ? 'PLUGIN_SPOTON_SOLOIST_HEALTH_REASON_WS_UNREACHABLE'
+                    :                                   'PLUGIN_SPOTON_SOLOIST_HEALTH_REASON_NO_LOGIN';
 
-    require Slim::Networking::SimpleAsyncHTTP;
+    require POSIX;
+    # 84.1-08 (WR-06, D-04): a date AND a clock time -- the notice can now
+    # persist past the day it was created (WR-06 ages it out, not the
+    # calendar), so the bare %H:%M used to read as "today" no matter when.
+    my $timeText = $health->{last_at} ? POSIX::strftime('%Y-%m-%d %H:%M', localtime($health->{last_at})) : '?';
 
-    Slim::Networking::SimpleAsyncHTTP->new(
-        sub {
-            my $http    = shift;
-            my $profile = eval { from_json($http->content) };
-            my $userId  = $profile && $profile->{id};
-            unless ($userId) {
-                $log->error("Settings: PKCE /me lookup returned no user ID — cannot create account");
-                if ($isJson) {
-                    _jsonResponse($httpClient, $response,
-                        { status => 'error', message => 'Spotify profile lookup failed — please try again' });
-                } else {
-                    _renderPkceResultPage($httpClient, $response, string('PLUGIN_SPOTON_PKCE_ERROR'),
-                        'Could not retrieve Spotify profile. Please try again.', 1);
-                }
-                return;
-            }
-            my $displayName = $profile->{display_name} || $userId;
-            _pkceStoreAccount($httpClient, $response, $tokenData, $clientId, $userId, $displayName, $isJson);
-        },
-        sub {
-            my ($http, $error) = @_;
-            $log->error("Settings: PKCE /me lookup failed: $error — cannot create account without user identity");
-            if ($isJson) {
-                _jsonResponse($httpClient, $response,
-                    { status => 'error', message => 'Spotify profile lookup failed — please try again' });
-            } else {
-                _renderPkceResultPage($httpClient, $response, string('PLUGIN_SPOTON_PKCE_ERROR'),
-                    'Could not retrieve Spotify profile. Please try again.', 1);
-            }
-        },
-        { timeout => 30 }
-    )->get(
-        'https://api.spotify.com/v1/me',
-        'Authorization' => "Bearer $tokenData->{access_token}",
-        'Accept'        => 'application/json',
-    );
-}
-
-# ============================================================
-# _pkceStoreAccount(...)
-# Derives accountId, persists PKCE tokens (chmod 0600 file via PKCE.pm),
-# secures the account directory (chmod 0700, T-04.3-07 pattern), and stores
-# the account in prefs via TokenManager's existing _storeAccountPrefs (sets
-# activeAccount + triggers daemon start if this is the first account).
-# ============================================================
-sub _pkceStoreAccount {
-    my ($httpClient, $response, $tokenData, $clientId, $userId, $displayName, $isJson) = @_;
-
-    my $accountId = substr(md5_hex($userId), 0, 8);
-    my $expiresAt = time() + ($tokenData->{expires_in} || 3600);
-
-    require Plugins::SpotOn::API::PKCE;
-    my $stored = Plugins::SpotOn::API::PKCE::storeTokens($accountId, {
-        access_token  => $tokenData->{access_token},
-        refresh_token => $tokenData->{refresh_token},
-        expires_at    => $expiresAt,
-        client_id     => $clientId,
-        scope         => $tokenData->{scope},
-    });
-
-    # IN-05: consistent accountId masking (T-50-01 discipline) — never log
-    # the full accountId; use the same substr(0,4).'****' pattern as the
-    # failure branch below.
-    my $maskedId = substr($accountId, 0, 4) . '****';
-
-    unless ($stored) {
-        $log->error("Settings: PKCE token storage failed for account $maskedId — aborting account creation");
-        if ($isJson) {
-            _jsonResponse($httpClient, $response, { status => 'error', message => 'Token storage failed' });
-        } else {
-            _renderPkceResultPage($httpClient, $response, string('PLUGIN_SPOTON_PKCE_ERROR'),
-                'Token storage failed — check disk space and cache directory permissions.', 1);
-        }
-        return;
-    }
-
-    my $serverPrefs = preferences('server');
-    my $accountDir  = catdir($serverPrefs->get('cachedir'), 'spoton', $accountId);
-    chmod(0700, $accountDir) if -d $accountDir;
-
-    require Plugins::SpotOn::API::TokenManager;
-    Plugins::SpotOn::API::TokenManager->_storeAccountPrefs($accountId, $userId, $displayName, sub {
-        main::INFOLOG && $log->is_info && $log->info(
-            "Settings: PKCE account $maskedId connected (displayName=$displayName)");
-
-        # T-50-11: clear the persistent needsReauth flag immediately on a
-        # successful (re-)authentication rather than waiting for the next
-        # refresh timer cycle.
-        Plugins::SpotOn::API::TokenManager->clearNeedsReauth($accountId);
-
-        # GH #139: refresh Material Skin home rows now that auth is complete.
-        # Fires for both first-time auth and re-auth.  Daemon lifecycle is
-        # intentionally not signaled — rows carry no daemon-derived content.
-        Plugins::SpotOn::HomeExtras::refresh() if $INC{'Plugins/SpotOn/HomeExtras.pm'};
-
-        # scheduleInit stays: harmless without playback credentials
-        # (startHelper skips accounts without a usable credentials.json),
-        # and required so an account that ALREADY has valid ZeroConf-paired
-        # credentials gets its daemon after a token re-auth (D-06/D-07:
-        # unconditional trigger, never the first-account-only
-        # $needsDaemonStart conditional in _storeAccountPrefs; Pitfall 6).
-        require Plugins::SpotOn::Unified::DaemonManager;
-        Plugins::SpotOn::Unified::DaemonManager->scheduleInit();
-
-        require Plugins::SpotOn::API::Client;
-        unless (Plugins::SpotOn::API::Client->limitsProbed()) {
-            Plugins::SpotOn::API::Client->probeEndpointLimits($accountId, sub {});
-        }
-
-        # D-02 (the core of phase 66): account-PKCE tokens are NEVER
-        # derivation input, for any client_id -- an account-PKCE token has
-        # the wrong provenance for Login5, so ZeroConf pairing (65-02) is the
-        # REQUIRED second auth step (the 65-05 hypothesis test proved this
-        # restriction is server-side and client_id-based, not fixable by
-        # picking a "better" client_id). The playerauth browser fallback
-        # (65-03) remains the alternate playback path for mDNS-unreachable
-        # networks (D-03). The response reports honest, already-known state:
-        # a re-auth of an already-paired account reports ready; a fresh
-        # account reports playback authorization required. The access token
-        # appears in no log line and is persisted nowhere beyond the
-        # storeTokens call above (T-65-09).
-        require Plugins::SpotOn::API::Credentials;
-        my $hasPlayback = (-f Plugins::SpotOn::API::Credentials->credentialsPathFor($accountId))
-            && !Plugins::SpotOn::API::Credentials->needsPlaybackAuth($accountId);
-
-        if ($isJson) {
-            _jsonResponse($httpClient, $response,
-                { status => 'ok', accountId => $accountId,
-                  connectReady => ($hasPlayback ? 1 : 0),
-                  playbackAuthRequired => ($hasPlayback ? 0 : 1) });
-        } else {
-            _renderPkceResultPage($httpClient, $response,
-                string('PLUGIN_SPOTON_PKCE_SUCCESS'),
-                string('PLUGIN_SPOTON_PKCE_SUCCESS'), 0);
-        }
-    });
-}
-
-# ============================================================
-# _pkceClientId()
-# Resolves the Client-ID to use for PKCE requests: the user's own Spotify
-# Developer App Client-ID if configured, otherwise SpotOn's bundled
-# Extended-Quota Client ID (GH #147 plan 66-01, D-01). The bundled identity
-# has its OWN rate-limit bucket, unlike the previous default which shared
-# one global bucket with every librespot/Spotify Desktop user worldwide --
-# that shared bucket caused the severe 429 blockade this plan reverts.
-# Tokens minted with the bundled ID have the wrong provenance for Login5 and
-# are therefore never used for playback-credential derivation (phase-65 D-04
-# discipline re-instated) -- ZeroConf pairing (65-02) is the required second
-# auth step.
-# ============================================================
-sub _pkceClientId {
-    my $custom = $prefs->get('clientId');
-    return $custom if $custom;
-
-    require Plugins::SpotOn::API::Client;
-    return Plugins::SpotOn::API::Client::SPOTON_DEFAULT_CLIENT_ID();
-}
-
-# ============================================================
-# _isPkceConfigured()
-# True if any known account has completed the PKCE OAuth flow (has a
-# pkce_tokens.json). Drives which setup guide/CTA the template shows.
-# ============================================================
-sub _isPkceConfigured {
-    require Plugins::SpotOn::API::TokenManager;
-    require Plugins::SpotOn::API::PKCE;
-
-    for my $id (Plugins::SpotOn::API::TokenManager->getAccountIds()) {
-        return 1 if Plugins::SpotOn::API::PKCE::loadTokens($id);
-    }
-    return 0;
-}
-
-# ============================================================
-# _postParam($request, $key)
-# Extracts a single application/x-www-form-urlencoded POST body parameter.
-# Returns undef if the request/body is missing or the key is absent.
-# ============================================================
-sub _postParam {
-    my ($request, $key) = @_;
-    return undef unless $request;
-
-    my $body = $request->content;
-    return undef unless defined $body && length $body;
-
-    my %params = eval { URI->new("?$body")->query_form };
-    return undef if $@;
-    return $params{$key};
-}
-
-# ============================================================
-# _htmlEscape($str)
-# Minimal HTML entity escaping for values interpolated into
-# _renderPkceResultPage — the OAuth 'error' query parameter is attacker/
-# Spotify controlled and must not be reflected unescaped (Rule 2, XSS).
-# ============================================================
-sub _htmlEscape {
-    my ($s) = @_;
-    return '' unless defined $s;
-    $s =~ s/&/&amp;/g;
-    $s =~ s/</&lt;/g;
-    $s =~ s/>/&gt;/g;
-    $s =~ s/"/&quot;/g;
-    return $s;
-}
-
-# ============================================================
-# _renderPkceResultPage($httpClient, $response, $title, $message, $isError)
-# Renders a minimal centered-card HTML result page for the /pkce/callback
-# browser redirect flow. This page is opened via window.open() as a popup/
-# new tab and has no LMS navigation frame, so on success it self-closes
-# (window.close()) after 2 seconds instead of redirecting itself to Settings
-# -- a self-redirect here would strand the user on a bare Settings page
-# without the Material Skin wrapper. Error pages show a link back to
-# Settings instead (the user may need to read the error before leaving).
-#
-# D-06 (forum #257): Classic Skin's ORIGINAL Settings tab (window.opener --
-# same-origin, since it's the LMS host that opened this popup) does not
-# auto-refresh after OAuth completes, leaving it showing stale
-# not-connected state until the user manually reloads. On success we
-# navigate window.opener to the Settings page (triggering a fresh render
-# with the new account state) before self-closing this popup. Material
-# Skin already refreshes its own Settings view via AJAX, so the extra
-# opener navigation is harmless there.
-# ============================================================
-sub _renderPkceResultPage {
-    my ($httpClient, $response, $title, $message, $isError) = @_;
-
-    my $safeTitle   = _htmlEscape($title);
-    my $safeMessage = _htmlEscape($message);
-    my $settingsUrl = '/' . SETTINGS_URL;
-
-    my $action = $isError
-        ? qq{<p><a href="$settingsUrl">} . _htmlEscape(string('PLUGIN_SPOTON_NAME')) . qq{</a></p>}
-        : qq{<script>
-setTimeout(function() {
-    try {
-        if (window.opener && !window.opener.closed) {
-            window.opener.location.href = "$settingsUrl";
-        }
-    } catch (e) {}
-    try { window.close(); } catch (e) {}
-}, 2000);
-</script>
-<p style="color:#b3b3b3; font-size:0.9em">This tab will close automatically and your SpotOn Settings page will refresh. If not, close it manually and refresh Settings yourself.</p>};
-
-    my $html = qq{<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>$safeTitle</title>
-$action
-<style>
-  body { font-family: -apple-system, Helvetica, Arial, sans-serif; background: #191414;
-         color: #fff; display: flex; align-items: center; justify-content: center;
-         min-height: 100vh; margin: 0; }
-  .card { background: #282828; border-radius: 12px; padding: 2em 2.5em; max-width: 420px;
-          text-align: center; }
-  a { color: #1db954; }
-</style>
-</head>
-<body>
-  <div class="card">
-    <h2>$safeTitle</h2>
-    <p>$safeMessage</p>
-  </div>
-</body>
-</html>
-};
-
-    my $bytes = encode('UTF-8', $html);
-    $response->header('Content-Length' => length($bytes));
-    $response->code($isError ? 400 : 200);
-    $response->header('Connection' => 'close');
-    $response->content_type('text/html; charset=utf-8');
-    Slim::Web::HTTP::addHTTPResponse($httpClient, $response, \$bytes);
+    return sprintf(string('PLUGIN_SPOTON_SOLOIST_HEALTH_RESTARTED'),
+        $playerName, string($reasonKey), $timeText);
 }
 
 # ============================================================
 # Diagnostic bundle endpoint (#3): /plugins/SpotOn/settings/diagnosticBundle
 # Returns a downloadable text file with system info + daemon logs.
 # Only works when diagnosticMode pref is enabled (403 otherwise).
+# 74b-03 (D-07): at the Soloist state - backend, Soloist version/expiry/key
+# state, stored stream quality, glibc, per-player effective format and path,
+# the live *-soloist.log tails - and every log tail and the server.log
+# extract pass through _redactBundleText (T-74b-07).
 # ============================================================
+
+# The repo's secret pattern, copied verbatim from tools/uat/extract-run.pl
+# ($REDACT_RE): Soloist keys, auth_data values and Bearer tokens.
+my $BUNDLE_REDACT_RE = qr/spak_[A-Za-z0-9_-]*|auth_data[^ ]*|Bearer [A-Za-z0-9._-]+/;
+
+sub _redactBundleText {
+    my ($text) = @_;
+    return $text unless defined $text;
+    $text =~ s/$BUNDLE_REDACT_RE/[REDACTED]/g;
+    return $text;
+}
+
 sub _diagnosticBundleHandler {
     my ($httpClient, $response) = @_;
 
@@ -1202,21 +699,80 @@ sub _diagnosticBundleHandler {
     my $serverPrefs = preferences('server');
     my $spotonDir   = catdir($serverPrefs->get('cachedir'), 'spoton');
 
-    # Collect all daemon logs (connect + unified)
+    # Collect all daemon logs (connect + unified + soloist). Live files only:
+    # the *-soloist.log.1 generation stays out to keep the bundle bounded.
     my @logFiles = (
         bsd_glob(catfile($spotonDir, '*-connect.log')),
         bsd_glob(catfile($spotonDir, '*-unified.log')),
+        bsd_glob(catfile($spotonDir, '*-soloist.log')),
     );
 
     # Build header with system info
     my $activeId = $prefs->get('activeAccount') || '';
     my $redactedId = $activeId ? substr($activeId, 0, 4) . '****' : 'none';
-    my $clientId = $prefs->get('clientId') || '';
-    my $redactedClientId = $clientId ? substr($clientId, 0, 4) . '****' : 'none';
+
+    require Plugins::SpotOn::Unified::DaemonManager;
+    my $DM          = 'Plugins::SpotOn::Unified::DaemonManager';
+    my $backendName = eval { $DM->backendName() } // 'unknown';
+    my $isSoloist   = $backendName eq 'soloist';
+    my $role        = eval { $DM->backendClass() };
+
+    # Backend block (D-07). Every read is eval-guarded: a broken role must
+    # not take the whole bundle down.
+    my @backendLines = ("Backend: $backendName");
+    if ($isSoloist) {
+        my %info;
+        eval {
+            $role->settingsInfo(\%info,
+                formatHealthNotice => \&_formatHealthNotice,
+                keyMaskedPreview   => SOLOIST_KEY_MASKED_PREVIEW,
+            );
+            1;
+        };
+        push @backendLines, 'Soloist version: ' . ($info{soloistMissing} ? '(not installed)' : ($info{soloistVersion} || 'unknown'));
+        push @backendLines, 'Soloist expiry: ' . ($info{soloistExpired} ? 'EXPIRED' : ($info{soloistExpiryText} || 'unknown'));
+        my $keyState = eval { $role->keyState() } || {};
+        push @backendLines, 'Soloist key: ' . ($keyState->{present} ? 'present' : 'missing');
+        push @backendLines, 'Spotify quality (stored): ' . ($prefs->get('soloistQuality') // 'unknown');
+    }
+    my $glibc = eval { $DM->glibcVersion() };
+    push @backendLines, 'glibc: ' . (defined $glibc ? $glibc : 'not detected');
+    my $glibcProblem = eval { $DM->soloistGlibcProblem() };
+    # 79-24 (RF-74b-IN-03): say what was checked. soloistGlibcProblem() is undef
+    # for "backend not soloist", "glibc undetectable" and "glibc fine" alike, so
+    # the line branches on the values read above, not on that return alone.
+    if (!$isSoloist) {
+        push @backendLines, "glibc check: not applicable (backend $backendName)";
+    }
+    elsif (!defined $glibc) {
+        push @backendLines, 'glibc check: not run (glibc not detected)';
+    }
+    elsif (defined $glibcProblem && length $glibcProblem) {
+        push @backendLines, "glibc check: $glibcProblem";
+    }
+    else {
+        push @backendLines, 'glibc check: ok';
+    }
+    unless ($isSoloist) {
+        push @backendLines, 'Bitrate: ' . ($prefs->get('bitrate') || 320);
+        push @backendLines, 'Normalization: ' . ($prefs->get('normalization') ? 'on' : 'off');
+    }
 
     my @playerList;
     for my $c (Slim::Player::Client::clients()) {
-        push @playerList, sprintf('  %s | %s | %s', $c->name, $c->id, $c->model);
+        my $line = sprintf('  %s | %s | %s', $c->name, $c->id, $c->model);
+        eval {
+            my $out = $DM->effectiveOutput($c);
+            $line .= sprintf(' | format chosen=%s effective=%s type=%s path=%s',
+                $out->{chosen} // '?', $out->{effective} // '?', $out->{type} // '?', $out->{path} // '?');
+            $line .= ' reason=' . $out->{reason} if $out->{reason};
+            1;
+        };
+        if ($isSoloist) {
+            my $q = eval { $role->qualityInfo($c) } || {};
+            $line .= ' quality=' . ($q->{effectiveLabel} || 'unknown');
+        }
+        push @playerList, $line;
     }
 
     require POSIX;
@@ -1232,9 +788,7 @@ sub _diagnosticBundleHandler {
         "Perl: $]",
         "SpotOn version: " . (Plugins::SpotOn::Plugin->_pluginDataFor('version') || 'unknown'),
         "Active account: $redactedId",
-        "Bitrate: " . ($prefs->get('bitrate') || 320),
-        "Normalization: " . ($prefs->get('normalization') ? 'on' : 'off'),
-        "Client-ID: $redactedClientId",
+        @backendLines,
         "diagnosticMode: 1",
         '',
         '--- Players ---',
@@ -1247,8 +801,8 @@ sub _diagnosticBundleHandler {
     # --- Token & API Status ---
     my @tokenStatus;
     eval {
-        require Plugins::SpotOn::API::Client;
-        my $snapshot = Plugins::SpotOn::API::Client->statusSnapshot() || {};
+        require Plugins::SpotOn::API::SpClient;
+        my $snapshot = Plugins::SpotOn::API::SpClient->statusSnapshot() || {};
         push @tokenStatus, '--- Token & API Status ---';
 
         my $accounts = $prefs->get('accounts') || {};
@@ -1260,6 +814,11 @@ sub _diagnosticBundleHandler {
         push @tokenStatus, "  API requests: " . ($snapshot->{apiRequestCount} || 0);
         push @tokenStatus, "  429 responses: " . ($snapshot->{api429Count} || 0);
         push @tokenStatus, "  Rate limited: " . ($snapshot->{rateLimited} ? 'YES' : 'no');
+        push @tokenStatus, "  spclient host: " . ($snapshot->{spclientHost} // '(not resolved)');
+        push @tokenStatus, "  Last error: " . ($snapshot->{lastErrorClass} // '(none)');
+        for my $acctId (sort keys %{ $snapshot->{login5} || {} }) {
+            push @tokenStatus, "  login5 state (" . substr($acctId, 0, 4) . "****): " . ($snapshot->{login5}{$acctId} // 'unknown');
+        }
 
         if ($INC{'Plugins/SpotOn/Status.pm'}) {
             my $errors = Plugins::SpotOn::Status->getErrorHistory() || [];
@@ -1288,7 +847,7 @@ sub _diagnosticBundleHandler {
     for my $logFile (@logFiles) {
         my $basename = basename($logFile);
         $logs .= "--- Log: $basename ---\n";
-        $logs .= _readLogTail($logFile, $maxBytes);
+        $logs .= _redactBundleText(_readLogTail($logFile, $maxBytes));
         $logs .= "\n";
     }
 
@@ -1308,7 +867,7 @@ sub _diagnosticBundleHandler {
                 shift @spotonLines if @spotonLines > 200;
             }
             close $sfh;
-            $logs .= join('', @spotonLines) || "(no SpotOn entries found)\n";
+            $logs .= _redactBundleText(join('', @spotonLines)) || "(no SpotOn entries found)\n";
         } else {
             $logs .= "(could not open server.log: $!)\n";
         }
@@ -1329,7 +888,11 @@ sub _diagnosticBundleHandler {
 
 # ============================================================
 # Clear logs endpoint (GT-07): /plugins/SpotOn/settings/clearLogs
-# Deletes all *-connect.log files in the spoton cache directory.
+# Deletes the *-connect.log, *-unified.log, *-soloist.log.1 and
+# *-soloist.log.1.tmp files in the spoton cache directory and TRUNCATES the live *-soloist.log files to 0
+# (74b-04): a running Soloist daemon keeps its append-mode file handle, an
+# unlinked file would swallow its output until the next daemon start. The
+# deleted count covers every file removed or truncated.
 # ============================================================
 sub _clearLogsHandler {
     my ($httpClient, $response) = @_;
@@ -1342,7 +905,10 @@ sub _clearLogsHandler {
     my @logFiles = (
         bsd_glob(catfile($spotonDir, '*-connect.log')),
         bsd_glob(catfile($spotonDir, '*-unified.log')),
+        bsd_glob(catfile($spotonDir, '*-soloist.log.1')),
+        bsd_glob(catfile($spotonDir, '*-soloist.log.1.tmp')),
     );
+    my @liveSoloistLogs = bsd_glob(catfile($spotonDir, '*-soloist.log'));
 
     my $deleted = 0;
     for my $logFile (@logFiles) {
@@ -1351,6 +917,15 @@ sub _clearLogsHandler {
         } else {
             $log->warn("clearLogs: failed to delete $logFile: $!");
         }
+    }
+    for my $logFile (@liveSoloistLogs) {
+        my $fh;
+        if (open($fh, '+<', $logFile) && truncate($fh, 0)) {
+            $deleted++;
+        } else {
+            $log->warn("clearLogs: failed to truncate $logFile: $!");
+        }
+        close($fh) if $fh;
     }
 
     main::INFOLOG && $log->is_info && $log->info("clearLogs: deleted $deleted log file(s)");

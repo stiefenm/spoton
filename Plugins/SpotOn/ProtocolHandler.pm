@@ -51,6 +51,22 @@ sub _applyRuntimeMetadata {
         }
     }
 
+    # Phase 82 (Befund 2, D-04): a length that arrives asynchronously (the
+    # API refetch, or a later getMetadataFor cache hit) releases a
+    # T_meta-held successCb and promotes seekable back to 1. Delivered to
+    # the backend role (84-08: notify('noteDuration'); a backend without a
+    # player engine answers 'unsupported'). Best-effort -- eval-guarded:
+    # $client here can be a lightweight test/UI double without a real
+    # id(); metadata display must never crash on it.
+    if ($client && $logicalUrl =~ m{^spoton://(?:track|episode):} && $meta->{duration}) {
+        eval {
+            require Plugins::SpotOn::Unified::DaemonManager;
+            my $be = Plugins::SpotOn::Unified::DaemonManager->backendFor($client);
+            $be->notify('noteDuration', url => $logicalUrl, secs => $meta->{duration}) if $be;
+            1;
+        };
+    }
+
     # Only set title for the actively playing song — getMetadataFor is called
     # for every queue entry, not just the current track
     return unless $song && $client && $meta->{title};
@@ -71,7 +87,43 @@ use constant MAX_BROWSE_404_RETRIES => 3;
 use constant BROWSE_404_RETRY_DELAY => 2;   # seconds between retries
 my %_browse404Retries;  # "$clientId|$trackUrl" => attempt_count
 
-sub contentType { 'son' }
+# Fable-5 review of quick-260910-upw (CR-01): every _asyncRefetch metadata-fetch
+# failure -- not just the definitive ones -- must keep a per-url bound on the
+# refetch cadence, or a fast-failing 5xx/no_token storms every status poll,
+# throttled only by a reactive 429. Transient failures get this short TTL
+# instead of the definitive case's 60s so a later success still lands promptly.
+use constant META_REFETCH_TRANSIENT_TTL => 15;
+
+# 84-08 (SEAM-6.2): the former runtime backend-pref check of Phase 72 D-01
+# is gone. spoton:// URLs are unchanged across backends; every entry point
+# below asks the backend role (DaemonManager->backendFor / backendClass)
+# for what differs: content type, sample hints, URLs, the track request.
+
+# _streamingModeIsProxy($client) -- WR-05: per-player streamingMode=proxy (or
+# per-player 'global' resolving to a global streamingMode=proxy default,
+# GH #96) forces LMS-relayed streaming. canDirectStream's COMPAT-02 gate,
+# which runs before every backend's direct-URL answer (84-08: the former
+# per-backend Browse branch that ran ahead of it is gone).
+sub _streamingModeIsProxy {
+    my ($client) = @_;
+    return 0 unless $client;
+
+    my $gateClient = $client->can('master') ? $client->master : $client;
+    my $mode = $prefs->client($gateClient)->get('streamingMode') || 'global';
+    if ($mode eq 'global') {
+        $mode = $prefs->get('streamingMode') || 'direct';
+    }
+    return $mode eq 'proxy' ? 1 : 0;
+}
+
+# Phase 76 D-06 note: this class-level default is NOT the transcode-profile
+# input -- Slim::Player::Song::open() (Song.pm:375-378) starts from
+# Slim::Music::Info::contentType($track) but then unconditionally replaces
+# it with our formatOverride($song) result, which is where the per-player
+# resolver ('soc' vs 'smp' vs 'son') lives. Kept client-agnostic here on
+# purpose: there is no client context at this call site -- hence the role
+# CLASS default (84-08, capabilitiesDefault), never a per-player read.
+sub contentType { Plugins::SpotOn::Unified::DaemonManager->backendClass->capabilitiesDefault->{contentType} }
 
 sub isRemote    { 1 }
 
@@ -94,29 +146,134 @@ sub trackGain {
 # - 'son' for single-track Browse URLs (default)
 sub getFormatForURL {
     my ($class, $url) = @_;
+    # Phase 73 D-03: every backend's Browse URL plays through the daemon's
+    # HTTP endpoint -- the 'soc' PCM-direct/proxy family, the fall-through
+    # default below (84-08 deleted the redundant per-backend branch; the
+    # result is identical).
     return 'soc' if $url && $url =~ m{spoton://connect-};
     return 'pcm' if $url && $url =~ m{:\d+/stream\b};
     return 'soc' if $url && $url =~ m{:\d+/(?:track|episode)/};  # Phase 28: Browse daemon HTTP URLs
     return 'soc';
 }
 
+# contentTypeFor($class, $client)
+# Returns ($type, $resolver, $resolved): the per-player stream content type
+# (the INPUT side of the LMS transcoding key) plus the two facts it was
+# derived from. The ONE mapping from "what the backend resolved" to "which
+# convert rule LMS runs": formatOverride (playback) and
+# DaemonManager->effectiveFormat/effectiveOutput (every display surface) both
+# call it, so what the player page says is what playback does (74b D-08).
+#
+# Four types, each with exactly ONE rule in custom-convert.conf so the
+# player's format-preference order (TranscodingHelper.pm:352-396) can never
+# change the outcome (74b D-14):
+#   'soc' pure PCM passthrough          (soc pcm * *)
+#   'sof' FLAC 16 via the bundled tool  (sof flc * *)
+#   'smp' MP3 via the lame tool         (smp mp3 * *, Phase 76 D-07)
+#   'son' OGG passthrough               (son ogg * *)
+#
+# 84-08 (SEAM-6.2): the backend names its format resolver
+# (capabilitiesDefault->{formats}); the core calls it on DaemonManager and
+# maps the answer. A resolver answers EITHER a format name
+# ('pcm'|'flac'|'mp3' -- Phase 76 D-06, the bounded /stream family) OR the
+# OGG-passthrough boolean (D-04/D-05/D-08). Mapping:
+#   'mp3'          -> 'smp'
+#   'flac'         -> 'sof' for an explicit FLAC choice, otherwise 'soc'
+#                     (74b D-22: under Soloist the resolver answers 'flac'
+#                     for Auto on an flc group, which keeps the stream on
+#                     the LMS proxy path; the delivered format stays PCM
+#                     through the soc pcm rule until Auto is staged to FLAC)
+#   passthrough 1  -> 'son'
+#   boolean 0      -> 'soc', except the librespot per-player pref: mp3 ->
+#                     'smp'
+#   anything else  -> 'soc'
+sub contentTypeFor {
+    my ($class, $client) = @_;
+
+    require Plugins::SpotOn::Unified::DaemonManager;
+
+    my $resolver = Plugins::SpotOn::Unified::DaemonManager->backendClass->capabilitiesDefault->{formats};
+    my $resolved = Plugins::SpotOn::Unified::DaemonManager->$resolver($client);
+    $resolved = '' unless defined $resolved;
+
+    # The stored per-player choice (WR-04 chain). Both callers pass the
+    # master, the pref lives there.
+    my $stored = sub {
+        return 'auto' unless $client;
+        return $prefs->client($client)->get('streamFormat')
+            || $prefs->client($client)->get('connectOggOverride')
+            || 'auto';
+    };
+
+    my $type;
+    if ($resolved eq 'mp3') {
+        $type = 'smp';
+    }
+    elsif ($resolved eq 'flac') {
+        # Under Soloist the resolver already answered with a NAME. Re-reading
+        # the pref to pick a type would undo a capability downgrade (a
+        # downgrade answers 'pcm', never 'flac', RESEARCH Pitfall 3), so the
+        # pref is consulted only here, where it separates an explicit FLAC
+        # choice from Auto.
+        if ($stored->() eq 'flac') {
+            $type = 'sof';
+        }
+        else {
+            # 74b D-16/D-22: Auto on an flc group. While the staging seam
+            # answers false Auto keeps today's PCM delivery through the soc
+            # pcm rule (the stream is on the proxy path either way, the
+            # resolver's answer decided that); once it answers true the same
+            # proxied stream is delivered as FLAC through the sof rule.
+            # Asked only in this branch, never in the path resolver.
+            $type = Plugins::SpotOn::Unified::DaemonManager->autoFlacEnabled ? 'sof' : 'soc';
+        }
+    }
+    elsif ($resolved eq '1') {
+        $type = 'son';
+    }
+    elsif ($resolved =~ /^(?:0)?$/) {
+        # The librespot boolean answered (no name): the per-player pref picks
+        # the single-rule forcing type -- without it 'soc' would let flc/pcm
+        # beat mp3 in the player's format-preference order.
+        $type = 'soc';
+        my $pref = $stored->();
+        if ($pref eq 'mp3') {
+            $type = 'smp';
+        }
+        elsif ($pref eq 'flac') {
+            # 74b D-04 (code side) / D-15: an explicit FLAC pref under
+            # librespot rides the same sof rule (16-bit input is padded
+            # losslessly by $SAMPLESIZE$) when every member of the player or
+            # sync group can play flc, otherwise it degrades to PCM.
+            # Librespot Auto stays unchanged ('son' or 'soc').
+            $type = Plugins::SpotOn::Unified::DaemonManager->groupSupportsFlac($client) ? 'sof' : 'soc';
+        }
+    }
+    else {
+        $type = 'soc';
+    }
+
+    return ($type, $resolver, $resolved);
+}
+
 # formatOverride($class, $song)
-# Returns the content type (INPUT side of transcoding key) for the current song.
-# 'son' (SpotOn Native) when daemon sends OGG passthrough, 'soc' (SpotOn Coded) for PCM.
+# Returns the content type (INPUT side of transcoding key) for the current song:
+# one of 'soc' (PCM), 'sof' (FLAC), 'smp' (MP3), 'son' (OGG passthrough), see
+# contentTypeFor above (74b D-14). For Auto the resolver's 'flac' decides the
+# PATH (proxy instead of direct), the type decides the delivered format (74b
+# D-22).
 #
 # LMS Song.pm constructs the transcoding profile key as:
-#   formatOverride-outputFormat-*-*  (e.g. soc-pcm-*-* or son-ogg-*-*)
+#   formatOverride-outputFormat-*-*  (e.g. soc-pcm-*-* or sof-flc-*-*)
 sub formatOverride {
     my ($class, $song) = @_;
 
     my $client = $song->master;
     my $url = $song->track->url || '';
 
-    require Plugins::SpotOn::Unified::DaemonManager;
-    my $fmt = Plugins::SpotOn::Unified::DaemonManager->resolvePassthroughForClient($client)
-            ? 'son' : 'soc';
+    my ($fmt, $resolver, $resolved) = $class->contentTypeFor($client);
 
-    $log->warn("[DIAG] formatOverride: mac=" . ($client ? $client->id : 'none') . " url=$url result=$fmt") if $prefs->get('diagnosticMode');
+    $log->warn("[DIAG] formatOverride: mac=" . ($client ? $client->id : 'none') . " url=$url result=$fmt resolver=$resolver resolved=$resolved") if $prefs->get('diagnosticMode');
     return $fmt;
 }
 
@@ -137,6 +294,13 @@ sub canDirectStreamSong {
         $song->startOffset($offset);
     }
 
+    # Phase 82 (D-04, Befund 1): the &start=<offset> rewrite for the
+    # bounded /stream/track?uri=...&g=<gen> URL is REMOVED -- Befund 1
+    # established that this restart path never reaches getNextTrack
+    # (0/30 seek_arm on LMS `time`, § S-03), so the rewrite it was meant to
+    # feed was dead code from the start. Seek/rewind now reach the daemon
+    # via canDoAction/getSeekData's marker -> onStream -> requestTrack.
+
     return $directUrl;
 }
 
@@ -152,50 +316,39 @@ sub canDirectStream {
 
     # COMPAT-02: per-player streamingMode=proxy (or per-player 'global' resolving
     # to a global streamingMode=proxy default) forces LMS-relayed streaming for
-    # BOTH Browse and Connect (D-02) — one gate at the top covers both branches
-    # below, no duplication. D-03: this gate is orthogonal to sync-group gating,
-    # which already happens independently inside the Browse/Connect branches.
-    # D-05: this gate is orthogonal to codec/transcoding format selection.
+    # BOTH Browse and Connect (D-02) and for every backend (WR-05: it runs
+    # before any backend's direct-URL answer) — one gate at the top, no
+    # duplication. D-03: this gate is orthogonal to sync-group gating, which
+    # the backend's streamUrl applies. D-05: this gate is orthogonal to
+    # codec/transcoding format selection.
     # Known, accepted side effect (review finding): in proxy mode this gate
     # returns before the translated-Connect-URL cleanup further down, so an entry
     # can remain in %_translatedConnectUrls; if the user later switches back to
     # direct, one stale entry causes a single harmless extra return 0 (the proxy
     # path in new() absorbs it) — bounded and accepted, no mitigation needed.
-    {
-        my $gateClient = $client->can('master') ? $client->master : $client;
-        my $mode = $prefs->client($gateClient)->get('streamingMode') || 'global';
-        if ($mode eq 'global') {
-            # GH #96: per-player unset/global resolves against the global default
-            $mode = $prefs->get('streamingMode') || 'direct';
-        }
-        if ($mode eq 'proxy') {
-            main::INFOLOG && $log->is_info && $log->info(
-                "canDirectStream: 0 (streamingMode=proxy)"
-            );
-            return 0;
-        }
+    if (_streamingModeIsProxy($client)) {
+        main::INFOLOG && $log->is_info && $log->info(
+            "canDirectStream: 0 (streamingMode=proxy)"
+        );
+        return 0;
     }
 
-    # Browse URL: direct stream to unified daemon /track/{id}
-    if ($url && $url =~ m{^spoton://(track|episode):([A-Za-z0-9]+)$}) {
-        my $contentType = $1;
-        my $trackId = $2;
-        my $browseClient = $client->can('master') ? $client->master : $client;
+    # 84-08 (SEAM-6.2): the direct URL itself comes from the backend role
+    # (streamUrl browse_direct / connect_direct) -- librespot
+    # http://<serverAddr>:<port>/<type>/<id> resp. /stream, the per-track
+    # bounded /stream?uri=...&g=<gen> endpoint for the other backend -- with
+    # the backend's own format/daemon/synced gates; undef there means 0 here
+    # (Synced: new()'s proxy substitution handles it).
+    # T-05-16: URLs are built from Slim::Utils::Network::serverAddr() + the
+    # daemon port -- both LMS-controlled, no user input in the URL.
+    if ($url && $url =~ m{^spoton://(?:track|episode):[A-Za-z0-9]+$}) {
         require Plugins::SpotOn::Unified::DaemonManager;
-        my $helper = Plugins::SpotOn::Unified::DaemonManager->helperForClient($browseClient);
-        if ($helper && $helper->alive && $helper->_streamPort) {
-            if ($browseClient->isSynced()) {
-                $log->warn("[DIAG] canDirectStream: unified browse url=$url result=0 reason=synced") if $prefs->get('diagnosticMode');
-                return 0;   # Synced: new() proxy handles
-            }
-            my $host   = Slim::Utils::Network::serverAddr();
-            my $ds_url = "http://$host:" . $helper->_streamPort . "/$contentType/$trackId";
-            $log->warn("[DIAG] canDirectStream: unified browse url=$ds_url") if $prefs->get('diagnosticMode');
-            return $ds_url;
-        }
+        my $be = Plugins::SpotOn::Unified::DaemonManager->backendFor($client);
+        my $ds_url = $be ? $be->streamUrl($client, $url, 'browse_direct') : undef;
+        return defined $ds_url ? $ds_url : 0;
     }
 
-    # Connect URL: direct stream to unified daemon /stream
+    # Connect URL: direct stream to the daemon's /stream
     if ($url && $url =~ m{spoton://connect-}) {
         # Translated history URL: translate to Browse, skip Direct Stream
         if (delete $_translatedConnectUrls{$url}) {
@@ -204,37 +357,10 @@ sub canDirectStream {
             );
             return 0;
         }
-        my $connectClient = $client->can('master') ? $client->master : $client;
-        # Per-player streamFormat: pcm/flac/mp3 force transcoding
-        {
-            my $fmt = $prefs->client($connectClient)->get('streamFormat')
-                   || $prefs->client($connectClient)->get('connectOggOverride')
-                   || 'auto';
-            if ($fmt =~ /^(?:pcm|flac|mp3)$/) {
-                main::INFOLOG && $log->is_info && $log->info(
-                    "canDirectStream: 0 (streamFormat=$fmt forces transcoding)"
-                );
-                return 0;
-            }
-        }
         require Plugins::SpotOn::Unified::DaemonManager;
-        my $helper = Plugins::SpotOn::Unified::DaemonManager->helperForClient($connectClient);
-        if ($helper && $helper->alive && $helper->_streamPort) {
-            if ($connectClient->isSynced()) {
-                $log->warn("[DIAG] canDirectStream: unified connect result=0 reason=synced") if $prefs->get('diagnosticMode');
-                main::INFOLOG && $log->is_info && $log->info(
-                    "canDirectStream: 0 (player is synced)"
-                );
-                return 0;
-            }
-            my $host   = Slim::Utils::Network::serverAddr();
-            my $ds_url = "http://$host:" . $helper->_streamPort . "/stream";
-            $log->warn("[DIAG] canDirectStream: unified connect url=$ds_url") if $prefs->get('diagnosticMode');
-            main::INFOLOG && $log->is_info && $log->info(
-                "canDirectStream: $ds_url"
-            );
-            return $ds_url;
-        }
+        my $be = Plugins::SpotOn::Unified::DaemonManager->backendFor($client);
+        my $ds_url = $be ? $be->streamUrl($client, $url, 'connect_direct') : undef;
+        return defined $ds_url ? $ds_url : 0;
     }
 
     return 0;
@@ -256,7 +382,7 @@ sub requestString {
         my ($server, $port, $path) = Slim::Utils::Misc::crackURL($url);
         my $host = ($port == 80) ? $server : "$server:$port";
         main::INFOLOG && $log->is_info && $log->info(
-            "requestString: daemon proxy — plain GET (no Range) for $url"
+            "requestString: daemon proxy - plain GET (no Range) for $url"
         );
         return join($CRLF,
             "GET $path HTTP/1.0",
@@ -286,7 +412,7 @@ sub handleDirectError {
             my $remaining = ($client->controller()->playingSongDuration() || 0)
                           - ($client->controller()->playingSongElapsed() || 0);
             $remaining = 1 if $remaining < 1;
-            $log->warn("Browse daemon 404 for $url — prefetch context, scheduling skip in ${remaining}s");
+            $log->warn("Browse daemon 404 for $url - prefetch context, scheduling skip in ${remaining}s");
             # M9: pass the failing URL — playback state can change before the
             # timer fires, and _skipUnavailable must not skip the wrong track.
             Slim::Utils::Timers::killTimers($client, \&_skipUnavailable);
@@ -300,7 +426,7 @@ sub handleDirectError {
         $_browse404Retries{$retryKey} = $attempt;
 
         if ($attempt <= MAX_BROWSE_404_RETRIES) {
-            $log->warn("Browse daemon 404 for $url — retry $attempt/" . MAX_BROWSE_404_RETRIES
+            $log->warn("Browse daemon 404 for $url - retry $attempt/" . MAX_BROWSE_404_RETRIES
                       . " in " . BROWSE_404_RETRY_DELAY . "s");
             Slim::Utils::Timers::killTimers($client, \&_retryStream);
             Slim::Utils::Timers::setTimer($client, Time::HiRes::time() + BROWSE_404_RETRY_DELAY,
@@ -309,7 +435,7 @@ sub handleDirectError {
         }
 
         # Exhausted retries — skip to next track and clean up
-        $log->warn("Browse daemon 404 for $url — $attempt attempts exhausted, skipping to next track");
+        $log->warn("Browse daemon 404 for $url - $attempt attempts exhausted, skipping to next track");
         if ($INC{'Plugins/SpotOn/Status.pm'}) {
             Plugins::SpotOn::Status->recordError('warn', 'Browse', "404 retries exhausted, skipping track");
         }
@@ -351,7 +477,7 @@ sub _skipUnavailable {
         unless ($streaming && $streamUrl eq $url) {
             main::DEBUGLOG && $log->is_debug && $log->debug(
                 "_skipUnavailable: streaming song changed (now: "
-                . ($streamUrl || 'none') . ") — dropping stale skip for $url (M9)");
+                . ($streamUrl || 'none') . ") - dropping stale skip for $url (M9)");
             return;
         }
     }
@@ -376,7 +502,7 @@ sub canEnhanceHTTP {
         # Phase 28: also return 0 for Browse daemon /track/ URLs (same reason as /stream).
         $log->warn("[DIAG] canEnhanceHTTP: url=$url result=0 reason=daemon_proxy_infinite_stream") if $prefs->get('diagnosticMode');
         main::INFOLOG && $log->is_info && $log->info(
-            "canEnhanceHTTP: daemon proxy — returning 0 for $url"
+            "canEnhanceHTTP: daemon proxy - returning 0 for $url"
         );
         return 0;
     }
@@ -404,38 +530,36 @@ sub new {
         if ($client) {
             $client = $client->master if $client->can('master');
             main::INFOLOG && $log->is_info && $log->info(
-                "D-08: Browse URL — unified daemon handles mode transition for " . $client->id
+                "D-08: Browse URL - unified daemon handles mode transition for " . $client->id
             );
         }
     }
 
-    # (b2) Browse sync-group proxy — substitute Unified daemon HTTP URL for synced players.
-    # T-28-08: trackId extracted via [A-Za-z0-9]+ regex from already-validated spoton:// URL.
-    if ($url =~ m{^spoton://(track|episode):([A-Za-z0-9]+)$} && $url !~ m{spoton://connect-}) {
-        my $contentType = $1;
-        my $trackId = $2;
-        my $client  = $args->{client};
+    # (b2/b3) Browse URL substitution through the backend role (84-08,
+    # SEAM-6.2). new() is only called when canDirectStream() returned 0, so
+    # a spoton://track|episode URL always needs the daemon's HTTP endpoint:
+    # synced players (sync-group proxy), proxy mode and the transcode path.
+    # The role builds the URL -- librespot /<type>/<id>[?start_position=N]
+    # (sets the song's startOffset for a seek), the per-track bounded
+    # endpoint for the other backend -- and answers undef without an alive
+    # daemon + stream port. The url LMS opened is passed explicitly: the
+    # role must not re-derive it from the song (Song::open uses
+    # `$redir || $track->url`). T-28-08: the regex below only lets an
+    # already-validated [A-Za-z0-9]+ id through.
+    if ($url =~ m{^spoton://(?:track|episode):[A-Za-z0-9]+$}) {
+        my $client = $args->{client};
         if ($client) {
             $client = $client->master if $client->can('master');
             require Plugins::SpotOn::Unified::DaemonManager;
-            my $helper = Plugins::SpotOn::Unified::DaemonManager->helperForClient($client);
-            if ($helper && $helper->alive && $helper->_streamPort) {
-                my $host    = Slim::Utils::Network::serverAddr();
-                my $httpUrl = "http://$host:" . $helper->_streamPort . "/$contentType/$trackId";
-                my $song = $args->{song};
-                if ($song && $song->seekdata && $song->seekdata->{'timeOffset'}) {
-                    my $offset = $song->seekdata->{'timeOffset'};
-                    $httpUrl .= '?start_position=' . $offset;
-                    $song->startOffset($offset);
-                }
-                $log->warn("[DIAG] unified_browse_sync_proxy: mac=" . $client->id . " http_url=$httpUrl") if $prefs->get('diagnosticMode');
-                $args = { %$args, url => $httpUrl };
-            } else {
+            my $be   = Plugins::SpotOn::Unified::DaemonManager->backendFor($client);
+            my $url2 = $be ? $be->streamUrl($client, $args->{song}, 'browse_proxy', url => $url) : undef;
+            unless (defined $url2) {
                 main::INFOLOG && $log->is_info && $log->info(
-                    "Browse URL but no active unified daemon for " . ($client ? $client->id : '?') . " — returning undef"
+                    "Browse URL but no active unified daemon for " . $client->id . " - returning undef"
                 );
                 return undef;
             }
+            $args = { %$args, url => $url2 };
         }
     }
 
@@ -447,13 +571,15 @@ sub new {
             require Plugins::SpotOn::Unified::DaemonManager;
             my $helper = Plugins::SpotOn::Unified::DaemonManager->helperForClient($client);
             if ($helper && $helper->alive && $helper->_streamPort) {
-                my $host    = Slim::Utils::Network::serverAddr();
+                # CR-05 (82-25): hardcoded, not the auto-detected host IP --
+                # see the (b2) block above for the full rationale.
+                my $host    = '127.0.0.1';
                 my $httpUrl = 'http://' . $host . ':' . $helper->_streamPort . '/stream';
                 $log->warn("[DIAG] unified_connect_sync_proxy: mac=" . $client->id . " http_url=$httpUrl") if $prefs->get('diagnosticMode');
                 $args = { %$args, url => $httpUrl };
             } else {
                 main::INFOLOG && $log->is_info && $log->info(
-                    "Connect URL but no active unified daemon for " . ($client ? $client->id : '?') . " — returning undef"
+                    "Connect URL but no active unified daemon for " . ($client ? $client->id : '?') . " - returning undef"
                 );
                 return undef;
             }
@@ -469,6 +595,16 @@ sub new {
 # receives a valid spoton://track:ID instead of spoton://connect-TIMESTAMP.
 sub getNextTrack {
     my ($class, $song, $successCb, $errorCb) = @_;
+
+    # Scope-fence deviation (83-03-EXEC, Nutzerentscheidung, 2026-09-22):
+    # unbedingte Eintrittsprotokollierung, VOR jedem Zweig -- die fuenf
+    # bereits vorhandenen $log->info(...)-Aufrufe im Rumpf decken nur
+    # Sonderpfade ab (tote Connect-URL-Uebersetzung, Deferral); der normale
+    # Erfolgspfad einer live Connect-Session (isSpotifyConnect==wahr, weiter
+    # unten) hatte bislang KEINE Protokollierung auf jedem Level. Exaktes
+    # Idiom der sechs bestehenden [DIAG]-Zeilen dieser Datei (u.a. :187,
+    # :206, :263, :284, :292, :311), kein neuer Mechanismus, kein neues Gate.
+    $log->warn("[DIAG] getNextTrack: mac=" . ($song->master ? $song->master->id : 'none') . " url=" . ($song->track->url || '')) if $prefs->get('diagnosticMode');
 
     my $url = $song->track->url || '';
     if ($url =~ m{spoton://connect-}) {
@@ -504,12 +640,23 @@ sub getNextTrack {
         # No cached spotifyUri — either a live Connect session or an untranslatable URL
         require Plugins::SpotOn::Connect;
         if (Plugins::SpotOn::Connect->isSpotifyConnect($client)) {
+            # D-08 (Phase 76) / CR-01: the sample-size hint comes from the
+            # backend role, set EXPLICITLY for every backend (S32LE from
+            # fake-libpulse's /stream, S16LE from librespot) so the $SAMPLESIZE$
+            # of the sof FLAC rule and the smp MP3 rule (74b D-14) and the
+            # strm pcmsamplesize frame the stream correctly: RemoteTrack objects are cached in-memory by
+            # URL (Slim::Schema::RemoteTrack %Cache) and survive a backend
+            # switch within one LMS uptime, so a stale hint from the other
+            # backend would otherwise misframe the stream (transcode:
+            # $SAMPLESIZE$; direct: strm pcmsamplesize).
+            require Plugins::SpotOn::Unified::DaemonManager;
+            _applySampleHints($song, Plugins::SpotOn::Unified::DaemonManager->backendClass->capabilitiesDefault);
             $successCb->();
             return;
         }
 
         main::INFOLOG && $log->is_info && $log->info(
-            "getNextTrack: dead Connect URL with no cached spotifyUri — cannot translate"
+            "getNextTrack: dead Connect URL with no cached spotifyUri - cannot translate"
         );
         $errorCb->('PROBLEM_OPENING', 'No cached track ID for Connect history URL');
         return;
@@ -522,7 +669,105 @@ sub getNextTrack {
         $song->duration($browseMeta->{duration});
     }
 
+    # spoton://track|episode Browse URL: the backend role takes the track
+    # request (84-08, SEAM-6.2). The sample hints come from its
+    # capabilities and are set EXPLICITLY for every backend (D-08 Phase 76:
+    # raw S32LE/44100/stereo from fake-libpulse's /stream, D-04; CR-01:
+    # librespot S16LE -- RemoteTrack objects are cached in-memory by URL
+    # and survive a backend switch within one LMS uptime, so relying on a
+    # "never set" default would leave the other backend's hint in place).
+    # They drive both the strm-frame pcm_sample_sizes mapping
+    # (Squeezebox.pm:1129) and the $SAMPLESIZE$ substitution in the sof FLAC
+    # and smp MP3 convert rules (74b D-14, TranscodingHelper.pm:449).
+    #
+    # control('track', source => 'getNextTrack') owns the callbacks: the
+    # player engine's request (or its deferral while the daemon is still
+    # coming up, or the named prerequisite failure), or librespot's direct
+    # successCb. The position travels as ms (seekdata timeOffset).
+    if ($url =~ m{^spoton://(?:track|episode):[A-Za-z0-9]+$}) {
+        my $client = $song->master;
+        require Plugins::SpotOn::Unified::DaemonManager;
+        my $be = Plugins::SpotOn::Unified::DaemonManager->backendFor($client);
+        unless ($be) {
+            $successCb->();
+            return;
+        }
+
+        _applySampleHints($song, $be->capabilities);
+
+        my $posMs = ($song->can('seekdata') && $song->seekdata && defined $song->seekdata->{timeOffset})
+            ? int($song->seekdata->{timeOffset} * 1000)
+            : 0;
+
+        $be->control('track', source => 'getNextTrack',
+            url => $url, position_ms => $posMs, song => $song, duration => $song->duration,
+            successCb => $successCb, errorCb => $errorCb,
+        );
+
+        # Clean slate on Browse entry (Phase 83.1 D-D1): the release happens
+        # AFTER the player engine has decided, not before. Its own
+        # connect->browse handoff already flips the mode to 'browse' for a
+        # foreign uri from getNextTrack; a real in-session getNextTrack
+        # (mode still 'connect') keeps its claim. No engine instance (a
+        # deferred request, or a backend without one: state mode undef) ->
+        # nothing to release.
+        my $mode = $be->state->{mode};
+        Plugins::SpotOn::Connect->releaseConnectClaim($client, 'browse-entry') if defined $mode && $mode ne 'connect';
+
+        return;
+    }
+
     $successCb->();
+}
+
+# _applySampleHints($song, $caps) -- the backend's samplesize/samplerate/
+# channels on the song's RemoteTrack (84-08; each `can`-guarded as before).
+sub _applySampleHints {
+    my ($song, $caps) = @_;
+    my $track = $song->track or return;
+    $track->samplesize($caps->{samplesize}) if $caps->{samplesize} && $track->can('samplesize');
+    $track->samplerate($caps->{samplerate}) if $caps->{samplerate} && $track->can('samplerate');
+    $track->channels($caps->{channels})     if $caps->{channels}   && $track->can('channels');
+}
+
+# onStream($class, $player, $song)
+# D-05: verified against LMS 9.1.1 (StreamingController.pm:1311-1327; byte-
+# identical with tag 9.1.1, see 82-RESEARCH.md § D-07) -- called for EVERY
+# stream start (play, EOF/skip, seek N, rewind, reconnect, sync members),
+# per player, right after Song::open, immediately before $player->play.
+# There is no callback and $player->play runs in the SAME synchronous LMS
+# command (Pitfall 2) -- Control arms synchronously when it dispatches from
+# here (requestTrack's source => 'onStream').
+#
+# This is THE consumer for both absicht-erfassende markers (Befund 1/3,
+# D-04): getNextTrack remains the entry point for ordinary title changes;
+# a restart triggered by canDoAction('rew')/getSeekData (rewind, seek N,
+# _Continue reconnect) is NEVER visible to getNextTrack (Befund 1 -- LMS's
+# _JumpToTime bypasses it entirely) and reaches Control only here. Without
+# a marker or seekdata, this call is the idempotent twin of getNextTrack
+# for the SAME title (Befund 1 point 3) -- requestTrack's own idempotency
+# absorbs the double entry.
+sub onStream {
+    my ($class, $player, $song) = @_;
+
+    my $master = $song->master or return;
+    # Sync-Mitglieder: onStream is called once per player in the group
+    # (A4); only the master requests -- a player engine exists only for
+    # the master anyway (the role resolves the master too, but this avoids
+    # a second, redundant track request per synced player).
+    return unless $player && $player->id eq $master->id;
+
+    my $url = $song->track ? ($song->track->url || '') : '';
+    return unless $url =~ m{^spoton://(?:track|episode):[A-Za-z0-9]+$};
+
+    # 84-08 (SEAM-6.2): the seekdata/marker/startOffset/track-request body
+    # lives in the backend role (control('track', source => 'onStream'));
+    # a backend without a player engine answers 'unsupported' before any
+    # work, exactly the former "no engine -> return".
+    require Plugins::SpotOn::Unified::DaemonManager;
+    my $be = Plugins::SpotOn::Unified::DaemonManager->backendFor($master) or return;
+    $be->control('track', source => 'onStream', url => $url, song => $song, duration => $song->duration);
+    return;
 }
 
 # explodePlaylist($class, $client, $uri, $cb)
@@ -553,9 +798,9 @@ sub explodePlaylist {
         my $albumId = $1;
         require Plugins::SpotOn::Plugin;
         my $accountId = Plugins::SpotOn::Plugin::_getAccountId($client);
-        require Plugins::SpotOn::API::Client;
+        require Plugins::SpotOn::API::SpClient;
 
-        Plugins::SpotOn::API::Client->getAlbum($accountId, $albumId, sub {
+        Plugins::SpotOn::API::SpClient->getAlbum($accountId, $albumId, sub {
             my ($album, $err) = @_;
             unless ($album && $album->{name}) {
                 main::INFOLOG && $log->is_info && $log->info(
@@ -595,9 +840,9 @@ sub explodePlaylist {
             my $fetchPage;
             $fetchPage = sub {
                 my ($offset) = @_;
-                Plugins::SpotOn::API::Client->getAlbumTracks($accountId, $albumId, {
+                Plugins::SpotOn::API::SpClient->getAlbumTracks($accountId, $albumId, {
                     offset => $offset,
-                    limit  => Plugins::SpotOn::API::Client->getLimit('library'),
+                    limit  => Plugins::SpotOn::API::SpClient->pageLimit('library'),
                 }, sub {
                     my ($data, $err) = @_;
                     unless ($data && $data->{items}) {
@@ -633,15 +878,15 @@ sub explodePlaylist {
         my $playlistId = $1;
         require Plugins::SpotOn::Plugin;
         my $accountId = Plugins::SpotOn::Plugin::_getAccountId($client);
-        require Plugins::SpotOn::API::Client;
+        require Plugins::SpotOn::API::SpClient;
 
         my @allItems;
         my $fetchPage;
         $fetchPage = sub {
             my ($offset) = @_;
-            Plugins::SpotOn::API::Client->getPlaylistItems($accountId, $playlistId, {
+            Plugins::SpotOn::API::SpClient->getPlaylistItems($accountId, $playlistId, {
                 offset => $offset,
-                limit  => Plugins::SpotOn::API::Client->getLimit('playlist_items'),
+                limit  => Plugins::SpotOn::API::SpClient->pageLimit('playlist_items'),
             }, sub {
                 my ($data, $err) = @_;
                 unless ($data && $data->{items}) {
@@ -686,16 +931,16 @@ sub explodePlaylist {
         my $showId = $1;
         require Plugins::SpotOn::Plugin;
         my $accountId = Plugins::SpotOn::Plugin::_getAccountId($client);
-        require Plugins::SpotOn::API::Client;
+        require Plugins::SpotOn::API::SpClient;
 
         my @allItems;
         my $total = 0;
         my $fetchPage;
         $fetchPage = sub {
             my ($offset) = @_;
-            Plugins::SpotOn::API::Client->getShowEpisodes($accountId, $showId, {
+            Plugins::SpotOn::API::SpClient->getShowEpisodes($accountId, $showId, {
                 offset => $offset,
-                limit  => Plugins::SpotOn::API::Client->getLimit('library'),
+                limit  => Plugins::SpotOn::API::SpClient->pageLimit('library'),
             }, sub {
                 my ($data, $err) = @_;
                 unless ($data && $data->{items}) {
@@ -762,24 +1007,37 @@ sub isRepeatingStream {
 
 sub canSeek {
     my ($class, $client) = @_;
+    # Both backends (librespot + soloist) support seek. librespot uses
+    # ?start_position=N in canDirectStreamSong; soloist uses LMS-native
+    # seek-restart with &start=N in the bounded URL (D-03 Phase 78).
     return Slim::Utils::Versions->compareVersions($::VERSION, '7.9.1') >= 0;
 }
 
 sub canTranscodeSeek {
     my ($class, $client) = @_;
-    # Unified daemon: seek is handled via ?start_position=N in canDirectStreamSong,
-    # not via $START$ in the transcoding command. Returning 0 keeps canDoSeek at 1
-    # so streamMode 'I' stays in the profile search and soc-pcm-*-* matches.
+    # Unified daemon: seek is handled via URL query parameters in
+    # canDirectStreamSong (?start_position=N for librespot, &start=N
+    # substitution for soloist bounded URLs), not via $START$ in the
+    # transcoding command. Returning 0 keeps canDoSeek at 1 so streamMode
+    # 'I' stays in the profile search and soc-pcm-*-* matches.
     return 0;
 }
 
 sub getSeekData {
     my ($class, $client, $song, $newtime) = @_;
 
-    # Connect mode (GH #129): return undef so _JumpToTime suppresses the
-    # LMS-side stream restart (_Stop + _Stream would tear down /stream).
-    # The ['time'] event still fires and Connect::_onSeek forwards the seek
-    # to the binary via /control/seek.
+    # 83.1-04 (D-B1): a Soloist connect session takes the SAME seekable/
+    # noteSeekIntent/{timeOffset} path as browse. The restart chain
+    # (_JumpToTime's _Stop+_Stream -> getNextTrack's same-uri handoff ->
+    # onStream(seek=1) -> Control::requestTrack -> _reconcilePlan's connect
+    # seek row -> arm + `send seek`, never a `play` with a uri) is the ONE seek
+    # path for Soloist connect (Prinzip 3.1(4)).
+    #
+    # 79-28 D-23: a librespot connect seek travels over POST /control/seek
+    # (Connect.pm _onSeek -> _forwardLibrespotSeek -> Backend::Librespot) and
+    # the daemon's flush carries the jump, so LMS must NOT restart /stream:
+    # undef here (GH #129 behaviour, restored behind the backend capability
+    # connectSeekViaControl; Soloist reports 0 and keeps the restart chain).
     #
     # Known accepted paths that still restart the stream (59-REVIEW R-2/R-3):
     # - Pause -> seek -> unpause: _JumpPaused stores resumeTime (canSeek=1),
@@ -789,28 +1047,91 @@ sub getSeekData {
     #   Seek-to-0 while paused IS suppressed via canDoAction('rew').
     # - Seek beyond track duration (CLI only): LMS _Skip fires before
     #   getSeekData. No handler hook exists; accepted as known limitation.
-    return undef if Plugins::SpotOn::Connect->isSpotifyConnect($client);
+
+    # Phase 82 (D-04, Befund 1/3): the second absicht-erfassende marker --
+    # onStream is the only consumer. seekable=0 (Befund 2: no known
+    # duration, or a confirmed 404) makes LMS itself skip the restart
+    # (undef here means _JumpToTime returns without a _Stop/_Stream).
+    # 84-08: asked through the backend role -- query('seekable') undef is
+    # "no opinion" (no player engine), then no marker either.
+    require Plugins::SpotOn::Unified::DaemonManager;
+    if (my $be = Plugins::SpotOn::Unified::DaemonManager->backendFor($client)) {
+        return undef if $be->capabilities->{connectSeekViaControl}
+            && Plugins::SpotOn::Connect->isSpotifyConnect($client);
+        my $url = $song->track->url;
+        my $seekable = $be->query('seekable', url => $url);
+        return undef if defined $seekable && !$seekable;
+        $be->notify('noteSeekIntent', url => $url, target_ms => int($newtime * 1000)) if defined $seekable;
+    }
 
     return { timeOffset => $newtime };
 }
 
 # canDoAction($class, $client, $url, $action)
-# Connect mode (R-1, GH #129): block LMS-side track restart on seek-to-0.
-# _JumpToTime special-cases newtime == 0 BEFORE getSeekData and would
-# _Stop + _Stream the Connect stream. Returning 0 for 'rew' suppresses the
-# restart in both _JumpToTime (playing) and _JumpPaused (paused); the
-# ['time'] event still fires and _onSeek forwards seek-to-0 to the binary.
-# Track restart via prev-button is unaffected: _onPlaylistJump forwards
-# playlist jump -1/+0 to /control/prev.
+# Connect mode (R-1, GH #129, kept per 83.1-04 plan-04 decision): block
+# LMS-side track restart on seek-to-0. In connect, restart-at-0 can arrive
+# from three distinct LMS sources -- an exact `time 0`, a `playlist jump -1`
+# on the one-entry playlist, and a `jump +0` -- and LMS must not restart the
+# stream for ANY of them: (a) `jump -1`/`+0` must become `skip_prev`
+# (D-B2, Connect.pm::_onPlaylistJump -> Control::requestSkip), not an
+# LMS-side track restart; (b) a REFUSED `skip_prev` (D-B4: the daemon's own
+# `available_actions` lacks it) must leave NOTHING changed -- an LMS-side
+# restart already fired would violate that; (c) restart-at-0 in connect is
+# the daemon's own `skip_prev` semantics anyway (Spotify: a `time 0` inside
+# the first ~3s of a track goes to the PREVIOUS track), never LMS's local
+# concept of "rewind this stream". `_onSeek` (Connect.pm) routes an exact
+# `time 0` to `requestSkip('prev', 'time0')`; the ['time'] event still
+# fires and reaches that handler regardless of this guard -- returning 0 for
+# 'rew' only suppresses the LMS-SIDE _Stop+_Stream restart in both
+# _JumpToTime (playing) and _JumpPaused (paused). Track restart via
+# prev-button: _onPlaylistJump forwards playlist jump -1 to
+# Control::requestSkip('prev', ...), the same D-B2 route; `jump +0` see the
+# 1B paragraph below.
 # All other actions ('stop', 'pause', 'fwd') must stay allowed (return 1).
+#
+# Debug session connect-skip-prev-ton-bleibt (2026-09-24), user decision
+# 1B -- DEVIATION from D-B2 for `jump +0`: the block above stays for every
+# restart-at-0 LMS asks about on its own (`time 0`, `jump -1`, and LMS' own
+# first call for `jump +0`, which arrives here BEFORE the `playlist jump`
+# notification tells _onPlaylistJump which one it was). Exactly one
+# restart passes: the one Control::requestRestart asks for itself once
+# _onPlaylistJump knows it was `+0` -- its one-shot allowance for this url
+# (consumeRestartAllowance) lets it fall through to the rewind marker
+# below (seekable check + noteSeekIntent(url, 0)), so LMS restarts the
+# stream and onStream arms `seek 0` (the D-B1 restart chain).
 sub canDoAction {
     my ($class, $client, $url, $action) = @_;
 
     if ($action eq 'rew' && Plugins::SpotOn::Connect->isSpotifyConnect($client)) {
+        # 84-08: the one-shot restart allowance is the player engine's
+        # (query('consumeRestartAllowance'), read-and-clear); no engine ->
+        # undef -> blocked, as before.
+        require Plugins::SpotOn::Unified::DaemonManager;
+        my $be = Plugins::SpotOn::Unified::DaemonManager->backendFor($client);
+        unless ($be && $be->query('consumeRestartAllowance', url => $url)) {
+            main::DEBUGLOG && $log->is_debug && $log->debug(
+                "Connect mode: blocking LMS-side restart for 'rew' (seek-to-0 handled by requestSkip, D-B2)"
+            );
+            return 0;
+        }
         main::DEBUGLOG && $log->is_debug && $log->debug(
-            "Connect mode: blocking LMS-side restart for 'rew' (seek-to-0 handled by binary)"
+            "Connect mode: LMS-side restart for 'rew' allowed -- jump +0 from the start via the seek path (1B)"
         );
-        return 0;
+    }
+
+    # Phase 82 (D-04, Befund 1/3): 'rew' sets only a marker; the consumer is
+    # onStream. No command is EVER sent from here -- the UPnP MediaRenderer
+    # probe (AVTransport.pm:945) and _JumpPaused (player paused, ziel 0)
+    # call this WITHOUT a restart following, so a marker set here must be
+    # allowed to expire/leak-clear rather than assume a stream restart is
+    # coming (SEEK_INTENT_TTL, Control::consumeSeekIntent).
+    if ($action eq 'rew') {
+        require Plugins::SpotOn::Unified::DaemonManager;
+        if (my $be = Plugins::SpotOn::Unified::DaemonManager->backendFor($client)) {
+            my $seekable = $be->query('seekable', url => $url);
+            return 0 if defined $seekable && !$seekable;
+            $be->notify('noteSeekIntent', url => $url, target_ms => 0) if defined $seekable;
+        }
     }
 
     return 1;
@@ -927,7 +1248,7 @@ sub getMetadataFor {
             }
             if ($meta->{title} && $track->can('title') && !$track->title) {
                 my $display = $meta->{artist}
-                    ? "$meta->{title} \x{2014} $meta->{artist}"
+                    ? "$meta->{title} - $meta->{artist}"
                     : $meta->{title};
                 $track->title($display);
             }
@@ -1063,7 +1384,7 @@ sub _placeholderMeta {
 }
 
 # _asyncRefetch($class, $client, $url, $canonical)
-# Fires an async API::Client->getTrack call for a cache-miss URL.
+# Fires an async API::SpClient->getTrack call for a cache-miss URL.
 # D-04: extracts track ID from Browse URL or from cached spotifyUri for Connect URLs.
 # D-05: debounce via %_pendingRefetch — one in-flight re-fetch per URL.
 # Pitfall 4: delete from debounce hash is the FIRST action in the callback.
@@ -1074,6 +1395,14 @@ sub _asyncRefetch {
     # D-05: debounce — skip if already fetching this URL
     return unless $url;
     return if $_pendingRefetch{$url};
+
+    # Phase 82 (Befund 2 / Pitfall 10): the metadata fetch for this exact url
+    # failed within the last 60s (definitive) or 15s (transient) -- without
+    # this short-circuit, every status poll (Material Skin: every 1-5s)
+    # re-fires API requests against the app-wide 30s rate window (CLAUDE.md
+    # § Rate Limits) for a title that will not resolve right now
+    # (server.log:989-1009, measured -- not a timing corner).
+    return if $cache->get('spoton_meta_neg_' . md5_hex($url));
 
     # Extract track/episode ID from Browse URL or from cached connect entry's spotifyUri
     my ($trackId, $episodeId);
@@ -1103,15 +1432,59 @@ sub _asyncRefetch {
     # D-05: mark in-flight
     $_pendingRefetch{$url} = 1;
 
-    require Plugins::SpotOn::API::Client;
+    require Plugins::SpotOn::API::SpClient;
 
     my $fetchCb = sub {
-        my ($info) = @_;
+        my ($info, $err) = @_;
 
         # Pitfall 4: ALWAYS clear debounce first — even on error
         delete $_pendingRefetch{$url};
 
-        return unless $info && $info->{name};
+        unless ($info && $info->{name}) {
+            # Quick 260910-upw + Fable-5 review of df80cdb (CR-01/WR-01),
+            # 85-07 D-11: classify what the failure means for seek.
+            #   - a real HTTP 404 from spclient (the only metadata source):
+            #     this id has no metadata, the length will never arrive.
+            #     Only this case fail-closes seek: noteMetadataMissing marks
+            #     the uri non-seekable (canDoAction/getSeekData refuse the
+            #     LMS-side restart) and surfaces exactly one errors[] entry.
+            #   - anything else -- a transport error (code 0, "Connect timed
+            #     out"), 5xx, no_token, 400, invalid_id -- says nothing about
+            #     whether the title has metadata: no notify, and a later
+            #     success can still resolve it (a WLAN hiccup must not cost a
+            #     title its seek for the session, P5).
+            #
+            # CR-01: EVERY failure still keeps a per-url bound on the refetch
+            # cadence via the negative cache. Without this, a fast-failing
+            # 5xx/no_token/connect-timeout refetches on every status poll
+            # (Material Skin: every 1-5s), throttled only by a reactive 429
+            # -- exactly the "429 bursts" this project's core value forbids.
+            # Transient failures get a short TTL (META_REFETCH_TRANSIENT_TTL)
+            # so a later success still lands promptly; 404, 400 and
+            # invalid_id (structurally permanent) keep the 60s bound.
+            my ($code, $reason) = (0, '');
+            if ($err && ref($err) eq 'HASH') {
+                $code   = $err->{code}  || 0;
+                $reason = $err->{error} // '';
+            }
+
+            my $definitive = ($code == 404);
+            my $permanent  = ($definitive || $code == 400 || $reason eq 'invalid_id');
+
+            $cache->set('spoton_meta_neg_' . md5_hex($url), 1,
+                $permanent ? 60 : META_REFETCH_TRANSIENT_TTL);
+
+            if ($definitive && $client) {
+                # Best-effort -- see _applyRuntimeMetadata's identical guard.
+                eval {
+                    require Plugins::SpotOn::Unified::DaemonManager;
+                    my $be = Plugins::SpotOn::Unified::DaemonManager->backendFor($client);
+                    $be->notify('noteMetadataMissing', url => $canonical || $url) if $be;
+                    1;
+                };
+            }
+            return;
+        }
 
         my $title    = $info->{name};
         my $duration = ($info->{duration_ms} || 0) / 1000;
@@ -1178,9 +1551,9 @@ sub _asyncRefetch {
     };
 
     if ($episodeId) {
-        Plugins::SpotOn::API::Client->getEpisode($accountId, $episodeId, $fetchCb);
+        Plugins::SpotOn::API::SpClient->getEpisode($accountId, $episodeId, $fetchCb);
     } else {
-        Plugins::SpotOn::API::Client->getTrack($accountId, $trackId, $fetchCb);
+        Plugins::SpotOn::API::SpClient->getTrack($accountId, $trackId, $fetchCb);
     }
 }
 

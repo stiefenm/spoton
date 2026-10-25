@@ -1,64 +1,6 @@
 [% PROCESS settings/header.html %]
 	[% title = "PLUGIN_SPOTON" %]
 
-	[% IF NOT accounts.keys.size %]
-	<div style="background:rgba(128,128,128,0.1); border:1px solid rgba(128,128,128,0.25); padding:16px; margin-bottom:20px; border-radius:4px">
-		<h3 style="margin-top:0">[% 'PLUGIN_SPOTON_SETUP_GUIDE_TITLE' | string %]</h3>
-
-		<p style="margin:0 0 4px 0"><strong>1. [% 'PLUGIN_SPOTON_SETUP_PKCE_TITLE' | string %]</strong></p>
-		<p style="margin:0 0 12px 0">[% 'PLUGIN_SPOTON_SETUP_PKCE_DESC' | string %]</p>
-
-		<p style="margin:0 0 4px 0"><strong>2. [% 'PLUGIN_SPOTON_SETUP_PLAYBACK_TITLE' | string %]</strong></p>
-		<p style="margin:0 0 12px 0">[% 'PLUGIN_SPOTON_SETUP_PLAYBACK_DESC' | string %]</p>
-
-		<p style="margin:0 0 4px 0"><strong>3. [% 'PLUGIN_SPOTON_SETUP_SPDC_TITLE' | string %]</strong></p>
-		<p style="margin:0 0 12px 0">[% 'PLUGIN_SPOTON_SETUP_SPDC_DESC' | string %]</p>
-
-		<p style="margin:0 0 4px 0"><strong>4. [% 'PLUGIN_SPOTON_SETUP_PATHFINDER_TITLE' | string %]</strong></p>
-		<p style="margin:0; font-size:0.9em">[% 'PLUGIN_SPOTON_SETUP_PATHFINDER_DESC' | string %]</p>
-		<hr style="margin:12px 0; border:0; border-top:1px solid rgba(128,128,128,0.2)"/>
-		<p style="margin:0; font-size:0.85em; opacity:0.7">
-			[% 'PLUGIN_SPOTON_SETUP_TROUBLESHOOT_HINT' | string %]
-			<a href="https://github.com/stiefenm/spoton/blob/main/TROUBLESHOOTING.md" target="_blank">
-				[% 'PLUGIN_SPOTON_SETUP_TROUBLESHOOT_LINK' | string %] &rarr;
-			</a>
-		</p>
-	</div>
-	[% END %]
-
-	[% IF needsMigration %]
-	<div style="background:rgba(255,165,0,0.08); border:1px solid orange; padding:12px 16px; margin-bottom:20px; border-radius:4px">
-		<strong style="color:orange">[% 'PLUGIN_SPOTON_MIGRATION_SETTINGS_HINT' | string %]</strong>
-		<p style="margin:8px 0 0 0">
-			<button type="button" class="submit" onclick="spotonPkceStart()">
-				[% 'PLUGIN_SPOTON_PKCE_CONNECT_BTN' | string %]
-			</button>
-		</p>
-	</div>
-	[% END %]
-
-	[% IF needsPkceReauth %]
-	<div style="background:rgba(255,165,0,0.08); border:1px solid orange; padding:12px 16px; margin-bottom:20px; border-radius:4px">
-		<strong style="color:orange">[% 'PLUGIN_SPOTON_PKCE_REAUTH_BANNER' | string %]</strong>
-		<p style="margin:8px 0 0 0">
-			<a href="#spoton-pkce-auth" style="font-weight:bold">
-				[% 'PLUGIN_SPOTON_PKCE_AUTH' | string %] &rarr;
-			</a>
-		</p>
-	</div>
-	[% END %]
-
-	[% IF playbackAuthState == 'required' %]
-	<div style="background:rgba(255,165,0,0.08); border:1px solid orange; padding:12px 16px; margin-bottom:20px; border-radius:4px">
-		<strong style="color:orange">[% 'PLUGIN_SPOTON_PLAYER_AUTH_BANNER' | string %]</strong>
-		<p style="margin:8px 0 0 0">
-			<a href="#spoton-player-auth" style="font-weight:bold">
-				[% 'PLUGIN_SPOTON_PLAYER_AUTH_TITLE' | string %] &rarr;
-			</a>
-		</p>
-	</div>
-	[% END %]
-
 	<div style="background:rgba(66,133,244,0.08); border:1px solid rgba(66,133,244,0.3); padding:12px 16px; margin-bottom:20px; border-radius:4px">
 		<strong>[% 'PLUGIN_SPOTON_PLAYER_SETTINGS_LINK_TITLE' | string %]</strong>
 		<p style="margin:6px 0 0 0">[% 'PLUGIN_SPOTON_PLAYER_SETTINGS_LINK_DESC' | string %]</p>
@@ -76,71 +18,235 @@
 	</div>
 
 	<hr style="margin:16px 0; border:0; border-top:1px solid rgba(128,128,128,0.25)"/>
+	<h2>[% 'PLUGIN_SPOTON_SETTINGS_BACKEND_SECTION' | string %]</h2>
+
+	[% WRAPPER setting title="PLUGIN_SPOTON_BACKEND" desc="PLUGIN_SPOTON_BACKEND_DESC" %]
+		<select class="stdedit" name="pref_backend" id="pref_backend">
+			[% FOREACH b IN availableBackends %]
+			<option value="[% b | html %]" [% IF backend == b %]selected[% END %]>[% IF b == 'soloist' %]Soloist[% ELSE %][% b | html %][% END %]</option>
+			[% END %]
+		</select>
+	[% END %]
+
+	[% IF soloistHint %]
+	<div style="margin:6px 0 12px 0; font-size:0.9em">
+		[% 'PLUGIN_SPOTON_SOLOIST_HINT' | string | html %]
+		<a href="https://developer.spotify.com/documentation/soloist/concepts/authentication" target="_blank" rel="noopener noreferrer">[% 'PLUGIN_SPOTON_SOLOIST_HINT_LINK' | string | html %]</a>
+	</div>
+	<input type="text" class="stdedit" name="soloistHintKey" id="soloistHintKey" value="" autocomplete="off"
+	       placeholder="[% 'PLUGIN_SPOTON_SOLOIST_KEY' | string | html %]" style="margin:0 0 12px 0"/>
+	[% ELSIF soloistSwitchOffer %]
+	<div style="margin:6px 0 12px 0; font-size:0.9em">
+		[% 'PLUGIN_SPOTON_SOLOIST_SWITCH_OFFER' | string | html %]
+		<input type="hidden" name="switchBackendSoloist" value="1" disabled/>
+		<input type="submit" value="[% 'PLUGIN_SPOTON_SOLOIST_SWITCH_BUTTON' | string | html %]"
+			onclick="this.previousElementSibling.disabled=false"/>
+	</div>
+	[% END %]
+
+	<div id="soloist-fields" style="[% IF backend == 'soloist' %]display:block[% ELSE %]display:none[% END %]">
+		[% WRAPPER setting title="PLUGIN_SPOTON_SOLOIST_KEY" desc="PLUGIN_SPOTON_SOLOIST_KEY_DESC" %]
+			<input type="text" class="stdedit" name="pref_soloistKey" id="pref_soloistKey"
+			       value="[% soloistKeyMasked | html %]"
+			       placeholder="[% 'PLUGIN_SPOTON_SOLOIST_KEY' | string | html %]"/>
+
+			<div style="margin-top:6px; font-size:0.9em">
+				[% IF soloistUnsupportedOS %]
+				<span style="color: red">&#9679; [% 'PLUGIN_SPOTON_SOLOIST_UNSUPPORTED_OS' | string %]</span>
+				[% ELSIF soloistMissing %]
+				<span style="color: red">&#9679; [% 'PLUGIN_SPOTON_SOLOIST_BINARY_MISSING' | string %]</span>
+				[% ELSIF soloistKeyMissing %]
+				<span style="color: orange">&#9679; [% 'PLUGIN_SPOTON_SOLOIST_KEY_MISSING' | string %]</span>
+				[% ELSE %]
+				<span style="color: green">&#9679; [% 'PLUGIN_SPOTON_SOLOIST_STATUS' | string %] [% soloistVersion | html %]</span>
+				[% END %]
+			</div>
+
+			[% IF !soloistUnsupportedOS && !soloistMissing && !soloistKeyMissing %]
+			<div style="margin-top:12px; font-size:0.9em">
+				[% IF soloistPlayers.size %]
+				<table style="width:100%">
+					[% FOREACH p IN soloistPlayers %]
+					<tr>
+						<td style="padding:2px 8px 2px 0">[% p.name | html %]</td>
+						<td style="padding:2px 8px 2px 0">
+							[% IF p.daemonAlive && p.loggedIn %]
+							<span style="color: green">&#9679; [% 'PLUGIN_SPOTON_SOLOIST_DAEMON_RUNNING' | string %]</span>
+							[% ELSIF p.daemonAlive %]
+							<span style="color: orange">&#9679; [% 'PLUGIN_SPOTON_SOLOIST_DAEMON_RUNNING' | string %]</span>
+							[% ELSE %]
+							<span style="color: red">&#9679; [% 'PLUGIN_SPOTON_SOLOIST_DAEMON_STOPPED' | string %]</span>
+							[% END %]
+							[% IF p.switchPending %]
+							<br/><span style="color: orange; font-size:0.85em">&#9679; [% 'PLUGIN_SPOTON_SOLOIST_SWITCH_PENDING' | string %]</span>
+							[% END %]
+						</td>
+						<td style="padding:2px 8px 2px 0">
+							[% IF p.paired %]
+							<span style="color: green">&#9679; [% 'PLUGIN_SPOTON_SOLOIST_PAIRED' | string %]</span>
+							[% ELSE %]
+							<span style="color: orange">&#9679; [% 'PLUGIN_SPOTON_SOLOIST_NOT_PAIRED' | string %]</span>
+							[% END %]
+						</td>
+						<td style="padding:2px 0">
+							[% IF p.qualityDiffers %]
+							<span style="opacity:0.85">[% 'PLUGIN_SPOTON_SOLOIST_QUALITY_EFFECTIVE' | string(p.qualityEffectiveLabel) | html %]</span>
+							[% END %]
+							[% IF p.qualityNotice %]
+							<div style="color: orange">[% p.qualityNotice | html %]</div>
+							[% END %]
+							[% IF p.healthNotice %]
+							<div style="color: orange">[% p.healthNotice | html %]</div>
+							[% END %]
+						</td>
+					</tr>
+					[% END %]
+				</table>
+				[% END %]
+				<p style="margin:8px 0 4px 0; font-size:0.9em; opacity:0.85">[% 'PLUGIN_SPOTON_SOLOIST_PAIR_HOWTO' | string %]</p>
+
+				[% IF soloistExpired %]
+				<p style="color: red; margin-top:10px">&#9679; [% 'PLUGIN_SPOTON_SOLOIST_EXPIRED_RENEWING' | string %]</p>
+				[% IF soloistRenewal.text %]
+				<p style="margin:4px 0 0 0; font-size:0.85em; opacity:0.85">[% soloistRenewal.text | html %]</p>
+				[% END %]
+				[% IF soloistRenewal.phase == 'failed' %]
+				<p style="color: orange; margin-top:4px; font-size:0.85em">[% 'PLUGIN_SPOTON_SOLOIST_EXPIRED_PLACE_BINARY' | string %]</p>
+				[% END %]
+				[% ELSIF soloistInfoLine %]
+				<p style="[% IF soloistExpiryWarn %]color: orange[% ELSE %]opacity:0.7[% END %]; margin-top:10px; font-size:0.85em">
+					&#9679; [% soloistInfoLine | html %]
+				</p>
+				[% IF soloistRenewal.text %]
+				<p style="margin:4px 0 0 0; font-size:0.85em; opacity:0.85">[% soloistRenewal.text | html %]</p>
+				[% END %]
+				[% END %]
+			</div>
+			[% END %]
+		[% END %]
+
+		[% WRAPPER setting title="PLUGIN_SPOTON_SOLOIST_RENEW_NOW" desc="PLUGIN_SPOTON_SOLOIST_RENEW_NOW_DESC" %]
+			<button type="button" id="soloistRenewBtn" class="submit" onclick="spotonSoloistRenew()"
+				data-started-text="[% 'PLUGIN_SPOTON_SOLOIST_RENEWAL_STARTED' | string | html %]"
+				data-busy-text="[% 'PLUGIN_SPOTON_SOLOIST_RENEWAL_BUSY' | string | html %]"
+				data-unsupported-text="[% 'PLUGIN_SPOTON_SOLOIST_RENEWAL_UNSUPPORTED' | string | html %]">
+				[% 'PLUGIN_SPOTON_SOLOIST_RENEW_NOW_BUTTON' | string %]
+			</button>
+			<span id="soloistRenewResult" style="margin-left:10px"></span>
+			<p style="margin:6px 0 0 0; font-size:0.85em; opacity:0.7">[% 'PLUGIN_SPOTON_SOLOIST_ROLLBACK_HINT' | string %]</p>
+		[% END %]
+
+		[% WRAPPER setting title="PLUGIN_SPOTON_SOLOIST_DOWNLOAD_PAGE" desc="" %]
+			<p style="margin:0"><a href="[% soloistDownloadUrl | html %]" target="_blank">[% 'PLUGIN_SPOTON_SOLOIST_DOWNLOAD_PAGE' | string %]</a></p>
+			<p style="margin:6px 0 0 0; font-size:0.85em; opacity:0.7">[% 'PLUGIN_SPOTON_SOLOIST_TERMS_LINE' | string %]</p>
+			<p style="margin:8px 0 0 0; font-size:0.85em">[% 'PLUGIN_SPOTON_SOLOIST_MANUAL_FOLDER_DESC' | string("<code>" _ soloistManualDir _ "</code>") %]</p>
+			[% IF soloistPlaced.text %]
+			<p style="margin:4px 0 0 0; font-size:0.85em; [% IF soloistPlaced.status == 'active' %]color: green[% ELSIF soloistPlaced.status == 'checking' %]opacity:0.7[% ELSE %]color: orange[% END %]">
+				&#9679; [% soloistPlaced.text | html %]
+			</p>
+			[% END %]
+			[% IF soloistExpiryHint %]
+			<p style="margin:4px 0 0 0; font-size:0.85em; color: orange">&#9679; [% 'PLUGIN_SPOTON_SOLOIST_MANUAL_EXPIRING' | string(soloistExpiryDays) %]</p>
+			[% END %]
+		[% END %]
+
+		[% WRAPPER setting title="PLUGIN_SPOTON_SOLOIST_QUALITY" desc="PLUGIN_SPOTON_SOLOIST_QUALITY_DESC" %]
+			<select class="stdedit" name="pref_soloistQuality"
+			        id="pref_soloistQuality">
+				[% FOREACH l IN soloistQualityLevels %]
+				<option value="[% l.value %]" [% IF soloistQuality == l.value %]selected[% END %]>[% l.label | html %]</option>
+				[% END %]
+				[% IF soloistQualityStoredLabel %]
+				<option disabled selected>[% 'PLUGIN_SPOTON_SOLOIST_QUALITY_SET_IN_APP' | string(soloistQualityStoredLabel) | html %]</option>
+				[% END %]
+			</select>
+			<p style="margin:6px 0 0 0; font-size:0.85em; opacity:0.7">[% 'PLUGIN_SPOTON_SOLOIST_QUALITY_NEXT_TRACK' | string %]</p>
+		[% END %]
+	</div>
+
+	<hr style="margin:16px 0; border:0; border-top:1px solid rgba(128,128,128,0.25)"/>
 	<h2>[% 'PLUGIN_SPOTON_SETTINGS_ACCOUNT_SECTION' | string %]</h2>
 
-	[% WRAPPER setting title="PLUGIN_SPOTON_CLIENT_ID_SETTINGS" desc="PLUGIN_SPOTON_CLIENT_ID_DESC" %]
-		[% IF clientIdMode == 'bundled' %]
-		<div style="color: orange; margin:0 0 10px 0; font-size:0.9em">
-			[% 'PLUGIN_SPOTON_BUNDLED_SHARED_QUOTA_HINT' | string %]
-		</div>
+	[%# 85-11 (D-24): the two-step setup block. Outside librespot-fields on
+	    purpose: the account pairing (step 1) is needed by BOTH backends. #%]
+	<div id="spoton-setup" style="background:rgba(128,128,128,0.1); border:1px solid rgba(128,128,128,0.25); padding:16px; margin-bottom:20px; border-radius:4px">
+
+		<h3 id="spoton-step-account" style="margin-top:0">
+			[% 'PLUGIN_SPOTON_STEP_ACCOUNT_TITLE' | string %]
+			[% IF accountStepOk %]<span style="color:green">✓</span>[% ELSE %]<span style="color:orange">✗</span>[% END %]
+		</h3>
+
+		[% IF discoverResult %]
+		<p id="discover-imported" style="margin:0 0 10px 0; color:green">[% 'PLUGIN_SPOTON_DISCOVER_IMPORTED' | string %]</p>
+		[% END %]
+		[% IF discoverError %]
+		<p id="discover-invalid" style="margin:0 0 10px 0; color:orange">[% 'PLUGIN_SPOTON_DISCOVER_INVALID' | string %]</p>
+		[% END %]
+
+		<p style="margin:0 0 6px 0; font-size:0.9em">[% 'PLUGIN_SPOTON_PLAYER_AUTH_INSTRUCTIONS' | string %]</p>
+		<p style="margin:0 0 12px 0">
+			<code style="background:rgba(128,128,128,0.1); padding:2px 6px; border-radius:3px">[% pairingDeviceName | html %]</code>
+		</p>
+
+		<p style="margin:0">
+			<button type="button" class="submit" id="accountPairStartBtn" onclick="spotonPlayerAuthStart()"
+				data-waiting-text="[% 'PLUGIN_SPOTON_ACCOUNT_PAIR_WAITING' | string | html %]"
+				data-success-text="[% 'PLUGIN_SPOTON_ACCOUNT_PAIR_SUCCESS' | string | html %]"
+				data-failed-text="[% 'PLUGIN_SPOTON_PLAYER_AUTH_FAILED' | string | html %]"
+				data-timeout-text="[% 'PLUGIN_SPOTON_ACCOUNT_PAIR_TIMEOUT' | string | html %]"
+				data-just-paired-text="[% 'PLUGIN_SPOTON_ACCOUNT_PAIR_JUST_PAIRED' | string | html %]"
+				data-window-seconds="[% pairingWindowSeconds | html %]">
+				[% 'PLUGIN_SPOTON_ACCOUNT_PAIR_BUTTON' | string %]
+			</button>
+			<button type="button" class="submit" id="playerAuthCancelBtn" style="display:none"
+				onclick="spotonPlayerAuthCancel()">
+				[% 'PLUGIN_SPOTON_PLAYER_AUTH_CANCEL_BTN' | string %]
+			</button>
+			<span id="account-pair-countdown" style="display:none; margin-left:10px; font-variant-numeric:tabular-nums"></span>
+		</p>
+		<div id="player-auth-status" style="display:none; margin-top:10px"></div>
+
+		[% FOREACH id IN needsPairingAccounts %]
+		<p class="needs-pairing" style="margin:10px 0 0 0; color:orange">
+			&#9679; [% accounts.$id.displayName | html %]: [% 'PLUGIN_SPOTON_ACCOUNT_NEEDS_PAIRING' | string %]
+		</p>
+		[% END %]
+
+		<h3 id="spoton-step-player" style="margin-top:20px">
+			[% 'PLUGIN_SPOTON_STEP_PLAYER_TITLE' | string %]
+			[% IF playerStepOk %]<span style="color:green">✓</span>[% ELSE %]<span style="color:orange">✗</span>[% END %]
+		</h3>
+		[% IF backend == 'soloist' %]
+			[% IF soloistPlayers.size %]
+			<table style="width:100%; font-size:0.9em">
+				[% FOREACH p IN soloistPlayers %]
+				<tr>
+					<td style="padding:2px 8px 2px 0">[% p.name | html %]</td>
+					<td style="padding:2px 0">
+						[% IF p.paired %]
+						<span style="color: green">&#9679; [% 'PLUGIN_SPOTON_SOLOIST_PAIRED' | string %]</span>
+						[% ELSE %]
+						<span style="color: orange">&#9679; [% 'PLUGIN_SPOTON_SOLOIST_NOT_PAIRED' | string %]</span>
+						[% END %]
+					</td>
+				</tr>
+				[% END %]
+			</table>
+			[% END %]
+			<p style="margin:8px 0 0 0; font-size:0.9em; opacity:0.85">[% 'PLUGIN_SPOTON_SOLOIST_PAIR_HOWTO' | string %]</p>
 		[% ELSE %]
-		<div style="color: green; margin:0 0 10px 0; font-size:0.9em">
-			[% 'PLUGIN_SPOTON_CUSTOM_QUOTA_OK' | string %]
-		</div>
+			<p style="margin:0; font-size:0.9em; opacity:0.85">[% 'PLUGIN_SPOTON_STEP_PLAYER_NOT_NEEDED' | string %]</p>
 		[% END %]
 
-		<input type="text" class="stdedit" name="pref_clientId" id="pref_clientId"
-		       value="[% customClientId | html %]"
-		       placeholder="[% 'PLUGIN_SPOTON_CLIENT_ID_PLACEHOLDER' | string %]"/>
-		[% IF accounts.keys.size %]
-		<p style="margin:4px 0 0 0; font-size:0.85em; color:orange; opacity:0.85">
-			[% 'PLUGIN_SPOTON_CLIENT_ID_REAUTH_HINT' | string %]
-		</p>
-		[% END %]
-
-		<details style="margin-top:10px">
-			<summary style="cursor:pointer">[% 'PLUGIN_SPOTON_CLIENT_ID_WIZARD_TITLE' | string %]</summary>
-			<p style="margin:8px 0 4px 0; font-size:0.9em; opacity:0.85">[% 'PLUGIN_SPOTON_SETUP_DEVAPP_DESC' | string %]</p>
-			<p style="margin:0; font-size:0.85em">
-				<code style="background:rgba(128,128,128,0.1); padding:2px 6px; border-radius:3px">[% redirectUri | html %]</code>
-			</p>
-		</details>
+		<hr style="margin:12px 0; border:0; border-top:1px solid rgba(128,128,128,0.2)"/>
+		<p style="margin:0; font-size:0.9em; opacity:0.85">[% 'PLUGIN_SPOTON_STEP_WHY_TWO' | string %]</p>
 		<p style="margin:8px 0 0 0; font-size:0.85em; opacity:0.7">
-			<a href="#" onclick="document.getElementById('pref_clientId').value=''; return false;">[% 'PLUGIN_SPOTON_CUSTOM_APP_REMOVE' | string %]</a>
+			[% 'PLUGIN_SPOTON_SETUP_TROUBLESHOOT_HINT' | string %]
+			<a href="https://github.com/stiefenm/spoton/blob/main/TROUBLESHOOTING.md" target="_blank">
+				[% 'PLUGIN_SPOTON_SETUP_TROUBLESHOOT_LINK' | string %] &rarr;
+			</a>
 		</p>
-	[% END %]
-
-	<div id="spoton-pkce-auth"></div>
-	[% WRAPPER setting title="PLUGIN_SPOTON_PKCE_AUTH" desc="PLUGIN_SPOTON_PKCE_AUTH_DESC" %]
-		<p>
-			<button type="button" class="submit" id="pkceConnectBtn" onclick="spotonPkceStart()"
-				data-opening-text="[% 'PLUGIN_SPOTON_PKCE_OPENING' | string | html %]"
-				data-error-text="[% 'PLUGIN_SPOTON_PKCE_ERROR' | string | html %]">
-				[% 'PLUGIN_SPOTON_PKCE_CONNECT_BTN' | string %]
-			</button>
-		</p>
-		<p style="color:#999; font-size:0.85em; margin-top:4px">[% 'PLUGIN_SPOTON_PKCE_POPUP_NOTE' | string %]</p>
-
-		<div id="pkce-status" style="display:none; margin-top:10px"></div>
-
-		<div id="pkce-fallback" style="[% IF clientIdMode == 'bundled' %]display:block[% ELSE %]display:none[% END %]; margin-top:14px; padding-top:14px; border-top:1px solid rgba(128,128,128,0.2)">
-			<p style="margin:0 0 4px 0"><strong>[% 'PLUGIN_SPOTON_PKCE_MANUAL_TITLE' | string %]</strong></p>
-			<p style="margin:0 0 8px 0; font-size:0.9em">[% 'PLUGIN_SPOTON_PKCE_MANUAL_DESC' | string %]</p>
-			<input type="text" id="pkce-manual-url" class="stdedit" style="width:80%"
-				placeholder="http://127.0.0.1:9005/login?code=...&amp;state=..."/>
-			<button type="button" class="submit"
-				id="pkceManualBtn" onclick="spotonPkceManual()"
-				data-error-text="[% 'PLUGIN_SPOTON_PKCE_ERROR' | string | html %]">
-				[% 'PLUGIN_SPOTON_PKCE_MANUAL_BTN' | string %]
-			</button>
-		</div>
-
-		[% IF reauthReason == 'bundled_id_unavailable' %]
-		<div style="color: red; margin-top:14px">
-			[% 'PLUGIN_SPOTON_BUNDLED_ID_REVOKED' | string %]
-		</div>
-		[% END %]
-	[% END %]
+	</div>
 
 	[% WRAPPER setting title="PLUGIN_SPOTON_ACCOUNT_SETTINGS" desc="" %]
 		[% IF accounts.keys.size > 0 %]
@@ -165,123 +271,15 @@
 				</tr>
 			[% END %]
 			</table>
-
-			<p>
-				<button type="button" class="submit" onclick="spotonPkceStart()">
-					[% 'PLUGIN_SPOTON_ADD_ANOTHER' | string %]
-				</button>
-			</p>
 		[% ELSE %]
 			<p>[% 'PLUGIN_SPOTON_ACCOUNT_NONE' | string %]</p>
 		[% END %]
 	[% END %]
 
-	<div id="spoton-player-auth"></div>
-	[% WRAPPER setting title="PLUGIN_SPOTON_PLAYER_AUTH_TITLE" desc="PLUGIN_SPOTON_PLAYER_AUTH_DESC" %]
-		<div style="margin-bottom:10px; font-size:0.9em">
-			[% IF playbackAuthState == 'required' %]
-			<span style="color: orange">&#9679; [% 'PLUGIN_SPOTON_PLAYER_AUTH_STATUS_REQUIRED' | string %]</span>
-			[% ELSE %]
-			<span style="color: green">&#9679; [% 'PLUGIN_SPOTON_PLAYER_AUTH_STATUS_OK' | string %]</span>
-			[% IF playbackCredSource == 'zeroconf' %]
-			<span style="opacity:0.7; margin-left:6px">([% 'PLUGIN_SPOTON_PLAYER_AUTH_SOURCE_ZEROCONF' | string %])</span>
-			[% ELSIF playbackCredSource == 'keymaster' %]
-			<span style="opacity:0.7; margin-left:6px">([% 'PLUGIN_SPOTON_PLAYER_AUTH_SOURCE_BROWSER' | string %])</span>
-			[% END %]
-			[% END %]
-		</div>
-
-		<p style="margin:0 0 6px 0; font-size:0.9em">[% 'PLUGIN_SPOTON_PLAYER_AUTH_INSTRUCTIONS' | string %]</p>
-		<p style="margin:0 0 12px 0">
-			<code style="background:rgba(128,128,128,0.1); padding:2px 6px; border-radius:3px">[% pairingDeviceName | html %]</code>
-		</p>
-
-		<p style="margin:0">
-			<button type="button" class="submit" id="playerAuthStartBtn" onclick="spotonPlayerAuthStart()"
-				data-waiting-text="[% 'PLUGIN_SPOTON_PLAYER_AUTH_WAITING' | string | html %]"
-				data-success-text="[% 'PLUGIN_SPOTON_PLAYER_AUTH_SUCCESS' | string | html %]"
-				data-failed-text="[% 'PLUGIN_SPOTON_PLAYER_AUTH_FAILED' | string | html %]"
-				data-timeout-text="[% 'PLUGIN_SPOTON_PLAYER_AUTH_TIMEOUT' | string | html %]"
-				data-mismatch-text="[% 'PLUGIN_SPOTON_PLAYER_AUTH_MISMATCH' | string | html %]">
-				[% 'PLUGIN_SPOTON_PLAYER_AUTH_START_BTN' | string %]
-			</button>
-			<button type="button" class="submit" id="playerAuthCancelBtn" style="display:none"
-				onclick="spotonPlayerAuthCancel()">
-				[% 'PLUGIN_SPOTON_PLAYER_AUTH_CANCEL_BTN' | string %]
-			</button>
-		</p>
-		<div id="player-auth-status" style="display:none; margin-top:10px"></div>
-
-		<details style="margin-top:14px; padding-top:14px; border-top:1px solid rgba(128,128,128,0.2)">
-			<summary style="cursor:pointer"><strong>[% 'PLUGIN_SPOTON_PLAYER_AUTH_BROWSER_TITLE' | string %]</strong></summary>
-			<p style="margin:8px 0 8px 0; font-size:0.9em">[% 'PLUGIN_SPOTON_PLAYER_AUTH_BROWSER_DESC' | string %]</p>
-			<p style="margin:0 0 8px 0">
-				<button type="button" class="submit" id="playerAuthBrowserStartBtn"
-					onclick="spotonPlayerAuthBrowserStart()"
-					data-failed-text="[% 'PLUGIN_SPOTON_PLAYER_AUTH_BROWSER_FAILED' | string | html %]">
-					[% 'PLUGIN_SPOTON_PLAYER_AUTH_BROWSER_START_BTN' | string %]
-				</button>
-			</p>
-			<div id="player-auth-browser-paste" style="display:none">
-				<p style="margin:0 0 8px 0; font-size:0.9em; opacity:0.85">[% 'PLUGIN_SPOTON_PLAYER_AUTH_BROWSER_PASTE_HINT' | string %]</p>
-				<input type="text" id="player-auth-browser-url" class="stdedit" style="width:80%"
-					placeholder="http://127.0.0.1:18764/login?code=..."/>
-				<button type="button" class="submit" id="playerAuthBrowserSubmitBtn"
-					onclick="spotonPlayerAuthBrowserManual()"
-					data-failed-text="[% 'PLUGIN_SPOTON_PLAYER_AUTH_BROWSER_FAILED' | string | html %]"
-					data-mismatch-text="[% 'PLUGIN_SPOTON_PLAYER_AUTH_MISMATCH' | string | html %]">
-					[% 'PLUGIN_SPOTON_PLAYER_AUTH_BROWSER_SUBMIT_BTN' | string %]
-				</button>
-			</div>
-			<div id="player-auth-browser-status" style="display:none; margin-top:10px"></div>
-		</details>
-	[% END %]
-
-	[% WRAPPER setting title="PLUGIN_SPOTON_SP_DC" desc="PLUGIN_SPOTON_SP_DC_DESC" %]
-		[% IF madeForYouState == 'expired' %]
-		<div style="color: orange; margin-bottom:10px">
-			[% 'PLUGIN_SPOTON_SP_DC_EXPIRED_HINT' | string %]
-		</div>
-		[% ELSIF madeForYouState == 'secrets_down' %]
-		<div style="color: orange; margin-bottom:10px">
-			[% 'PLUGIN_SPOTON_MFY_SECRETS_DOWN' | string %]
-		</div>
-		[% END %]
-
-		<input type="text" class="stdedit" name="pref_spDc" id="pref_spDc"
-		       value="[% spDcMasked | html %]"
-		       placeholder="[% 'PLUGIN_SPOTON_SP_DC' | string | html %]"/>
-
-		<div style="margin-top:6px; font-size:0.9em">
-			[% IF madeForYouState == 'valid' %]
-			<span style="color: green">&#9679; [% 'PLUGIN_SPOTON_SP_DC_STATUS_VALID' | string %]</span>
-			[% ELSIF madeForYouState == 'expired' %]
-			<span style="color: orange">&#9679; [% 'PLUGIN_SPOTON_SP_DC_STATUS_EXPIRED' | string %]</span>
-			[% ELSE %]
-			<span style="opacity:0.5">&#9679; [% 'PLUGIN_SPOTON_SP_DC_STATUS_EMPTY' | string %]</span>
-			[% END %]
-		</div>
-
-		<details style="margin-top:10px">
-			<summary style="cursor:pointer">[% 'PLUGIN_SPOTON_SP_DC_HOWTO_TITLE' | string %]</summary>
-			<p style="margin:8px 0 0 0; font-size:0.9em; opacity:0.85">[% 'PLUGIN_SPOTON_SP_DC_HOWTO' | string | html %]</p>
-		</details>
-	[% END %]
-
-	[% WRAPPER setting title="PLUGIN_SPOTON_PATHFINDER_HASH" desc="PLUGIN_SPOTON_PATHFINDER_HASH_DESC" %]
-		<input type="text" class="stdedit" name="pref_pathfinderHash" id="pref_pathfinderHash"
-		       value="[% pathfinderHash | html %]"
-		       placeholder="[% 'PLUGIN_SPOTON_PATHFINDER_HASH' | string | html %]"/>
-
-		<details style="margin-top:10px">
-			<summary style="cursor:pointer">[% 'PLUGIN_SPOTON_PATHFINDER_HASH_HOWTO_TITLE' | string %]</summary>
-			<p style="margin:8px 0 0 0; font-size:0.9em; opacity:0.85">[% 'PLUGIN_SPOTON_PATHFINDER_HASH_HOWTO' | string | html %]</p>
-		</details>
-	[% END %]
-
 	<hr style="margin:16px 0; border:0; border-top:1px solid rgba(128,128,128,0.25)"/>
 	<h2>[% 'PLUGIN_SPOTON_SETTINGS_GLOBAL_SECTION' | string %]</h2>
 
+	<div id="librespot-fields" style="[% IF backend == 'soloist' %]display:none[% ELSE %]display:block[% END %]">
 	[% WRAPPER setting title="PLUGIN_SPOTON_BINARY_STATUS" desc="" %]
 		[% IF binaryPath %]
 			<p>[% binaryPath | html %] (v[% binaryVersion | html %])</p>
@@ -315,6 +313,7 @@
 			value="1" [% IF prefs.pref_normalization %]checked[% END %]/>
 		<label for="pref_normalization">[% 'PLUGIN_SPOTON_NORMALIZATION_LABEL' | string %]</label>
 	[% END %]
+	</div>
 
 	<hr style="margin:16px 0; border:0; border-top:1px solid rgba(128,128,128,0.25)"/>
 	<h2>[% 'PLUGIN_SPOTON_SETTINGS_DIAG_SECTION' | string %]</h2>
@@ -356,93 +355,69 @@
 	[% END %]
 
 	<script type="text/javascript">
-	function spotonPkceStart() {
-		var btn      = document.getElementById('pkceConnectBtn');
-		var statusEl = document.getElementById('pkce-status');
-		var fallbackEl = document.getElementById('pkce-fallback');
-
-		var xhr = new XMLHttpRequest();
-		xhr.open('POST', '/plugins/SpotOn/settings/pkce/start', true);
-		xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
-		xhr.onload = function() {
-			if (xhr.status === 200) {
-				var data;
-				try { data = JSON.parse(xhr.responseText); } catch(e) { data = null; }
-				if (data && data.url) {
-					statusEl.textContent = btn.dataset.openingText;
-					statusEl.style.display = 'block';
-					// The copy-paste fallback stays visible for the whole flow —
-					// auto-redirect may not reach this LMS instance (edge case D).
-					fallbackEl.style.display = 'block';
-					window.open(data.url, '_blank');
-					// Plan 65-04: the reload timer is ALWAYS armed. In default
-					// (Keymaster loopback) mode the redirect reaches LMS when the
-					// browser runs on the LMS host — the reload then shows the
-					// connected account. Remote-browser users click into the paste
-					// field, which cancels the timer (no mid-paste interruption).
-					var reloadTimer = setTimeout(function() { window.location.reload(); }, 30000);
-					var manualInput = document.getElementById('pkce-manual-url');
-					if (manualInput) {
-						manualInput.addEventListener('focus', function() { clearTimeout(reloadTimer); });
-					}
-					return;
-				}
-			}
-			statusEl.textContent = btn.dataset.errorText;
-			statusEl.style.display = 'block';
-		};
-		xhr.onerror = function() {
-			statusEl.textContent = btn.dataset.errorText;
-			statusEl.style.display = 'block';
-		};
-		xhr.send();
-	}
-
-	function spotonPkceManual() {
-		var input    = document.getElementById('pkce-manual-url');
-		var btn      = document.getElementById('pkceManualBtn');
-		var statusEl = document.getElementById('pkce-status');
-		var callbackUrl = input.value.trim();
-		if (!callbackUrl) { return; }
-
-		var xhr = new XMLHttpRequest();
-		xhr.open('POST', '/plugins/SpotOn/settings/pkce/manual', true);
-		xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
-		xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
-		xhr.onload = function() {
-			var data;
-			try { data = JSON.parse(xhr.responseText); } catch(e) { data = null; }
-			if (data && data.status === 'ok') {
-				window.location.href = window.location.pathname;
-				return;
-			}
-			statusEl.textContent = (data && data.message) || btn.dataset.errorText;
-			statusEl.style.display = 'block';
-		};
-		xhr.onerror = function() {
-			statusEl.textContent = btn.dataset.errorText;
-			statusEl.style.display = 'block';
-		};
-		xhr.send('callback_url=' + encodeURIComponent(callbackUrl));
-	}
-
 	// ============================================================
-	// Playback authorization: ZeroConf pairing (GH #147 plan 65-02)
+	// Account pairing: ZeroConf (85-11, D-21/D-22/D-24; was GH #147 plan 65-02)
+	// One button creates the account AND its playback credentials. The page
+	// returns by GET navigation, never reload() -- a reload would re-POST
+	// whatever the browser last submitted (3fd1632 layer 1, T-85-21).
+	// t/core/65_account_pair_js.t extracts the block between the BEGIN and END
+	// markers and runs it under Node.
 	// ============================================================
+	// BEGIN account-pair-js
 	var spotonPlayerAuthPoll = null;
+	var spotonPairCountdown  = null;
+
+	function spotonPairCountdownStop() {
+		if (spotonPairCountdown) { clearInterval(spotonPairCountdown); spotonPairCountdown = null; }
+		var el = document.getElementById('account-pair-countdown');
+		if (el) { el.style.display = 'none'; }
+	}
+
+	function spotonPairCountdownRender(el, remaining) {
+		var m = Math.floor(remaining / 60);
+		var s = remaining % 60;
+		el.textContent = m + ':' + (s < 10 ? '0' : '') + s;
+	}
+
+	function spotonPairCountdownStart(seconds) {
+		spotonPairCountdownStop();
+		var el = document.getElementById('account-pair-countdown');
+		if (!el || !(seconds > 0)) { return; }
+		var remaining = seconds;
+		spotonPairCountdownRender(el, remaining);
+		el.style.display = 'inline';
+		spotonPairCountdown = setInterval(function() {
+			remaining -= 1;
+			if (remaining <= 0) { spotonPairCountdownStop(); return; }
+			spotonPairCountdownRender(el, remaining);
+		}, 1000);
+	}
 
 	function spotonPlayerAuthResetUi() {
 		if (spotonPlayerAuthPoll) { clearInterval(spotonPlayerAuthPoll); spotonPlayerAuthPoll = null; }
-		var startBtn  = document.getElementById('playerAuthStartBtn');
+		spotonPairCountdownStop();
+		var startBtn  = document.getElementById('accountPairStartBtn');
 		var cancelBtn = document.getElementById('playerAuthCancelBtn');
 		if (startBtn)  { startBtn.disabled = false; }
 		if (cancelBtn) { cancelBtn.style.display = 'none'; }
 	}
 
-	function spotonPlayerAuthStart() {
-		var startBtn  = document.getElementById('playerAuthStartBtn');
+	function spotonPlayerAuthWaiting(seconds) {
+		var startBtn  = document.getElementById('accountPairStartBtn');
 		var cancelBtn = document.getElementById('playerAuthCancelBtn');
 		var statusEl  = document.getElementById('player-auth-status');
+		statusEl.textContent = startBtn.dataset.waitingText;
+		statusEl.style.display = 'block';
+		startBtn.disabled = true;
+		cancelBtn.style.display = 'inline-block';
+		spotonPairCountdownStart(seconds);
+		if (spotonPlayerAuthPoll) { clearInterval(spotonPlayerAuthPoll); }
+		spotonPlayerAuthPoll = setInterval(spotonPlayerAuthCheck, 2000);
+	}
+
+	function spotonPlayerAuthStart() {
+		var startBtn = document.getElementById('accountPairStartBtn');
+		var statusEl = document.getElementById('player-auth-status');
 
 		var xhr = new XMLHttpRequest();
 		xhr.open('POST', '/plugins/SpotOn/settings/playerauth/start', true);
@@ -450,12 +425,16 @@
 		xhr.onload = function() {
 			var data;
 			try { data = JSON.parse(xhr.responseText); } catch(e) { data = null; }
+			var windowSeconds = (data && data.windowSeconds) || parseInt(startBtn.dataset.windowSeconds, 10) || 0;
 			if (xhr.status === 200 && data && data.status === 'ok') {
-				statusEl.textContent = startBtn.dataset.waitingText;
+				spotonPlayerAuthWaiting(windowSeconds);
+			} else if (data && data.reason === 'just_paired') {
+				// A start right after a success is a double click or a replay:
+				// the account exists already (3fd1632 layer 3, server side).
+				statusEl.textContent = startBtn.dataset.justPairedText;
 				statusEl.style.display = 'block';
-				startBtn.disabled = true;
-				cancelBtn.style.display = 'inline-block';
-				spotonPlayerAuthPoll = setInterval(spotonPlayerAuthCheck, 2000);
+			} else if (data && data.reason === 'already_running') {
+				spotonPlayerAuthWaiting(windowSeconds);
 			} else {
 				statusEl.textContent = startBtn.dataset.failedText;
 				statusEl.style.display = 'block';
@@ -469,7 +448,7 @@
 	}
 
 	function spotonPlayerAuthCheck() {
-		var startBtn = document.getElementById('playerAuthStartBtn');
+		var startBtn = document.getElementById('accountPairStartBtn');
 		var statusEl = document.getElementById('player-auth-status');
 
 		var xhr = new XMLHttpRequest();
@@ -484,15 +463,14 @@
 				spotonPlayerAuthResetUi();
 				statusEl.textContent = startBtn.dataset.successText;
 				statusEl.style.display = 'block';
-				window.location.reload();
+				// GET navigation, never reload(): see the block comment above.
+				window.location.href = window.location.pathname;
 				return;
 			}
-			if (data.state === 'mismatch' || data.state === 'failed' || data.state === 'timeout') {
+			if (data.state === 'failed' || data.state === 'timeout') {
 				spotonPlayerAuthResetUi();
 				statusEl.textContent =
-					data.state === 'mismatch' ? startBtn.dataset.mismatchText :
-					data.state === 'timeout'  ? startBtn.dataset.timeoutText  :
-					startBtn.dataset.failedText;
+					data.state === 'timeout' ? startBtn.dataset.timeoutText : startBtn.dataset.failedText;
 				statusEl.style.display = 'block';
 			}
 		};
@@ -526,73 +504,7 @@
 			});
 		} catch(e) {}
 	});
-
-	// ============================================================
-	// Playback authorization: Keymaster browser fallback (GH #147 plan 65-03)
-	// For Docker/VLAN setups where the Spotify app cannot see the pairing
-	// device. No auto-reload timer: the loopback redirect never reaches LMS,
-	// so copy-paste is the only completion path (same rationale as the
-	// bundled-mode PKCE flow above).
-	// ============================================================
-	function spotonPlayerAuthBrowserStart() {
-		var btn      = document.getElementById('playerAuthBrowserStartBtn');
-		var pasteEl  = document.getElementById('player-auth-browser-paste');
-		var statusEl = document.getElementById('player-auth-browser-status');
-
-		var xhr = new XMLHttpRequest();
-		xhr.open('POST', '/plugins/SpotOn/settings/playerauth/browser/start', true);
-		xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
-		xhr.onload = function() {
-			var data;
-			try { data = JSON.parse(xhr.responseText); } catch(e) { data = null; }
-			if (xhr.status === 200 && data && data.url) {
-				statusEl.style.display = 'none';
-				pasteEl.style.display = 'block';
-				window.open(data.url, '_blank');
-				return;
-			}
-			statusEl.textContent = btn.dataset.failedText;
-			statusEl.style.display = 'block';
-		};
-		xhr.onerror = function() {
-			statusEl.textContent = btn.dataset.failedText;
-			statusEl.style.display = 'block';
-		};
-		xhr.send();
-	}
-
-	function spotonPlayerAuthBrowserManual() {
-		var input    = document.getElementById('player-auth-browser-url');
-		var btn      = document.getElementById('playerAuthBrowserSubmitBtn');
-		var statusEl = document.getElementById('player-auth-browser-status');
-		var callbackUrl = input.value.trim();
-		if (!callbackUrl) { return; }
-
-		var xhr = new XMLHttpRequest();
-		xhr.open('POST', '/plugins/SpotOn/settings/playerauth/browser/manual', true);
-		xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
-		xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
-		xhr.onload = function() {
-			var data;
-			try { data = JSON.parse(xhr.responseText); } catch(e) { data = null; }
-			if (data && data.status === 'ok') {
-				window.location.reload();
-				return;
-			}
-			// Reason-mapped strings: account_mismatch reuses the plan 65-02
-			// mismatch text; everything else shows the generic failure text.
-			var reason = data && data.reason;
-			statusEl.textContent = (reason === 'account_mismatch')
-				? btn.dataset.mismatchText
-				: btn.dataset.failedText;
-			statusEl.style.display = 'block';
-		};
-		xhr.onerror = function() {
-			statusEl.textContent = btn.dataset.failedText;
-			statusEl.style.display = 'block';
-		};
-		xhr.send('callback_url=' + encodeURIComponent(callbackUrl));
-	}
+	// END account-pair-js
 
 	function spotonClearLogs() {
 		var btn = document.getElementById('clearLogsBtn');
@@ -622,6 +534,91 @@
 		};
 		xhr.send();
 	}
+
+	// Phase 83.3 plan 03 (D-04): "Renew Soloist now" -- fires the same
+	// download + smoke test + promote pipeline the automatic <=14-day
+	// trigger uses, then polls status every 5s (up to 3 min) so the page
+	// updates as the renewal progresses without a manual reload.
+	var spotonSoloistPollTimer = null;
+
+	function spotonSoloistRenew() {
+		var btn = document.getElementById('soloistRenewBtn');
+		var result = document.getElementById('soloistRenewResult');
+		btn.disabled = true;
+
+		var xhr = new XMLHttpRequest();
+		xhr.open('POST', '/plugins/SpotOn/settings/soloistRenew', true);
+		xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+		xhr.onload = function() {
+			var data;
+			try { data = JSON.parse(xhr.responseText); } catch(e) { data = null; }
+			var status = data && data.status;
+			var text = status === 'started' ? btn.dataset.startedText
+				: status === 'busy' ? btn.dataset.busyText
+				: status === 'unsupported' ? btn.dataset.unsupportedText
+				: (status || 'error');
+			result.textContent = text;
+			btn.disabled = false;
+			if (status === 'started') {
+				spotonSoloistPollStatus(0);
+			}
+		};
+		xhr.onerror = function() {
+			result.textContent = 'Error';
+			btn.disabled = false;
+		};
+		xhr.send();
+	}
+
+	function spotonSoloistPollStatus(elapsedMs) {
+		if (spotonSoloistPollTimer) { clearTimeout(spotonSoloistPollTimer); spotonSoloistPollTimer = null; }
+		if (elapsedMs >= 180000) { return; }    // 3 min cap
+
+		var xhr = new XMLHttpRequest();
+		xhr.open('GET', '/plugins/SpotOn/settings/soloistRenewStatus', true);
+		xhr.onload = function() {
+			if (xhr.status !== 200) { return; }
+			var data;
+			try { data = JSON.parse(xhr.responseText); } catch(e) { return; }
+			var result = document.getElementById('soloistRenewResult');
+			var renewal = data && data.renewal;
+			if (!renewal) { return; }
+			var text = renewal.phase + (renewal.detail ? ' (' + renewal.detail + ')' : '');
+			result.textContent = text;
+			if (renewal.phase === 'done' || renewal.phase === 'same_version' || renewal.phase === 'failed') {
+				return;    // terminal state -- stop polling, next page load shows the final rendered text
+			}
+			spotonSoloistPollTimer = setTimeout(function() { spotonSoloistPollStatus(elapsedMs + 5000); }, 5000);
+		};
+		xhr.send();
+	}
+
+	// Phase 71/72 (D-08/D-07): live backend dropdown toggle -- shows/hides the
+	// Soloist spak-key/pairing fields and the librespot-only fields (Binary
+	// Status, Bitrate, Streaming Mode, Normalization, Player Auth) without a
+	// page reload. Both divs' initial visibility is already server-rendered
+	// correctly (backend == 'soloist' above); this listener only keeps them
+	// in sync with further client-side changes before the next save.
+	// #librespot-fields intentionally appears twice in the DOM (Account
+	// section's Player Auth block + Global section's binary/bitrate/
+	// streaming/normalization block) -- querySelectorAll (not
+	// getElementById) is required to toggle both instances.
+	(function() {
+		var backendSelect = document.getElementById('pref_backend');
+		var soloistFields  = document.getElementById('soloist-fields');
+		var librespotFieldsList = document.querySelectorAll('[id="librespot-fields"]');
+		if (backendSelect) {
+			backendSelect.addEventListener('change', function() {
+				var isSoloist = backendSelect.value === 'soloist';
+				if (soloistFields) {
+					soloistFields.style.display = isSoloist ? 'block' : 'none';
+				}
+				for (var i = 0; i < librespotFieldsList.length; i++) {
+					librespotFieldsList[i].style.display = isSoloist ? 'none' : 'block';
+				}
+			});
+		}
+	})();
 	</script>
 
 	<p style="opacity:0.6; font-size:0.85em; margin-top:24px; text-align:center">

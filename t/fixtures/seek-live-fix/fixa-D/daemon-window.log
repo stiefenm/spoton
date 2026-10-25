@@ -1,0 +1,69 @@
+[fakepulse BOUNDARY ts=10:14:55.779] write_summary: bytes_written=140536264 ring_fill=160 calls=82 bytes_since=409600 corked=1
+[fakepulse BOUNDARY ts=10:14:56.780] write_summary: bytes_written=140929480 ring_fill=18560 calls=85 bytes_since=393216 corked=1
+[fakepulse BOUNDARY ts=10:14:57.782] write_summary: bytes_written=141330888 ring_fill=1056 calls=88 bytes_since=401408 corked=1
+[fakepulse 10:14:58.156] client-close: write error/disconnect
+[fakepulse 10:14:58.156] client-attach: new /stream client fd=34
+08:14:58.163 I [f:1565                          ] Seeking to position: 120000 ms - creator position: 0 ms[0m
+[fakepulse 10:14:58.163] pa_stream_flush(stream=0x7940145bd000)
+[fakepulse BOUNDARY ts=10:14:58.163] flush: stream=0x7940145bd000 bytes_written=141492488 ring_fill=0 corked=1
+[fakepulse 10:14:58.167] flush-disconnect cancelled by queued seek-arm (via=backlog)
+[fakepulse BOUNDARY ts=10:14:58.167] seek_arm: consumed by pending flush-disconnect via=backlog armed=0
+[fakepulse BOUNDARY ts=10:14:58.878] write_summary: bytes_written=143630600 ring_fill=1404928 calls=294 bytes_since=2299712 corked=1
+[fakepulse BOUNDARY ts=10:14:59.884] write_summary: bytes_written=145694984 ring_fill=2519040 calls=256 bytes_since=2064384 corked=1
+[fakepulse BOUNDARY ts=10:15:00.887] write_summary: bytes_written=146112776 ring_fill=1970176 calls=71 bytes_since=417792 corked=1
+[fakepulse BOUNDARY ts=10:15:01.891] write_summary: bytes_written=146522376 ring_fill=1396736 calls=70 bytes_since=409600 corked=1
+[fakepulse BOUNDARY ts=10:15:02.892] write_summary: bytes_written=146940168 ring_fill=831488 calls=71 bytes_since=417792 corked=1
+[fakepulse BOUNDARY ts=10:15:03.893] write_summary: bytes_written=147357960 ring_fill=266240 calls=71 bytes_since=417792 corked=1
+[fakepulse BOUNDARY ts=10:15:04.895] write_summary: bytes_written=147775752 ring_fill=5504 calls=82 bytes_since=417792 corked=1
+[fakepulse BOUNDARY ts=10:15:05.896] write_summary: bytes_written=148185352 ring_fill=21984 calls=83 bytes_since=409600 corked=1
+[fakepulse BOUNDARY ts=10:15:06.895] write_summary: bytes_written=148594952 ring_fill=19744 calls=89 bytes_since=409600 corked=1
+[fakepulse BOUNDARY ts=10:15:07.899] write_summary: bytes_written=149004552 ring_fill=7936 calls=84 bytes_since=409600 corked=1
+[fakepulse BOUNDARY ts=10:15:08.900] write_summary: bytes_written=149397768 ring_fill=6368 calls=79 bytes_since=393216 corked=1
+[fakepulse BOUNDARY ts=10:15:09.902] write_summary: bytes_written=149825704 ring_fill=25792 calls=93 bytes_since=427936 corked=1
+[fakepulse BOUNDARY ts=10:15:10.902] write_summary: bytes_written=150216968 ring_fill=1888 calls=85 bytes_since=391264 corked=1
+[fakepulse BOUNDARY ts=10:15:11.903] write_summary: bytes_written=150634760 ring_fill=15744 calls=86 bytes_since=417792 corked=1
+[fakepulse BOUNDARY ts=10:15:12.911] write_summary: bytes_written=151044360 ring_fill=608 calls=87 bytes_since=409600 corked=1
+[fakepulse BOUNDARY ts=10:15:13.912] write_summary: bytes_written=151445768 ring_fill=1824 calls=82 bytes_since=401408 corked=1
+[fakepulse BOUNDARY ts=10:15:14.916] write_summary: bytes_written=151855368 ring_fill=2912 calls=83 bytes_since=409600 corked=1
+[fakepulse BOUNDARY ts=10:15:15.919] write_summary: bytes_written=152273160 ring_fill=17600 calls=84 bytes_since=417792 corked=1
+[fakepulse BOUNDARY ts=10:15:16.922] write_summary: bytes_written=152689448 ring_fill=15808 calls=88 bytes_since=416288 corked=1
+[fakepulse BOUNDARY ts=10:15:17.924] write_summary: bytes_written=153098792 ring_fill=22048 calls=85 bytes_since=409344 corked=1
+[fakepulse BOUNDARY ts=10:15:18.927] write_summary: bytes_written=153501960 ring_fill=22944 calls=90 bytes_since=403168 corked=1
+[fakepulse BOUNDARY ts=10:15:19.928] write_summary: bytes_written=153903368 ring_fill=6688 calls=81 bytes_since=401408 corked=1
+[fakepulse BOUNDARY ts=10:15:20.930] write_summary: bytes_written=154312968 ring_fill=1536 calls=84 bytes_since=409600 corked=1
+[fakepulse BOUNDARY ts=10:15:21.934] write_summary: bytes_written=154735336 ring_fill=20384 calls=87 bytes_since=422368 corked=1
+[fakepulse BOUNDARY ts=10:15:22.936] write_summary: bytes_written=155143432 ring_fill=26208 calls=92 bytes_since=408096 corked=1
+[fakepulse BOUNDARY ts=10:15:23.939] write_summary: bytes_written=155541768 ring_fill=2720 calls=82 bytes_since=398336 corked=1
+[fakepulse BOUNDARY ts=10:15:24.942] write_summary: bytes_written=155951368 ring_fill=3808 calls=87 bytes_since=409600 corked=1
+[fakepulse BOUNDARY ts=10:15:25.944] write_summary: bytes_written=156369160 ring_fill=25152 calls=81 bytes_since=417792 corked=1
+[fakepulse BOUNDARY ts=10:15:26.945] write_summary: bytes_written=156762376 ring_fill=3200 calls=88 bytes_since=393216 corked=1
+[fakepulse BOUNDARY ts=10:15:27.949] write_summary: bytes_written=157186824 ring_fill=17472 calls=88 bytes_since=424448 corked=1
+[fakepulse BOUNDARY ts=10:15:28.950] write_summary: bytes_written=157589768 ring_fill=5248 calls=85 bytes_since=402944 corked=1
+[fakepulse BOUNDARY ts=10:15:29.952] write_summary: bytes_written=157999368 ring_fill=512 calls=86 bytes_since=409600 corked=1
+[fakepulse BOUNDARY ts=10:15:30.954] write_summary: bytes_written=158400776 ring_fill=7136 calls=83 bytes_since=401408 corked=1
+[fakepulse BOUNDARY ts=10:15:31.955] write_summary: bytes_written=158818568 ring_fill=23072 calls=95 bytes_since=417792 corked=1
+[fakepulse BOUNDARY ts=10:15:32.958] write_summary: bytes_written=159211784 ring_fill=288 calls=86 bytes_since=393216 corked=1
+[fakepulse BOUNDARY ts=10:15:33.959] write_summary: bytes_written=159629576 ring_fill=2080 calls=92 bytes_since=417792 corked=1
+[fakepulse BOUNDARY ts=10:15:34.961] write_summary: bytes_written=160039176 ring_fill=2336 calls=84 bytes_since=409600 corked=1
+[fakepulse BOUNDARY ts=10:15:35.962] write_summary: bytes_written=160456968 ring_fill=384 calls=85 bytes_since=417792 corked=1
+[fakepulse BOUNDARY ts=10:15:36.963] write_summary: bytes_written=160858376 ring_fill=1184 calls=83 bytes_since=401408 corked=1
+[fakepulse BOUNDARY ts=10:15:37.964] write_summary: bytes_written=161283176 ring_fill=4576 calls=87 bytes_since=424800 corked=1
+[fakepulse BOUNDARY ts=10:15:38.965] write_summary: bytes_written=161692936 ring_fill=21216 calls=85 bytes_since=409760 corked=1
+[fakepulse BOUNDARY ts=10:15:39.967] write_summary: bytes_written=162095368 ring_fill=3488 calls=84 bytes_since=402432 corked=1
+[fakepulse BOUNDARY ts=10:15:40.968] write_summary: bytes_written=162504968 ring_fill=4576 calls=84 bytes_since=409600 corked=1
+[fakepulse BOUNDARY ts=10:15:41.969] write_summary: bytes_written=162914568 ring_fill=1504 calls=85 bytes_since=409600 corked=1
+[fakepulse BOUNDARY ts=10:15:42.971] write_summary: bytes_written=163324168 ring_fill=7168 calls=81 bytes_since=409600 corked=1
+[fakepulse BOUNDARY ts=10:15:43.971] write_summary: bytes_written=163717384 ring_fill=6848 calls=83 bytes_since=393216 corked=1
+[fakepulse BOUNDARY ts=10:15:44.973] write_summary: bytes_written=164135176 ring_fill=2816 calls=90 bytes_since=417792 corked=1
+[fakepulse BOUNDARY ts=10:15:45.974] write_summary: bytes_written=164544776 ring_fill=160 calls=88 bytes_since=409600 corked=1
+[fakepulse BOUNDARY ts=10:15:46.975] write_summary: bytes_written=164962568 ring_fill=2368 calls=84 bytes_since=417792 corked=1
+[fakepulse BOUNDARY ts=10:15:47.975] write_summary: bytes_written=165372040 ring_fill=25376 calls=91 bytes_since=409472 corked=1
+[fakepulse BOUNDARY ts=10:15:48.977] write_summary: bytes_written=165765384 ring_fill=3552 calls=85 bytes_since=393344 corked=1
+[fakepulse BOUNDARY ts=10:15:49.979] write_summary: bytes_written=166183176 ring_fill=5344 calls=85 bytes_since=417792 corked=1
+[fakepulse BOUNDARY ts=10:15:50.978] write_summary: bytes_written=166597992 ring_fill=19136 calls=83 bytes_since=414816 corked=1
+[fakepulse BOUNDARY ts=10:15:51.980] write_summary: bytes_written=167006920 ring_fill=14144 calls=86 bytes_since=408928 corked=1
+[fakepulse BOUNDARY ts=10:15:52.981] write_summary: bytes_written=167411976 ring_fill=8192 calls=84 bytes_since=405056 corked=1
+[fakepulse BOUNDARY ts=10:15:53.982] write_summary: bytes_written=167813384 ring_fill=1088 calls=82 bytes_since=401408 corked=1
+[fakepulse BOUNDARY ts=10:15:55.000] write_summary: bytes_written=168231176 ring_fill=800 calls=82 bytes_since=417792 corked=1
+[fakepulse BOUNDARY ts=10:15:56.005] write_summary: bytes_written=168648968 ring_fill=3008 calls=83 bytes_since=417792 corked=1
+[fakepulse BOUNDARY ts=10:15:57.005] write_summary: bytes_written=169058568 ring_fill=3264 calls=90 bytes_since=409600 corked=1

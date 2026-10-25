@@ -131,12 +131,12 @@ footer {
 <div id="spoton-status">
     <header>
         <h1>SpotOn Status</h1>
-        <p>Plugin health &mdash; auto-updating every 5 seconds</p>
+        <p>Plugin health - auto-updating every 5 seconds</p>
         <span id="poll-indicator" class="poll-flash">&#9679; Live</span>
         <span id="last-updated" class="muted"></span>
     </header>
 
-    <div id="error-banner">Status unavailable &mdash; retrying.</div>
+    <div id="error-banner">Status unavailable - retrying.</div>
 
     <div class="grid">
         <div class="card" id="card-auth-health">
@@ -144,8 +144,12 @@ footer {
             <div class="card-body" id="auth-health-body"></div>
         </div>
         <div class="card" id="card-api">
-            <h2>API &amp; Tokens</h2>
+            <h2>spclient &amp; Accounts</h2>
             <div class="card-body" id="api-body"></div>
+        </div>
+        <div class="card" id="card-mfy">
+            <h2>Made for You</h2>
+            <div class="card-body" id="mfy-body"></div>
         </div>
         <div class="card" id="card-daemon">
             <h2>Player Daemon Health</h2>
@@ -161,7 +165,7 @@ footer {
         </div>
     </div>
 
-    <footer id="footer-credits">SpotOn &mdash; Lyrion Music Server plugin</footer>
+    <footer id="footer-credits">SpotOn - Lyrion Music Server plugin</footer>
 </div>
 
 <script>
@@ -170,7 +174,7 @@ footer {
     var systemLoaded = false;
 
     function formatUptime(s) {
-        if (s === null || s === undefined || s === 0) return '—';
+        if (s === null || s === undefined || s === 0) return '-';
         var days = Math.floor(s / 86400);
         var hours = Math.floor((s % 86400) / 3600);
         var minutes = Math.floor((s % 3600) / 60);
@@ -179,7 +183,7 @@ footer {
     }
 
     function formatDuration(s) {
-        if (s === null || s === undefined) return '—';
+        if (s === null || s === undefined) return '-';
         s = Math.floor(s);
         if (s >= 3600) {
             var h = Math.floor(s / 3600);
@@ -195,7 +199,7 @@ footer {
     }
 
     function val(v) {
-        if (v === null || v === undefined) return '—';
+        if (v === null || v === undefined) return '-';
         return String(v);
     }
 
@@ -269,10 +273,15 @@ footer {
                 body.appendChild(playRow);
             }
 
-            body.appendChild(createMetricRow('PID', d.pid ? String(d.pid) : '—', 'mono'));
+            body.appendChild(createMetricRow('PID', d.pid ? String(d.pid) : '-', 'mono'));
             body.appendChild(createMetricRow('Uptime', formatUptime(d.uptime)));
             body.appendChild(createMetricRow('Connect', d.connectEnabled ? 'Yes' : 'No'));
-            body.appendChild(createMetricRow('Stream Port', d.streamPort != null ? String(d.streamPort) : '—', 'mono'));
+            body.appendChild(createMetricRow('Stream Port', d.streamPort != null ? String(d.streamPort) : '-', 'mono'));
+
+            if (d.paired !== undefined && d.paired !== null) {
+                body.appendChild(createMetricRow('Paired', d.paired ? 'Yes' : 'No'));
+                body.appendChild(createMetricRow('WS', d.wsConnected ? 'Connected' : 'Down'));
+            }
 
             if (d.sessionHealth) {
                 var sessionValid = d.sessionHealth.session_valid;
@@ -302,15 +311,13 @@ footer {
 
         body.appendChild(createMetricRow('Active Accounts', val(tokens.accountCount)));
 
-        if (api.apiLimits) {
-            var lim = api.apiLimits;
-            var limStr = 'Search ' + val(lim.search) +
-                ' | Library ' + val(lim.library) +
-                ' | Artist Albums ' + val(lim.artist_albums) +
-                ' | Album Tracks ' + val(lim.album_tracks) +
-                ' | Playlists ' + val(lim.playlist_items);
-            var limClass = api.limitsProbed ? '' : 'pending';
-            body.appendChild(createMetricRow('API Limits', api.limitsProbed ? limStr : limStr + ' (probing...)', limClass));
+        body.appendChild(createMetricRow('spclient Host', val(api.spclientHost)));
+
+        if (api.lastErrorClass) {
+            var errAt = api.lastErrorAt ? ' (' + formatRelTime(api.lastErrorAt) + ')' : '';
+            body.appendChild(createMetricRow('Last error', api.lastErrorClass + errAt, 'rate-limited'));
+        } else {
+            body.appendChild(createMetricRow('Last error', 'None'));
         }
     }
 
@@ -363,14 +370,14 @@ footer {
 
         var sys = data.system || {};
 
-        body.appendChild(createMetricRow('Plugin Version', sys.pluginVersion ? 'v' + sys.pluginVersion : '—'));
-        body.appendChild(createMetricRow('Binary Version', sys.binaryVersion ? 'v' + sys.binaryVersion : '—'));
+        body.appendChild(createMetricRow('Plugin Version', sys.pluginVersion ? 'v' + sys.pluginVersion : '-'));
+        body.appendChild(createMetricRow('Binary Version', sys.binaryVersion ? 'v' + sys.binaryVersion : '-'));
         body.appendChild(createMetricRow('LMS Version', val(sys.lmsVersion)));
         body.appendChild(createMetricRow('Perl Version', val(sys.perlVersion)));
         body.appendChild(createMetricRow('OS', val(sys.os)));
 
         var footer = document.getElementById('footer-credits');
-        footer.textContent = 'SpotOn v' + (sys.pluginVersion || '?') + ' — Lyrion Music Server plugin';
+        footer.textContent = 'SpotOn v' + (sys.pluginVersion || '?') + ' - Lyrion Music Server plugin';
     }
 
     function formatRelTime(epoch) {
@@ -418,23 +425,21 @@ footer {
             nameRow.appendChild(nameLbl);
             body.appendChild(nameRow);
 
-            // Web API Token (renamed from "PKCE Status", D-08): three states
-            // so "no token yet" (Missing) reads distinctly from "token
-            // present but rejected" (Re-auth required).
-            var pkce = h.pkce || {};
-            var webApiLabel, webApiClass;
-            if (pkce.hasToken && !pkce.needsReauth) {
-                webApiLabel = 'Valid';
-                webApiClass = 'dot-alive';
-            } else if (pkce.hasToken && pkce.needsReauth) {
-                webApiLabel = 'Re-auth required';
-                webApiClass = 'dot-dead';
-            } else {
-                webApiLabel = 'Missing';
-                webApiClass = 'dot-dead';
+            // Account login (login5, D-13): the account's login since the auth
+            // switch. State comes from Login5->loginState (last observed mint).
+            var login = h.login || {};
+            var loginLabel, loginClass;
+            if (login.state === 'ok')                       { loginLabel = 'OK'; loginClass = 'dot-alive'; }
+            else if (login.state === 'invalid_credentials') { loginLabel = 'Invalid credentials - pair the account again'; loginClass = 'dot-dead'; }
+            else if (login.state === 'no_credentials')      { loginLabel = 'No credentials - pair the account'; loginClass = 'dot-dead'; }
+            else if (login.state === 'transient')           { loginLabel = 'Temporary problem (network?)'; loginClass = 'dot-warn'; }
+            else                                            { loginLabel = 'Not checked yet'; loginClass = 'dot-unknown'; }
+            body.appendChild(createMetricRow('Konto-Login (login5)', loginLabel, loginClass));
+            body.appendChild(createMetricRow('Credentials stored', login.hasCredentials ? 'Yes' : 'No',
+                login.hasCredentials ? 'dot-alive' : 'dot-dead'));
+            if (login.needsPairing) {
+                body.appendChild(createMetricRow('Pairing', 'Bitte Konto einmal koppeln', 'dot-warn'));
             }
-            body.appendChild(createMetricRow('Web API Token', webApiLabel, webApiClass));
-            body.appendChild(createMetricRow('Last API Call', formatRelTime(pkce.lastApiCall)));
 
             // Playback Credentials (D-08, GH #147 plan 66-02): the OTHER
             // half of the auth chain -- independent of the Web API token
@@ -443,7 +448,7 @@ footer {
             var playback = h.playback || {};
             var pbLabel, pbClass;
             if (playback.needsAuth || !playback.hasCredentials) {
-                pbLabel = 'Missing — authorize playback in SpotOn Settings';
+                pbLabel = 'Missing - authorize playback in SpotOn Settings';
                 if (playback.reason) { pbLabel += ' (' + playback.reason + ')'; }
                 pbClass = 'dot-dead';
             } else if (playback.source === 'zeroconf') {
@@ -453,22 +458,10 @@ footer {
                 pbLabel = 'Paired (browser fallback)';
                 pbClass = 'dot-alive';
             } else {
-                pbLabel = 'Legacy (token-derived) — re-pairing recommended';
+                pbLabel = 'Legacy (token-derived) - re-pairing recommended';
                 pbClass = 'dot-warn';
             }
             body.appendChild(createMetricRow('Playback Credentials', pbLabel, pbClass));
-
-            // sp_dc Status
-            var spDc = h.spDc || {};
-            var spDcLabel, spDcClass;
-            if (spDc.state === 'valid')             { spDcLabel = 'Valid'; spDcClass = 'dot-alive'; }
-            else if (spDc.state === 'expired')      { spDcLabel = 'Expired'; spDcClass = 'dot-warn'; }
-            else if (spDc.state === 'secrets_down') { spDcLabel = 'Secrets unavailable'; spDcClass = 'dot-warn'; }
-            else                                    { spDcLabel = 'Not configured'; spDcClass = 'dot-unknown'; }
-            if (spDc.state && spDc.state !== 'empty' && spDc.maskedPreview) {
-                spDcLabel += ' (' + spDc.maskedPreview + ')';
-            }
-            body.appendChild(createMetricRow('sp_dc Status', spDcLabel, spDcClass));
 
             // Connect
             var connect = h.connect || {};
@@ -476,11 +469,6 @@ footer {
                 ? 'Running (PID ' + connect.pid + ', ' + formatUptime(connect.uptime) + ')'
                 : 'Stopped';
             body.appendChild(createMetricRow('Connect', connectLabel, connect.alive ? 'dot-alive' : 'dot-dead'));
-
-            // Migration
-            var migration = h.migration || {};
-            body.appendChild(createMetricRow('Migration', migration.needed ? 'Reconnect required' : 'Complete',
-                migration.needed ? 'dot-warn' : 'dot-alive'));
 
             // Audio Keys
             var audioKey = h.audioKey || {};
@@ -492,12 +480,64 @@ footer {
         }
     }
 
+    // Made for You (D-19, decision-D17 pathfinder-login5-plus-rootlist): the
+    // Pathfinder health from SpClient->madeForYouStatus. A warning row shows
+    // when the persisted-query hash is broken, an operation is missing from
+    // the web-player bundles, or the rootlist fallback is answering.
+    function renderMadeForYou(data) {
+        var body = document.getElementById('mfy-body');
+        body.textContent = '';
+
+        var m = data.madeForYou || {};
+        if (!m.source) {
+            body.appendChild(createMetricRow('Made for You', 'Status unavailable', 'dot-unknown'));
+            return;
+        }
+
+        var ops = m.opsMissing || [];
+        if (m.hashState === 'broken') {
+            body.appendChild(createMetricRow('Warning',
+                'Pathfinder hash rejected, refreshing it failed - Made for You may show saved mixes only', 'dot-dead'));
+        }
+        if (m.hashState === 'op_missing') {
+            body.appendChild(createMetricRow('Warning',
+                'Pathfinder operation missing from the web player: ' + (ops.length ? ops.join(', ') : '?'), 'dot-warn'));
+        }
+        if (m.fallbackActive) {
+            // WR-13: say WHY. 'empty' = Pathfinder answered but listed no playlists.
+            body.appendChild(createMetricRow('Warning',
+                m.fallbackReason === 'empty'
+                    ? 'Showing saved mixes only (Pathfinder answered without any Made for You playlists, the playlist library is used instead)'
+                    : 'Showing saved mixes only (Pathfinder is not answering, the playlist library is used instead)',
+                'dot-warn'));
+        }
+
+        var hsLabel, hsClass;
+        if (m.hashState === 'ok')              { hsLabel = 'OK'; hsClass = 'dot-alive'; }
+        else if (m.hashState === 'broken')     { hsLabel = 'Broken'; hsClass = 'dot-dead'; }
+        else if (m.hashState === 'op_missing') { hsLabel = 'Operation missing'; hsClass = 'dot-warn'; }
+        else                                   { hsLabel = 'Not asked yet'; hsClass = 'dot-unknown'; }
+
+        body.appendChild(createMetricRow('Source', val(m.source)));
+        body.appendChild(createMetricRow('Pathfinder hashes', hsLabel, hsClass));
+        body.appendChild(createMetricRow('Rootlist fallback', m.fallbackActive ? 'Active' : 'Off',
+            m.fallbackActive ? 'dot-warn' : ''));
+        body.appendChild(createMetricRow('Mixes listed', val(m.mixCount)));
+        body.appendChild(createMetricRow('Last Pathfinder error', val(m.lastError)));
+        body.appendChild(createMetricRow('Last 412', formatRelTime(m.last412At)));
+        body.appendChild(createMetricRow('Last 401', formatRelTime(m.last401At)));
+        body.appendChild(createMetricRow('Last 403', formatRelTime(m.last403At)));
+        body.appendChild(createMetricRow('Last hash scrape', formatRelTime(m.lastScrapeAt)));
+        body.appendChild(createMetricRow('Missing operations', ops.length ? ops.join(', ') : 'None'));
+    }
+
     function render(data) {
         renderDaemon(data);
         renderApi(data);
         renderErrors(data);
         renderSystem(data);
         renderAuthHealth(data);
+        renderMadeForYou(data);
     }
 
     function poll() {

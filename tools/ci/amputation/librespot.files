@@ -1,0 +1,10 @@
+# Librespot side of the backend seam (84-12, SEAM-6.3.2). One repo-relative
+# path per line; a trailing / marks a directory. amputate.sh removes every
+# path and FAILS on a missing one (a stale manifest must be red).
+# Plugins/SpotOn/Helper.pm is deliberately NOT here: it is the auth path
+# (Plugin.pm boot Helper->init, API/Credentials.pm token-login) and therefore
+# core (user decision 2026-10-11, W4).
+Plugins/SpotOn/Unified/Daemon.pm
+Plugins/SpotOn/Backend/Librespot.pm
+librespot-spoton/
+spoton-helper/

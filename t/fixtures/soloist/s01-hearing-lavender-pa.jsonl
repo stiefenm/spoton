@@ -1,0 +1,30 @@
+#ts=08:04:57.653 epoch=1788501897.65337
+{"type":"auth_state","logged_in":true,"is_active":false,"device_name":"lavender-pa"}
+#ts=08:04:57.653 epoch=1788501897.65348
+{"type":"playback_state","status":"idle","item":{"uri":"","entity_type":"","decorations":{}},"context":{"uri":"","entity_type":"","decorations":{}},"position":{"position_ms":0,"timestamp_ms":1788501897653,"speed":0},"volume":70,"is_active":false,"options":{"shuffle":false,"repeat":"off","playback_speed":1,"modes":{}},"available_actions":{}}
+#ts=08:05:00.658 epoch=1788501900.65852
+{"type":"playback_changed","status":"playing"}
+#ts=08:05:00.658 epoch=1788501900.65873
+{"type":"context_changed","context":{"uri":"spotify:track:11dFghVXANMlKmJXsNCbNl","entity_type":"track","decorations":{}}}
+#ts=08:05:00.658 epoch=1788501900.65881
+{"type":"queue_changed","previous":[{"uid":"node_rules_placeholder","source":"context","item":{"uri":"spotify:meta:node_rules_placeholder","entity_type":"unknown","decorations":{"playback":{"duration_ms":0,"content_ratings":[]}}}}],"upcoming":[{"uid":"node_rules_placeholder","source":"context","item":{"uri":"spotify:meta:node_rules_placeholder","entity_type":"unknown","decorations":{"playback":{"duration_ms":0,"content_ratings":[]}}}}]}
+#ts=08:05:00.658 epoch=1788501900.65888
+{"type":"playback_state","status":"playing","item":{"uri":"","entity_type":"","decorations":{}},"context":{"uri":"spotify:track:11dFghVXANMlKmJXsNCbNl","entity_type":"track","decorations":{}},"position":{"position_ms":0,"timestamp_ms":1788501900658,"speed":1},"volume":70,"is_active":false,"options":{"shuffle":false,"repeat":"off","playback_speed":1,"modes":{}},"available_actions":{"add_to_queue":{},"pause":{},"set_repeat":{},"shuffle":{}}}
+#ts=08:05:00.658 epoch=1788501900.65895
+{"type":"position_sync","position":{"position_ms":0,"timestamp_ms":1788501900658,"speed":1}}
+#ts=08:05:00.659 epoch=1788501900.65902
+{"type":"device_changed","is_active":true,"device_name":"lavender-pa"}
+#ts=08:05:00.736 epoch=1788501900.73655
+{"type":"track_changed","item":{"uri":"spotify:track:11dFghVXANMlKmJXsNCbNl","entity_type":"track","decorations":{"identity":{"name":"Cut To The Feeling"},"visual_identity":{"cover":[{"url":"https://i.scdn.co/image/ab67616d000048517359994525d219f64872d3b1","size":"small"},{"url":"https://i.scdn.co/image/ab67616d00001e027359994525d219f64872d3b1","size":"default"},{"url":"https://i.scdn.co/image/ab67616d0000b2737359994525d219f64872d3b1","size":"large"},{"url":"https://i.scdn.co/image/ab67616d0000b2737359994525d219f64872d3b1","size":"xlarge"}]},"parent":{"entity":{"uri":"spotify:album:0tGPJ0bkWOUmH7MEOR77qc","entity_type":"album","decorations":{"identity":{"name":"Cut To The Feeling"}}}},"creators":[{"entity":{"uri":"spotify:artist:6sFIWsNpZYqfjUpaCgueju","entity_type":"artist","decorations":{"identity":{"name":"Carly Rae Jepsen"}}}}],"playback":{"duration_ms":208000,"content_ratings":[]}}}}
+#ts=08:05:00.736 epoch=1788501900.73675
+{"type":"playback_changed","status":"buffering"}
+#ts=08:05:00.736 epoch=1788501900.7368
+{"type":"options_changed","options":{"shuffle":false,"repeat":"off","playback_speed":1,"modes":{"context_enhancement":"NONE"}}}
+#ts=08:05:00.736 epoch=1788501900.73684
+{"type":"queue_changed","previous":[],"upcoming":[]}
+#ts=08:05:00.736 epoch=1788501900.73688
+{"type":"playback_state","status":"buffering","item":{"uri":"spotify:track:11dFghVXANMlKmJXsNCbNl","entity_type":"track","decorations":{"identity":{"name":"Cut To The Feeling"},"visual_identity":{"cover":[{"url":"https://i.scdn.co/image/ab67616d000048517359994525d219f64872d3b1","size":"small"},{"url":"https://i.scdn.co/image/ab67616d00001e027359994525d219f64872d3b1","size":"default"},{"url":"https://i.scdn.co/image/ab67616d0000b2737359994525d219f64872d3b1","size":"large"},{"url":"https://i.scdn.co/image/ab67616d0000b2737359994525d219f64872d3b1","size":"xlarge"}]},"parent":{"entity":{"uri":"spotify:album:0tGPJ0bkWOUmH7MEOR77qc","entity_type":"album","decorations":{"identity":{"name":"Cut To The Feeling"}}}},"creators":[{"entity":{"uri":"spotify:artist:6sFIWsNpZYqfjUpaCgueju","entity_type":"artist","decorations":{"identity":{"name":"Carly Rae Jepsen"}}}}],"playback":{"duration_ms":208000,"content_ratings":[]}}},"context":{"uri":"spotify:track:11dFghVXANMlKmJXsNCbNl","entity_type":"track","decorations":{}},"position":{"position_ms":0,"timestamp_ms":1788501900736,"speed":0},"volume":70,"is_active":true,"options":{"shuffle":false,"repeat":"off","playback_speed":1,"modes":{"context_enhancement":"NONE"}},"available_actions":{"add_to_queue":{},"pause":{},"seek":{},"seek_backward":{"step_ms":15000},"seek_forward":{"step_ms":15000},"set_repeat":{},"shuffle":{},"skip_next":{}}}
+#ts=08:05:00.736 epoch=1788501900.73697
+{"type":"position_sync","position":{"position_ms":0,"timestamp_ms":1788501900736,"speed":0}}
+#ts=08:05:00.822 epoch=1788501900.82237
+{"type":"position_sync","position":{"position_ms":116,"timestamp_ms":1788501900822,"speed":0}}
