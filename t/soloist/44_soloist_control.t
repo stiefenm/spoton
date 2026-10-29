@@ -145,6 +145,7 @@ END
 write_stub($stub_dir, 'Slim::Player::Client', <<'END');
 package Slim::Player::Client;
 our @EXECUTED;
+our @ORDER;
 my %clients;
 sub getClient {
     my ($mac) = @_;
@@ -167,9 +168,18 @@ sub getClient {
     return $clients{$mac};
 }
 package Slim::Player::Client::Recorder;
+# 79-53: one shared, ordered log of what the player was told (exec:<cmd> and
+# hint:<text>); the never-paired refusal pins the ORDER stop, hint, errorCb.
+# @EXECUTED stays as it was for every older block.
 sub execute {
     my ($self, $req) = @_;
     push @Slim::Player::Client::EXECUTED, $req;
+    push @Slim::Player::Client::ORDER, 'exec:' . join(' ', @$req);
+}
+sub showBriefly {
+    my ($self, $h) = @_;
+    my $t = $h && $h->{jive} ? $h->{jive}{text} : undef;
+    push @Slim::Player::Client::ORDER, 'hint:' . ($t ? $t->[0] : '');
 }
 sub id     { return $_[0]->{mac}; }
 sub volume {
@@ -511,6 +521,32 @@ sub sysread {
 1;
 END
 
+# 79-53: the never-paired refusal asks Plugins::SpotOn::Soloist whether the
+# player has a stored session. The real module does not load in this harness
+# (the eval would return undef and the code would keep deferring, so gate B
+# would be invisible), hence a stub. %FS maps mac => 0|1; a mac that is not
+# in %FS answers undef (= unknown), so every older block keeps the old 20 s
+# deferral. $BROKEN makes the call die (module unavailable).
+write_stub($stub_dir, 'Plugins::SpotOn::Soloist', <<'END');
+package Plugins::SpotOn::Soloist;
+our %FS;
+our $BROKEN = 0;
+sub isPairedForClient {
+    die "unavailable" if $BROKEN;
+    return $FS{ $_[0] };
+}
+1;
+END
+
+# 79-53: the pairing hint is built with Slim::Utils::Strings::cstring. CI has
+# no LMS tree (/usr/share/perl5/Slim), so without this stub the suite would
+# pass here and die there.
+write_stub($stub_dir, 'Slim::Utils::Strings', <<'END');
+package Slim::Utils::Strings;
+sub cstring { return "STR($_[1])"; }
+1;
+END
+
 BEGIN {
     no warnings 'redefine';
     *main::INFOLOG  = sub () { 0 };
@@ -535,6 +571,11 @@ require_ok('Slim::Player::Playlist')
 # restores THAT (not the module's real default) once the local scope ends.
 require_ok('Slim::Networking::SimpleAsyncHTTP')
     or BAIL_OUT("Failed to load the Slim::Networking::SimpleAsyncHTTP stub");
+
+# 79-53: load the Soloist stub NOW, so its `our $BROKEN = 0` never runs after a
+# test has set $BROKEN or %FS.
+require_ok('Plugins::SpotOn::Soloist')
+    or BAIL_OUT("Failed to load the Plugins::SpotOn::Soloist stub");
 
 require_ok('Plugins::SpotOn::Soloist::Control')
     or BAIL_OUT("Failed to load Plugins::SpotOn::Soloist::Control");
@@ -6862,17 +6903,26 @@ my $authProbeTimers = sub {
     is($errorFired, 0, "82-42A Fall-7: errorCb still never fires");
 }
 
-# --- 82-42A Fall-8 (TTL-Fallback aus Schritt 2, IMMER zu implementieren):
-# a daemon that stays known-unpaired (paired=0) and never answers the
+# --- 82-42A Fall-8 (TTL-Fallback aus Schritt 2, IMMER zu implementieren),
+# edited by 79-53: a daemon WITH a stored session (so the 82-42A deferral
+# applies) that stays known-unpaired (paired=0) and never answers the
 # WR-05 probe at all (the genuinely-unpaired real-world case R3-CR01
 # Fall E already exercises for the probe cadence itself) must not wedge
 # the deferred requestTrack forever (T-77-10) -- the SAME TTL fallback
-# Schritt 1 uses (82-42 Task C Fall-2) resolves it here too, same error
-# shape, same ws-retry:<uri> ring entry -- plus Schritt 2's OWN
-# 'unpaired' ring entry, written before the defer (unchanged, R2-CR03). ---
+# Schritt 1 uses (82-42 Task C Fall-2) resolves it here too, same
+# ws-retry:<uri> ring entry -- plus Schritt 2's OWN 'unpaired' ring entry,
+# written before the defer (unchanged, R2-CR03).
+# The OUTCOME changed with 79-53: it used to end with errorCb 'Soloist
+# daemon not ready', which made LMS advance to the next title (the
+# unpaired-player playlist walk, 20 s per title, silent). Now the expiry on
+# a daemon that is known-unpaired ends with stop FIRST (so LMS drops the
+# errorCb as stale), then the pairing hint, then errorCb 'Soloist daemon
+# not paired'. ---
 {
     @Plugins::SpotOn::Status::RECORDED = ();
+    @Slim::Player::Client::ORDER = ();
     my $mac = 'aa:bb:cc:dd:82:08';
+    $Plugins::SpotOn::Soloist::FS{$mac} = 1;    # stored session: the deferral applies
     my ($ctl, $daemon, $ws) = fresh_control(
         mac => $mac, uptime => 100,
         observed => { wsConnected => 1, meta => {} },
@@ -6885,7 +6935,7 @@ my $authProbeTimers = sub {
     my ($success, $errorArgs) = (0, undef);
     $ctl->requestTrack($TID, 0, {
         successCb => sub { $success++ },
-        errorCb   => sub { $errorArgs = [@_]; },
+        errorCb   => sub { $errorArgs = [@_]; push @Slim::Player::Client::ORDER, 'errorCb'; },
     });
 
     is(scalar(grep { $_->[0] eq 'get_auth_state' } @{ $ws->sent }), 1,
@@ -6897,8 +6947,12 @@ my $authProbeTimers = sub {
 
     is($ctl->_deferredTrackRequest, undef, "82-42A Fall-8: the deferral is cleared once the TTL fires");
     is($success, 0, "82-42A Fall-8: successCb never fires");
-    is_deeply($errorArgs, [ 'PROBLEM_OPENING', 'Soloist daemon not ready' ],
-        "82-42A Fall-8: errorCb fires with the SAME error shape Schritt 1's TTL fallback uses (82-42 Task C Fall-2)");
+    is_deeply($errorArgs, [ 'PROBLEM_OPENING', 'Soloist daemon not paired' ],
+        "82-42A Fall-8 (79-53): the TTL expiry on a known-unpaired daemon ends with errorCb 'Soloist daemon not paired'");
+    is_deeply([ @Slim::Player::Client::ORDER ],
+        [ 'exec:stop', 'hint:STR(PLUGIN_SPOTON_SOLOIST_NOT_PAIRED)', 'errorCb' ],
+        "82-42A Fall-8 (79-53): order is stop, hint, errorCb (the stop makes LMS drop the errorCb as stale)")
+        or diag("ORDER=@Slim::Player::Client::ORDER");
 
     is(scalar(@Plugins::SpotOn::Status::RECORDED), 2,
         "82-42A Fall-8: exactly two ring entries total -- Schritt 2's own 'unpaired' write plus the TTL's 'ws-retry' write");
@@ -6943,6 +6997,257 @@ my $authProbeTimers = sub {
     # of this file's R2-CR03/R2-WR05/R3-CR01 block.
     Slim::Utils::Timers::killTimers($ctl, \&Plugins::SpotOn::Soloist::Control::_wsRetryTimeout);
     $ctl->_deferredTrackRequest(undef);
+}
+
+# ============================================================
+# 79-53: a never-paired Soloist player must stop ONCE with the pairing hint
+# instead of letting LMS walk the playlist (debug session
+# unpaired-player-skips-playlist). LMS answers every getNextTrack error with
+# "next title", so a refusal has to stop the player BEFORE the errorCb fires:
+# StreamingController _Stop bumps nextTrackCallbackId and the later errorCb
+# reaches _nextTrackError as a stale id. The gate that tells "never paired"
+# from "restoring a stored session" is Plugins::SpotOn::Soloist::
+# isPairedForClient (stubbed above, %FS). Synthetic MACs only.
+# ============================================================
+sub s53_state {    # wsConnected=1, paired=0: the Pi-walk daemon state
+    my ($mac) = @_;
+    return fresh_control(mac => $mac, uptime => 100,
+        observed => { wsConnected => 1, paired => 0, meta => {} });
+}
+sub s53_reset {
+    @Plugins::SpotOn::Status::RECORDED = ();
+    @Slim::Player::Client::ORDER = ();
+    @Slim::Player::Client::EXECUTED = ();
+    @Slim::Utils::Log::WARNINGS = ();
+}
+sub s53_timer {
+    my ($ctl) = @_;
+    return scalar grep { $_->[0] == $ctl && $_->[2] == \&Plugins::SpotOn::Soloist::Control::_wsRetryTimeout } @Slim::Utils::Timers::TIMERS;
+}
+sub s53_cleanup {
+    my ($ctl) = @_;
+    Slim::Utils::Timers::killTimers($ctl, \&Plugins::SpotOn::Soloist::Control::_wsRetryTimeout);
+    $ctl->_deferredTrackRequest(undef);
+}
+
+# --- 79-53 S1: never paired (FS=0, wsConnected=1, paired=0) -> refuse at once:
+# stop, hint, errorCb in that order; no deferral, no timer, one warning.
+{
+    s53_reset();
+    my $mac = 'aa:bb:cc:dd:53:01';
+    $Plugins::SpotOn::Soloist::FS{$mac} = 0;
+    my ($ctl, $daemon, $ws) = s53_state($mac);
+    my @err;
+    $ctl->requestTrack($TID, 0, { source => 'getNextTrack', errorCb => sub { push @Slim::Player::Client::ORDER, 'errorCb'; push @err, [@_] } });
+
+    is_deeply([ @Slim::Player::Client::ORDER ],
+        [ 'exec:stop', 'hint:STR(PLUGIN_SPOTON_SOLOIST_NOT_PAIRED)', 'errorCb' ],
+        "79-53 S1: order is stop, hint, errorCb (errorCb last, so LMS drops it as stale)")
+        or diag("ORDER=@Slim::Player::Client::ORDER");
+    is_deeply($err[0], [ 'PROBLEM_OPENING', 'Soloist daemon not paired' ], "79-53 S1: errorCb args");
+    ok(!$ctl->_deferredTrackRequest, "79-53 S1: no deferral for a never-paired daemon");
+    is(s53_timer($ctl), 0, "79-53 S1: no _wsRetryTimeout timer armed");
+    my @w = grep { /requestTrack refused \(daemon not paired, no stored session\)/ && /pairing hint shown/ } @Slim::Utils::Log::WARNINGS;
+    is(scalar(@w), 1, "79-53 S1: exactly one refusal warning naming the reason and the hint")
+        or diag("WARNINGS=" . join(' | ', @Slim::Utils::Log::WARNINGS));
+    s53_cleanup($ctl);
+}
+
+# --- 79-53 S2: stored session (FS=1) -> still deferred, no stop, no hint; a
+# login inside the window replays it, no errorCb (the 82-42A race survives).
+{
+    s53_reset();
+    my $mac = 'aa:bb:cc:dd:53:02';
+    $Plugins::SpotOn::Soloist::FS{$mac} = 1;
+    my ($ctl, $daemon, $ws) = s53_state($mac);
+    my @err;
+    $ctl->requestTrack($TID, 0, { source => 'getNextTrack', errorCb => sub { push @err, [@_] } });
+    ok($ctl->_deferredTrackRequest, "79-53 S2: deferred when a stored session exists");
+    is(scalar(@Slim::Player::Client::ORDER), 0, "79-53 S2: no stop, no hint while the session is restoring");
+    $ctl->onEvent({ type => 'auth_state', logged_in => 1 });
+    ok(!$ctl->_deferredTrackRequest && !@err, "79-53 S2: a login inside the window replays the deferral, no errorCb");
+    is(scalar(@Slim::Player::Client::ORDER), 0, "79-53 S2: still no stop and no hint after the replay");
+    s53_cleanup($ctl);
+}
+
+# --- 79-53 S3: pairing state unknown (module dies) -> the old deferral, no stop.
+{
+    s53_reset();
+    my $mac = 'aa:bb:cc:dd:53:03';
+    my ($ctl, $daemon, $ws) = s53_state($mac);
+    {
+        local $Plugins::SpotOn::Soloist::BROKEN = 1;
+        $ctl->requestTrack($TID, 0, { source => 'getNextTrack', errorCb => sub { } });
+    }
+    ok($ctl->_deferredTrackRequest, "79-53 S3: an unknown pairing state keeps the deferral");
+    is(scalar(@Slim::Player::Client::ORDER), 0, "79-53 S3: no stop, no hint for an unknown state");
+    s53_cleanup($ctl);
+}
+
+# --- 79-53 S4: wsConnected=0 with FS=0 -> step 1 deferral, untouched.
+{
+    s53_reset();
+    my $mac = 'aa:bb:cc:dd:53:04';
+    $Plugins::SpotOn::Soloist::FS{$mac} = 0;
+    my ($ctl, $daemon, $ws) = fresh_control(mac => $mac, uptime => 1,
+        observed => { wsConnected => 0, meta => {} });
+    my @err;
+    $ctl->requestTrack($TID, 0, { source => 'getNextTrack', errorCb => sub { push @err, [@_] } });
+    ok($ctl->_deferredTrackRequest, "79-53 S4: wsConnected=0 still defers (step 1)");
+    ok(!@err, "79-53 S4: no errorCb on the step 1 deferral");
+    is(scalar(@Slim::Player::Client::ORDER), 0, "79-53 S4: no stop, no hint on step 1");
+    s53_cleanup($ctl);
+}
+
+# --- 79-53 S5: stored session (FS=1) but the login never arrives -> deferred
+# first; at TTL expiry: stop, hint, errorCb 'not paired' (not LMS moving on).
+{
+    s53_reset();
+    my $mac = 'aa:bb:cc:dd:53:05';
+    $Plugins::SpotOn::Soloist::FS{$mac} = 1;
+    my ($ctl, $daemon, $ws) = s53_state($mac);
+    my @err;
+    $ctl->requestTrack($TID, 0, { source => 'getNextTrack', errorCb => sub { push @Slim::Player::Client::ORDER, 'errorCb'; push @err, [@_] } });
+    ok($ctl->_deferredTrackRequest, "79-53 S5: deferred first");
+    is(scalar(@Slim::Player::Client::ORDER), 0, "79-53 S5: nothing sent to the player while deferred");
+    Slim::Utils::Timers::fire_due(Time::HiRes::time() + Plugins::SpotOn::Soloist::Control::WS_RETRY_TTL_S() + 1);
+    is_deeply([ @Slim::Player::Client::ORDER ],
+        [ 'exec:stop', 'hint:STR(PLUGIN_SPOTON_SOLOIST_NOT_PAIRED)', 'errorCb' ],
+        "79-53 S5: TTL expiry on a known-unpaired daemon: stop, hint, errorCb")
+        or diag("ORDER=@Slim::Player::Client::ORDER");
+    is_deeply($err[0], [ 'PROBLEM_OPENING', 'Soloist daemon not paired' ], "79-53 S5: errorCb args at the TTL");
+    my @w = grep { /requestTrack refused \(daemon not paired, login did not arrive within \d+s\)/ } @Slim::Utils::Log::WARNINGS;
+    is(scalar(@w), 1, "79-53 S5: the refusal warning names the TTL reason")
+        or diag("WARNINGS=" . join(' | ', @Slim::Utils::Log::WARNINGS));
+    s53_cleanup($ctl);
+}
+
+# --- 79-53 S6: requestResume on a never-paired daemon -> no stop (only a
+# requestTrack, i.e. a getNextTrack caller, is refused with a stop).
+{
+    s53_reset();
+    my $mac = 'aa:bb:cc:dd:53:06';
+    $Plugins::SpotOn::Soloist::FS{$mac} = 0;
+    my ($ctl, $daemon, $ws) = s53_state($mac);
+    $ctl->wanted({ playing => 1, uri => $TID });
+    $ctl->requestResume;
+    is(scalar(grep { /^exec:stop/ } @Slim::Player::Client::ORDER), 0, "79-53 S6: requestResume on a never-paired daemon sends no stop");
+    is(scalar(grep { /^hint:/ } @Slim::Player::Client::ORDER), 0, "79-53 S6: and shows no hint");
+    s53_cleanup($ctl);
+}
+
+# --- 79-53 S7: a step 1 deferral is still pending, then a requestTrack
+# arrives on the now never-paired daemon -> the old errorCb is superseded,
+# exactly one stop, no timer left (no second refusal at the old TTL).
+{
+    s53_reset();
+    my $mac = 'aa:bb:cc:dd:53:07';
+    $Plugins::SpotOn::Soloist::FS{$mac} = 0;
+    my ($ctl, $daemon, $ws) = fresh_control(mac => $mac, uptime => 1,
+        observed => { wsConnected => 0, meta => {} });
+    my (@old, @new);
+    $ctl->requestTrack($TID, 0, { source => 'getNextTrack', errorCb => sub { push @old, [@_] } });
+    ok($ctl->_deferredTrackRequest, "79-53 S7 setup: the step 1 deferral is pending");
+    is(s53_timer($ctl), 1, "79-53 S7 setup: its TTL timer is armed");
+
+    $ctl->observed->{wsConnected} = 1;
+    $ctl->observed->{paired}      = 0;
+    $ctl->requestTrack($TID, 0, { source => 'getNextTrack', errorCb => sub { push @Slim::Player::Client::ORDER, 'errorCb'; push @new, [@_] } });
+
+    is_deeply(\@old, [ [ 'PROBLEM_OPENING', 'superseded' ] ], "79-53 S7: the old errorCb is superseded, once");
+    is_deeply($new[0], [ 'PROBLEM_OPENING', 'Soloist daemon not paired' ], "79-53 S7: the new request is refused as not paired");
+    is(scalar(grep { /^exec:stop/ } @Slim::Player::Client::ORDER), 1, "79-53 S7: exactly one stop");
+    ok(!$ctl->_deferredTrackRequest, "79-53 S7: no deferral left");
+    is(s53_timer($ctl), 0, "79-53 S7: no timer left");
+    Slim::Utils::Timers::fire_due(Time::HiRes::time() + Plugins::SpotOn::Soloist::Control::WS_RETRY_TTL_S() + 5);
+    is(scalar(grep { /^exec:stop/ } @Slim::Player::Client::ORDER), 1, "79-53 S7: still exactly one stop after the old TTL would have fired");
+    is(scalar(@old), 1, "79-53 S7: the old errorCb did not fire a second time");
+    s53_cleanup($ctl);
+}
+
+# ============================================================
+# 79-53 repair round 2 (79-REVIEW-53-FIX.md WR-01): the TTL refusal (branch
+# D) fires up to 20 s after the request. By then the user may have moved on
+# to a radio station or a local file while the deferral is still pending
+# (only shutdown and a closed transport release it). The refusal must stop
+# and show the hint ONLY while LMS is still on one of OUR spoton:// titles;
+# the errorCb stays unconditional (T-77-10). Path A (synchronous, inside
+# getNextTrack) keeps its unconditional stop: the TRACKWAIT song is ours by
+# construction (S11 pins it).
+# ============================================================
+sub s53_ttl_fire {
+    my ($ctl, $mac, $setSong) = @_;
+    my @err;
+    $ctl->requestTrack($TID, 0, { source => 'getNextTrack', errorCb => sub { push @Slim::Player::Client::ORDER, 'errorCb'; push @err, [@_] } });
+    $setSong->() if $setSong;
+    Slim::Utils::Timers::fire_due(Time::HiRes::time() + Plugins::SpotOn::Soloist::Control::WS_RETRY_TTL_S() + 1);
+    return @err;
+}
+
+# --- 79-53 S8: stored session, the user switched to a radio station inside
+# the window -> at the TTL no stop, no hint, errorCb still fires.
+{
+    s53_reset();
+    my $mac = 'aa:bb:cc:dd:53:08';
+    $Plugins::SpotOn::Soloist::FS{$mac} = 1;
+    my ($ctl, $daemon, $ws) = s53_state($mac);
+    my @err = s53_ttl_fire($ctl, $mac, sub { foreign_track($mac, 'http://radio.example.invalid/stream.mp3') });
+    ok(!$ctl->_deferredTrackRequest, "79-53 S8: the deferral is resolved at the TTL");
+    is_deeply([ @Slim::Player::Client::ORDER ], [ 'errorCb' ],
+        "79-53 S8: a foreign song at the TTL -> no stop, no hint, errorCb still fires")
+        or diag("ORDER=@Slim::Player::Client::ORDER");
+    is_deeply($err[0], [ 'PROBLEM_OPENING', 'Soloist daemon not paired' ], "79-53 S8: errorCb args unchanged");
+    my @w = grep { /requestTrack refused \(daemon not paired, login did not arrive within \d+s\)/ && /no stop/ && !/stop sent/ && !/pairing hint shown/ } @Slim::Utils::Log::WARNINGS;
+    is(scalar(@w), 1, "79-53 S8: one warning that says no stop was sent")
+        or diag("WARNINGS=" . join(' | ', @Slim::Utils::Log::WARNINGS));
+    s53_cleanup($ctl);
+}
+
+# --- 79-53 S9: same, but LMS reports no song at all -> no stop, no hint.
+{
+    s53_reset();
+    my $mac = 'aa:bb:cc:dd:53:09';
+    $Plugins::SpotOn::Soloist::FS{$mac} = 1;
+    my ($ctl, $daemon, $ws) = s53_state($mac);
+    my @err = s53_ttl_fire($ctl, $mac, sub { no_track($mac) });
+    is_deeply([ @Slim::Player::Client::ORDER ], [ 'errorCb' ],
+        "79-53 S9: no song at the TTL -> no stop, no hint, errorCb still fires")
+        or diag("ORDER=@Slim::Player::Client::ORDER");
+    is_deeply($err[0], [ 'PROBLEM_OPENING', 'Soloist daemon not paired' ], "79-53 S9: errorCb args unchanged");
+    s53_cleanup($ctl);
+}
+
+# --- 79-53 S10: twin of S5 with the ownership stated explicitly: LMS still on
+# our spoton:// title at the TTL -> stop, hint, errorCb.
+{
+    s53_reset();
+    my $mac = 'aa:bb:cc:dd:53:10';
+    $Plugins::SpotOn::Soloist::FS{$mac} = 1;
+    my ($ctl, $daemon, $ws) = s53_state($mac);
+    my @err = s53_ttl_fire($ctl, $mac, sub { own_track($mac, 'spoton://track:' . $TID =~ s/^spotify:track://r) });
+    is_deeply([ @Slim::Player::Client::ORDER ],
+        [ 'exec:stop', 'hint:STR(PLUGIN_SPOTON_SOLOIST_NOT_PAIRED)', 'errorCb' ],
+        "79-53 S10: LMS still on our title at the TTL -> stop, hint, errorCb")
+        or diag("ORDER=@Slim::Player::Client::ORDER");
+    is_deeply($err[0], [ 'PROBLEM_OPENING', 'Soloist daemon not paired' ], "79-53 S10: errorCb args");
+    s53_cleanup($ctl);
+}
+
+# --- 79-53 S11: path A (never paired, synchronous inside getNextTrack) keeps
+# its UNCONDITIONAL stop, even when the client's song reads foreign: the
+# guard belongs to the delayed TTL path only.
+{
+    s53_reset();
+    my $mac = 'aa:bb:cc:dd:53:11';
+    $Plugins::SpotOn::Soloist::FS{$mac} = 0;
+    foreign_track($mac, 'http://radio.example.invalid/stream.mp3');
+    my ($ctl, $daemon, $ws) = s53_state($mac);
+    $ctl->requestTrack($TID, 0, { source => 'getNextTrack', errorCb => sub { push @Slim::Player::Client::ORDER, 'errorCb' } });
+    is_deeply([ @Slim::Player::Client::ORDER ],
+        [ 'exec:stop', 'hint:STR(PLUGIN_SPOTON_SOLOIST_NOT_PAIRED)', 'errorCb' ],
+        "79-53 S11: the synchronous refusal inside getNextTrack stops unconditionally")
+        or diag("ORDER=@Slim::Player::Client::ORDER");
+    s53_cleanup($ctl);
 }
 
 # ============================================================

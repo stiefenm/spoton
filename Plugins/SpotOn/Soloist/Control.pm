@@ -1847,6 +1847,30 @@ sub _reconcilePlan {
         # even with `_ws` undef, exactly as `_reconcile` does today (Vorab
         # Fall-A pins this).
         if ($trigger eq 'requestTrack') {
+            # 79-53 (unpaired-player-skips-playlist): the deferral below
+            # exists for the Handschlag-vor-Login race, which only a daemon
+            # WITH a stored session has (it restores the session after the
+            # websocket handshake). A daemon without one cannot log in by
+            # itself, nothing is about to arrive, and LMS answers every
+            # getNextTrack error with "next title" -- so waiting here only
+            # slowed the walk through the playlist down to one title per
+            # 20 s, silent. Refuse once instead: stop the player, show the
+            # pairing hint (op refuse_unpaired). Only a defined "no stored
+            # session" refuses; an unknown state keeps the deferral.
+            unless ($self->_hasStoredSession) {
+                # A still-pending EARLIER deferral loses its one shot, same
+                # Fall-5 convention as below, and must not fire a second
+                # refusal at its old TTL.
+                if (my $prevDeferred = $self->_deferredTrackRequest) {
+                    push @intents, { op => 'killtimer', cb => \&_wsRetryTimeout };
+                    push @intents, { op => 'fire', cb => $prevDeferred->{opts}, which => 'errorCb', args => [ 'PROBLEM_OPENING', 'superseded' ] };
+                    $self->_deferredTrackRequest(undef);
+                }
+                push @intents, { op => 'refuse_unpaired', cb => $opts, reason => 'no stored session' };
+                push @intents, { op => 'fail' };
+                return \@intents;
+            }
+
             if (my $prevDeferred = $self->_deferredTrackRequest) {
                 push @intents, { op => 'killtimer', cb => \&_wsRetryTimeout };
                 push @intents, { op => 'fire', cb => $prevDeferred->{opts}, which => 'errorCb', args => [ 'PROBLEM_OPENING', 'superseded' ] };
@@ -3060,6 +3084,9 @@ sub _execute {
         elsif ($op eq 'boundary') {
             $self->_postBoundary;
         }
+        elsif ($op eq 'refuse_unpaired') {
+            $self->_refuseUnpaired($intent->{cb}, $intent->{reason});
+        }
         elsif ($op eq 'fail') {
             # `_reconcilePlan`'s early-return-0 branches (Schritt 1/2's
             # non-requestTrack terminal path, Schritt 5's drift-exhausted
@@ -3199,7 +3226,100 @@ sub _wsRetryTimeout {
         ($self->mac // '?') . ": deferred requestTrack for " . ($deferred->{uri} // '?')
         . " timed out after " . WS_RETRY_TTL_S . "s (Soloist daemon never became ready)");
 
+    # 79-53: the websocket is up and the daemon reports itself unpaired, so
+    # the login never came (an expired-but-present session, or one that
+    # showed up between the step 2 check and now). A plain errorCb would make
+    # LMS advance to the next title, one 20 s wait per title -- stop once with
+    # the pairing hint instead, exactly as step 2 does for a never-paired
+    # daemon. wsConnected=0, or an unknown paired state, keeps the old text.
+    if ($self->observed->{wsConnected} && defined $self->observed->{paired} && !$self->observed->{paired}) {
+        $self->_refuseUnpaired($deferred->{opts}, 'login did not arrive within ' . WS_RETRY_TTL_S . 's', 1);
+        return;
+    }
+
     $self->_fireCbs($deferred->{opts}, 'errorCb', 'PROBLEM_OPENING', 'Soloist daemon not ready');
+}
+
+# _hasStoredSession($self) -- 79-53: does this player's daemon have a stored
+# Spotify session to restore (settings/Users non-empty)? Only a daemon that
+# has one can still log in by itself after the websocket handshake (the
+# 82-42A Handschlag-vor-Login race). Returns 0 ONLY when
+# Plugins::SpotOn::Soloist::isPairedForClient says a defined "no"; undef
+# (module load failure or unknown) reads as 1, so the old 20 s deferral stays
+# the answer whenever the state is not known.
+sub _hasStoredSession {
+    my $self = shift;
+
+    my $fs = eval {
+        require Plugins::SpotOn::Soloist;
+        Plugins::SpotOn::Soloist::isPairedForClient($self->mac);
+    };
+
+    return defined $fs ? ($fs ? 1 : 0) : 1;
+}
+
+# _refuseUnpaired($self, $opts, $reason, $onlyIfOurs) -- 79-53: end a
+# requestTrack that cannot succeed because the daemon is not paired. Order
+# matters:
+#
+#   1. `stop` on the LMS client FIRST. StreamingController's _Stop sets the
+#      streaming state to IDLE, which bumps nextTrackCallbackId, so the
+#      errorCb in step 4 reaches _nextTrackError as a stale id and returns
+#      without advancing (without the stop, LMS answers an errorCb with
+#      "next title" and walks the whole playlist).
+#   2. The pairing hint (existing string PLUGIN_SPOTON_SOLOIST_NOT_PAIRED).
+#   3. One warning line, so the refusal is visible in server.log.
+#   4. The errorCb ALWAYS fires, even without a client or when the hint
+#      died, so getNextTrack never wedges (T-77-10).
+#
+# $onlyIfOurs (79-53 repair round 2, 79-REVIEW-53-FIX.md WR-01): the TTL
+# path (_wsRetryTimeout) runs up to 20 s after the request, and the deferral
+# is not released by an LMS stop or by a switch to other material. By then
+# the user may be on a radio station or a local file, and a stop would hit
+# that. With $onlyIfOurs the stop and the hint happen only while LMS is
+# still on one of OUR spoton:// titles (_lmsSongIsOurs); otherwise neither
+# is sent. The errorCb stays unconditional either way. The synchronous path
+# inside getNextTrack passes no flag: the TRACKWAIT song is ours by
+# construction there, so its stop stays unconditional.
+#
+# The stop is synchronous inside getNextTrack, by decision. LMS source:
+# _getNextTrack sets the TRACKWAIT state before it calls getNextSong, and
+# getNextSong is its last statement; _StopGetNext ends with _getNextTrack;
+# _eventAction only validates the resulting state after the action returns.
+# No caller frame writes the streaming state after the nested Stop bumped
+# nextTrackCallbackId, and the later errorCb returns at the stale-id check.
+sub _refuseUnpaired {
+    my ($self, $opts, $reason, $onlyIfOurs) = @_;
+
+    my $mac     = $self->mac // '?';
+    my $outcome = 'no client';
+
+    if (my $client = Slim::Player::Client::getClient($self->mac)) {
+        if ($onlyIfOurs && !$self->_lmsSongIsOurs) {
+            $outcome = 'LMS no longer on our title, no stop, no hint';
+        }
+        else {
+            $client->execute(['stop']);
+
+            my $ok = eval {
+                require Slim::Utils::Strings;
+                $client->showBriefly({
+                    jive => {
+                        type => 'popupplay',
+                        text => [ Slim::Utils::Strings::cstring($client, 'PLUGIN_SPOTON_SOLOIST_NOT_PAIRED') ],
+                    },
+                });
+                1;
+            };
+            my $hint = $ok ? 'pairing hint shown' : 'pairing hint failed: ' . ($@ || 'unknown error');
+            $hint =~ s/\s+\z//;
+            $outcome = "stop sent, $hint";
+        }
+    }
+
+    $log->warn("$mac: requestTrack refused (daemon not paired, " . ($reason // 'not paired') . "): $outcome");
+
+    $self->_fireCbs($opts, 'errorCb', 'PROBLEM_OPENING', 'Soloist daemon not paired');
 }
 
 # _tMetaFire($self) -- T_META_MS timeout: the echo confirmed the title but

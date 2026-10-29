@@ -11,7 +11,20 @@ body:
     id: spoton-version
     attributes:
       label: SpotOn Version
-      placeholder: "e.g. 1.5.1"
+      description: "LMS Settings > Plugins shows the installed version."
+      placeholder: "e.g. 4.0.0beta2.1 or 3.5.8"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Playback Backend
+      description: "SpotOn Settings > Backend. SpotOn 3.5.x always uses librespot."
+      options:
+        - Soloist
+        - librespot
+        - Don't know
     validations:
       required: true
 

@@ -5,6 +5,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.0.0-beta.2.1] - 2026-10-29
+
+**Installing this hotfix.** Same beta repository URL as before (`https://stiefenm.github.io/spoton/beta/repo.xml`); the Plugins page offers SpotOn 4.0.0beta2.1 as an update over 4.0.0beta2. Restart LMS after the update. Everything else is as in 4.0.0-beta.2 below.
+
+### Fixed
+
+- A player that was never paired with Spotify no longer runs through a whole playlist when it is played from the SpotOn menus. In 4.0.0-beta.2 each title waited about 20 seconds and then failed, silently and without any explanation. Now playback stops at the first title and the existing hint is shown: "Not paired yet - playback will fail until this player is selected once in the Spotify app."
+- Workaround for 4.0.0-beta.2: select the new player once in the device list of the Spotify app before playing from the SpotOn menus. That pairs it.
+
 ## [4.0.0-beta.2] - 2026-10-28
 
 **Installing this beta.** This beta is a GitHub pre-release and uses the same repository URL as 4.0.0-beta.1. In LMS, open **Settings > Plugins > Additional Repositories**, add `https://stiefenm.github.io/spoton/beta/repo.xml` and save; the Plugins page then offers SpotOn 4.0.0beta2 as an install, or as an update if 4.0.0beta1 is installed. Without that URL LMS keeps offering 3.5.8, and the final 4.0.0 will be offered as an update over the beta. Removing the URL stops further beta updates; LMS does not move a plugin back to an older version by itself. The zip is downloaded from GitHub's release page, and that download sometimes fails in LMS with `Header line too long (limit is 8192)`: GitHub occasionally sends a header longer than LMS accepts. Try again later, or install by hand as below.
