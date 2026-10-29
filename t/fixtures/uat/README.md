@@ -219,3 +219,52 @@ and the Spotify user id (the account username) in the six `playlist/v2/user/<id>
 19:09:51) and is not archived; the walk and the extract of the run are in `/home/uuu/SynologyDrive/dev/spoton-messdaten/85-03-prephase-261016-1909/`.
 Limit: the walk skips nodes of `type=playlist` (Home -> Recently Played `0.0` and Top Tracks `0.3`, `isaudio=1`), so `me/top/tracks` and `me/player/recently-played` are not
 in this window; Up Next (`/v1/me/player/queue`), Search -> Neue Suche (`/v1/search`) and the Library nodes (`/v1/me/playlists`, `/v1/me/shows`) are.
+
+## `r2-connect-seek.log`
+
+The real recorder frames of the 79-47 Task 4 R2 re-run attempt 3 (`R2_3`, 2026-10-26 18:00:36 .. 18:01:18, lavender-UAT, a Connect session, an app seek via the CDP tool at 18:01:10.5):
+`/home/uuu/SynologyDrive/dev/spoton-messdaten/79-47-shim/task4/run-261026-175021/R2_3.ws.jsonl` (15 lines), redacted in the form of the `d34-*.log` fixtures: one meta line
+(`R2 CASE R2_3 (79-47 Task 4, redacted: rx frames only, decorations removed)`, so `d34_case($file, 'R2_3')` in `t/soloist/44_soloist_control.t` finds the case), rx frames only, and
+`item.decorations` / `context.decorations` (names, cover URLs, creators, durations) removed. The file lines are the lines of the source file (the meta line takes the place of the
+HANDSHAKE line): 3 `playback_state paused`, 4-6 the app play at 18:00:53.561 (position 100094), 7-9 the app seek's first frames at 18:01:11.516 (`playback_changed buffering`, then
+`playback_state buffering` on the SAME title `spotify:track:2374M0fQpWi3dLnB54qaLX` at the SAME position 100094, no `track_changed`), 10-12 the playing frames at 18:01:11.616, 13-15 the
+defect's own `paused` trio at 18:01:18.011 (LMS stopped 6.5 s after the daemon's flush closed its stream). Used by `D-34 R2-S1:` in `t/soloist/44_soloist_control.t` (lines 3-12 only:
+the paused trio is excluded) to pin that Control posts exactly one `POST /seek-keep` at the line-8 frame. Limit: the position is 100094 before AND after the seek (no `position_sync`
+in between), so Control's frozen-position guard returns before `_detectSeek` and the live `seek_from_binary` of 18:01:11.5169 cannot be reproduced from these frames; the test asserts
+only the keep. Nothing is added or doctored. PII/secret ERE (`@`, `Bearer`, `https?://`, `scdn`, `cover`) count 0; the one `device_name` is the rig player's name `lavender-UAT`.
+
+## `runaway-album-start.log`
+
+Real recorder frames of five start shapes, the evidence of plan 79-51 (album-start runaway, .planning/debug/album-start-connect-runaway.md), redacted in the form of the `d34-*.log`
+fixtures (one meta line `R51 CASE <NAME> (<source> lines <a>-<b>, ...)` per case, so `d34_case($file, '<NAME>')` in `t/soloist/44_soloist_control.t` finds it; rx frames only;
+`decorations` objects removed at every depth). Sources below `/home/uuu/SynologyDrive/dev/spoton-messdaten/`; the cut is the source line range:
+- `RUNAWAY` = `79-49-d34/run-261027-094204/connect_skip-single.ws.jsonl` lines 3-44 (E1): paused Redbone T1 at 95802 ms, then at 09:42:24.913 `playing`, `context_changed` album, an item-less
+  `playback_state` and `position_sync` in one millisecond, the album's first title 136 ms later, then the Spotify app's own four skips, each followed by SpotOn-caused `paused` triplets.
+- `PASS1` = `79-49-d34/run-261027-092233/connect_skip-single.ws.jsonl` lines 3-16 (E2, E10): the same frame form at position 0; line 13 is a speed-0 `position_sync`, line 14 a second `playing`.
+- `RESUME` = `79-49-d34/run-261027-092326/connect_lmsseek-single.ws.jsonl` lines 3-6 (E3): a plain Connect resume, the deciding `playback_state` in the same millisecond.
+- `TRANSFER` = `79-50-r2/run-261026-230636/R2.ws.jsonl` lines 3-14 (E8): transfer-in, `device_changed`, `playing`, item-less `playback_state`, same-uri `track_changed` 76 ms later, no `context_changed`.
+- `TRACKFIRST` = `84-17-hold-261001-110502-L1-empty/lavender-UAT/ws.jsonl` lines 3-9 (E9): `track_changed` before `playing`; its `playback_state` frames carry `is_active` false.
+Used by `79-51 D1-R1..R9:` in `t/soloist/44_soloist_control.t`. Nothing is added or doctored (a test that doctors a frame says so and works on its own copy). The fixture has 84 lines (5 meta, 79 frames).
+PII/secret ERE of the `r2-connect-seek.log` section above: count 0 on the fixture; the one `device_name` is the rig player's name `lavender-UAT`.
+
+## `album-start-deadline.log`
+
+Real recorder frames of eight start shapes, the evidence of plan 79-52 (album-start deadline stop, .planning/debug/album-start-deadline-stop.md), redacted in the form of the `d34-*.log`
+fixtures (one meta line `R52 CASE <NAME> (<source> lines <a>-<b>, ...)` per case, so `d34_case($file, '<NAME>')` in `t/soloist/44_soloist_control.t` finds it; rx frames only; `decorations`
+objects removed at every depth). Sources below `spoton-messdaten/` (the archive next to the repository); line 1 of every source is the HANDSHAKE meta line and line 2 the `auth_state`
+frame, the cut starts at line 3 (the session seed comes from the test, the `auth_state` frame is not fed):
+- `V3_SAME` = `79-45-d34/run-261028-123930/album_start-single.ws.jsonl` lines 3-18: the app's `play-uri` of a bare track on a session that already sits (paused) on that title. The daemon's
+  first load reaches `buffering` (12:39:52.418), then the second `prepare play` lands while it is still corked: only `context_changed` (album) and `queue_changed` (12:39:52.723), then
+  `playback_state playing` of the SAME title at position 1 ms (12:39:53.030). Variant V3 (lines 19-21, the `paused` triplet SpotOn itself caused after the shim closed LMS's stream, are excluded).
+- `V3_CHANGE` = `debug-album-start-deadline-stop/run-261028-130219/album_start-single.ws.jsonl` lines 3-18: the same sequence on a session paused on ANOTHER title (Rosanna), so the first
+  `track_changed` is a title change with its pending 84-17 change (the shim's `departed` reply at 13:02:40.956 clears it before the album `context_changed` at 13:02:41.223).
+- `V1` = `debug-album-start-deadline-stop/run-261028-130103/album_start-single.ws.jsonl` lines 3-42; `V1B` = `79-45-d34-attempt5/run-261028-112204/album_start-single.ws.jsonl` lines 3-44: the first load
+  reached `playing` before the second command; a flush, `buffering`, `playing`: the keep at the `buffering` frame.
+- `V2` = `79-45-d34/run-261028-123720/album_start-single.ws.jsonl` lines 3-44: the second command 197 ms after `buffering`; a transient `playing` with an empty item, `track_changed`, `buffering`, `playing`.
+- `V0` = `debug-album-start-deadline-stop/run-261028-125939/album_start-single.ws.jsonl` lines 3-44: no album context at all (one flush).
+- `SKIP` = `79-45-d34/run-261028-123157/connect_skip-single.ws.jsonl` lines 3-30: an app skip (`track_changed` first; its /boundary decides, no keep).
+- `CSEEK` = `79-45-d34/run-261028-123100/connect_seek-single.ws.jsonl` lines 3-13: an app seek on the unchanged title (one keep at its `buffering` frame).
+Used by `79-52 G1-` in `t/soloist/44_soloist_control.t`: the two V3 cases must post their keep at the `playing` frame after the album `context_changed` (HEAD before 79-52: 1 and 0 keeps in all,
+the fix: 2 and 1), the six negatives must post exactly the keeps and drains the code posted before (V1 2/2, V1B 2/2, V2 2/2, V0 3/1, SKIP 0/2, CSEEK 1/0). Nothing is added or doctored
+(a test that doctors a frame says so and works on its own copy). The fixture has 245 lines (8 meta, 237 frames).
+PII/secret ERE of the `r2-connect-seek.log` section above: count 0 on the fixture; no home path occurs in the fixture or here.

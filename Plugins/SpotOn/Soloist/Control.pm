@@ -185,6 +185,15 @@ use constant HOLD_CAP_S     => 60;
 use constant HOLD_RECHECK_S => 5;
 use constant HOLD_MAX_S     => 180;
 
+# 79-51 runaway D1 (.planning/debug/album-start-connect-runaway.md, E1/E3): the Connect `resume` is no longer
+# emitted at the `playback_changed playing` frame. That frame arrives BEFORE the context_changed and the
+# item-less playback_state of an album start (the same millisecond, 094204 09:42:24.913), so nothing at it can tell
+# a resume of the paused title from a new context. The decision moves to the frame that decides it; RESUME_DECIDE_MS
+# releases a lone playing frame (no deciding frame follows), RESUME_DUE_MAX_S drops a record that no deciding
+# frame ever released.
+use constant RESUME_DECIDE_MS => 200;
+use constant RESUME_DUE_MAX_S => 10;
+
 # 83.1-02 Task 2 (D-04/D-05): the split-brain ladder's shared attempt cap --
 # the watchdog's single attempt (_connectResync('watchdog')) and
 # _checkSplitBrain's own ticker-sighting attempts count against ONE shared
@@ -208,6 +217,55 @@ use constant HIT_POSITION_TOLERANCE_MS => 1500;
 # position_sync nach dem Flush (S-03: unter 5 ms nach dem Flush, Flush
 # 23-71 ms nach dem Trigger) -- eine Sekunde ist Reserve, keine Toleranz.
 use constant SEEK_ISSUED_WINDOW_S => 1;
+
+# D-34 (79-48): during LMS-started Browse on Soloist, LMS stays the owner of
+# everything that moves within its list; Control forwards only a daemon
+# transport change it did not request itself (the request filter,
+# _ownEchoOpen). A forwarded LMS request carries this source marker (the
+# precedent of Connect.pm's `source(__PACKAGE__)`): Connect.pm _onPause
+# returns early for it, because the daemon already did what the request
+# says. A plain token, not this package's name: core code must not spell a
+# Soloist package (the CI amputation leg's refcheck, tools/ci/refcheck.pl).
+# Connect.pm holds the same literal (t/soloist/44 pins the two together).
+use constant BROWSE_FORWARD_SOURCE => 'spoton-browse-forward';
+
+# D-34: how long after one of Control's own transport commands (pause, play,
+# seek) a daemon frame of that kind is still its echo. The echo of the
+# measured LMS commands arrived 59-137 ms after them (79-D34-RULE.md H, I); the
+# same bound as the late-echo window of a play (LATE_ECHO_WINDOW_S).
+use constant OWN_ECHO_WINDOW_S => 3;
+
+# D-34: the shim's browse flag (79-47-DEVRUN.md SHIM_ENDPOINT): `POST /browse-keep?on=1`
+# while Control owns an LMS-started Browse session, `on=0` when it leaves
+# (the flag is not reset by /boundary, a client change or a timeout; a stale 1
+# would turn a Connect app skip into a keep). With the flag set, a flush the
+# daemon itself raises (an app seek, next, previous) keeps LMS's client
+# connection instead of closing it, so LMS's clock and list stay LMS's.
+use constant BROWSE_KEEP_PATH_ON  => '/browse-keep?on=1';
+use constant BROWSE_KEEP_PATH_OFF => '/browse-keep?on=0';
+
+# D-34 R2 (79-50): `POST /seek-keep`, the shim's keep for a flush the daemon
+# raised on its own in a Connect session (an app seek or restart). The shim holds
+# the disconnect of an unarmed flush open for a bounded window (FLUSH_DECIDE_MS)
+# because at flush time it cannot tell a seek from a skip (E3); Control sees the
+# discriminating frame 6-7 ms later (E1, R2_3): a `buffering` playback_state for
+# the title it already observed is a reposition, so it keeps LMS's stream. An app
+# skip arrives as a track_changed with a new uri (E2) and its /boundary (84-17)
+# ends the window instead. Parameterless, loopback, degrade-open like every
+# loopback POST here.
+use constant SEEK_KEEP_PATH => '/seek-keep';
+
+# D-34: the 4th positional of a `spottyconnect seek` Control emits for an app
+# seek during Browse; Connect.pm applies the startOffset rewrite for it only
+# while Control's mode is browse.
+use constant BROWSE_SEEK_MARK => 'browse';
+
+# D-34: how long a foreign context_changed stays evidence for a takeover. The
+# measured gaps to the foreign track_changed were 78 and 186 ms (79-D34-RULE.md
+# B, G); 79-D34-RULE.md says "within 200 ms", one second keeps the same
+# discrimination (an autoplay continuation never sends a context_changed at
+# all) without making a loaded LMS lose the takeover.
+use constant TAKEOVER_CONTEXT_WINDOW_S => 1;
 
 # 82-11 CR-03: a daemon that reports 'requires authentication' is
 # re-probed with `get_auth_state` on this cadence instead of waiting on a
@@ -441,10 +499,13 @@ sub _sendableWhileInactive {
 sub leaveBrowse {
     my $self = shift;
 
+    $self->_browseKeepClear('leaveBrowse');    # D-34: every exit from browse clears the shim's flag
+    $self->_reloadForget;                      # 79-52
     $self->_dropPendingChange('leaveBrowse');
     delete $self->observed->{hold};
     $self->_forgetOwnQueue('leaveBrowse');
     delete $self->observed->{prefetchWish};    # 84.2-02: a wish never survives a loss of control
+    delete @{ $self->observed }{qw(ctxForeign appQueued queueBaseline)};    # D-34: no takeover evidence outlives the session
     # 84.2-05 (B7): LMS left a title whose context end SpotOn planted -- if the
     # daemon is found playing it after this leave while LMS is on foreign
     # content, that is NOT a phone-side Connect start (_holdAfterForeignLeave).
@@ -541,6 +602,10 @@ sub shutdown {
     delete $_byMac{ $self->mac } if defined $self->mac;
     $self->_shutDown(1);
 
+    # D-34: the player leaves Soloist (backend switch, sync-group stop, LMS
+    # shutdown) -- the shim's browse flag must not outlive the session.
+    $self->_browseKeepClear('shutdown');
+
     # 84-17: an unresolved boundary-reply wait does not outlive the instance
     # (no emission -- the session this change belonged to is gone).
     $self->_dropPendingChange('shutdown');
@@ -548,6 +613,9 @@ sub shutdown {
 
     Slim::Utils::Timers::killTimers($self, \&_t1Fire);
     Slim::Utils::Timers::killTimers($self, \&_watchdogRound2);
+    # 79-51 runaway D1: a held resume does not outlive the instance (the 82-46 rule).
+    Slim::Utils::Timers::killTimers($self, \&_resumeDueFire);
+    delete $self->observed->{resumeDue};
     # 82-11 CR-03: same discipline as WR-02/WR-03 -- no timer outlives a
     # torn-down Control.
     Slim::Utils::Timers::killTimers($self, \&_authProbe);
@@ -759,6 +827,11 @@ sub requestTrack {
             $self->mode('browse');
         }
     }
+
+    # D-34 (79-48): Control owns this Browse session from here on -- tell the
+    # shim to keep LMS's client across the daemon's own flushes. Once per
+    # session (and per daemon port): Control's own title changes post nothing.
+    $self->_browseKeepEnsure if $self->mode eq 'browse';
 
     my $posMs = $position_ms // 0;
 
@@ -2893,6 +2966,13 @@ sub _execute {
             # wire (single-fire contract preserved either way).
             $self->_fireCbs($superseded, 'errorCb', 'PROBLEM_OPENING', 'superseded') if $superseded;
 
+            # D-34 (79-48): the stamp the browse request filter reads. A bare
+            # pause/seek leaves no `pending` (onSuccessBare clears it right
+            # away), so without this the daemon's own echo of it could not be
+            # told from an app action (_ownEchoOpen).
+            $self->observed->{ownSend}{$cmd} = Time::HiRes::time()
+                if $cmd eq 'pause' || $cmd eq 'play' || $cmd eq 'seek';
+
             if ($intent->{seekTarget}) {
                 $self->observed->{seekIssued} = {
                     %{ $intent->{seekTarget} },
@@ -3428,6 +3508,580 @@ sub _maybeContextEnd {
     return;
 }
 
+# ------------------------------------------------------------------
+# D-34 (79-48): browse forwarding. During LMS-started Browse the Spotify app
+# can still move the daemon (pause, play, seek, next, previous, a new queue).
+# LMS stays the owner of everything that moves within its list; Control
+# forwards only what the daemon did that Control did not ask for itself.
+# 79-D34-RULE.md is the measurement this rests on; the request filter
+# (_ownEchoOpen) is what tells an app action from the echo of Control's own
+# command, because the frames alone do not (RULE: H, I, J carry the same
+# shapes as E, F, C).
+# ------------------------------------------------------------------
+
+# _lmsForward($self, @cmd) -- run one LMS request on the player (its master in
+# a sync group) with Control's source marker. The one place D-34 reaches LMS.
+sub _lmsForward {
+    my ($self, @cmd) = @_;
+
+    my $client = Slim::Player::Client::getClient($self->mac) or return 0;
+    $client = $client->master if $client->can('master');
+    return 0 unless $client;
+
+    require Slim::Control::Request;
+    my $request = Slim::Control::Request->new($client->id, [@cmd]);
+    $request->source(BROWSE_FORWARD_SOURCE);
+    $request->execute();
+
+    main::INFOLOG && $log->is_info && $log->info(
+        "Control: forwarded to LMS (D-34): " . join(' ', @cmd) . " (" . ($self->mac // '?') . ")"
+    );
+    return 1;
+}
+
+# _ownEchoOpen($self) -- the request filter's exclusion half: 1 while a frame
+# of the daemon may still be the echo of something Control itself sent or
+# waits on: an open play/pause/seek pending, an open late-echo window
+# (expectEcho), or an own pause/play/seek sent less than OWN_ECHO_WINDOW_S ago
+# (bare commands leave no pending). A volume pending is not a transport
+# command and does not count (its echo may never come).
+sub _ownEchoOpen {
+    my $self = shift;
+
+    my $pending = $self->pending;
+    return 1 if $pending && ($pending->{cmd} // '') =~ /^(?:play|pause|seek)$/;
+
+    my $now = Time::HiRes::time();
+    my $ee  = $self->observed->{expectEcho};
+    return 1 if ref($ee) eq 'HASH' && ($ee->{until} // 0) > $now;
+
+    my $os = $self->observed->{ownSend};
+    if (ref($os) eq 'HASH') {
+        for my $cmd (qw(pause play seek)) {
+            return 1 if defined $os->{$cmd} && ($now - $os->{$cmd}) < OWN_ECHO_WINDOW_S;
+        }
+    }
+    return 0;
+}
+
+# _browseTransportAllowed($self) -- the part of the request filter both transport
+# directions share: the daemon is the active device and on the wanted title,
+# Control has no command of its own open whose echo this could be
+# (_ownEchoOpen), and LMS is on our material. Returns the wanted uri, or undef.
+sub _browseTransportAllowed {
+    my $self = shift;
+
+    my $uri = $self->wanted->{uri};
+    return undef unless defined $uri;
+    return undef unless $self->mode eq 'browse';
+    return undef unless defined $self->observed->{track} && $self->observed->{track} eq $uri;
+    return undef unless $self->observed->{is_active};
+    return undef if $self->_ownEchoOpen;
+    return undef unless $self->_lmsSongIsOurs;
+    return $uri;
+}
+
+# _forwardBrowseTransport($self, $status) -- an app pause or play on the own
+# title (`playback_changed paused|playing` on wanted.uri). Forwarded as an LMS
+# `pause 1|0` carrying BROWSE_FORWARD_SOURCE; wanted.playing follows the
+# frame, so the daemon is not asked to undo what the app did and the watchdog
+# does not resume the paused title. The request filter, all of which must
+# hold: _browseTransportAllowed; wanted.playing disagrees with the frame; LMS
+# is in the state the forward would change (playing for a pause, paused for a
+# play); and, for a pause, it is not the context end under Autoplay OFF (that
+# one is _maybeContextEnd's: it plants the boundary and never pauses LMS).
+#
+# A pause is only a CANDIDATE here. The context end looks exactly like an app
+# pause in this frame -- `playback_changed paused` is the first frame of both
+# bursts (79-D34-RULE.md A_off vs E); what tells them apart is the position the
+# burst reports a few frames later (0 at the title's end, the real position
+# for an app pause). _settleBrowsePause decides on that frame. A play needs no
+# such wait.
+sub _forwardBrowseTransport {
+    my ($self, $status) = @_;
+
+    delete $self->observed->{pauseCandidate};
+    my $uri = $self->_browseTransportAllowed;
+    return 0 unless defined $uri;
+
+    my $wanted = $self->wanted;
+    if ($status eq 'paused') {
+        return 0 unless $wanted->{playing};
+        $self->observed->{pauseCandidate} = { uri => $uri, hr => Time::HiRes::time() };
+        return 0;
+    }
+
+    return 0 if $wanted->{playing};
+    my $client = Slim::Player::Client::getClient($self->mac) or return 0;
+    return 0 unless (Slim::Player::Source::playmode($client) // '') eq 'pause';
+    $wanted->{playing} = 1;
+    return $self->_lmsForward('pause', 0);
+}
+
+# _settleBrowsePause($self, $msg) -- onEvent tail: decides an app-pause
+# candidate on the first position-bearing frame after its `playback_changed
+# paused` (playback_state or position_sync, whose anchor was just written).
+# The context-end shape (anchor reset to <= CONTEXT_END_RESET_MS, not moving,
+# near the title's known end -- the same evidence _maybeContextEnd plants on)
+# is never forwarded; neither is that shape when the title's duration is unknown
+# (D-33 WR-01: no evidence either way). A candidate older than 2 s (no position frame came) is
+# dropped, not forwarded: a missed app pause is cheap, a pause LMS did not
+# ask for at a context end wedges the list.
+sub _settleBrowsePause {
+    my ($self, $msg) = @_;
+
+    my $c = $self->observed->{pauseCandidate} or return;
+    return unless ref($msg) eq 'HASH' && ($msg->{type} // '') =~ /^(?:playback_state|position_sync)$/;
+    return unless defined($msg->{position}) && (ref($msg->{position}) ne 'HASH' || defined $msg->{position}{position_ms});
+    delete $self->observed->{pauseCandidate};
+
+    return if Time::HiRes::time() - $c->{hr} > 2;
+    my $uri = $self->_browseTransportAllowed;
+    return unless defined $uri && $uri eq $c->{uri};
+    return unless $self->wanted->{playing};
+    my $client = Slim::Player::Client::getClient($self->mac) or return;
+    return unless (Slim::Player::Source::playmode($client) // '') eq 'play';
+
+    # D-33 WR-01 (79-44 Fable review): in the reset shape (anchor <= CONTEXT_END_RESET_MS,
+    # not moving) the near-end test is the only evidence, and it answers 0 without a known
+    # duration. Unknown is "not decidable", never "an app pause": the carrier's own marker
+    # and a missing duration both keep the shape from being forwarded.
+    my $a = $self->observed->{anchor};
+    if (ref($a) eq 'HASH' && defined $a->{position_ms}
+        && $a->{position_ms} <= CONTEXT_END_RESET_MS && !$a->{speed})
+    {
+        return if ($self->observed->{contextEndPlanted} // '') eq $uri;
+        return if $self->_nearTitleEnd($uri);
+        my $meta = $self->observed->{meta};
+        return unless ref($meta) eq 'HASH' && ref($meta->{$uri}) eq 'HASH' && ($meta->{$uri}{duration} // 0) > 0;
+    }
+
+    $self->wanted->{playing} = 0;
+    $self->_lmsForward('pause', 1);
+    return;
+}
+
+# _isOwnBrowseUri($self, $uri) -- 1 when $uri is a title of this Browse session
+# itself: the wanted/observed/pending/late-echo title, an entry SpotOn queued,
+# or any entry of the LMS playlist. A context_changed to one of those is the
+# daemon's context of our OWN play (79-D34-RULE.md: in Browse the daemon's
+# context is the own track), never an app that replaced the queue.
+sub _isOwnBrowseUri {
+    my ($self, $uri) = @_;
+
+    my $pending = $self->pending;
+    my $ee      = $self->observed->{expectEcho};
+    for my $own ($self->wanted->{uri}, $self->observed->{track},
+        (ref($pending) eq 'HASH' ? $pending->{uri} : undef), (ref($ee) eq 'HASH' ? $ee->{uri} : undef))
+    {
+        return 1 if defined $own && $own eq $uri;
+    }
+    my $q = $self->observed->{queuedByUs};
+    return 1 if ref($q) eq 'HASH' && $q->{$uri};
+
+    my $client = Slim::Player::Client::getClient($self->mac) or return 0;
+    my $count  = Slim::Player::Playlist::count($client) // 0;
+    $count = 2000 if $count > 2000;
+    for my $i (0 .. $count - 1) {
+        my $track = Slim::Player::Playlist::track($client, $i) or next;
+        my $entry = _normalizeUri(eval { $track->url });
+        return 1 if defined $entry && $entry eq $uri;
+    }
+    return 0;
+}
+
+# _onFrameContextChanged($self, $msg, $class, $detail) -- D-34 (79-48): the
+# daemon's context moved. In Browse a context that is none of the session's own
+# titles is the app replacing the queue (79-D34-RULE.md B, G: the context
+# arrives 78-186 ms before the foreign track); remembered for _browseTakeover,
+# which decides when the track follows. An empty or missing context is not a
+# replacement, and nothing outside Browse reads it. 79-52: in Connect it is the
+# re-load signal of the observed title (see _armReloadKeep).
+sub _onFrameContextChanged {
+    my ($self, $msg, $class, $detail) = @_;
+
+    if ($self->mode eq 'connect') {
+        $self->_armReloadKeep($msg);
+        return;
+    }
+    return unless $self->mode eq 'browse';
+    my $ctx = $msg->{context};
+    return unless ref($ctx) eq 'HASH';
+    my $uri = $ctx->{uri};
+    return unless defined $uri && !ref($uri) && length($uri);
+    return if $self->_isOwnBrowseUri($uri);
+
+    $self->observed->{ctxForeign} = { uri => $uri, entity => $ctx->{entity_type}, hr => Time::HiRes::time() };
+    return;
+}
+
+# _ownTransportPending($self) -- an own play/pause/seek still waits for its echo.
+sub _ownTransportPending {
+    my $self = shift;
+    my $pending = $self->pending;
+    return ($pending && ($pending->{cmd} // '') =~ /^(?:play|pause|seek)$/) ? 1 : 0;
+}
+
+# _browseTakeover($self, $uri) -- the `track_changed` of a foreign title in
+# Browse, decided: did the app REPLACE the queue? Yes when, with no own
+# transport command pending and the daemon being the active device, either
+#   - a foreign context_changed arrived within TAKEOVER_CONTEXT_WINDOW_S
+#     (the app started a track, a playlist, an album; 79-D34-RULE.md B, G), or
+#   - the title is one the app itself queued (appQueued) -- it takes over when
+#     it STARTS.
+# Autoplay (Autoplay ON: a foreign track at a title end, no context_changed)
+# and a natural end (Autoplay OFF: no foreign frame at all) match neither and
+# stay with the autoplay guard / the context-end path. A Connect switch that
+# is off leaves the frame to the guard as well (D-31: visible but refusing).
+# Acts through the shared transfer-in sub; for a sync group the claim binds on
+# the master. Returns 1 when it took over (mode is connect afterwards).
+sub _browseTakeover {
+    my ($self, $uri) = @_;
+
+    return 0 unless $self->mode eq 'browse';
+    my $wantedUri = $self->wanted->{uri};
+    return 0 unless defined $wantedUri && $uri ne $wantedUri;
+    return 0 unless $self->observed->{is_active} && !$self->_knownInactive;
+    return 0 if $self->_ownTransportPending;
+
+    my $ctx = $self->observed->{ctxForeign};
+    my $byContext = (ref($ctx) eq 'HASH'
+        && (Time::HiRes::time() - ($ctx->{hr} // 0)) <= TAKEOVER_CONTEXT_WINDOW_S) ? 1 : 0;
+    my $aq = $self->observed->{appQueued};
+    my $byQueue = (ref($aq) eq 'HASH' && $aq->{$uri}) ? 1 : 0;
+    return 0 unless $byContext || $byQueue;
+
+    return 0 unless $self->_emitAllowed;
+
+    delete $self->observed->{ctxForeign};
+    delete $self->observed->{appQueued}{$uri} if ref($self->observed->{appQueued}) eq 'HASH';
+
+    eval {
+        require Plugins::SpotOn::Connect;
+        my $bindClient = Slim::Player::Client::getClient($self->mac);
+        Plugins::SpotOn::Connect->bindConnectClaim($bindClient, 'takeover') if $bindClient;
+        1;
+    };
+    $self->_clearErrorOnce('connect-off:' . ($self->mac // '?'));
+    $self->_enterConnectSession('takeover', fresh => 1, uri => $uri, newSession => 1);
+    main::INFOLOG && $log->is_info && $log->info(
+        "Control: the app replaced the queue ("
+        . ($byContext ? "context " . ($ctx->{uri} // '?') : "queued track") . ") -- takeover $uri -> mode=connect ("
+        . ($self->mac // '?') . ")"
+    );
+    return 1;
+}
+
+# _enterConnectSession($self, $why, %o) -- D-34 (79-48): the body shared by
+# every way into a connect session. Callers: _onFramePlaybackState (the
+# reconnect adoption from idle, why 'reconnect-to-connect'), _onFrameDeviceChanged
+# (the transfer-in, 'transfer-in', fresh) and _browseTakeover (the app replaced
+# the queue, 'takeover', fresh, the app's own uri). Each caller binds the
+# Connect claim and emits the session's `start` itself (their claim sources and
+# entry positions differ); this is what they had in common:
+#   - the own-queue set is forgotten (84.2-01 D-04: a loss of Browse control);
+#   - the shim's browse flag is cleared BEFORE the mode flips (D-34 T6: with
+#     it set, the daemon's own flush for the new session would not close
+#     LMS's old stream);
+#   - mode connect, and `wanted` set by explicit field assignment (IN-02,
+#     82-REVIEW.md: a pauschale copy of `observed` shared HASH REFERENCES
+#     between wanted and observed; meta/errorsReported/anchor are
+#     OBSERVATIONS and do not belong in `wanted`): the uri from
+#     observed->{track} (there is no observed->{uri}) unless o{uri}, the
+#     position from the anchor (0 for an app-chosen uri);
+#   - the stop-leave markers end (84.1, 84.2-05); fresh (a new session) also
+#     ends the connect-foreign and autoplay-guard markers (84-26 R2 clear (d):
+#     an adopted session on the autoplay-paused title is legitimate, a stale
+#     marker must not outlive it); newSession drops a surviving session marker
+#     so the first frame announces a `start`.
+sub _enterConnectSession {
+    my ($self, $why, %o) = @_;
+
+    my $anchor = $self->observed->{anchor};
+    $self->_forgetOwnQueue($why);
+    $self->_browseKeepClear($why);
+    $self->_reloadForget;    # 79-52
+    delete @{ $self->observed }{qw(ctxForeign appQueued queueBaseline)};
+    $self->mode('connect');
+    $self->wanted({
+        uri         => defined $o{uri} ? $o{uri} : $self->observed->{track},
+        position_ms => (!defined $o{uri} && $anchor && defined $anchor->{position_ms}) ? $anchor->{position_ms} : 0,
+        playing     => 1,
+        volume      => $self->observed->{volume},
+    });
+    delete $self->observed->{leftBrowseUri};
+    delete $self->observed->{leftBrowsePlanted};
+    if ($o{fresh}) {
+        delete $self->observed->{leftConnectForeign};
+        delete $self->observed->{autoplayPaused};
+    }
+    delete $self->observed->{startEmittedFor} if $o{newSession};
+    return;
+}
+
+# _anchorPositionMs($self, $uri) -- the daemon's last position report for
+# $uri, carried forward by the wall clock while it was moving (speed > 0);
+# undef when the anchor is of another title or missing.
+sub _anchorPositionMs {
+    my ($self, $uri) = @_;
+
+    my $a = $self->observed->{anchor};
+    return undef unless ref($a) eq 'HASH' && defined $a->{position_ms};
+    return undef if defined $a->{uri} && $a->{uri} ne $uri;
+
+    my $pos = $a->{position_ms};
+    $pos += (Time::HiRes::time() - $a->{seen_hr}) * 1000 if ($a->{speed} // 0) > 0 && defined $a->{seen_hr};
+    return $pos;
+}
+
+# _detectBrowseSeek($self, $posMs, $status, $frameUri) -- Browse's counterpart
+# of the connect seek detection: a position report that jumped away from the
+# anchor of the SAME title while the daemon buffers (an app seek or previous;
+# a pause or play never is one), when the request filter holds
+# (_browseTransportAllowed: no own command's echo, the daemon on the wanted
+# title). The jump test and the frozen-position guard are _detectSeek's own
+# (called in browse mode: its result goes to _forwardBrowseSeek).
+sub _detectBrowseSeek {
+    my ($self, $posMs, $status, $frameUri) = @_;
+
+    return unless defined $posMs;
+    return unless ($status // '') eq 'buffering';
+    my $uri = $self->_browseTransportAllowed;
+    return unless defined $uri;
+    return if defined $frameUri && $frameUri ne $uri;
+    my $a = $self->observed->{anchor};
+    return unless ref($a) eq 'HASH' && defined $a->{position_ms} && defined $a->{uri} && $a->{uri} eq $uri;
+
+    $self->_detectSeek($posMs, time(), 1);
+    return;
+}
+
+# _forwardBrowseSeek($self, $posMs) -- an app seek on the own title. Its target
+# is handed to LMS's clock through Connect.pm's startOffset rewrite (a marked
+# `spottyconnect seek`, never a `time` command: that would re-open LMS's
+# stream and echo back as a new seek). A target at the very start is the
+# app's previous (the app restarts the title, 79-D34-RULE.md D): LMS goes to
+# its previous entry instead.
+sub _forwardBrowseSeek {
+    my ($self, $posMs) = @_;
+
+    return $self->_forwardBrowseSkip('-1') if $posMs < ENTRY_MIN_TARGET_MS;
+
+    $self->_emit('seek', sprintf('%.3f', $posMs / 1000), undef, undef, BROWSE_SEEK_MARK);
+    return 1;
+}
+
+# _forwardBrowseSkip($self, $step) -- app next ('+1') / previous ('-1') as an
+# LMS `playlist index` with Control's source marker, only while LMS is playing.
+sub _forwardBrowseSkip {
+    my ($self, $step) = @_;
+
+    my $client = Slim::Player::Client::getClient($self->mac) or return 0;
+    return 0 unless (Slim::Player::Source::playmode($client) // '') eq 'play';
+    return $self->_lmsForward('playlist', 'index', $step);
+}
+
+# _forwardBrowseNext($self, $uri, $prev, $queuedByUsMatch) -- an app next:
+# `track_changed` to the title SpotOn queued for LMS's next entry (the own
+# queue set), while the daemon was on the wanted title and LMS has not asked
+# for the new one, and no command of Control's own explains it. The frames of
+# a natural advance onto that same prefetched title are identical (79-D34-RULE.md
+# C vs the prefetch hit); only the position tells them apart, so the previous
+# title must be known to have been far from its end. An unknown length or
+# position is left to LMS (it advances by itself): a missed app next is cheap,
+# a skip LMS did not ask for cuts a title off.
+sub _forwardBrowseNext {
+    my ($self, $uri, $prev, $queuedByUsMatch) = @_;
+
+    return 0 unless $queuedByUsMatch;
+    my $wantedUri = $self->_browseTransportAllowed;
+    return 0 unless defined $wantedUri && defined $prev && $prev eq $wantedUri && $uri ne $wantedUri;
+
+    my $meta = $self->observed->{meta};
+    my $dur  = (ref($meta) eq 'HASH' && ref($meta->{$prev}) eq 'HASH') ? $meta->{$prev}{duration} : undef;
+    my $pos  = $self->_anchorPositionMs($prev);
+    return 0 unless defined $dur && $dur > 0 && defined $pos;
+    return 0 if $pos >= $dur * 1000 - CONTEXT_END_NEAR_MS;
+
+    return $self->_forwardBrowseSkip('+1');
+}
+
+# _noteLoadState($self, $uri, $status) -- 79-52: the dedicated per-title marker of
+# the LAST playback_state status the daemon reported for a track/episode uri. It is
+# written ONLY by playback_state frames (called from _onFramePlaybackState AFTER the
+# keep decision of that frame) -- never by position_sync, whose speed=0 frame
+# overwrites observed.status with 'paused' after every buffering burst (S-02), and
+# never by playback_changed, which sets 'playing' before the playback_state of the
+# same burst. The same call ends the re-load arm: any non-buffering state of a
+# track uri, and any state of another uri, retires it (the arm is for ONE playing
+# frame, the one that ends the re-load).
+sub _noteLoadState {
+    my ($self, $uri, $status) = @_;
+
+    return unless defined $uri;
+    $status //= '';
+    my $o = $self->observed;
+    delete $o->{reloadArm}
+        if $status ne 'buffering' || (defined $o->{reloadArm} && $o->{reloadArm} ne $uri);
+    $o->{lastState} = { uri => $uri, status => $status };
+    return;
+}
+
+# _armReloadKeep($self, $msg) -- 79-52: a `context_changed` frame in Connect while the
+# observed title's last playback_state read `buffering` (the marker above): the daemon
+# re-loaded that title (the app's second `prepare play`, V3). Arms the title for
+# exactly one keep at its next `playing` playback_state (_connectRepositionKeep).
+# A context-less frame is no re-load signal. Disarmed by a posted keep, by any
+# non-buffering state, by a title change and by every end of the session.
+sub _armReloadKeep {
+    my ($self, $msg) = @_;
+
+    my $ctx = $msg->{context};
+    return unless ref($ctx) eq 'HASH' && defined $ctx->{uri} && !ref($ctx->{uri}) && length($ctx->{uri});
+    my $o     = $self->observed;
+    my $track = $o->{track};
+    my $last  = $o->{lastState};
+    return unless defined $track && ref($last) eq 'HASH' && defined $last->{uri} && $last->{uri} eq $track
+        && ($last->{status} // '') eq 'buffering';
+    $o->{reloadArm} = $track;
+    return;
+}
+
+# _reloadForget($self) -- 79-52: the marker and the arm die with the session, the
+# transport and every leave of a mode: no state of an earlier session decides a keep.
+sub _reloadForget {
+    my $self = shift;
+    delete @{ $self->observed }{qw(lastState reloadArm)};
+    return;
+}
+
+# _connectRepositionKeep($self, $msg, $uri, $prevTrack) -- D-34 R2 (79-50): the
+# keep for a daemon-originated reposition in Connect. The daemon flushed on its
+# own (an app seek or restart) and the shim holds the disconnect of that unarmed
+# flush open (SEEK_KEEP_PATH); this frame is what decides it. Sent once, when ALL
+# of these hold:
+#   - the frame is `buffering` (every recorded reposition starts with one: R2_3 :286,
+#     D_off :34, F, I) and its item is the title Control already observed BEFORE
+#     the frame AND the title the anchor belongs to (a new uri is a title change:
+#     the skip, which the track_changed path and its /boundary own);
+#   - no title change is pending (84-17 pendingChange: the skip's own frames);
+#   - B1: the frame is not the echo of Control's own command. The exclusion is
+#     keyed on the own seek's TARGET (_seekAlreadyIssued: same uri, same position,
+#     under SEEK_ISSUED_WINDOW_S) and on an own play/seek still in flight in
+#     `pending` -- NOT on the generic ownSend stamp or _ownEchoOpen (a 3 s window
+#     would drop the keep of an app seek right after an LMS pause or play, and an
+#     app seek elsewhere within 1 s of an own seek still gets its keep). LMS's own
+#     seek restart opens a NEW GET /stream (ProtocolHandler.pm:1026-1034), and a
+#     keep landing 10-15 ms later could find that GET waiting in the shim's slot
+#     (the shim serves a control newcomer in place, independently; L2: the two
+#     safeguards are independent, neither may be removed on the grounds of the other).
+# 79-52 (album-start deadline stop, variant V3): the Spotify app opens a bare track
+# with TWO `prepare play` commands; when the second lands while the first load is
+# still corked the daemon flushes a second time and then sends only `context_changed`
+# (album) and a `playback_state playing` of the SAME title -- no `buffering` frame
+# follows the flush, so the keep above never fires, the shim's decision window runs
+# to its 2000 ms deadline and closes LMS's fresh stream (LMS stops, the daemon is
+# paused: "stop 0"). The re-load signal is that `context_changed` while the
+# observed title's last playback_state read `buffering` (_armReloadKeep); the keep
+# is then posted at the `playing` playback_state of that title, once. The marker is
+# a DEDICATED field written only by playback_state frames (_noteLoadState): it can
+# not be observed.status, which the position_sync speed=0 frame overwrites with
+# 'paused' after every buffering burst (Control.pm position_sync, S-02) and which
+# the playback_changed `playing` of the same burst has already set to 'playing'
+# before this frame arrives. And the arm exists because the literal form -- accept
+# `playing` whenever the title's last state read `buffering` -- re-posts at every
+# playing frame after a buffering keep: R2-S1 (the playing frames after the keep),
+# R2-S2 C_off (a skip), R2-S3 (a restart) and every real negative. All guards below
+# stay unchanged for both frames.
+# Nothing else changes: _detectSeek, the `seek` emit, _armSync and the /seek-arm
+# order stay as they are.
+sub _connectRepositionKeep {
+    my ($self, $msg, $uri, $prevTrack) = @_;
+
+    return 0 unless ($self->mode // '') eq 'connect';
+    my $state = $msg->{status} // '';
+    my $reload = $state eq 'playing' && defined $uri && defined $self->observed->{reloadArm}
+        && $self->observed->{reloadArm} eq $uri;    # 79-52: the re-load arm
+    return 0 unless $state eq 'buffering' || $reload;
+    return 0 unless defined $uri && defined $prevTrack && $prevTrack eq $uri;
+    my $anchor = $self->observed->{anchor};
+    return 0 unless ref($anchor) eq 'HASH' && defined $anchor->{uri} && $anchor->{uri} eq $uri;
+    return 0 if $self->observed->{pendingChange};
+
+    my $posMs = ref($msg->{position}) eq 'HASH' ? $msg->{position}{position_ms} : $msg->{position};
+    return 0 if defined $posMs && $self->_seekAlreadyIssued($uri, $posMs);
+    my $pending = $self->pending;
+    return 0 if ref($pending) eq 'HASH' && defined $pending->{cmd}
+        && ($pending->{cmd} eq 'play' || $pending->{cmd} eq 'seek');
+
+    my $daemon = $self->daemon;
+    my $port   = $daemon && $daemon->_streamPort;
+    return 0 unless $port;
+
+    if ($self->_loopbackPost($port, SEEK_KEEP_PATH)) {
+        delete $self->observed->{reloadArm};    # 79-52: one keep per re-load
+        main::INFOLOG && $log->is_info && $log->info(
+            "Control: connect reposition on the observed title -- seek keep posted (" . ($self->mac // '?') . ")"
+            . ($reload ? ' at the playing frame of a re-loaded title (79-52)' : '')
+        );
+        return 1;
+    }
+    main::DEBUGLOG && $log->is_debug && $log->debug(
+        "Control: connect seek keep post failed (" . ($self->mac // '?') . ")"
+    );
+    return 0;
+}
+
+# _browseKeepEnsure($self) -- D-34: set the shim's browse flag for the daemon
+# this Control talks to, once. The flag is remembered with the stream port it
+# was set on, so a respawned daemon (a new port, a flag back at 0) gets it
+# again at the next requestTrack. Degrade-open like every loopback POST.
+sub _browseKeepEnsure {
+    my $self = shift;
+
+    my $daemon = $self->daemon or return;
+    my $port   = $daemon->_streamPort or return;
+    my $kept   = $self->observed->{browseKeep};
+    return if defined $kept && $kept eq $port;
+
+    if ($self->_loopbackPost($port, BROWSE_KEEP_PATH_ON)) {
+        $self->observed->{browseKeep} = $port;
+        main::INFOLOG && $log->is_info && $log->info(
+            "Control: browse keep set on the shim (" . ($self->mac // '?') . ")"
+        );
+    }
+    else {
+        main::DEBUGLOG && $log->is_debug && $log->debug(
+            "Control: browse keep post failed (" . ($self->mac // '?') . ")"
+        );
+    }
+    return;
+}
+
+# _browseKeepClear($self, $why) -- D-34: clear the shim's browse flag, exactly
+# once per set (the second call finds nothing recorded). Called on every exit
+# from browse: leaveBrowse (stop/clear, the session loss, Connect.pm's source
+# switch), shutdown (the player leaves Soloist) and every entry into connect
+# (the two transfer-ins and the D-34 takeover) -- a stale 1 turns a Connect app
+# skip into a keep. A flag set on a daemon that is gone needs no clear (the
+# respawn starts at 0).
+sub _browseKeepClear {
+    my ($self, $why) = @_;
+
+    my $kept = delete $self->observed->{browseKeep};
+    return unless defined $kept;
+
+    my $daemon = $self->daemon or return;
+    my $port   = $daemon->_streamPort or return;
+    return unless $port eq $kept;
+
+    $self->_loopbackPost($port, BROWSE_KEEP_PATH_OFF);
+    main::INFOLOG && $log->is_info && $log->info(
+        "Control: browse keep cleared on the shim (" . ($why // '?') . ", " . ($self->mac // '?') . ")"
+    );
+    return;
+}
+
 # _entryTargetMs($anchorLike, $atHr) -- the anchor's position carried forward
 # to $atHr when its frame said the app was playing (speed > 0).
 sub _entryTargetMs {
@@ -3556,6 +4210,7 @@ my %FRAME_HANDLERS = (
     _transport       => \&_onFrameTransport,
     error            => \&_onFrameError,
     queue_changed    => \&_onFrameQueueChanged,
+    context_changed  => \&_onFrameContextChanged,    # D-34 (79-48)
 );
 
 sub onEvent {
@@ -3590,7 +4245,13 @@ sub onEvent {
         return;
     }
 
+    # 79-51 runaway D1: a held resume is stepped by every frame that has a handler (a handler-less frame, returned
+    # above, never steps it). The playing frame that opens the record does so inside its own handler, so its own
+    # pre step saw no record: the opener never judges itself.
+    $self->_resumeDuePre($msg);
     $self->$handler($msg, $class, $detail);
+    # 79-51 runaway D1: a new-title release goes out AFTER the deciding frame's own start/change.
+    $self->_resumeDuePost($msg);
 
     # inaktiver-player-steuert-fern: a take-over in flight completes on the
     # FIRST frame that leaves the daemon active -- device_changed(true) is
@@ -3605,6 +4266,143 @@ sub onEvent {
     # 84.2-02 (D-15): a context end without a Spotify successor plants the
     # boundary once, so LMS moves on or stops by itself.
     $self->_maybeContextEnd;
+    # D-34 (79-48): an app-pause candidate is decided on the burst's position frame,
+    # after the context-end carrier above has had its look at the same frame.
+    $self->_settleBrowsePause($msg);
+    return;
+}
+
+# ---------------------------------------------------------------------------
+# 79-51 runaway D1: the held Connect resume.
+#
+# observed->{resumeDue} = { track, id, pos, at, [newContext], [noItem], [releaseFor] } is opened by
+# the `playback_changed playing` frame after a pause (_onFramePlaybackChanged) and decided by the frame that
+# decides it. Recorded shapes (E1, E3, E8, E9, E10):
+#   - plain Connect resume: the deciding frame is the same-title playback_state in the same millisecond or the
+#     next position_sync (092326, 091944, the 84-17 run-3 pair): released with today's arguments.
+#   - album start in a paused session: the playing frame comes first, then context_changed and an item-less
+#     playback_state; the album's first title arrives 40-136 ms later (094204, 092233): released for THAT title
+#     with an empty position, after the frame's own start/change.
+#   - transfer-in without a context_changed (79-50 R2, 79-49 095931): an item-less playback_state, then the
+#     same-uri track_changed 40-76 ms later: today's arguments (an item-less playback_state alone does not mean
+#     a new title).
+# Rejected: emitting at once and correcting later (the stale title's stream is already open by then, E1 g=15).
+# ---------------------------------------------------------------------------
+
+# _resumeDueRelease($self, $id, $pos, $why) -- the single exit of a held resume. Only in mode connect it
+# emits (and asks the daemon for its state, the post-resume reconciliation); in any other mode it drops.
+sub _resumeDueRelease {
+    my ($self, $id, $pos, $why) = @_;
+    delete $self->observed->{resumeDue};
+    Slim::Utils::Timers::killTimers($self, \&_resumeDueFire);
+    return unless $self->mode eq 'connect';
+    main::INFOLOG && $log->is_info && $log->info(
+        "Control: resume released ($why) track=" . ($id // '-') . " (" . ($self->mac // '?') . ")"
+    );
+    $self->_emit('resume', $id, $pos);
+    # Post-resume reconciliation: the get_state reply (a playback_state
+    # snapshot) catches any residual drift.
+    $self->_dispatch('get_state');
+    return;
+}
+
+sub _resumeDueDrop {
+    my ($self, $why) = @_;
+    delete $self->observed->{resumeDue};
+    Slim::Utils::Timers::killTimers($self, \&_resumeDueFire);
+    main::INFOLOG && $log->is_info && $log->info(
+        "Control: held resume dropped ($why) (" . ($self->mac // '?') . ")"
+    );
+    return;
+}
+
+# _resumeDueFire($self) -- the RESUME_DECIDE_MS timer: a lone playing frame (no deciding frame followed) is
+# today's resume. Once a context_changed was seen, or a title frame decided for another title, the record waits
+# for its title frame instead (a new-context resume is never released with the old title's arguments).
+# D-33 WR-02 (79-44 Fable review): an item-less playback_state WITHOUT a context_changed decides like a lone
+# playing frame, counted from that state frame (see _resumeDuePre): it is the same title in every recorded
+# shape (R8, E8, E10), and a record only a title frame could release was lost without a trace when none came.
+sub _resumeDueFire {
+    my ($self) = @_;
+    my $rd = $self->observed->{resumeDue} or return;
+    return if $rd->{newContext} || defined $rd->{releaseFor};
+    $self->_resumeDueRelease($rd->{id}, $rd->{pos}, $rd->{noItem} ? 'timer (item-less)' : 'timer');
+    return;
+}
+
+# _resumeDuePre($self, $msg) -- called before the frame's handler. First match wins:
+#   1. mode not connect, or the record older than RESUME_DUE_MAX_S: drop.
+#   2. a `_transport` frame, or playback_changed paused/stopped/idle: drop (the handler emits stop as today).
+#   3. context_changed: newContext.
+#   4. a playback_state whose item uri is empty or not a track/episode uri: noItem (the first one re-arms the
+#      decide timer, D-33 WR-02: without a context_changed the timer releases it, see _resumeDueFire).
+#   5. a track_changed, or a playback_state naming a track/episode uri:
+#        same uri as the record's track and no newContext -> release now with the stored arguments (same title;
+#        a preceding item-less playback_state does not change this, E8);
+#        otherwise (another uri, or the same uri after a context_changed) -> releaseFor = <uri>.
+#   6. position_sync with neither flag set: release now with the stored arguments.
+#   7. anything else holds.
+sub _resumeDuePre {
+    my ($self, $msg) = @_;
+    my $rd = $self->observed->{resumeDue} or return;
+    my $type = $msg->{type} // '';
+
+    if ($self->mode ne 'connect') {
+        $self->_resumeDueDrop('mode');
+        return;
+    }
+    if (Time::HiRes::time() - ($rd->{at} // 0) > RESUME_DUE_MAX_S) {
+        # D-33 WR-02: a held resume that nothing released is a lost user action, not an INFO
+        $log->warn("Control: held resume dropped (stale) - nothing released it within " . RESUME_DUE_MAX_S . " s ("
+            . ($self->mac // '?') . ")");
+        $self->_resumeDueDrop('stale');
+        return;
+    }
+    if ($type eq '_transport'
+        || ($type eq 'playback_changed' && ($msg->{status} // '') =~ /^(?:paused|stopped|idle)$/))
+    {
+        $self->_resumeDueDrop($type eq '_transport' ? 'transport' : "playback_changed $msg->{status}");
+        return;
+    }
+    if ($type eq 'context_changed') {
+        $rd->{newContext} = 1;
+        return;
+    }
+    if ($type eq 'playback_state' || $type eq 'track_changed') {
+        my $uri = (ref($msg->{item}) eq 'HASH') ? $msg->{item}{uri} : undef;
+        my $isTitle = (defined $uri && $uri =~ /^spotify:(?:track|episode):[A-Za-z0-9]+$/) ? 1 : 0;
+        if (!$isTitle) {
+            if ($type eq 'playback_state' && !$rd->{noItem}) {
+                $rd->{noItem} = 1;
+                # D-33 WR-02: the window for a title frame that follows the item-less state counts from it
+                Slim::Utils::Timers::killTimers($self, \&_resumeDueFire);
+                Slim::Utils::Timers::setTimer($self, Time::HiRes::time() + RESUME_DECIDE_MS / 1000, \&_resumeDueFire);
+            }
+            return;
+        }
+        if (defined $rd->{track} && $uri eq $rd->{track} && !$rd->{newContext}) {
+            $self->_resumeDueRelease($rd->{id}, $rd->{pos}, 'same title');
+        }
+        else {
+            $rd->{releaseFor} = $uri;
+        }
+        return;
+    }
+    if ($type eq 'position_sync' && !$rd->{newContext} && !$rd->{noItem}) {
+        $self->_resumeDueRelease($rd->{id}, $rd->{pos}, 'position frame');
+        return;
+    }
+    return;
+}
+
+# _resumeDuePost($self, $msg) -- called after the frame's handler. A new-title release (the first frame
+# naming a title after a context_changed, or another title) carries an empty position: the paused old title's
+# position must never reach LMS's clock for the album's first title (T-79-190).
+sub _resumeDuePost {
+    my ($self, $msg) = @_;
+    my $rd = $self->observed->{resumeDue} or return;
+    return unless defined $rd->{releaseFor};
+    $self->_resumeDueRelease(_trackIdOf($rd->{releaseFor}), '', 'new title');
     return;
 }
 
@@ -3636,6 +4434,10 @@ sub _onFrameTrackChanged {
         # consumed-head detector in _onFrameQueueChanged, independent of
         # frame order, and an unknown head never licenses a skip_next.
         delete $self->observed->{queueHead};
+        # D-34 (79-48): the first real queue_changed after a title starts is the
+        # queue as it stood (stale own entries included); only entries that
+        # appear later can be the app's own "add to queue" (_onFrameQueueChanged).
+        delete $self->observed->{queueBaseline};
 
         # 84-17: a second track_changed for a DIFFERENT uri while a change is
         # still waiting for the shim's reply cancels the classification --
@@ -3670,6 +4472,7 @@ sub _onFrameTrackChanged {
             # Ueberschreiben genommen hat -- ohne D-02 waere Prefetch totes
             # Gewicht gewesen (81-DECISIONS Section D-C).
             $self->observed->{track}  = $uri;
+            delete $self->observed->{reloadArm};    # 79-52: a title change retires the re-load arm
             $self->_clearAutoplayPausedUnless($uri);    # 84-26 R2 clear (b)
             # 83.1-04 (D-B2): the daemon confirming a (re-)played uri
             # settles whatever requestPause marked -- a fresh title
@@ -3783,6 +4586,7 @@ sub _onFrameTrackChanged {
         {
             delete $self->observed->{expectEcho};
             $self->observed->{track}  = $uri;
+            delete $self->observed->{reloadArm};    # 79-52: a title change retires the re-load arm
             $self->_clearAutoplayPausedUnless($uri);    # 84-26 R2 clear (b)
             # 83.1-04 (D-B2): the daemon confirming a (re-)played uri
             # settles whatever requestPause marked -- a fresh title
@@ -3868,6 +4672,14 @@ sub _onFrameTrackChanged {
             $self->_debugStatusTransition('playing', 'track_changed foreign');
             return;
         }
+
+        # D-34 (79-48): an app that REPLACED the queue (a foreign context, or a
+        # track it queued itself) is a takeover into Connect, not an autoplay
+        # continuation: the session flips to connect here and the frame then
+        # runs through the connect-mode path below (first frame of a session:
+        # plain boundary, `start`). Autoplay and a natural end bring no
+        # context_changed and stay with the guard further down.
+        $self->_browseTakeover($uri) if $self->mode eq 'browse';
 
         # Foreign track / auto-advance: plant a boundary (today's rule --
         # only the confirmation of our OWN play skips it) 1:1 from
@@ -3992,7 +4804,13 @@ sub _onFrameTrackChanged {
             $self->observed->{autoplayPaused} = $uri;
         }
 
+        # D-34 (79-48): the daemon moved to the title SpotOn queued for LMS's next
+        # entry while LMS has not asked for it and the title was nowhere near
+        # its end -- the app's next. LMS moves within its own list.
+        $self->_forwardBrowseNext($uri, $prev, $queuedByUsMatch) if $self->mode eq 'browse';
+
         $self->observed->{track}  = $uri;
+        delete $self->observed->{reloadArm};    # 79-52: a title change retires the re-load arm
         $self->_clearAutoplayPausedUnless($uri);    # 84-26 R2 clear (b): another uri's marker dies here
         # 83.1-04 (D-B2): same discipline as the echo/late-echo
         # branches above -- a confirmed track change settles stopBy.
@@ -4076,6 +4894,13 @@ sub _onFramePlaybackChanged {
         # -- 'stopped' below is unconditional either way.
         $self->_postBoundary if $status eq 'stopped';
 
+        # D-34 (79-48): an app pause/play on the own title during LMS-started
+        # Browse moves LMS's pause state (the request filter inside decides
+        # whether this frame is the app's or an echo of something Control did).
+        if ($mode eq 'browse' && ($status eq 'paused' || $status eq 'playing')) {
+            $self->_forwardBrowseTransport($status);
+        }
+
         return unless $mode eq 'connect';
 
         if ($status eq 'playing') {
@@ -4085,10 +4910,31 @@ sub _onFramePlaybackChanged {
                 my $trackId = _trackIdOf($self->observed->{track});
                 my $anchor  = $self->observed->{anchor};
                 my $posSec  = _anchorPosSec($anchor);
-                $self->_emit('resume', $trackId, $posSec);
-                # Post-resume reconciliation: the get_state reply (a
-                # playback_state snapshot) catches any residual drift.
-                $self->_dispatch('get_state');
+                # 79-51 runaway D1 (E9, T-79-190): the anchor belongs to the title it was written for (84.2-02). When a
+                # track_changed came BEFORE this playing frame (the track-first start), observed.track is already the
+                # NEW title while the anchor still holds the old title's position; that position would set LMS's
+                # clock for the new title (Connect.pm resume branch). No position then. An anchor without a uri
+                # (not expected since 84.2-02) keeps today's position.
+                if ($anchor && defined $anchor->{uri} && defined $self->observed->{track}
+                    && $anchor->{uri} ne $self->observed->{track})
+                {
+                    $posSec = '';
+                }
+                # 79-51 runaway D1: HELD for the deciding frame (E1: nothing at this frame tells a resume from a new
+                # context). id and pos are computed exactly as before, so a same-title release is byte-identical to
+                # today's wire; the release (and the get_state that follows it) happens in _resumeDuePre /
+                # _resumeDuePost, or by the RESUME_DECIDE_MS timer for a lone playing frame.
+                Slim::Utils::Timers::killTimers($self, \&_resumeDueFire);
+                $self->observed->{resumeDue} = {
+                    track => $self->observed->{track},
+                    id    => $trackId,
+                    pos   => $posSec,
+                    at    => Time::HiRes::time(),
+                };
+                Slim::Utils::Timers::setTimer($self, Time::HiRes::time() + RESUME_DECIDE_MS / 1000, \&_resumeDueFire);
+                main::INFOLOG && $log->is_info && $log->info(
+                    "Control: resume held for the deciding frame (" . ($self->mac // '?') . ")"
+                );
             }
         }
         elsif ($status eq 'paused' || $status eq 'stopped') {
@@ -4119,6 +4965,10 @@ sub _onFramePositionSync {
         # below (mirrors SoloistWS::_onPositionSync:812-820) -- connect only.
         if (!$entryCorrected && $self->mode eq 'connect' && defined $self->observed->{anchor}) {
             $self->_detectSeek($p->{position_ms}, time());
+        }
+        elsif (!$entryCorrected && $self->mode eq 'browse' && defined $self->observed->{anchor}) {
+            # D-34 (79-48): an app seek during Browse (the daemon buffers at the target)
+            $self->_detectBrowseSeek($p->{position_ms}, $self->observed->{status}, undef);
         }
 
         # 84-02 C4-c: the daemon resets the position to 0 (speed 0) when a
@@ -4186,6 +5036,11 @@ sub _onFramePlaybackState {
             my $prev  = $self->observed->{track};
 
             $self->_noteCurrentItem($item);    # 85-07 D-09
+
+            # D-34 R2 (79-50): decided HERE, before observed.track is overwritten below
+            # -- the keep needs the title as it was before this frame.
+            $self->_connectRepositionKeep($msg, $uri, $hrPrevTrack) if $mode eq 'connect';
+            $self->_noteLoadState($uri, $msg->{status});    # 79-52: AFTER the keep decision of this frame
 
             # Phase 82-03 flagged assumption (T-1, "Reconnect mitten in
             # einer Connect-Session"): mirrors track_changed's start-vs-
@@ -4263,6 +5118,11 @@ sub _onFramePlaybackState {
             if (defined $posMs) {
                 if ($mode eq 'connect' && defined $self->observed->{anchor}) {
                     $self->_detectSeek($posMs, time());
+                }
+                elsif ($mode eq 'browse' && defined $self->observed->{anchor}) {
+                    # D-34 (79-48): an app seek / previous during Browse
+                    $self->_detectBrowseSeek($posMs, $msg->{status},
+                        (defined $uri && $uri =~ /^spotify:(?:track|episode):[A-Za-z0-9]+$/) ? $uri : undef);
                 }
                 # 84-14: the daemon sends the new-item reset as a playback_state
                 # (0, buffering) BEFORE the position_sync (0, speed 0) (recorder,
@@ -4343,25 +5203,10 @@ sub _onFramePlaybackState {
             # 84.2-01 (D-04, defensive): idle -> connect is a loss of Browse
             # control too -- whatever path left an own-queue set behind in
             # idle, none of it survives into connect.
-            $self->_forgetOwnQueue('reconnect-to-connect');
-            $self->mode('connect'); delete $self->observed->{leftBrowseUri};
-            delete $self->observed->{leftBrowsePlanted};    # 84.2-05: the adoption happened -- the episode is over
-            # IN-02 (82-REVIEW.md): explicit field assignment, same
-            # pattern as the device_changed branch below -- a pauschale
-            # `{ %{ $self->observed } }` copy shared HASH REFERENCES
-            # between `wanted` and `observed` (meta/errorsReported/anchor
-            # are refs, not scalars); a later write through `wanted` would
-            # silently mutate `observed` too. `meta`, `errorsReported` and
-            # `anchor` are OBSERVATIONS, not wishes, and deliberately do
-            # NOT belong in `wanted` at all. `uri` comes from
-            # observed->{track} -- there is no observed->{uri}.
-            my $anchor = $self->observed->{anchor};
-            $self->wanted({
-                uri         => $self->observed->{track},
-                position_ms => ($anchor && defined $anchor->{position_ms}) ? $anchor->{position_ms} : 0,
-                playing     => 1,
-                volume      => $self->observed->{volume},
-            });
+            # D-34 (79-48): the body shared by every way into a connect session
+            # (this reconnect adoption, the device_changed transfer-in, the
+            # app takeover out of Browse): _enterConnectSession.
+            $self->_enterConnectSession('reconnect-to-connect');
             if (defined $self->observed->{track}) {
                 my $tid = _trackIdOf($self->observed->{track});
                 $self->_emitStart($tid) if defined $tid;
@@ -4678,25 +5523,9 @@ sub _onFrameDeviceChanged {
             }
 
             if ($self->mode ne 'connect') {
-                my $anchor = $self->observed->{anchor};
-                # 84.2-01 (D-04): the transfer-in (browse/idle -> connect)
-                # flips the mode without leaveBrowse -- forget here as well.
-                $self->_forgetOwnQueue('transfer-in');
-                $self->mode('connect');
-                $self->wanted({
-                    uri         => $self->observed->{track},
-                    position_ms => ($anchor && defined $anchor->{position_ms}) ? $anchor->{position_ms} : 0,
-                    playing     => 1,
-                    volume      => $self->observed->{volume},
-                });
-                # 84.1 D-01(b): a transfer-in is a fresh session -- the
-                # stop-triggered leave's autoplay-guard marker no longer
-                # applies once the daemon is the active device again.
-                delete $self->observed->{leftBrowseUri}; delete $self->observed->{leftConnectForeign};
-                delete $self->observed->{leftBrowsePlanted};    # 84.2-05: a fresh session
-                # 84-26 R2 clear (d): same fresh-session clear point -- an adopted Connect session
-                # on the autoplay-paused title is legitimate (D-02); a stale marker must not outlive it.
-                delete $self->observed->{autoplayPaused};
+                # D-34 (79-48): the shared body (see _enterConnectSession for the
+                # forget-own-queue, fresh-session and marker rules this block used to carry).
+                $self->_enterConnectSession('transfer-in', fresh => 1);
                 main::INFOLOG && $log->is_info && $log->info(
                     "Control: transfer-in -> mode=connect (" . ($self->mac // '?') . ")"
                 );
@@ -5069,6 +5898,28 @@ sub _onFrameQueueChanged {
                 push @qUris, $eu;
                 $head = { uri => $eu, uid => $e->{uid} } if $i == 0;
             }
+            # D-34 (79-48): an entry with source `queue` that is not SpotOn's own
+            # (queuedByUs) and was not in the queue as the title started is the
+            # app's own "add to queue". Recorded only; it takes over when it STARTS
+            # (_browseTakeover), never when it is queued.
+            my $qBase = $self->observed->{queueBaseline};
+            if (ref($qBase) ne 'HASH') {
+                $self->observed->{queueBaseline} = { %uids };
+            }
+            else {
+                my $ownQ = $self->observed->{queuedByUs};
+                for my $e (@$up) {
+                    next unless ref($e) eq 'HASH' && ref($e->{item}) eq 'HASH' && ($e->{source} // '') eq 'queue';
+                    next unless defined $e->{uid} && !$qBase->{ $e->{uid} };
+                    my $eu = $e->{item}{uri};
+                    next unless defined $eu && $eu =~ /^spotify:track:[A-Za-z0-9]+$/;
+                    next if ref($ownQ) eq 'HASH' && $ownQ->{$eu};
+                    my $aq = $self->observed->{appQueued} ||= {};
+                    %$aq = () if keys(%$aq) >= OWN_QUEUE_MAX;
+                    $aq->{$eu} = 1;
+                }
+            }
+
             my $old = $self->observed->{queueHead};
             $self->observed->{queueUris} = \@qUris;
             if ($head) { $self->observed->{queueHead} = $head }
@@ -5559,7 +6410,7 @@ sub _observedPositionMs {
 # goes through _observedPositionMs (82-08 CR-01) -- unchanged behavior, one
 # fewer place carrying the anchor math.
 sub _detectSeek {
-    my ($self, $posMs, $now) = @_;
+    my ($self, $posMs, $now, $browse) = @_;
 
     my $expectedMs = $self->_observedPositionMs($now) // 0;
     my $deltaSec   = abs($posMs - $expectedMs) / 1000;
@@ -5574,13 +6425,27 @@ sub _detectSeek {
         # it as `seek` set LMS' clock back to it (startOffset -7.33,
         # -8.86, -68.87). A genuine app-side seek lands elsewhere.
         my $anchor = $self->observed->{anchor};
-        if ($anchor && defined $anchor->{position_ms}
+        # D-34 (79-48): in Browse a report at the very start of the title
+        # (below ENTRY_MIN_TARGET_MS) is the app's previous, not a frozen
+        # repeat, even though the anchor of a title that just started sits
+        # there too -- the daemon sends no ticks during a quiet title (79-46
+        # Case D: anchor 25 ms, restart to 0 eighteen seconds later) and only a
+        # frame that says `buffering` gets here. A frozen report mid-title
+        # (the real 84-02 cases) is still dropped below.
+        my $browseRestart = ($browse && $posMs < ENTRY_MIN_TARGET_MS) ? 1 : 0;
+        if (!$browseRestart && $anchor && defined $anchor->{position_ms}
             && abs($posMs - $anchor->{position_ms}) < FROZEN_POSITION_TOLERANCE_MS)
         {
             main::INFOLOG && $log->is_info && $log->info(sprintf(
                 "Control: position report %.3fs repeats the prior anchor (%.3fs) while %.1fs passed -- frozen daemon position, no seek echo (%s)",
                 $posMs / 1000, $anchor->{position_ms} / 1000, $deltaSec, ($self->mac // '?')
             ));
+            return;
+        }
+        # D-34 (79-48): in Browse the same detected jump is an app seek (or an
+        # app previous) that LMS has to follow, not a connect seek echo.
+        if ($browse) {
+            $self->_forwardBrowseSeek($posMs);
             return;
         }
         $self->_emit('seek', sprintf('%.3f', $posMs / 1000));
@@ -5672,6 +6537,7 @@ sub _transportClosed {
     delete $self->observed->{track};
     delete $self->observed->{status};
     delete $self->observed->{anchor};
+    $self->_reloadForget;    # 79-52
     # 85-07 D-09: the Up Next cache describes the queue of a connection that
     # is gone; the next queue_changed / get_queue reply rebuilds it.
     delete $self->observed->{upNext};
@@ -6507,7 +7373,10 @@ sub _emit {
 
     my $mode = $self->mode;
     if ($mode eq 'browse') {
-        return unless $cmd eq 'volume';
+        # D-34: besides the volume echo, browse surfaces one more verb -- the
+        # app seek Control marked BROWSE_SEEK_MARK (_detectBrowseSeek).
+        return unless $cmd eq 'volume'
+            || ($cmd eq 'seek' && defined $p4 && $p4 eq BROWSE_SEEK_MARK);
     }
     elsif ($mode eq 'idle') {
         return unless $cmd eq 'stop' && defined $p2 && $p2 eq 'inactive';
@@ -6640,6 +7509,7 @@ sub leaveConnect {
 
     # A tap-back is a fresh session -- it gets 'start', not 'resume'.
     delete $self->observed->{startEmittedFor};
+    $self->_reloadForget;    # 79-52
 
     # T-84.1-29/T-84.1-30: the pending-state marker the re-adoption
     # guard (_holdAfterForeignLeave) reads, cleared wherever this

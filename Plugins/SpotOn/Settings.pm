@@ -479,9 +479,12 @@ sub handler {
     # playerStepOk (step 2) is filled after the backend roles ran, since the
     # Soloist role builds the per-player list.
     $paramRef->{pairingWindowSeconds} = Plugins::SpotOn::API::Credentials::PAIRING_WINDOW_SECONDS();
-    $paramRef->{accountStepOk} =
-        (grep { Plugins::SpotOn::API::TokenManager->hasValidLogin($_) } keys %{ $paramRef->{accounts} })
-        ? 1 : 0;
+    # 79-39 (D-32 F2): pairedAccounts feeds step 1's "Gekoppelt: <names>"
+    # line; accountStepOk is derived from the same list, so the check mark
+    # and the paired line can never disagree.
+    $paramRef->{pairedAccounts} =
+        [ sort grep { Plugins::SpotOn::API::TokenManager->hasValidLogin($_) } keys %{ $paramRef->{accounts} || {} } ];
+    $paramRef->{accountStepOk} = @{ $paramRef->{pairedAccounts} } ? 1 : 0;
     $paramRef->{needsPairingAccounts} =
         [ sort grep { $paramRef->{accounts}{$_}{needsPairing} } keys %{ $paramRef->{accounts} } ];
 
@@ -688,6 +691,38 @@ sub _redactBundleText {
     return $text;
 }
 
+# _redactBundleUsers($text) -- 79-43 (D-33 FULL-3 WR-01): replaces every stored spotifyUserId (every account in
+# prefs) with [REDACTED], in each form it can take in the bundle: the stored value, its UTF-8 bytes (as a log file
+# holds it) and its URI escape (as a spclient path holds it, matched case-insensitively). quotemeta, longest first.
+# Runs over the whole assembled bundle, header and log extracts; $BUNDLE_REDACT_RE stays the extract-run.pl copy.
+# D-33 WR-04 (79-44 Fable review): an id is replaced as a TOKEN, not as a substring: no word character (or % escape
+# byte) directly before or after it, and case-sensitive (ids are). Only the URI-escape form, whose hex digits a log may
+# print in either case, stays case-insensitive. A short id ("max") therefore no longer eats HOLD_MAX_S or Maxwell.
+sub _redactBundleUsers {
+    my ($text) = @_;
+    return $text unless defined $text && length $text;
+    my $accounts = $prefs->get('accounts');
+    return $text unless ref($accounts) eq 'HASH';
+    require URI::Escape;
+    my (%forms, %escForms);
+    for my $acct (values %$accounts) {
+        next unless ref($acct) eq 'HASH';
+        my $uid = $acct->{spotifyUserId};
+        next unless defined $uid && !ref($uid) && length($uid) >= 3;
+        $forms{$uid} = 1;
+        $forms{ encode('UTF-8', $uid) } = 1;
+        my $esc = URI::Escape::uri_escape(encode('UTF-8', $uid));   # = uri_escape_utf8, for either representation
+        if (exists $forms{$esc} || $esc eq $uid) { $forms{$esc} = 1; }    # nothing escaped: stays case-sensitive
+        else                                      { $escForms{$esc} = 1; }
+    }
+    return $text unless %forms || %escForms;
+    my $by  = sub { length($b) <=> length($a) || $a cmp $b };
+    my @alt = ((map { quotemeta } sort $by keys %forms), (map { '(?i:' . quotemeta($_) . ')' } sort $by keys %escForms));
+    my $alt = join '|', @alt;
+    $text =~ s/(?<![A-Za-z0-9_%])(?:$alt)(?![A-Za-z0-9_])/[REDACTED]/g;
+    return $text;
+}
+
 sub _diagnosticBundleHandler {
     my ($httpClient, $response) = @_;
 
@@ -808,7 +843,11 @@ sub _diagnosticBundleHandler {
         my $accounts = $prefs->get('accounts') || {};
         my $displayName = 'unknown';
         if ($activeId && $accounts->{$activeId}) {
-            $displayName = $accounts->{$activeId}{displayName} || $accounts->{$activeId}{spotifyUserId} || 'unknown';
+            # 79-43 (D-33 FULL-3 WR-01): the fallback to the Spotify user id shows its masked form only
+            my $uid = $accounts->{$activeId}{spotifyUserId};
+            $displayName = $accounts->{$activeId}{displayName}
+                || ((defined $uid && length $uid) ? substr($uid, 0, 3) . '****' : undef)
+                || 'unknown';
         }
         push @tokenStatus, "  Display name: $displayName";
         push @tokenStatus, "  API requests: " . ($snapshot->{apiRequestCount} || 0);
@@ -874,7 +913,8 @@ sub _diagnosticBundleHandler {
         $logs .= "\n";
     }
 
-    my $content = $header . $logs;
+    # 79-43 (D-33 FULL-3 WR-01): no stored Spotify user id leaves in the bundle, header or log extract
+    my $content = _redactBundleUsers($header . $logs);
     my $filename = "spoton-diag-$timestamp.txt";
 
     my $bytes = encode('UTF-8', $content);

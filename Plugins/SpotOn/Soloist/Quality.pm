@@ -170,6 +170,9 @@ sub deviceNameForMac {
 sub _encodeRead {
     my ($class, $id, $name) = @_;
     require Plugins::SpotOn::API::ProtobufLite;
+    # 79-43 (D-33 FULL-3 WR-02): the device name is a character string from LMS; its Latin-1 representation
+    # ("K\x{fc}che" unflagged) is upgraded on a copy so encode_field sends it as UTF-8 like the flagged one.
+    if (defined $name) { $name = "$name"; utf8::upgrade($name); }
     my $descriptor = Plugins::SpotOn::API::ProtobufLite::encode_field(1, 2, $id)
                     . Plugins::SpotOn::API::ProtobufLite::encode_field(2, 2, $name);
     return Plugins::SpotOn::API::ProtobufLite::encode_field(1, 2,
@@ -179,6 +182,7 @@ sub _encodeRead {
 sub _encodeWrite {
     my ($class, $id, $name, $level) = @_;
     require Plugins::SpotOn::API::ProtobufLite;
+    if (defined $name) { $name = "$name"; utf8::upgrade($name); }   # 79-43: see _encodeRead
     my $descriptor = Plugins::SpotOn::API::ProtobufLite::encode_field(1, 2, $id)
                     . Plugins::SpotOn::API::ProtobufLite::encode_field(2, 2, $name);
     my $valueMsg   = Plugins::SpotOn::API::ProtobufLite::encode_field(1, 0, FIELD_AUDIO_QUALITY)
@@ -321,14 +325,25 @@ sub _request {
             { timeout => REQUEST_TIMEOUT },
         );
 
-        $http->post(
-            $url,
-            'Authorization'   => "Bearer $token",
-            'Content-Type'    => 'application/x-protobuf',
-            'Accept'          => 'application/x-protobuf',
-            'Accept-Encoding' => 'identity',
-            $body,
-        );
+        # 79-43 (D-33 FULL-3 WR-02): a transport-layer die (HTTP::Message "content must be bytes", a socket
+        # error raised synchronously) is classified as unreachable through the same once-only guard instead of
+        # escaping into the daemon poll or the settings handler.
+        eval {
+            $http->post(
+                $url,
+                'Authorization'   => "Bearer $token",
+                'Content-Type'    => 'application/x-protobuf',
+                'Accept'          => 'application/x-protobuf',
+                'Accept-Encoding' => 'identity',
+                $body,
+            );
+            1;
+        } or do {
+            my $error = "$@";
+            return if $called++;
+            main::INFOLOG && $log->info("Soloist::Quality: $method class=unreachable (post died)");
+            $cb->(undef, { class => 'unreachable', error => $error });
+        };
     });
 }
 

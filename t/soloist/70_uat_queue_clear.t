@@ -69,6 +69,20 @@ my $st = do { open(my $fh, '<', $ENV{QC_FAKE_STATE}) or die; local $/; decode_js
 open(my $out, '>', $o{out}) or die "out: $!";
 sub jl { my ($dir, $frame) = @_; print $out encode_json({ dir => $dir, frame => $frame, ts => '00:00:00.000', epoch => time() + 0 }) . "\n" }
 sub save { open(my $fh, '>', $ENV{QC_FAKE_STATE}) or die; print $fh encode_json($st); close $fh }
+# 79-46: the real recorder writes the frame as a CHARACTER string (soloist-ws-record.pl), so a
+# non-ASCII title arrives as a wide character after the outer decode. `nonascii` reproduces that:
+# rx frames are encoded at character level and carry a title with an accent.
+if ($st->{nonascii}) {
+    my $chars = JSON::PP->new->canonical;
+    no warnings 'redefine';
+    *encode_json = sub {
+        my ($h) = @_;
+        if (ref $h eq 'HASH' && ref $h->{item} eq 'HASH') { $h->{item}{decorations} = { identity => { name => "Thierry \x{e9}t\x{e9}" } } }
+        if (ref $h eq 'HASH' && ref $h->{upcoming} eq 'ARRAY') { $_->{item}{decorations} = { identity => { name => "Caf\x{e9}" } } for @{ $h->{upcoming} } }
+        return $chars->encode($h);
+    };
+    *jl = sub { my ($dir, $frame) = @_; print $out JSON::PP->new->utf8->encode({ dir => $dir, frame => $frame, ts => '00:00:00.000', epoch => time() + 0 }) . "\n" };
+}
 jl('meta', 'HANDSHAKE-OK');
 if ($st->{unreadable}) {
     for my $s (@send) { logline($ENV{QC_FAKE_TXLOG}, cmdname($s)); jl('tx', encode_json({ type => 'command', command => cmdname($s) })) }
@@ -280,6 +294,21 @@ sub nothing_invoked { my ($r) = @_; return (@{ $r->{inv} } == 0) ? 1 : 0 }
     ok(only_reads($r) && !@{ $r->{cdp} }, 'iwm C01 txlog only get_queue, app driver untouched');
     is($r->{nqc}, 1, 'iwm C01 exactly one QUEUE_CLEARED line');
     is($r->{last_line}, $r->{qc}, 'iwm C01 the QUEUE_CLEARED line is the last output line');
+}
+
+# ------------------------------------------------------------
+# C01u (79-46): the same empty live session, but the frames carry a non-ASCII title the way the real
+# recorder writes them (live 2026-10-26: "malformed UTF-8 character in JSON string" on an accented
+# title made every read `read_before_unreadable`).
+# ------------------------------------------------------------
+{
+    my $r = run_case(state => { is_active => 1, live => [], nonascii => 1 });
+    like($r->{qc}, qr/\AQUEUE_CLEARED=PASS before=0 after=0 action=none\b/, 'iwm C01u non-ASCII title: PASS before=0 after=0 action=none (not read_before_unreadable)');
+    is($r->{rc}, 0, 'iwm C01u exit 0');
+}
+{
+    my $r = run_case(state => { is_active => 1, live => ['spotify:track:QQQQQQQQQQQQQQQQQQQQQQ'], nonascii => 1 });
+    unlike($r->{qc}, qr/read_before_unreadable/, 'iwm C01u2 non-ASCII queue entry: the read is not unreadable');
 }
 
 # ------------------------------------------------------------

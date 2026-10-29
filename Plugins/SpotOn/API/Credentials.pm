@@ -337,6 +337,17 @@ sub pairingStatus {
     };
 }
 
+# pairingPid($class)
+# -> PID of the live ZeroConf pairing helper, or undef.
+# D-33 FULL-1 CR-01: the pairing helper is the same binary the hourly orphan
+# sweep (Plugin.pm _killOrphanedProcesses) matches by command line, and its
+# proc lives only in %_pairing; the sweep reads this to protect it.
+sub pairingPid {
+    my ($class) = @_;
+    my $proc = $_pairing{proc} or return undef;
+    return eval { $proc->alive } ? $proc->pid : undef;
+}
+
 # cancelPairing($class)
 # Kill + cleanup, state -> idle. Idempotent when idle, so Plugin shutdown
 # paths and the Settings pagehide handler can call it unconditionally

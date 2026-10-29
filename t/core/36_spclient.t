@@ -3068,6 +3068,8 @@ sub seed_track { my ($acct, $id, $ageDays, %o) = @_;
     my $h = track_hash_for_id($id);
     $h->{name} = $o{name} if defined $o{name};
     $h->{_spoton_cached_at} = time() - int($ageDays * 86400) if defined $ageDays;
+    # 79-43 (D-33 FULL-3 CR-01): a seeded entry is written in the current format unless the case asks for the old one
+    $h->{_spoton_fmt} = (eval { Plugins::SpotOn::API::SpClient::TRACK_META_FORMAT() } // 2) unless $o{unmarked};
     Slim::Utils::Cache->new()->set('spoton_spclient_resp_' . $acct . '_metadata/4/track/' . $SP->idToHex($id), $h, time() + 90 * 86400);
     return $h;
 }
@@ -3173,6 +3175,218 @@ my $DAY = 86400;
     is($n0 . '/' . ($plain && $plain->{name} // '?'), '0/Stale Name', '79-27 D-20: a plain getTrack on a warm entry issues 0 requests');
     is(($n1 - $n0) . '/' . ($refreshed && $refreshed->{name} // '?'), '1/Fresh Name', '79-27 D-20: getTrack with refresh on a warm entry issues exactly one GET metadata/4/track/<hex>');
     is(($n2 - $n1) . '/' . ($after && $after->{name} // '?'), '0/Fresh Name', '79-27 D-20: ... and overwrote the entry (a following plain getTrack returns the new name with 0 requests)');
+}
+
+# ============================================================
+# 79-43 (D-33 FULL-3 CR-01): names from the extended-metadata batch decoder are Perl character strings, and a
+# track cache entry without the current format marker (the byte form beta.1 wrote, up to 90 days to live) is a
+# miss at both readers: refetched, overwritten, never queued for renewal.
+# ============================================================
+my $FMT43 = eval { Plugins::SpotOn::API::SpClient::TRACK_META_FORMAT() } // 2;
+# umlaut_track_bytes($id): the JSON-shaped hash with UTF-8 BYTE names, as protobuf delivers them and beta.1 stored them
+sub umlaut_track_bytes {
+    my ($id) = @_;
+    my $h = track_hash_for_id($id);
+    $h->{name}   = "F\xc3\xbcr Elise";
+    $h->{artist} = [ { gid => 'bb000000000000000000000000000002', name => "Bj\xc3\xb6rk" } ];
+    $h->{album}  = { %{ $h->{album} }, name => "Caf\xc3\xa9 \xe2\x98\x95" };
+    return $h;
+}
+# umlaut_track_chars($id): the same names as character strings (what GET metadata/4/track JSON decodes to)
+sub umlaut_track_chars {
+    my ($id) = @_;
+    my $h = track_hash_for_id($id);
+    $h->{name}   = "F\x{fc}r Elise";
+    $h->{artist} = [ { gid => 'bb000000000000000000000000000002', name => "Bj\x{f6}rk" } ];
+    $h->{album}  = { %{ $h->{album} }, name => "Caf\x{e9} \x{2615}" };
+    return $h;
+}
+sub flag_len { return join '/', map { defined $_ ? (utf8::is_utf8($_) ? 1 : 0) . ':' . length($_) : 'undef' } @_ }
+sub names3   { my ($t) = @_; $t ||= {}; return ($t->{name}, ((($t->{artists} || [])->[0]) || {})->{name}, ($t->{album} || {})->{name}) }
+sub seed_bytes43 {   # an UNMARKED byte-form entry, as beta.1 and C5 wrote it
+    my ($acct, $id, $ageDays) = @_;
+    my $key = $SP->_trackCacheKey($acct, $SP->idToHex($id));
+    Slim::Utils::Cache->new()->set($key, { %{ umlaut_track_bytes($id) }, _spoton_cached_at => time() - int($ageDays * 86400) }, time() + 60 * 86400);
+    return $key;
+}
+my $UMLAUT_JSON = sub { JSON::PP->new->utf8->canonical->encode(umlaut_track_chars($_[0])) };
+
+# D1: the batch decoder returns character strings for the track, artist and album name
+{
+    reset_all(); @BATCH_LOG = ();
+    set_batch(data => \&umlaut_track_bytes);
+    my $res;
+    $SP->_enrichTracks('acct4301', [ b62id(4301) ], sub { ($res) = @_ });
+    my $t = $res && $res->[0];
+    is(flag_len(names3($t)), '1:9/1:5/1:6',
+        '79-43 D1 (D-33 FULL-3 CR-01): batch-decoded name, artist and album are character strings of length 9, 5 and 6');
+    is(join('|', map { $_ // 'undef' } names3($t)), join('|', "F\x{fc}r Elise", "Bj\x{f6}rk", "Caf\x{e9} \x{2615}"),
+        '79-43 D1: ... and equal the decoded characters');
+}
+
+# D2: the JSON path keeps its characters (no double decode) and the stored entry carries the marker
+{
+    reset_all();
+    my $id = b62id(4302);
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/metadata/4/track/}, $UMLAUT_JSON->($id));
+    my $res;
+    $SP->getTrack('acct4302', $id, sub { ($res) = @_ });
+    is(join('|', map { $_ // 'undef' } names3($res)), join('|', "F\x{fc}r Elise", "Bj\x{f6}rk", "Caf\x{e9} \x{2615}"),
+        '79-43 D2: a metadata/4/track JSON result keeps its characters (no double decode)');
+    my $stored = Slim::Utils::Cache->new()->get($SP->_trackCacheKey('acct4302', $SP->idToHex($id)));
+    is(ref($stored) eq 'HASH' ? ($stored->{_spoton_fmt} // 'none') : 'nostore', $FMT43,
+        '79-43 D2: the stored metadata/4/track entry carries _spoton_fmt = TRACK_META_FORMAT');
+}
+
+# H1: an unmarked byte-form entry is a miss for _enrichTracks: one POST for X, decoded name, the entry is marked
+{
+    reset_all(); @BATCH_LOG = (); @Slim::Utils::Timers::set_calls = ();
+    my $id  = b62id(4303);
+    my $key = seed_bytes43('acct4303', $id, 1);
+    set_batch(data => \&umlaut_track_bytes);
+    my $res;
+    $SP->_enrichTracks('acct4303', [$id], sub { ($res) = @_ });
+    is(scalar(@BATCH_LOG) . '/' . join(',', @{ $BATCH_LOG[0] || [] }), "1/spotify:track:$id",
+        '79-43 H1: an unmarked byte-form entry is a miss for _enrichTracks (one extended-metadata POST for X)');
+    is($res && $res->[0] && $res->[0]{name} // 'undef', "F\x{fc}r Elise", '79-43 H1: ... it returns the decoded name');
+    my $st = Slim::Utils::Cache->new()->get($key) || {};
+    is(($st->{_spoton_fmt} // 'none') . '|' . ($st->{name} // 'undef'), "$FMT43|F\x{fc}r Elise",
+        '79-43 H1: ... and the overwritten entry is marked and holds the decoded name');
+}
+
+# H2: the same unmarked entry is a miss for getTrack: one GET, the entry is overwritten
+{
+    reset_all(); @Slim::Utils::Timers::set_calls = ();
+    my $id  = b62id(4304);
+    my $key = seed_bytes43('acct4304', $id, 1);
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/metadata/4/track/}, $UMLAUT_JSON->($id));
+    my $res;
+    $SP->getTrack('acct4304', $id, sub { ($res) = @_ });
+    is(scalar(track_gets()) . '|' . ($res && $res->{name} // 'undef'), "1|F\x{fc}r Elise",
+        '79-43 H2: an unmarked byte-form entry is a miss for getTrack (one GET metadata/4/track/<hex>, decoded name)');
+    my $st = Slim::Utils::Cache->new()->get($key) || {};
+    is(($st->{_spoton_fmt} // 'none') . '|' . ($st->{name} // 'undef'), "$FMT43|F\x{fc}r Elise",
+        '79-43 H2: ... and the entry is overwritten with the marked character form');
+}
+
+# H3: a marked entry is a hit with no request; a marked entry older than TRACK_META_RENEW_AFTER is queued as today
+{
+    reset_all(); @Slim::Utils::Timers::set_calls = (); @BATCH_LOG = ();
+    seed_track('acct4305', b62id(4305), 1, name => 'Marked Name');
+    my $res;
+    $SP->getTrack('acct4305', b62id(4305), sub { ($res) = @_ });
+    $SP->_enrichTracks('acct4305', [ b62id(4305) ], sub { });
+    is(scalar(Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests()) . '|' . ($res && $res->{name} // 'undef') . '|' . scalar(drain_timers()),
+        '0|Marked Name|0', '79-43 H3: a marked entry is a hit at both readers with no request and no renewal');
+    reset_all(); @Slim::Utils::Timers::set_calls = ();
+    seed_track('acct4306', b62id(4306), 31);
+    $SP->getTrack('acct4306', b62id(4306), sub { });
+    is(scalar(Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests()) . '|' . scalar(drain_timers()), '0|1',
+        '79-43 H3: a marked entry older than 30 days is still a hit and is queued for renewal (one drain timer)');
+}
+
+# H4 (no laundering): an unmarked 31-day-old byte-form entry is refetched, never queued; the drain skips an unmarked value
+{
+    reset_all(); @Slim::Utils::Timers::set_calls = ();
+    my $id = b62id(4307);
+    seed_bytes43('acct4307', $id, 31);
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/metadata/4/track/}, $UMLAUT_JSON->($id));
+    $SP->getTrack('acct4307', $id, sub { });
+    is(scalar(track_gets()) . '|' . scalar(drain_timers()), '1|0',
+        '79-43 H4: getTrack on an unmarked 31-day-old entry refetches (one GET) and queues nothing for renewal');
+
+    reset_all(); @Slim::Utils::Timers::set_calls = (); @BATCH_LOG = ();
+    seed_bytes43('acct4308', b62id(4308), 31);
+    set_batch(data => \&umlaut_track_bytes);
+    $SP->_enrichTracks('acct4308', [ b62id(4308) ], sub { });
+    is(scalar(@BATCH_LOG) . '|' . scalar(drain_timers()), '1|0',
+        '79-43 H4: _enrichTracks on an unmarked 31-day-old entry refetches (one POST) and queues nothing for renewal');
+
+    reset_all(); @Slim::Utils::Timers::set_calls = ();
+    my $k = $SP->_trackCacheKey('acct4309', $SP->idToHex(b62id(4309)));
+    $SP->_noteTrackHit($k, { %{ umlaut_track_bytes(b62id(4309)) }, _spoton_cached_at => time() - 31 * 86400 });
+    my @t = drain_timers();
+    @Slim::Utils::Cache::SET_LOG = ();
+    $t[0][2]->($t[0][0], @{$t[0]}[3 .. $#{$t[0]}]) if @t;
+    is(scalar(@t) . '|' . scalar(set_log_for(qr/^\Q$k\E$/)), '1|0',
+        '79-43 H4: a queued value without the current marker is skipped by _flushTrackRenewals (nothing stored)');
+}
+
+
+# ============================================================
+# 79-43 (D-33 FULL-3 WR-01): no Spotify username and no search term in a SpClient log line. Paths are masked at
+# the one logging point (_logPath); request paths, cache keys and the request itself stay unchanged.
+# ============================================================
+{
+    my $lp = Plugins::SpotOn::API::SpClient->can('_logPath') || sub { $_[0] };
+    is(join(' | ', map { $lp->($_) } (
+            'user-profile-view/v3/profile/max.mustermann%40example.com',
+            'context-resolve/v1/spotify:user:j%C3%BCrgen.m:collection',
+            'recently-played/v3/user/j%C3%BCrgen.m/recently-played',
+            'playlist/v2/user/max/rootlist',
+            'context-resolve/v1/spotify:search:F%C3%BCr%20Elise',
+            'metadata/4/track/0123456789abcdef0123456789abcdef')),
+        join(' | ',
+            'user-profile-view/v3/profile/****',
+            'context-resolve/v1/spotify:user:****:collection',
+            'recently-played/v3/user/****/recently-played',
+            'playlist/v2/user/****/rootlist',
+            'context-resolve/v1/spotify:search:****',
+            'metadata/4/track/0123456789abcdef0123456789abcdef'),
+        '79-43 M1 (D-33 FULL-3 WR-01): _logPath masks profile/<u>, spotify:user:<u>, /user/<u> and the search term; a metadata path is unchanged');
+}
+
+our @LOGCAP43;
+sub capture43 {
+    my ($code) = @_;
+    @LOGCAP43 = ();
+    no warnings 'redefine';
+    local *Slim::Utils::Log::warn  = sub { push @LOGCAP43, $_[1] };
+    local *Slim::Utils::Log::error = sub { push @LOGCAP43, $_[1] };
+    local *Slim::Utils::Log::info  = sub { push @LOGCAP43, $_[1] };
+    $code->();
+    return @LOGCAP43;
+}
+
+# M2: a 503 on the profile lookup of an e-mail-shaped username
+{
+    reset_all();
+    $Plugins::SpotOn::API::Credentials::mock_creds = { username => 'max.mustermann@example.com', auth_data => 'ZGF0YQ==' };
+    Slim::Networking::SimpleAsyncHTTP::set_error_for(qr{/user-profile-view/v3/profile/}, 503);
+    my @lines = capture43(sub { $SP->getDisplayName('acct4310', sub { }) });
+    my $all = join("\n", @lines);
+    ok(scalar(grep { m{profile/\*\*\*\*} } @lines) >= 1, '79-43 M2 (D-33 FULL-3 WR-01): the 503 log line carries profile/****');
+    unlike($all, qr/max\.mustermann|%40example/, '79-43 M2: no logged line carries max.mustermann or %40example');
+    ok(scalar(grep { m{/user-profile-view/v3/profile/max\.mustermann%40example\.com$} } map { $_->{url} } Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests()) >= 1,
+        '79-43 M2: the request itself still goes to the real profile path');
+}
+
+# M3: the 429 line and both 401 lines mask the same way (non-ASCII username)
+{
+    reset_all();
+    $Plugins::SpotOn::API::Credentials::mock_creds = { username => "j\x{fc}rgen.m", auth_data => 'ZGF0YQ==' };
+    $Slim::Networking::SimpleAsyncHTTP::auto_mode = 'error_429';
+    my @l429 = capture43(sub { $SP->getDisplayName('acct4311', sub { }) });
+    $Slim::Networking::SimpleAsyncHTTP::auto_mode = 'success';
+    ok(scalar(grep { /429/ && m{profile/\*\*\*\*} } @l429) == 1 && !grep({ /j%C3%BCrgen|j\x{fc}rgen|j\xc3\xbcrgen/ } @l429),
+        '79-43 M3: the 429 line names profile/**** and not the username (raw or escaped)');
+
+    reset_all();
+    $Plugins::SpotOn::API::Credentials::mock_creds = { username => "j\x{fc}rgen.m", auth_data => 'ZGF0YQ==' };
+    Slim::Networking::SimpleAsyncHTTP::set_error_for(qr{/user-profile-view/v3/profile/}, 401);
+    my @l401 = capture43(sub { $SP->getDisplayName('acct4312', sub { }) });
+    ok(scalar(grep { /401/ && m{profile/\*\*\*\*} } @l401) == 2 && !grep({ /j%C3%BCrgen|j\x{fc}rgen|j\xc3\xbcrgen/ } @l401),
+        '79-43 M3: both 401 lines (remint, then unauthorized) name profile/**** and not the username');
+
+    # every log statement in SpClient that prints the request path does so through _logPath (the INFO lines are
+    # compiled away here by main::INFOLOG = 0, so their source is the oracle)
+    open(my $fh, '<', "$project_dir/Plugins/SpotOn/API/SpClient.pm") or die $!;
+    my $src = do { local $/; <$fh> };
+    close $fh;
+    my @raw = grep { /\$log->(?:info|warn|error|debug)\(/ && /\$cleanPath\b/ && !/_logPath\(\$cleanPath\)/ } split /\n/, $src;
+    my @masked = grep { /\$log->(?:info|warn|error|debug)\(/ && /_logPath\(\$cleanPath\)/ } split /\n/, $src;
+    is(scalar(@raw) . '/' . (scalar(@masked) >= 11 ? 'ok' : scalar(@masked)), '0/ok',
+        '79-43 M3: no SpClient log line prints $cleanPath unmasked (the cache-hit INFO line included); 11 lines go through _logPath');
 }
 
 done_testing();

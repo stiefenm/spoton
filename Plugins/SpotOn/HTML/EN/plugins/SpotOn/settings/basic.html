@@ -50,15 +50,24 @@
 			       value="[% soloistKeyMasked | html %]"
 			       placeholder="[% 'PLUGIN_SPOTON_SOLOIST_KEY' | string | html %]"/>
 
-			<div style="margin-top:6px; font-size:0.9em">
+			[%# 79-39 (D-32 F3, slim scope): soloist-binary-js polls the existing
+			    soloistRenewStatus route while the missing line shows under a saved
+			    soloist backend, and turns it to the ready text once active_version
+			    carries a version. data-state is the binary state (the key-missing
+			    branch has a binary, so it reads ready). #%]
+			<div id="soloist-binary-line" style="margin-top:6px; font-size:0.9em"
+				data-poll="[% IF backend == 'soloist' && soloistMissing && !soloistUnsupportedOS %]1[% ELSE %]0[% END %]"
+				data-ready-text="[% 'PLUGIN_SPOTON_SOLOIST_STATUS' | string | html %]"
+				data-key-missing-text="[% 'PLUGIN_SPOTON_SOLOIST_KEY_MISSING' | string | html %]"
+				data-key-missing="[% IF soloistKeyMissing %]1[% ELSE %]0[% END %]">
 				[% IF soloistUnsupportedOS %]
-				<span style="color: red">&#9679; [% 'PLUGIN_SPOTON_SOLOIST_UNSUPPORTED_OS' | string %]</span>
+				<span id="soloist-binary-status" data-state="unsupported" style="color: red">&#9679; [% 'PLUGIN_SPOTON_SOLOIST_UNSUPPORTED_OS' | string %]</span>
 				[% ELSIF soloistMissing %]
-				<span style="color: red">&#9679; [% 'PLUGIN_SPOTON_SOLOIST_BINARY_MISSING' | string %]</span>
+				<span id="soloist-binary-status" data-state="missing" style="color: red">&#9679; [% 'PLUGIN_SPOTON_SOLOIST_BINARY_MISSING' | string %]</span>
 				[% ELSIF soloistKeyMissing %]
-				<span style="color: orange">&#9679; [% 'PLUGIN_SPOTON_SOLOIST_KEY_MISSING' | string %]</span>
+				<span id="soloist-binary-status" data-state="ready" style="color: orange">&#9679; [% 'PLUGIN_SPOTON_SOLOIST_KEY_MISSING' | string %]</span>
 				[% ELSE %]
-				<span style="color: green">&#9679; [% 'PLUGIN_SPOTON_SOLOIST_STATUS' | string %] [% soloistVersion | html %]</span>
+				<span id="soloist-binary-status" data-state="ready" style="color: green">&#9679; [% 'PLUGIN_SPOTON_SOLOIST_STATUS' | string %] [% soloistVersion | html %]</span>
 				[% END %]
 			</div>
 
@@ -173,7 +182,7 @@
 
 		<h3 id="spoton-step-account" style="margin-top:0">
 			[% 'PLUGIN_SPOTON_STEP_ACCOUNT_TITLE' | string %]
-			[% IF accountStepOk %]<span style="color:green">✓</span>[% ELSE %]<span style="color:orange">✗</span>[% END %]
+			[% IF accountStepOk %]<span style="color:green">&#10003;</span>[% ELSE %]<span style="color:orange">&#10007;</span>[% END %]
 		</h3>
 
 		[% IF discoverResult %]
@@ -181,6 +190,23 @@
 		[% END %]
 		[% IF discoverError %]
 		<p id="discover-invalid" style="margin:0 0 10px 0; color:orange">[% 'PLUGIN_SPOTON_DISCOVER_INVALID' | string %]</p>
+		[% END %]
+
+		[%# 79-39 (D-32 F2): once an account is paired (and none needs pairing)
+		    step 1 shows which accounts are paired and folds the pairing flow
+		    behind a small link, so a user who just paired does not see the
+		    same call to action again. The flow itself is unchanged. #%]
+		[% IF accountStepOk && !needsPairingAccounts.size %]
+		<p id="account-paired" style="margin:0 0 6px 0; color:green">
+			&#9679; [% 'PLUGIN_SPOTON_ACCOUNT_PAIRED' | string %]
+			[% FOREACH id IN pairedAccounts %][% accounts.$id.displayName | html %][% UNLESS loop.last %], [% END %][% END %]
+		</p>
+		<p style="margin:0 0 6px 0; font-size:0.85em">
+			<a href="#" id="accountPairAnotherLink" onclick="spotonAccountPairShow(); return false;">[% 'PLUGIN_SPOTON_ACCOUNT_PAIR_ANOTHER' | string %]</a>
+		</p>
+		<div id="account-pair-flow" style="display:none">
+		[% ELSE %]
+		<div id="account-pair-flow" style="display:block">
 		[% END %]
 
 		<p style="margin:0 0 6px 0; font-size:0.9em">[% 'PLUGIN_SPOTON_PLAYER_AUTH_INSTRUCTIONS' | string %]</p>
@@ -205,6 +231,7 @@
 			<span id="account-pair-countdown" style="display:none; margin-left:10px; font-variant-numeric:tabular-nums"></span>
 		</p>
 		<div id="player-auth-status" style="display:none; margin-top:10px"></div>
+		</div>
 
 		[% FOREACH id IN needsPairingAccounts %]
 		<p class="needs-pairing" style="margin:10px 0 0 0; color:orange">
@@ -214,7 +241,7 @@
 
 		<h3 id="spoton-step-player" style="margin-top:20px">
 			[% 'PLUGIN_SPOTON_STEP_PLAYER_TITLE' | string %]
-			[% IF playerStepOk %]<span style="color:green">✓</span>[% ELSE %]<span style="color:orange">✗</span>[% END %]
+			[% IF playerStepOk %]<span style="color:green">&#10003;</span>[% ELSE %]<span style="color:orange">&#10007;</span>[% END %]
 		</h3>
 		[% IF backend == 'soloist' %]
 			[% IF soloistPlayers.size %]
@@ -233,7 +260,17 @@
 				[% END %]
 			</table>
 			[% END %]
-			<p style="margin:8px 0 0 0; font-size:0.9em; opacity:0.85">[% 'PLUGIN_SPOTON_SOLOIST_PAIR_HOWTO' | string %]</p>
+			[%# 79-39 (D-32 F2): with every listed player paired the how-to folds
+			    behind a small link; with no player listed it stays open, since a
+			    green check over an empty table would hide every hint. #%]
+			[% IF playerStepOk && soloistPlayers.size %]
+			<p style="margin:8px 0 0 0; font-size:0.85em">
+				<a href="#" id="soloistPairHowtoLink" onclick="spotonSoloistPairHowtoShow(); return false;">[% 'PLUGIN_SPOTON_SOLOIST_PAIR_ANOTHER' | string %]</a>
+			</p>
+			<p id="soloist-pair-howto" style="display:none; margin:8px 0 0 0; font-size:0.9em; opacity:0.85">[% 'PLUGIN_SPOTON_SOLOIST_PAIR_HOWTO' | string %]</p>
+			[% ELSE %]
+			<p id="soloist-pair-howto" style="display:block; margin:8px 0 0 0; font-size:0.9em; opacity:0.85">[% 'PLUGIN_SPOTON_SOLOIST_PAIR_HOWTO' | string %]</p>
+			[% END %]
 		[% ELSE %]
 			<p style="margin:0; font-size:0.9em; opacity:0.85">[% 'PLUGIN_SPOTON_STEP_PLAYER_NOT_NEEDED' | string %]</p>
 		[% END %]
@@ -592,6 +629,88 @@
 		};
 		xhr.send();
 	}
+
+	// 79-39 (D-32 F3, slim scope): while the red "binary not found" line shows
+	// under a saved soloist backend (data-poll="1"), ask the existing GET route
+	// soloistRenewStatus every 5 s (cap 10 min) and read its existing
+	// active_version field. A version turns the line to the ready text (or the
+	// orange key-missing text) and stops; a non-200, unparsable, failed or
+	// timed-out answer leaves the red text and polls again in 5000 ms inside the
+	// 600000 ms cap (79-43, D-33 79-REVIEW WR-01). No downloading state, no
+	// error state. Text only through textContent (T-79-134). Own timer, not
+	// spotonSoloistPollTimer. t/core/72_settings_setup_js.t extracts the block
+	// between the BEGIN and END markers.
+	// BEGIN soloist-binary-js
+	var spotonSoloistBinaryTimer = null;
+
+	function spotonSoloistBinaryPoll(elapsedMs) {
+		if (spotonSoloistBinaryTimer) { clearTimeout(spotonSoloistBinaryTimer); spotonSoloistBinaryTimer = null; }
+		if (elapsedMs >= 600000) { return; }    // 10 min cap
+		var line = document.getElementById('soloist-binary-line');
+		var status = document.getElementById('soloist-binary-status');
+		if (!line || !status) { return; }
+
+		var xhr = new XMLHttpRequest();
+		xhr.open('GET', '/plugins/SpotOn/settings/soloistRenewStatus', true);
+		xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+		xhr.timeout = 4000;    // a hung request must not freeze the chain
+		var again = function() {
+			if (spotonSoloistBinaryTimer) { clearTimeout(spotonSoloistBinaryTimer); }
+			spotonSoloistBinaryTimer = setTimeout(function() { spotonSoloistBinaryPoll(elapsedMs + 5000); }, 5000);
+		};
+		xhr.onload = function() {
+			var data = null, version;
+			if (xhr.status === 200) {
+				try { data = JSON.parse(xhr.responseText); } catch(e) { data = null; }
+			}
+			version = data && data.active_version;
+			if (version === null || version === undefined || version === '') {
+				again();    // no version yet, a non-200 or an unparsable answer: the red text stays
+				return;
+			}
+			if (line.dataset.keyMissing === '1') {
+				status.textContent = '\u25CF ' + (line.dataset.keyMissingText || '');
+				status.style.color = 'orange';
+			} else {
+				status.textContent = '\u25CF ' + (line.dataset.readyText || '') + ' ' + String(version);
+				status.style.color = 'green';
+			}
+			status.dataset.state = 'ready';
+		};
+		xhr.onerror = again;      // a network error: the red text stays, poll again
+		xhr.ontimeout = again;    // a timeout: the same
+		xhr.send();
+	}
+
+	function spotonSoloistBinaryStart() {
+		var line = document.getElementById('soloist-binary-line');
+		if (!line || !line.dataset || line.dataset.poll !== '1') { return; }
+		spotonSoloistBinaryPoll(0);
+	}
+
+	spotonSoloistBinaryStart();
+	// END soloist-binary-js
+
+	// 79-39 (D-32 F2): the small "pair another" links of the setup block open
+	// the folded pairing flow (step 1) or the folded how-to (step 2) and hide
+	// themselves. Absent elements are a no-op. t/core/72_settings_setup_js.t
+	// extracts the block between the BEGIN and END markers.
+	// BEGIN setup-collapse-js
+	function spotonSetupUnfold(targetId, linkId) {
+		var target = document.getElementById(targetId);
+		var link = document.getElementById(linkId);
+		if (target) { target.style.display = 'block'; }
+		if (link) { link.style.display = 'none'; }
+	}
+
+	function spotonAccountPairShow() {
+		spotonSetupUnfold('account-pair-flow', 'accountPairAnotherLink');
+	}
+
+	function spotonSoloistPairHowtoShow() {
+		spotonSetupUnfold('soloist-pair-howto', 'soloistPairHowtoLink');
+	}
+	// END setup-collapse-js
 
 	// Phase 71/72 (D-08/D-07): live backend dropdown toggle -- shows/hides the
 	// Soloist spak-key/pairing fields and the librespot-only fields (Binary

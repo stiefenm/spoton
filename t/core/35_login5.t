@@ -479,4 +479,28 @@ for my $row (
     unlike($module_src, qr/3600\s*\)\s*;\s*#?\s*$/m, 'no bare literal-3600 TTL expression');
 }
 
+
+# ============================================================
+# 79-43 (D-33 FULL-3 WR-02): the username is sent as UTF-8 bytes, the authData byte-exact
+# ============================================================
+{
+    reset_all();
+    require MIME::Base64;
+    my $user = "j\x{fc}rgen";
+    utf8::upgrade($user);   # JSON-decoded credentials are character strings
+    my $auth = "\x80\xff\x00\xc3\x10\xfe";
+    $Plugins::SpotOn::API::Credentials::mock_creds = { username => $user, auth_data => MIME::Base64::encode_base64($auth, '') };
+    $Slim::Networking::SimpleAsyncHTTP::auto_response_content =
+        build_login_ok_response(accessToken => 'z' x 40, expiresIn => 3600);
+    $L5->getToken('acct-l1', sub { });
+    my $body = ($Slim::Networking::SimpleAsyncHTTP::requests[0] || {})->{body};
+    ok(defined $body && !utf8::is_utf8($body), '79-43 L1 (D-33 FULL-3 WR-02): the login5 body is a byte string');
+    my $top = defined $body ? Plugins::SpotOn::API::ProtobufLite::parse_fields($body) : undef;
+    my $sc  = $top ? Plugins::SpotOn::API::ProtobufLite::parse_fields(Plugins::SpotOn::API::ProtobufLite::field_first($top, 100) // '') : undef;
+    is(unpack('H*', ($sc ? Plugins::SpotOn::API::ProtobufLite::field_first($sc, 1) : '') // ''), unpack('H*', "j\xc3\xbcrgen"),
+        '79-43 L1: StoredCredential.username is "j\x{fc}rgen" as UTF-8 bytes');
+    is(unpack('H*', ($sc ? Plugins::SpotOn::API::ProtobufLite::field_first($sc, 2) : '') // ''), unpack('H*', $auth),
+        '79-43 L1: StoredCredential.data is the authData byte-exact (0x80..0xFF untouched)');
+}
+
 done_testing();

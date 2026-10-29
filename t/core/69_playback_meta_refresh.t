@@ -209,6 +209,7 @@ END
 
 write_stub($stub_dir, 'Plugins::SpotOn::API::SpClient', <<'END');
 package Plugins::SpotOn::API::SpClient;
+use constant TRACK_META_FORMAT => 2;   # 79-43 (D-33 FULL-3 CR-01): the format marker of the real module
 # 79-27 D-20: records getTrack calls; the test completes them by hand
 our @getTrack_calls = ();   # { account, id, opts, cb }
 sub getTrack {

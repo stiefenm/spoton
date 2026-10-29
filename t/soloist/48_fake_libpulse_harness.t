@@ -76,6 +76,45 @@
 # nicht-lokale IPv4-Adresse druckt er `skip:` statt `ok:`. Die Untergrenze der ok:-Zeilen steigt von 64 auf 74
 # (63 + 1 + 10; der Harness druckt mit dem Off-Loopback-Fall 75).
 #
+# 79-47 (D-34, Nutzerentscheidung "beta.2: auch App-Uebernahme"): ein App-Spulen im Browse-Betrieb laesst den Daemon
+# selbst flushen; der unarmierte Flush schloss bisher LMS' Strom, LMS las EOF und spielte den naechsten Titel. Mit
+# POST /browse-keep?on=1 (Control setzt es ab 79-48) haelt ein unarmierter Flush den Client. Sechs Namen `browse: ...`:
+# Flush mit Keep haelt den Client (S1), ohne Keep bzw. nach on=0 schliesst er wie bisher (S2), Drain-POST und neuer
+# GET /stream beenden den alten Titel weiterhin (S3), ein armierter Flush verbraucht den Arm (S4), ein POST ohne on=
+# wird mit 400 abgewiesen (S5). Die Mutante schneidet den markierten Block D-34 BROWSE_KEEP_BEGIN/END aus dem
+# Quelltext (der alte unarmierte Flush-Disconnect) und laeuft im Nur-Browse-Modus (FAKE_LIBPULSE_TEST_BROWSE_ONLY=1):
+# sie MUSS S1 verfehlen, der unveraenderte Harness MUSS ihn bestehen. Die Untergrenze der ok:-Zeilen steigt von 74
+# auf 80.
+#
+# 79-50 (D-34 R2, Nutzerentscheidung "beta.2: das App-Spulen im Connect darf die Wiedergabe nicht beenden"): im Connect-Betrieb
+# laesst ein App-Spulen den Daemon selbst flushen; der unarmierte Flush schloss LMS' Strom 9 ms spaeter, LMS las EOF und stoppte
+# etwa 6,5 s danach (79-47 R2, R2_3). Perl erfaehrt erst 6-8 ms nach dem Flush, dass es ein Spulen war (der erste Daemon-Frame).
+# Darum haelt der Shim einen unarmierten Flush-Disconnect jetzt FLUSH_DECIDE_MS lang offen (SPOTON_FAKEPULSE_FLUSH_DECIDE_MS,
+# Standard 2000, 0 = kein Fenster) und haelt das Audio nach dem Flush zurueck; POST /seek-keep haelt den Client, POST /boundary
+# (der Skip) oder die Frist schliesst ihn. Zwoelf Namen `connect: R2-C...` (elf Pflicht, der Off-Loopback-Fall druckt ohne
+# nicht-lokale IPv4 `skip:` und steht nicht in der Liste): Keep haelt den Client (C1), Boundary schliesst sofort (C2), ohne Signal
+# schliesst die Frist (C3), ein Keep nach dem Boundary wird abgewiesen (C4), ein Keep ohne Anstehendes aendert nichts (C5), Fenster 0
+# ist der alte Vertrag (C6), ein stehender Schreibvorgang wird nie mittendrin abgeschnitten (C7), der Browse-Keep von 79-47 oeffnet
+# kein Fenster (C8), ein wartender GET /stream ueberlebt einen Steuer-Neuankoemmling (C9, B1), ein verspaeteter /seek-arm beendet das
+# Fenster (C10, W4), ein Takeover beendet es (C11, M1). Drei Mutanten laufen im Nur-Connect-Modus (FAKE_LIBPULSE_TEST_CONNECT_ONLY=1):
+# der geschnittene Block D-34 R2_DEFER_BEGIN/END (sofortiger Disconnect) MUSS C1 verfehlen, der geschnittene Block R2_PROMOTE_BEGIN/END
+# (das Boundary beendet das Fenster nicht) C2, und der durch die alte Zeile ersetzte Block R2_TAKEOVER_BEGIN/END C11. Die Untergrenze
+# der ok:-Zeilen steigt von 80 auf 91.
+#
+# 79-51 (Runaway D2, .planning/debug/album-start-connect-runaway.md, E4/E5): ein Album-Start im pausierten Connect-Betrieb
+# endete in "LMS ended in stop", weil ein Plant mit niemandem angeschlossen von LMS' frischem Strom geerbt wurde und diesen nach
+# 0 Bytes schloss (094204 :25.328/.338 und 094408 :20.536/.550, jeweils `gen=-1 via=none ring_fill=0`). Der Shim vermerkt jetzt
+# auch den Client eines begrenzten EOF als gegangen (g_departed_client_generation, beide Schliessstellen; Bloecke
+# `79-51 D2_DEPART_BEGIN/END`, genau zwei) und verwirft beim Anschluss eines neuen Clients einen Waisen-Marker, der auf oder
+# unter total_popped steht (Block `79-51 D2_ORPHAN_BEGIN/END`, genau einer; Log `boundary_discarded: orphan at attach`). Sieben
+# Namen `runaway: D2-C...`: ein begrenztes EOF vermerkt seinen Client, der naechste Plant liest via=departed und der frische Client
+# wird bedient (C1), ein Waisen-Marker auf dem Lesezeiger wird beim Anschluss verworfen (C2), D-04 bleibt (Marker ueber total_popped
+# ohne Vermerk wird geerbt, C3), der Vermerk ist einmalig (C4), ein Anschluss loescht ihn (C5), nach begrenztem EOF plus Skip-Flush
+# wird der Marker beim Anschluss verworfen und der naechste Titel nicht bei 8192 Bytes abgeschnitten (C6), und die Kosten ohne
+# Flush sind festgeschrieben (C7: der Zwischeneintrag wird nicht mehr begrenzt). Zwei Mutanten laufen im Nur-Runaway-Modus
+# (FAKE_LIBPULSE_TEST_RUNAWAY_ONLY=1): beide geschnittenen D2_DEPART-Bloecke MUESSEN C1 (die Plant-Antwort) UND C6 (der Vermerk
+# selbst) verfehlen, der geschnittene D2_ORPHAN-Block C2. Die Untergrenze der ok:-Zeilen steigt von 91 auf 98.
+#
 # Der Test uebersetzt fake-libpulse.c mit -DFAKE_LIBPULSE_TEST in ein
 # Temp-Verzeichnis (kein Build-Artefakt im Quellbaum), fuehrt den Harness
 # aus und macht aus jeder `ok:`-/`FAIL:`-Zeile einen TAP-Punkt. Ohne
@@ -128,7 +167,7 @@ fail("harness: $_") for @fail;
 
 is($run_rc, 0, 'harness exits 0') or diag($out);
 like($out, qr/^All fake-libpulse HTTP mode tests passed$/m, 'harness reports all tests passed');
-cmp_ok(scalar(@ok), '>=', 74, 'harness ran at least the 74 known checks') or diag($out);
+cmp_ok(scalar(@ok), '>=', 98, 'harness ran at least the 98 known checks') or diag($out);
 
 # The regression tests of this session must stay in the harness -- a
 # silently deleted test would otherwise still leave "All ... passed".
@@ -200,6 +239,33 @@ for my $want (
     qr/^ok: hold: a plain POST \/boundary releases the hold and plants at total_pushed/m,
     qr/^ok: hold: HOLD_GAP_MS 0 turns the hold off/m,
     qr/^ok: hold: the hold arms when the monotonic clock reads negative \(32-bit wrap\)/m,
+    # 79-47 D-34: browse keep
+    qr/^ok: browse: with browse keep set an unarmed flush keeps the client and it gets only post-flush bytes/m,
+    qr/^ok: browse: without browse keep an unarmed flush still closes the client \(never set, and after on=0\)/m,
+    qr/^ok: browse: with browse keep set the drain POST \/boundary still ends the title and the gap hold applies/m,
+    qr/^ok: browse: with browse keep set a new GET \/stream still supersedes the old client/m,
+    qr/^ok: browse: with browse keep set an armed flush consumes the arm and keeps the client/m,
+    qr/^ok: browse: a POST \/browse-keep without on=0 or on=1 is refused and changes nothing/m,
+    # 79-50 D-34 R2: the connect decision window
+    qr/^ok: connect: R2-C1 a keep inside the decision window keeps the client and it gets the post-flush bytes/m,
+    qr/^ok: connect: R2-C2 a boundary inside the decision window closes the old client at once with no byte of the next title/m,
+    qr/^ok: connect: R2-C3 with no signal the window closes the client at its deadline and withholds the next title/m,
+    qr/^ok: connect: R2-C4 a keep after a boundary is refused and the client still ends/m,
+    qr/^ok: connect: R2-C5 a keep with nothing pending is a no-op \(no arm, audio flows\) and a later unarmed flush still opens a window/m,
+    qr/^ok: connect: R2-C6 with window 0 an unarmed flush closes at the next tick as before 79-50/m,
+    qr/^ok: connect: R2-C7 a keep while a write is stalled completes the chunk in flight and then delivers the post-flush bytes/m,
+    qr/^ok: connect: R2-C8 with browse keep set an unarmed flush keeps the client and opens no decision window/m,
+    qr/^ok: connect: R2-C9 a \/seek-keep arriving while a GET \/stream waits in the pending slot is served in place and the GET survives/m,
+    qr/^ok: connect: R2-C10 a late seek-arm consumed by the pending disconnect ends the window and the audio flows/m,
+    qr/^ok: connect: R2-C11 a takeover inside the decision window ends the window: the new client gets audio and is not closed at the deadline/m,
+    # 79-51 runaway D2: the departed record at a bounded close, the orphan discard at promotion
+    qr/^ok: runaway: D2-C1 a bounded EOF records its client: the next plant \(nobody attached, ring empty\) reads via=departed and the fresh client is not closed at 0 bytes/m,
+    qr/^ok: runaway: D2-C2 an orphan plant at or below total_popped is discarded when the next client attaches \(the fresh client is served\)/m,
+    qr/^ok: runaway: D2-C3 a plant above total_popped with no departed record is still inherited/m,
+    qr/^ok: runaway: D2-C4 the departed record is one-shot: a second plant with nobody attached reads via=none/m,
+    qr/^ok: runaway: D2-C5 a live attach clears the departed record: a plant while the new client is attached reads via=live with its generation/m,
+    qr/^ok: runaway: D2-C6 after a bounded EOF and a skip flush the next plant reads via=departed and its marker is discarded at the attach/m,
+    qr/^ok: runaway: D2-C7 after a bounded EOF without a flush the next plant is discarded at the attach/m,
 ) {
     like($out, $want, "regression check present: $want");
 }
@@ -243,6 +309,160 @@ for my $want (
     ok(($hrc == 0 && $hout =~ /^ok: hold: archive natural end/m && $hout !~ /^FAIL: /m) ? 1 : 0,
        '79-37 D-31: the unmutated harness passes the zero-residual cell in hold-only mode')
         or diag("hold-only exit=$hrc output:\n$hout");
+}
+
+# 79-47 D-34: the browse-keep mutant. The S1 cell must be able to FAIL: cut the marked keep block out of the source
+# (what is left is the old unarmed flush-disconnect), build that, and run it in browse-only mode -- it MUST fail S1;
+# the real binary MUST pass every browse cell in that mode.
+{
+    open(my $sfh, '<', $src) or die "cannot read $src: $!";
+    my $code = do { local $/; <$sfh> };
+    close $sfh;
+    my $begins = () = $code =~ /D-34 BROWSE_KEEP_BEGIN/g;
+    my $ends   = () = $code =~ /D-34 BROWSE_KEEP_END/g;
+    my $cut    = $code;
+    my $nrep   = ($cut =~ s{/\* D-34 BROWSE_KEEP_BEGIN \*/.*?/\* D-34 BROWSE_KEEP_END \*/}{}s) || 0;
+    my $one    = ($begins == 1 && $ends == 1 && $nrep == 1 && $cut ne $code) ? 1 : 0;
+    ok($one, '79-47 D-34: the browse-keep mutant source differs from the real source at exactly one marked block')
+        or diag("begin markers=$begins end markers=$ends replaced=$nrep");
+
+    my ($mcompiled, $mout, $mrc) = (0, '', 0);
+    if ($one) {
+        my $msrc = "$tmp/fake-libpulse-browse-mutant.c";
+        my $mbin = "$tmp/fake-libpulse-browse-mutant";
+        open(my $mfh, '>', $msrc) or die "cannot write $msrc: $!";
+        print $mfh $cut;
+        close $mfh;
+        my $mbuild = `"$cc" -O2 -Wall -Wextra -DFAKE_LIBPULSE_TEST -o "$mbin" "$msrc" -lpthread -lm 2>&1`;
+        $mcompiled = (($? >> 8) == 0 && -x $mbin) ? 1 : 0;
+        diag($mbuild) unless $mcompiled;
+        if ($mcompiled) {
+            $mout = `FAKE_LIBPULSE_TEST_BROWSE_ONLY=1 $timeout"$mbin" 2>&1`;
+            $mrc  = $? >> 8;
+        }
+    }
+    ok($mcompiled, '79-47 D-34: the browse-keep mutant compiles');
+    ok(($mcompiled && $mrc != 0 && $mout =~ /^FAIL: browse: with browse keep set an unarmed flush keeps the client/m) ? 1 : 0,
+       '79-47 D-34: the browse-keep mutant fails the keep cell (old unarmed flush-disconnect)')
+        or diag("mutant exit=$mrc output:\n$mout");
+
+    my $bout = `FAKE_LIBPULSE_TEST_BROWSE_ONLY=1 $timeout"$bin" 2>&1`;
+    my $brc  = $? >> 8;
+    my $bok  = () = $bout =~ /^ok: browse: /mg;
+    ok(($brc == 0 && $bok == 6 && $bout !~ /^FAIL: /m) ? 1 : 0,
+       '79-47 D-34: the unmutated harness passes all six browse cells in browse-only mode')
+        or diag("browse-only exit=$brc ok=$bok output:\n$bout");
+}
+
+# 79-50 D-34 R2: the three decision-window mutants. Each cell must be able to FAIL: the marked block is cut (or, for the
+# takeover, replaced by the line that was there before 79-50), the result built and run in connect-only mode -- it MUST fail
+# its cell; the real binary MUST pass every connect cell in that mode. Each check also proves that the source differs from the
+# real one at exactly one marked block.
+{
+    open(my $sfh, '<', $src) or die "cannot read $src: $!";
+    my $code = do { local $/; <$sfh> };
+    close $sfh;
+    my $r2n = 0;
+    for my $m (
+        [ 'MUT_DEFER',    'R2_DEFER',    '',
+          qr/^FAIL: connect: R2-C1 /m,  'the decision hold-back (an unarmed flush closes at once again)' ],
+        [ 'MUT_PROMOTE',  'R2_PROMOTE',  '',
+          qr/^FAIL: connect: R2-C2 /m,  'the boundary promotion (a boundary no longer ends the window)' ],
+        [ 'MUT_TAKEOVER', 'R2_TAKEOVER', "if (!was_supersede && g_flush_disconnect) g_flush_disconnect = 0;\n",
+          qr/^FAIL: connect: R2-C11 /m, 'the takeover clear (the window outlives a takeover and closes the new client)' ],
+    ) {
+        my ($label, $tag, $repl, $want, $what) = @$m;
+        my $begins = () = $code =~ /D-34 ${tag}_BEGIN/g;
+        my $ends   = () = $code =~ /D-34 ${tag}_END/g;
+        my $cut    = $code;
+        my $nrep   = ($cut =~ s{/\* D-34 ${tag}_BEGIN \*/.*?/\* D-34 ${tag}_END \*/}{$repl}s) || 0;
+        my $one    = ($begins == 1 && $ends == 1 && $nrep == 1 && $cut ne $code) ? 1 : 0;
+        ok($one, "79-50 D-34 R2: the $label mutant source differs from the real source at exactly one marked block")
+            or diag("begin markers=$begins end markers=$ends replaced=$nrep");
+
+        my ($mcompiled, $mout, $mrc) = (0, '', 0);
+        if ($one) {
+            $r2n++;
+            my $msrc = "$tmp/fake-libpulse-r2-mutant-$r2n.c";
+            my $mbin = "$tmp/fake-libpulse-r2-mutant-$r2n";
+            open(my $mfh, '>', $msrc) or die "cannot write $msrc: $!";
+            print $mfh $cut;
+            close $mfh;
+            my $mbuild = `"$cc" -O2 -Wall -Wextra -DFAKE_LIBPULSE_TEST -o "$mbin" "$msrc" -lpthread -lm 2>&1`;
+            $mcompiled = (($? >> 8) == 0 && -x $mbin) ? 1 : 0;
+            diag($mbuild) unless $mcompiled;
+            if ($mcompiled) {
+                $mout = `FAKE_LIBPULSE_TEST_CONNECT_ONLY=1 $timeout"$mbin" 2>&1`;
+                $mrc  = $? >> 8;
+            }
+        }
+        ok($mcompiled, "79-50 D-34 R2: the $label mutant compiles");
+        ok(($mcompiled && $mrc != 0 && $mout =~ $want) ? 1 : 0,
+           "79-50 D-34 R2: the $label mutant fails its cell: $what")
+            or diag("mutant exit=$mrc output:\n$mout");
+    }
+
+    my $cout = `FAKE_LIBPULSE_TEST_CONNECT_ONLY=1 $timeout"$bin" 2>&1`;
+    my $crc  = $? >> 8;
+    my $cok  = () = $cout =~ /^ok: connect: R2-C\d+ /mg;
+    ok(($crc == 0 && $cok == 11 && $cout !~ /^FAIL: /m) ? 1 : 0,
+       '79-50 D-34 R2: the unmutated harness passes all eleven connect cells in connect-only mode')
+        or diag("connect-only exit=$crc ok=$cok output:\n$cout");
+}
+
+# 79-51 runaway D2: the two shim mutants. MUT_D2_DEPART cuts BOTH `79-51 D2_DEPART` blocks (a bounded EOF no longer records its
+# client): in runaway-only mode it MUST fail C1 (the plant reads via=none) AND C6 (the record's own effect: the next title is bounded at
+# the marker again). MUT_D2_ORPHAN cuts the one `79-51 D2_ORPHAN` block (the orphan marker is inherited again): it MUST fail C2. The
+# unmutated binary MUST pass all seven runaway cells in that mode. Each check also proves the source differs from the real one at
+# exactly the expected number of marked blocks.
+{
+    open(my $sfh, '<', $src) or die "cannot read $src: $!";
+    my $code = do { local $/; <$sfh> };
+    close $sfh;
+    my $r51n = 0;
+    for my $m (
+        [ 'MUT_D2_DEPART', 'D2_DEPART', 2, [ qr/^FAIL: runaway: D2-C1 /m, qr/^FAIL: runaway: D2-C6 /m ],
+          'the departed record at both bounded-EOF closes (the next plant reads via=none and is inherited again)' ],
+        [ 'MUT_D2_ORPHAN', 'D2_ORPHAN', 1, [ qr/^FAIL: runaway: D2-C2 /m ],
+          'the orphan discard at the attach (the fresh client is closed at 0 bytes again)' ],
+    ) {
+        my ($label, $tag, $want_n, $wants, $what) = @$m;
+        my $begins = () = $code =~ /79-51 ${tag}_BEGIN/g;
+        my $ends   = () = $code =~ /79-51 ${tag}_END/g;
+        my $cut    = $code;
+        my $nrep   = ($cut =~ s{/\* 79-51 ${tag}_BEGIN \*/.*?/\* 79-51 ${tag}_END \*/}{}sg) || 0;
+        my $one    = ($begins == $want_n && $ends == $want_n && $nrep == $want_n && $cut ne $code) ? 1 : 0;
+        ok($one, "79-51 runaway D2: the $label mutant source differs from the real source at exactly $want_n marked block(s)")
+            or diag("begin markers=$begins end markers=$ends replaced=$nrep (want $want_n)");
+
+        my ($mcompiled, $mout, $mrc) = (0, '', 0);
+        if ($one) {
+            $r51n++;
+            my $msrc = "$tmp/fake-libpulse-r51-mutant-$r51n.c";
+            my $mbin = "$tmp/fake-libpulse-r51-mutant-$r51n";
+            open(my $mfh, '>', $msrc) or die "cannot write $msrc: $!";
+            print $mfh $cut;
+            close $mfh;
+            my $mbuild = `"$cc" -O2 -Wall -Wextra -DFAKE_LIBPULSE_TEST -o "$mbin" "$msrc" -lpthread -lm 2>&1`;
+            $mcompiled = (($? >> 8) == 0 && -x $mbin) ? 1 : 0;
+            diag($mbuild) unless $mcompiled;
+            if ($mcompiled) {
+                $mout = `FAKE_LIBPULSE_TEST_RUNAWAY_ONLY=1 $timeout"$mbin" 2>&1`;
+                $mrc  = $? >> 8;
+            }
+        }
+        ok($mcompiled, "79-51 runaway D2: the $label mutant compiles");
+        my $all = ($mcompiled && $mrc != 0 && !grep { $mout !~ $_ } @$wants) ? 1 : 0;
+        ok($all, "79-51 runaway D2: the $label mutant fails its cell(s): $what")
+            or diag("mutant exit=$mrc output:\n$mout");
+    }
+
+    my $rout = `FAKE_LIBPULSE_TEST_RUNAWAY_ONLY=1 $timeout"$bin" 2>&1`;
+    my $rrc  = $? >> 8;
+    my $rok  = () = $rout =~ /^ok: runaway: D2-C\d+ /mg;
+    ok(($rrc == 0 && $rok == 7 && $rout !~ /^FAIL: /m) ? 1 : 0,
+       '79-51 runaway D2: the unmutated harness passes all seven runaway cells in runaway-only mode')
+        or diag("runaway-only exit=$rrc ok=$rok output:\n$rout");
 }
 
 done_testing();

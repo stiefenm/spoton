@@ -262,7 +262,9 @@ sub _cacheAndExtractUris {
         my $year   = Plugins::SpotOn::Plugin::_releaseYear(($track->{album} || {})->{release_date});
 
         my %trackIds = Plugins::SpotOn::Plugin::_extractTrackIds($track);
+        require Plugins::SpotOn::API::SpClient;   # 79-43 (D-33 FULL-3 CR-01): the format marker of spoton_meta records
         $cache->set('spoton_meta_' . md5_hex($uri), {
+            _spoton_fmt => Plugins::SpotOn::API::SpClient::TRACK_META_FORMAT(),
             title    => $track->{name} // '',
             artist   => $artist,
             album    => $track->{album}{name} // '',

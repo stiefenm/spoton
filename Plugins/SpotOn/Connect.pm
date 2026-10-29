@@ -408,6 +408,17 @@ sub _stuckRebuffer {
     return (($ctl->buffering // 0) == 2) ? 1 : 0;
 }
 
+# _neverStarted($client) -- 79-51 runaway D3 (E6): LMS reports "playing" (non-strict), the strict isPlaying(1) is
+# false and the controller says INITIAL buffering (buffering() == 1, SC:1697-1702): the playing song has not started
+# output yet. The same accessor pair _stuckRebuffer reads, the other value (1 instead of 2).
+sub _neverStarted {
+    my ($client) = @_;
+    return 0 unless $client->isPlaying && !$client->isPlaying(1);
+    my $ctl = _lmsController($client);
+    return 0 unless $ctl && $ctl->can('buffering');
+    return (($ctl->buffering // 0) == 1) ? 1 : 0;
+}
+
 # _settleCheck($client, $snap) -- called right after the stop branch's
 # ['pause',1]. One info line per evaluation records the outcome and the
 # discriminator (PASS-by-pause runs are recorded too).
@@ -1025,6 +1036,15 @@ sub _holdMax     { return _holdCaps($_[0])->{holdMaxS}; }
 #                `!$song->duration() && $song->isLive()`) re-streams the OLD
 #                url as a radio retry after 10 s of play.
 #   not_playing  a paused/stopped LMS has no buffered tail to protect.
+#   not_started  79-51 runaway D3 (E6): LMS is in initial buffering (isPlaying, not isPlaying(1), buffering() == 1,
+#                `_neverStarted`; WAITING_TO_SYNC reads the same): it has not started output of the playing song, and
+#                a never-fed stream can never leave that state (StreamingController.pm:1676-1701), so there is no
+#                tail to protect and LMS's own advance would never open the deferred item (094204: `via=live hold=1`
+#                on a Redbone stream that never got a byte). Limits: (1) a stream re-opened by an LMS-side seek near
+#                the title end is in the same state with bytes already delivered: that remainder is cut instead of
+#                held. (2) STOPPED with TRACKWAIT/STREAMING (non-strict isPlaying true, buffering() 0) still takes
+#                the hold. A rebuffer (buffering() == 2) keeps the hold: the old title's tail is still in LMS's
+#                pipeline.
 sub _holdSkipReason {
     my ($client) = @_;
 
@@ -1036,6 +1056,7 @@ sub _holdSkipReason {
     return 'no_duration' unless $dur > 0;
 
     return 'not_playing' unless $client->isPlaying;
+    return 'not_started' if _neverStarted($client);
     return undef;
 }
 
@@ -1259,6 +1280,18 @@ sub _onPause {
     # Source-marking loop prevention (T-05-13): skip our own requests
     if ($request->source && $request->source eq __PACKAGE__) {
         main::DEBUGLOG && $log->is_debug && $log->debug("SpotOn G3-INSTR: _onPause skip=source");
+        return;
+    }
+
+    # D-34 (79-48): an app pause/play during LMS-started Browse is forwarded to
+    # LMS by Control (its request filter decided the daemon did it, not LMS);
+    # the pause notification that request causes must not travel back to the
+    # daemon. Control's source marker is BROWSE_FORWARD_SOURCE (Control.pm); the
+    # token is repeated here, as a literal inside this sub (t/core/37 evals the
+    # sub text on its own), because this module must not load Control or spell
+    # a Soloist package (t/soloist/44 pins the two literals together).
+    if ($request->source && $request->source eq 'spoton-browse-forward') {
+        main::DEBUGLOG && $log->is_debug && $log->debug("SpotOn D-34: _onPause skip=control-forward");
         return;
     }
 
@@ -1811,7 +1844,19 @@ sub _connectEvent {
         # (D-06) removed -- this one stays, Phase 83 territory. CON-17
         # exception: seek can arrive BEFORE playlist play — accept while
         # pendingConnect is set.
-        unless (__PACKAGE__->isSpotifyConnect($client) || $client->pluginData('pendingConnect')) {
+        #
+        # D-34 (79-48): an app seek during LMS-started Browse on Soloist is
+        # marked `browse` by Control (its _p4, the 4th positional). It takes
+        # the same startOffset rewrite below -- never ['time', N], which would
+        # re-open the stream -- but only while Control's mode really is
+        # browse; every other seek keeps both guards exactly as they were.
+        my $browseSeek = (($request->getParam('_p4') // '') eq 'browse') ? 1 : 0;
+        if ($browseSeek && (($ctlMode->() // '') ne 'browse')) {
+            main::DEBUGLOG && $log->is_debug && $log->debug(
+                "Dropping browse-marked seek for " . $client->id . " (Control mode is not browse)");
+            return;
+        }
+        unless ($browseSeek || __PACKAGE__->isSpotifyConnect($client) || $client->pluginData('pendingConnect')) {
             main::DEBUGLOG && $log->is_debug && $log->debug(
                 "Dropping Connect seek event for non-Connect player " . $client->id . " (connect-guard)");
             return;
@@ -1822,7 +1867,7 @@ sub _connectEvent {
         # when the claim and Control disagree; the guard's first purpose
         # (keep a Browse player out of the per-track playlist-play path
         # that would collapse the Browse playlist) is served the same way.
-        if (defined $ctlMode->() && $ctlMode->() ne 'connect') {
+        if (!$browseSeek && defined $ctlMode->() && $ctlMode->() ne 'connect') {
             $log->warn("Connect claim vs Control mode disagree -- dropping change for " . $client->id
                 . " (claim=" . (__PACKAGE__->isSpotifyConnect($client) ? 1 : 0)
                 . " mode=" . $ctlMode->() . ", D-D2)");
@@ -1853,7 +1898,7 @@ sub _connectEvent {
             main::INFOLOG && $log->is_info && $log->info("Binary reported seek to: $position");
             $log->warn("[DIAG] seek_from_binary: mac=" . $client->id . " position=$position") if $prefs->get('diagnosticMode');
 
-            if ($client->pluginData('pendingConnect')) {
+            if (!$browseSeek && $client->pluginData('pendingConnect')) {
                 # Seek arrived before playlist play — store for _onNewSong to apply
                 # AFTER the new song object is created (CON-17 race prevention)
                 $client->pluginData(progress => $position);
@@ -2546,10 +2591,15 @@ sub _connectEvent {
             return;
         }
         # Grace period: ignore spurious stop events during Connect session setup.
-        # The binary fires Stopped between TrackChanged and Playing — this must not
-        # pause the LMS player. Time-based check only (isPlaying is already true by
-        # the time the stop arrives because playlist play was just issued).
-        if ((Time::HiRes::time() - ($client->pluginData('connectStartTime') || 0)) < CONNECT_START_GRACE)
+        # This is librespot's grace: its binary fires Stopped between TrackChanged
+        # and Playing, which must not pause the LMS player. Time-based check only
+        # (isPlaying is already true by the time the stop arrives because playlist
+        # play was just issued). D-33 FULL-2 CR-01: Soloist's Control classifies
+        # its own frames (stop only on a real paused/stopped), so on that role
+        # (connectClaimGate 0) a stop inside the window is a genuine app pause.
+        # No role known keeps the grace.
+        my $needsStartGrace = $evBe ? ($evBe->capabilities->{connectClaimGate} ? 1 : 0) : 1;
+        if ($needsStartGrace && (Time::HiRes::time() - ($client->pluginData('connectStartTime') || 0)) < CONNECT_START_GRACE)
         {
             main::INFOLOG && $log->is_info && $log->info(
                 "Ignoring spurious stop during Connect session setup grace period"
@@ -2844,9 +2894,11 @@ sub _fetchTrackMetadata {
         my $cacheUrl = $song->track->url || $song->streamUrl;
         if ($cacheUrl) {
             my %trackIds = Plugins::SpotOn::Plugin::_extractTrackIds($trackInfo);
+            require Plugins::SpotOn::API::SpClient;   # 79-43 (D-33 FULL-3 CR-01): the format marker of spoton_meta records
             $cache->set(
                 'spoton_meta_' . md5_hex($cacheUrl),
                 {
+                    _spoton_fmt => Plugins::SpotOn::API::SpClient::TRACK_META_FORMAT(),
                     title      => $title,
                     artist     => $artist,
                     album      => $album,

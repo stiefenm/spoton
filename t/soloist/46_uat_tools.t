@@ -2214,6 +2214,123 @@ subtest 'extract-run-79-38-hold' => sub {
 };
 
 # ============================================================
+# subtest 'extract-run-79-50-decide' -- 79-50 Task 2 (D-34 R2). The 79-47 shim
+# writes `flush-keep:` / `browse-keep:` (and their BOUNDARY twins `flush_keep:` /
+# `browse_keep:`), and since 79-50 the decision window writes `flush-decide:
+# open|closed reason=<boundary|deadline>` and `seek-keep: kept|nothing pending`
+# (BOUNDARY twins `flush_decide:` / `seek_keep:`). Under architecture rule 4 a
+# line without a category is only counted, never printed, so the live checks of
+# 79-50 Task 4 (d50-check.py, `seek-keep: kept` / `flush-decide: closed reason=`)
+# could not quote them. One category prints all of them.
+# REAL in this fixture: the four 79-47 lines, copied from the UAT daemon log of
+# the 79-47 R1 window (/var/lib/squeezeboxserver/cache/spoton/0200005a1101-soloist.log
+# lines 11035/11036 (browse-keep 0 -> 1) and 11078/11079 (flush-keep, 2026-10-26
+# 17:51:48 / 17:52:05; the one bootstrap raw read of 79-50 Task 2, recorded as
+# BOOTSTRAP_RAW_READ in 79-50-DEVRUN.md). SYNTHETIC: the 79-50 lines, in the
+# format of fake-libpulse.c's flush-decide / seek-keep writers, and a write_summary
+# line, which must stay OUT. The file carries its data inline.
+# ============================================================
+subtest 'extract-run-79-50-decide' => sub {
+    my $stubdir   = tempdir(CLEANUP => 1);
+    my $sudo_stub = write_sudo_passthrough_stub($stubdir);
+
+    my ($sfh, $server_log) = tempfile();
+    close($sfh);
+
+    my ($dfh, $daemon_log) = tempfile();
+    print $dfh "[fakepulse 17:51:48.702] browse-keep: 0 -> 1\n";
+    print $dfh "[fakepulse BOUNDARY ts=17:51:48.702] browse_keep: 0 -> 1\n";
+    print $dfh "[fakepulse 17:52:05.610] flush-keep: browse keep set, active HTTP client stays\n";
+    print $dfh "[fakepulse BOUNDARY ts=17:52:05.610] flush_keep: browse keep set, no flush-disconnect\n";
+    print $dfh "[fakepulse 17:52:06.000] flush-decide: open window_ms=2000\n";
+    print $dfh "[fakepulse BOUNDARY ts=17:52:06.000] flush_decide: open window_ms=2000\n";
+    print $dfh "[fakepulse 17:52:06.020] seek-keep: kept active HTTP client after_ms=20\n";
+    print $dfh "[fakepulse BOUNDARY ts=17:52:06.020] seek_keep: kept after_ms=20\n";
+    print $dfh "[fakepulse 17:52:09.000] flush-decide: closed reason=boundary after_ms=6\n";
+    print $dfh "[fakepulse BOUNDARY ts=17:52:09.000] flush_decide: closed reason=boundary after_ms=6\n";
+    print $dfh "[fakepulse 17:52:10.000] seek-keep: nothing pending\n";
+    print $dfh "[fakepulse BOUNDARY ts=17:52:10.000] seek_keep: noop reason=none\n";
+    print $dfh "[fakepulse BOUNDARY ts=17:52:11.000] write_summary: bytes_written=1 ring_fill=0 calls=1 bytes_since=1 corked=0\n";
+    close($dfh);
+
+    my ($exit, $stdout, $stderr) = run_perl_tool($extract_run_script,
+        [ 'aa:bb:cc:dd:ee:01', '17:51:00', '17:53:00',
+          '--server-log', $server_log, '--daemon-log', $daemon_log,
+          '--date', '2026-10-26' ],
+        SUDO_BIN => $sudo_stub, TZ => 'Europe/Berlin');
+    is($exit, 0, 'extract-run-79-50-decide: Exit 0') or diag("stderr: $stderr");
+
+    my $body = ($stdout =~ /^--- Daemon-Log: connect decision and keeps[^\n]*---\n(.*?)(?=\n---|\z)/ms) ? $1 : '';
+    like($stdout, qr/^--- Daemon-Log: connect decision and keeps[^\n]*\(Anzahl: 12 im Fenster/m,
+        'extract-run-79-50-decide: category header carries Anzahl 12 (count => 1)');
+    like($body, qr/\] flush-decide: open window_ms=2000/,        'extract-run-79-50-decide: the flush-decide open line is in the body');
+    like($body, qr/\] flush-decide: closed reason=boundary after_ms=6/, 'extract-run-79-50-decide: the flush-decide closed line (reason=boundary) is in the body');
+    like($body, qr/\] seek-keep: kept active HTTP client after_ms=20/,  'extract-run-79-50-decide: the seek-keep kept line is in the body');
+    like($body, qr/\] seek-keep: nothing pending/,                'extract-run-79-50-decide: the seek-keep nothing-pending line is in the body');
+    like($body, qr/\] seek_keep: kept after_ms=20/,               'extract-run-79-50-decide: the BOUNDARY twin seek_keep line is in the body');
+    like($body, qr/\] flush_decide: closed reason=boundary after_ms=6/, 'extract-run-79-50-decide: the BOUNDARY twin flush_decide line is in the body');
+    like($body, qr/\] flush-keep: browse keep set, active HTTP client stays/, 'extract-run-79-50-decide: the real 79-47 flush-keep line is verbatim');
+    like($body, qr/\] flush_keep: browse keep set, no flush-disconnect/,      'extract-run-79-50-decide: the real 79-47 flush_keep twin is verbatim');
+    like($body, qr/\] browse-keep: 0 -> 1/,                       'extract-run-79-50-decide: the real 79-47 browse-keep line is verbatim');
+    like($body, qr/\] browse_keep: 0 -> 1/,                       'extract-run-79-50-decide: the real 79-47 browse_keep twin is verbatim');
+    unlike($body, qr/write_summary:/,                             'extract-run-79-50-decide: a write_summary line stays out of the category');
+    unlike($stdout, qr/Restzaehler-Selbsttest[^\n]*FEHLGESCHLAGEN/,
+        'extract-run-79-50-decide: Restzaehler self-test stays silent');
+
+    unlink($server_log, $daemon_log);
+};
+
+# ============================================================
+# subtest 'extract-run-79-51-discard' -- 79-51 Task 2 (runaway D2). The shim's drain loop writes
+# `boundary_discarded: stale generation (planted_gen=.. current_gen=..) total_popped=.. boundary=..` when a
+# marker planted for a departed client meets the next client, and since 79-51 the promotion block writes
+# `boundary_discarded: orphan at attach (planted_gen=-1 current_gen=..) total_popped=.. boundary=..` (an orphan
+# marker at or below total_popped, E4/E5). Under architecture rule 4 a line without a category is only counted,
+# never printed, so the live checks of 79-51 Task 4 could not quote them. One category prints both.
+# REAL in this fixture: the two stale-generation lines, copied from the UAT daemon log
+# (/var/lib/squeezeboxserver/cache/spoton/0200005a1101-soloist.log lines 16841 (09:13:43.057) and 22251
+# (09:36:17.617); the one bootstrap raw read of 79-51 Task 2, recorded as BOOTSTRAP_RAW_READ in 79-51-DEVRUN.md).
+# SYNTHETIC: the orphan-at-attach line, in the format of fake-libpulse.c's writer, and a write_summary line,
+# which must stay OUT. The file carries its data inline.
+# ============================================================
+subtest 'extract-run-79-51-discard' => sub {
+    my $stubdir   = tempdir(CLEANUP => 1);
+    my $sudo_stub = write_sudo_passthrough_stub($stubdir);
+
+    my ($sfh, $server_log) = tempfile();
+    close($sfh);
+
+    my ($dfh, $daemon_log) = tempfile();
+    print $dfh "[fakepulse BOUNDARY ts=09:13:43.057] boundary_discarded: stale generation (planted_gen=12 current_gen=13) total_popped=118898688 boundary=118890496\n";
+    print $dfh "[fakepulse BOUNDARY ts=09:36:17.617] boundary_discarded: stale generation (planted_gen=5 current_gen=6) total_popped=45268992 boundary=45260800\n";
+    print $dfh "[fakepulse BOUNDARY ts=09:42:25.338] boundary_discarded: orphan at attach (planted_gen=-1 current_gen=16) total_popped=130643728 boundary=130643728\n";
+    print $dfh "[fakepulse BOUNDARY ts=09:42:26.000] write_summary: bytes_written=1 ring_fill=0 calls=1 bytes_since=1 corked=0\n";
+    close($dfh);
+
+    my ($exit, $stdout, $stderr) = run_perl_tool($extract_run_script,
+        [ 'aa:bb:cc:dd:ee:01', '09:00:00', '09:50:00',
+          '--server-log', $server_log, '--daemon-log', $daemon_log,
+          '--date', '2026-10-27' ],
+        SUDO_BIN => $sudo_stub, TZ => 'Europe/Berlin');
+    is($exit, 0, 'extract-run-79-51-discard: Exit 0') or diag("stderr: $stderr");
+
+    my $body = ($stdout =~ /^--- Daemon-Log: boundary discarded[^\n]*---\n(.*?)(?=\n---|\z)/ms) ? $1 : '';
+    like($stdout, qr/^--- Daemon-Log: boundary discarded[^\n]*\(Anzahl: 3 im Fenster/m,
+        'extract-run-79-51-discard: category header carries Anzahl 3 (count => 1)');
+    like($body, qr/\] boundary_discarded: stale generation \(planted_gen=12 current_gen=13\) total_popped=118898688 boundary=118890496/,
+        'extract-run-79-51-discard: the real 09:13:43.057 stale-generation line is verbatim');
+    like($body, qr/\] boundary_discarded: stale generation \(planted_gen=5 current_gen=6\) total_popped=45268992 boundary=45260800/,
+        'extract-run-79-51-discard: the real 09:36:17.617 stale-generation line is verbatim');
+    like($body, qr/\] boundary_discarded: orphan at attach \(planted_gen=-1 current_gen=16\) total_popped=130643728 boundary=130643728/,
+        'extract-run-79-51-discard: the orphan-at-attach line is in the body');
+    unlike($body, qr/write_summary:/, 'extract-run-79-51-discard: a write_summary line stays out of the category');
+    unlike($stdout, qr/Restzaehler-Selbsttest[^\n]*FEHLGESCHLAGEN/,
+        'extract-run-79-51-discard: Restzaehler self-test stays silent');
+
+    unlink($server_log, $daemon_log);
+};
+
+# ============================================================
 # subtest 'extract-run-dateless-utc-day-boundary' -- 84.1-REVIEW.md round 3,
 # WR-09. resolve_dateless_utc() picked its candidate day by asking "does the
 # time-of-day fall inside the (local) window?" -- but time-of-day is
@@ -5023,6 +5140,50 @@ subtest 'extract-run-79-eject' => sub {
     unlink($real);
 };
 
+# 79-42 (D-33 FULL-2 CR-01): the `[DIAG] [<ts>] stop: player=<mac> ...` lines Connect.pm writes in diagnostic mode
+# (stop branch: sessionEnd=1, or isPlaying=<0|1> gracePeriod=<0|1>) had no category, so a stop swallowed by the
+# CONNECT_START_GRACE was only counted (rule 4). Real input: the run8 cut carries a real `stop: ... gracePeriod=0` line
+# (:27) and a real `[DIAG] seek_from_binary:` line (:31). The `gracePeriod=1` form is a real archive line
+# (spoton-messdaten/79-29-forensics/logs/server.log, 2026-10-22 10:07:47) re-stamped into the run8 window.
+my $stopdiag_cat = 'server.log: Connect stop decision ([DIAG] stop: sessionEnd / gracePeriod; Connect.pm _connectEvent stop branch, 79-42 D-33)';
+my $stopdiag_grace_line = '[26-10-09 21:09:28.0005] Plugins::SpotOn::Connect::_connectEvent (2558) '
+    . '[DIAG] [1792656467.729] stop: player=02:00:00:5a:11:01 isPlaying=1 gracePeriod=1 elapsed=0.000';
+
+subtest 'extract-run-79-42-stopdiag' => sub {
+    ok(-s $webapi_fx, 'extract-run-79-42-stopdiag: real run8 cut present');
+    my $section = sub {
+        my ($out) = @_;
+        return ($out =~ /---\s*\Q$stopdiag_cat\E[^\n]*---\n(.*?)(?=\n---|\z)/s) ? $1 : '';
+    };
+
+    # A: the unmodified real cut -- its real gracePeriod=0 stop line lands in the new category.
+    my $real = _webapi_server_log(0);
+    my ($exitR, $outR, undef, $errR) = _webapi_extract($real, '2026-10-09');
+    is($exitR, 0, 'extract-run-79-42-stopdiag: real cut -- extract-run runs (exit 0)') or diag("stderr: $errR");
+    like($outR, qr/---\s*\Q$stopdiag_cat\E \(Anzahl: 1 im Fenster/,
+        'extract-run-79-42-stopdiag: real cut -- the category header counts the one real stop line');
+    like($section->($outR), qr/stop: player=02:00:00:5a:11:01 isPlaying=0 gracePeriod=0/,
+        'extract-run-79-42-stopdiag: real cut -- the real gracePeriod=0 line is printed under the category');
+    unlike($section->($outR), qr/seek_from_binary/,
+        'extract-run-79-42-stopdiag: real cut -- a [DIAG] line without stop: stays out of the category');
+    unlink($real);
+
+    # B: the real gracePeriod=1 form injected into the cut -- both stop lines print, the grace one verbatim.
+    my $text = _slurp($webapi_fx);
+    $text =~ s/\A([^\n]*\n)/$1$stopdiag_grace_line\n/ or die "fixture has no first line";
+    my ($fh, $file) = tempfile();
+    binmode($fh);
+    print $fh $text;
+    close($fh);
+    my ($exit, $out, undef, $err) = _webapi_extract($file, '2026-10-09');
+    is($exit, 0, 'extract-run-79-42-stopdiag: injected cut -- extract-run runs (exit 0)') or diag("stderr: $err");
+    like($out, qr/---\s*\Q$stopdiag_cat\E \(Anzahl: 2 im Fenster/,
+        'extract-run-79-42-stopdiag: injected cut -- header counts both stop lines');
+    like($section->($out), qr/\Q$stopdiag_grace_line\E/,
+        'extract-run-79-42-stopdiag: injected cut -- the gracePeriod=1 line is printed under the category, verbatim');
+    unlink($file);
+};
+
 # 79-27 (D-18): the spclient track-metadata request category. SpClient hydrates a track list with one
 # `GET metadata/4/track/<hex>` per track (cap 2) or, after 79-27, one `POST extended-metadata/v0/extended-metadata`
 # per batch; both are logged by network.asynchttp at DEBUG (`<TYPE>ing <url>`, SimpleHTTP/Base.pm:97) only while the
@@ -5471,6 +5632,98 @@ subtest q(pa-mac-fail-closed) => sub {
         is($e, 2, 'pa-mac-fail-closed: signatur-c-probe without PA_MAC and SPOTON_MAC -> exit 2');
         like($o . $r, qr/PA_MAC/, 'pa-mac-fail-closed: signatur-c-probe output names PA_MAC');
     }
+};
+
+# ============================================================
+# 79-46 (D-34): the autoplay-vs-takeover measurement reads the frames Control
+# receives. E1: a recorder `context_changed` frame is rendered with its
+# context.uri and context.entity_type (before 79-46 it fell into the "other
+# types" counter, so no window could show which context the daemon moved to).
+# E2-E4: three Control server.log lines that were only counted (rule 4) get
+# their own category: the autoplay guard's pause (Control.pm:3979-3986), the
+# classify-unknown catch-all (Control.pm:3584-3589) and the context end
+# without successor (Control.pm _maybeContextEnd). Each subtest also proves
+# an unrelated line stays out of the new section.
+# ============================================================
+my $d34_write = sub {
+    my (@lines) = @_;
+    my ($fh, $file) = tempfile();
+    print $fh "$_\n" for @lines;
+    close($fh);
+    return $file;
+};
+my $d34_section = sub {
+    my ($stdout, $hdr) = @_;
+    return ($stdout =~ /---\s*\Q$hdr\E.*?---\n(.*?)(?=\n---|\z)/s) ? $1 : '';
+};
+my $d34_unrelated = '[26-10-26 12:00:04.0000] Plugins::SpotOn::Soloist::Control::_dispatch (100) Control: dispatch play armed=0 (02:00:00:5a:11:01)';
+my $d34_run_srv = sub {
+    my ($line) = @_;
+    my $srv = $d34_write->($d34_unrelated, $line);
+    my $dmn = $d34_write->();
+    my ($exit, $stdout, $stderr) = run_perl_tool($extract_run_script,
+        [ '02:00:00:5a:11:01', '12:00:00', '12:00:10', '--server-log', $srv,
+          '--daemon-log', $dmn, '--date', '2026-10-26' ],
+        SUDO_BIN => '/bin/true');
+    unlink($srv, $dmn);
+    return ($exit, $stdout, $stderr);
+};
+
+subtest 'd34-E1-context-changed-rendered' => sub {
+    my $rec = $d34_write->(
+        '{"frame":"{\"type\":\"context_changed\",\"context\":{\"uri\":\"spotify:playlist:37i9dQZF1DXcBWIGoYBM5M\",\"entity_type\":\"playlist\",\"decorations\":{}}}","ts":"12:00:05.500","dir":"rx","epoch":1}',
+        '{"frame":"{\"type\":\"context_changed\",\"context\":{\"uri\":\"\",\"entity_type\":\"\",\"decorations\":{}}}","ts":"12:00:05.550","dir":"rx","epoch":2}',
+        '{"frame":"{\"type\":\"track_changed\",\"item\":{\"uri\":\"spotify:track:0ymW7RlpQ12wFvr3tP8Fqb\",\"entity_type\":\"track\"}}","ts":"12:00:05.600","dir":"rx","epoch":3}',
+    );
+    my $srv = $d34_write->();
+    my $dmn = $d34_write->();
+    my ($exit, $stdout, $stderr) = run_perl_tool($extract_run_script,
+        [ '02:00:00:5a:11:01', '12:00:00', '12:00:10', '--server-log', $srv,
+          '--daemon-log', $dmn, '--recorder', $rec, '--date', '2026-10-26' ],
+        SUDO_BIN => '/bin/true');
+    unlink($rec, $srv, $dmn);
+    is($exit, 0, 'd34-E1: extract-run.pl exits 0') or diag("stderr: $stderr");
+    like($stdout, qr/^\@12:00:05\.500 type=context_changed uri=spotify:playlist:37i9dQZF1DXcBWIGoYBM5M entity_type=playlist$/m,
+        'd34-E1: context_changed is listed with context.uri and context.entity_type');
+    like($stdout, qr/^\@12:00:05\.550 type=context_changed uri="" entity_type=""$/m,
+        'd34-E1: an empty context is listed with explicit empty values, not silently dropped');
+    like($stdout, qr/^\@12:00:05\.600 type=track_changed uri=spotify:track:0ymW7RlpQ12wFvr3tP8Fqb$/m,
+        'd34-E1: the track_changed line keeps its existing form');
+    unlike($stdout, qr/anderer Typen[^\n]*context_changed/,
+        'd34-E1: context_changed no longer falls into the other-types counter');
+};
+
+subtest 'd34-E2-autoplay-guard-category' => sub {
+    my $hdr = 'server.log: D-34 autoplay guard (daemon advanced to <uri> unrequested -- pausing; Control.pm)';
+    my ($exit, $stdout, $stderr) = $d34_run_srv->(
+        '[26-10-26 12:00:06.0000] Plugins::SpotOn::Soloist::Control::_recordErrorOnce (6386) 02:00:00:5a:11:01: daemon advanced to spotify:track:0ymW7RlpQ12wFvr3tP8Fqb unrequested -- pausing');
+    is($exit, 0, 'd34-E2: extract-run.pl exits 0') or diag("stderr: $stderr");
+    my $body = $d34_section->($stdout, $hdr);
+    like($body, qr/daemon advanced to spotify:track:0ymW7RlpQ12wFvr3tP8Fqb unrequested -- pausing/,
+        'd34-E2: the guard line lands in its own category');
+    unlike($body, qr/Control: dispatch play/, 'd34-E2: an unrelated line stays out of the category');
+};
+
+subtest 'd34-E3-classify-unknown-category' => sub {
+    my $hdr = 'server.log: D-34 Control classify unknown (type=; Control.pm onEvent catch-all)';
+    my ($exit, $stdout, $stderr) = $d34_run_srv->(
+        '[26-10-26 12:00:06.0000] Plugins::SpotOn::Soloist::Control::_classify (3584) Control: classify unknown -- type=context_changed mode=browse wanted.uri=spotify:track:0ymW7RlpQ12wFvr3tP8Fqb observed.track=spotify:track:0ymW7RlpQ12wFvr3tP8Fqb pending.cmd=- (02:00:00:5a:11:01)');
+    is($exit, 0, 'd34-E3: extract-run.pl exits 0') or diag("stderr: $stderr");
+    my $body = $d34_section->($stdout, $hdr);
+    like($body, qr/Control: classify unknown -- type=context_changed mode=browse/,
+        'd34-E3: the classify-unknown line lands in its own category');
+    unlike($body, qr/Control: dispatch play/, 'd34-E3: an unrelated line stays out of the category');
+};
+
+subtest 'd34-E4-context-end-category' => sub {
+    my $hdr = 'server.log: D-34 context end without successor (Control.pm _maybeContextEnd)';
+    my ($exit, $stdout, $stderr) = $d34_run_srv->(
+        '[26-10-26 12:00:06.0000] Plugins::SpotOn::Soloist::Control::_maybeContextEnd (3420) Control: context end without successor on spotify:track:0ymW7RlpQ12wFvr3tP8Fqb -- planting boundary, no resume (02:00:00:5a:11:01)');
+    is($exit, 0, 'd34-E4: extract-run.pl exits 0') or diag("stderr: $stderr");
+    my $body = $d34_section->($stdout, $hdr);
+    like($body, qr/Control: context end without successor on spotify:track:0ymW7RlpQ12wFvr3tP8Fqb/,
+        'd34-E4: the context-end line lands in its own category');
+    unlike($body, qr/Control: dispatch play/, 'd34-E4: an unrelated line stays out of the category');
 };
 
 done_testing();

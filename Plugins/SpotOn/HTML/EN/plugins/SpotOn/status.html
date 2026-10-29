@@ -242,7 +242,7 @@ footer {
             nameLbl.className = 'metric-label';
             var dot = document.createElement('span');
             dot.className = d.alive ? 'dot-alive' : 'dot-dead';
-            dot.textContent = '● ';
+            dot.textContent = '\u25CF ';
             nameLbl.appendChild(dot);
             var playerName = (d.name && d.name !== d.mac) ? d.name : d.mac;
             var nameText = document.createTextNode(playerName);
@@ -267,7 +267,7 @@ footer {
             }
 
             if (d.playing) {
-                var playText = d.currentTrack ? '▶ ' + d.currentTrack : '▶ Playing';
+                var playText = d.currentTrack ? '\u25B6 ' + d.currentTrack : '\u25B6 Playing';
                 var playRow = createMetricRow('Playback', playText);
                 playRow.querySelector('.metric-value').style.color = '#1db954';
                 body.appendChild(playRow);
@@ -353,7 +353,7 @@ footer {
             var msg = document.createElement('span');
             msg.className = 'error-msg';
             var fullMsg = e.message || '';
-            msg.textContent = fullMsg.length > 80 ? fullMsg.substring(0, 80) + '…' : fullMsg;
+            msg.textContent = fullMsg.length > 80 ? fullMsg.substring(0, 80) + '\u2026' : fullMsg;
             if (fullMsg.length > 80) msg.title = fullMsg;
             row.appendChild(msg);
 
@@ -395,7 +395,7 @@ footer {
         body.textContent = '';
 
         var authHealth = data.authHealth || {};
-        // Sort account IDs for deterministic display order — the authHealth
+        // Sort account IDs for deterministic display order - the authHealth
         // JSON object arrives with non-deterministic key order (fresh Perl
         // hash serialized by non-canonical JSON::XS each request; perl
         // randomizes per-hash traversal), so order must be pinned at
@@ -542,7 +542,7 @@ footer {
 
     function poll() {
         var xhr = new XMLHttpRequest();
-        xhr.timeout = 4000; // 4s — shorter than the 5s poll interval (WR-04)
+        xhr.timeout = 4000; // 4s - shorter than the 5s poll interval (WR-04)
         xhr.open('GET', '/plugins/SpotOn/status/data', true);
         xhr.ontimeout = function() {
             document.getElementById('error-banner').style.display = 'block';

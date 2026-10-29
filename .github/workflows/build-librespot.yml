@@ -385,13 +385,45 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.SPOTON_PRIVATE_PATTERNS_TOKEN }}
           PRIVATE_PATTERNS_REPO: ${{ secrets.SPOTON_PRIVATE_PATTERNS_REPO }}
+        # D-33 FULL-5 WR-01 (b): shell bash runs with -eo pipefail, so a failed
+        # fetch can no longer hide behind the decode in a pipe.
+        shell: bash
         run: |
           if [ -z "$PRIVATE_PATTERNS_REPO" ]; then
-            echo "No private patterns source configured — keeping public stub table"
+            echo "No private patterns source configured - keeping public stub table"
             exit 0
           fi
-          gh api "repos/${PRIVATE_PATTERNS_REPO}/contents/patterns.rs" \
-            --jq '.content' | base64 -d > spoton-helper/src/patch/patterns.rs
+          # D-33 FULL-5 WR-01 (b): with a source configured every failure is loud
+          # and names its cause. The bare expect_count: pattern of the review is
+          # not used: it matches the stub's struct field (patterns.rs:35). A real
+          # site has digits after expect_count:.
+          RAW="${RUNNER_TEMP:-/tmp}/private-patterns.b64"
+          PAT=spoton-helper/src/patch/patterns.rs
+          if ! gh api "repos/${PRIVATE_PATTERNS_REPO}/contents/patterns.rs" \
+            --jq '.content' > "$RAW"; then
+            echo "FATAL: private pattern table fetch failed" >&2
+            exit 1
+          fi
+          if [ ! -s "$RAW" ]; then
+            echo "FATAL: private pattern table answer is empty" >&2
+            exit 1
+          fi
+          if ! base64 -d "$RAW" > "$PAT"; then
+            echo "FATAL: private pattern table answer is not decodable" >&2
+            exit 1
+          fi
+          if [ ! -s "$PAT" ]; then
+            echo "FATAL: private pattern table is empty after decoding" >&2
+            exit 1
+          fi
+          if ! grep -q 'fn sites_for' "$PAT"; then
+            echo "FATAL: private pattern table defines no fn sites_for" >&2
+            exit 1
+          fi
+          if ! grep -Eq 'expect_count:[[:space:]]*[0-9]+' "$PAT"; then
+            echo "FATAL: private pattern table has no real site" >&2
+            exit 1
+          fi
           echo "Private patch pattern table injected"
 
       - name: Build binary

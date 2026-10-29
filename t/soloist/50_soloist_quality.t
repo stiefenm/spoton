@@ -280,6 +280,9 @@ sub post {
     my $isWrite = ($url =~ m{/WriteDeviceValue$}) ? 1 : 0;
     my $mode    = $isWrite ? $write_mode : $read_mode;
 
+    # 79-43 Q3: a transport-layer die (HTTP::Message "content must be bytes") escapes post() like the real one
+    die "HTTP::Message content must be bytes at /stub/HTTP/Message.pm line 1\n" if $mode eq 'die';
+
     $last_callback_error = undef;
 
     if ($mode eq 'success') {
@@ -1209,6 +1212,46 @@ subtest 'Case 19: qualityInfo($client)->{wanted} is the level SpotOn writes' => 
     $prefs->set('soloistQuality', 0);
     $qi = eval { $S->qualityInfo($client) } || {};
     is($qi->{wanted}, 0, "global Automatic -> wanted 0 (no MP3 note)");
+};
+
+
+# ============================================================
+# 79-43 (D-33 FULL-3 WR-02): the device name is a character string from LMS; the quality request carries it
+# as UTF-8 in both Perl representations, and a transport die in the POST is a classified error.
+# ============================================================
+subtest '79-43 Q1-Q3: device name as UTF-8, POST guarded' => sub {
+    reset_all();
+    my $id      = '7c9359b9-e676-4c96-ab3d-6a0f322f30ba';
+    my $latin1  = "K\x{fc}che";                    # stored as Latin-1 internally (not flagged)
+    my $upgraded = $latin1; utf8::upgrade($upgraded);
+    my $w1 = $Q->_encodeWrite($id, $latin1, 5);
+    my $w2 = $Q->_encodeWrite($id, $upgraded, 5);
+    is(unpack('H*', $w1), unpack('H*', $w2), '79-43 Q1 (D-33 FULL-3 WR-02): _encodeWrite gives byte-identical bodies for both representations of "K\x{fc}che"');
+    ok(index($w1, "\x12\x06K\xc3\xbcche") >= 0, '79-43 Q1: ... carrying the name as UTF-8 with length byte 6');
+    ok(index($Q->_encodeRead($id, $latin1), "\x12\x06K\xc3\xbcche") >= 0, '79-43 Q1: _encodeRead carries the Latin-1 representation as UTF-8 too');
+
+    reset_all();
+    my $mac = '00:AA:43:00:00:02';
+    write_device_id($mac);
+    MockClient->new($mac, "B\x{fc}ro \x{2615}");
+    my ($ok, $err);
+    my $lived = eval { $Q->write($mac, 5, sub { ($ok, $err) = @_; }); 1 };
+    my $req = $Slim::Networking::SimpleAsyncHTTP::requests[-1] || {};
+    ok($lived && $ok, '79-43 Q2: a write for "B\x{fc}ro \x{2615}" does not die and succeeds');
+    is(defined $req->{body} ? (utf8::is_utf8($req->{body}) ? 1 : 0) : 'nobody', 0, '79-43 Q2: the posted body is bytes (utf8::is_utf8 0)');
+    ok(defined $req->{body} && index($req->{body}, "B\xc3\xbcro \xe2\x98\x95") >= 0, '79-43 Q2: ... with the name as UTF-8');
+
+    reset_all();
+    my $mac3 = '00:AA:43:00:00:03';
+    write_device_id($mac3);
+    MockClient->new($mac3, 'player-43');
+    $Slim::Networking::SimpleAsyncHTTP::write_mode = 'die';
+    ($ok, $err) = (undef, undef);
+    my $escaped;
+    eval { $Q->_request('WriteDeviceValue', 'x', sub { ($ok, $err) = @_; }); 1 } or $escaped = $@;
+    is($escaped // 'none', 'none', '79-43 Q3: a die inside the POST does not escape to the caller');
+    is(($err && $err->{class}) // 'none', 'unreachable', '79-43 Q3: the callback gets class unreachable');
+    like(($err && $err->{error}) // '', qr/content must be bytes/, '79-43 Q3: ... with the error text');
 };
 
 done_testing();

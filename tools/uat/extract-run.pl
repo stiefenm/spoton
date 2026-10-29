@@ -467,6 +467,11 @@ my @SRV_CATS = (
     # (t/fixtures/uat/84.3-c5-run8-server-pause-won.log:31) already holds one real seek_from_binary line.
     { name => 'server.log: librespot daemon event received ([DIAG] seek_from_binary / volume_from_binary; Connect.pm _connectEvent, 79-28 D-23)',
       pat  => qr/\[DIAG\] (?:seek_from_binary|volume_from_binary): /,                  count => 1 },
+    # 79-42 (D-33 FULL-2 CR-01): Connect.pm's stop branch writes `[DIAG] [<ts>] stop: player=<mac> sessionEnd=1 ...` or
+    # `... isPlaying=<0|1> gracePeriod=<0|1> ...` (diagnosticMode=1). Without a category a stop swallowed by the start grace
+    # (gracePeriod=1) was only counted (rule 4). A `[DIAG]` line without `stop: player=` stays out (t/46 79-42-stopdiag).
+    { name => 'server.log: Connect stop decision ([DIAG] stop: sessionEnd / gracePeriod; Connect.pm _connectEvent stop branch, 79-42 D-33)',
+      pat  => qr/\[DIAG\] \[[\d.]+\] stop: player=/,                                   count => 1 },
     # 79-32 (D-27): the SpotOn PauseGuard (Plugin.pm _pauseGuardCheck) writes `[DIAG] PauseGuard: re-applying pause (swallowed
     # <age>s ago) mac=<id>` when it re-pauses a pause that came back to play on the SAME song, and `[DIAG] PauseGuard: dropped,
     # song changed since the pause request (<idx>:<url> -> <idx>:<url>) mac=<id>` when it drops the guard instead. Both only
@@ -483,6 +488,20 @@ my @SRV_CATS = (
     # entries and the 84-26 entry (t/46 extract-run-79-eject, 84.3-settle pin the order).
     { name => 'server.log: LMS sync resync (player.sync INFO "<mac> resync: skipAhead|pauseFor <n>ms"; StreamingController.pm:566/576, 79-32 D-27 a2)',
       pat  => qr/resync: (?:skipAhead|pauseFor) -?\d+ms/,                                   count => 1 },
+    # 79-46 (D-34): three Control lines that were only counted (rule 4), each in its own
+    # category, BEFORE the 84.3 entries and the 84-26 entry (t/46 extract-run-84.3-settle pins
+    # the 84.3 buffering section directly before the 84-26 header; the 84-26 entry stays last). The
+    # autoplay guard's pause (Control.pm:3979-3986, written through _recordErrorOnce as
+    # "<mac>: daemon advanced to <uri> unrequested -- pausing"), the classify-unknown catch-all
+    # (Control.pm:3584-3589) and the context end without successor (Control.pm _maybeContextEnd).
+    # The D-34 measurement separates autoplay, natural end and app takeover with them; absence
+    # reads "nicht gefunden im Fenster", never "did not happen".
+    { name => 'server.log: D-34 autoplay guard (daemon advanced to <uri> unrequested -- pausing; Control.pm)',
+      pat  => qr/daemon advanced to \S+ unrequested -- pausing/,                      count => 1 },
+    { name => 'server.log: D-34 Control classify unknown (type=; Control.pm onEvent catch-all)',
+      pat  => qr/Control: classify unknown -- type=/,                                  count => 1 },
+    { name => 'server.log: D-34 context end without successor (Control.pm _maybeContextEnd)',
+      pat  => qr/Control: context end without successor on /,                          count => 1 },
     # 84.3-03 (D-09): the context-end settle (Connect.pm _settleNow, 84.3-01) leaves FOUR kinds of
     # server.log line that no category printed -- they were only counted (rule 4), so a guarded hit
     # (or its absence) could be proven only by hand-grepping. The four entries below sit BEFORE the
@@ -566,6 +585,24 @@ my @DMN_CATS = (
     # "nicht gefunden im Fenster" (no hold armed in that window), never "no hold".
     { name => 'Daemon-Log: gap hold (hold_armed / hold_consumed / hold_released / hold_suppressed / hold_skipped; 79 D-31 fake-libpulse) / boundary_reached',
       pat  => qr/\] hold_(?:armed|consumed|released|suppressed|skipped): |\] boundary_reached: /, count => 1 },
+    # 79-50 (D-34 R2): the shim's decision window for an unarmed flush in Connect writes `flush-decide: open
+    # window_ms=<W>` / `flush-decide: closed reason=<boundary|deadline> after_ms=<n>` and `seek-keep: kept active HTTP
+    # client after_ms=<n>` / `seek-keep: nothing pending` (debug trace), each with a BOUNDARY twin after the closing
+    # bracket (`flush_decide:`, `seek_keep:`); 79-47's browse keep writes `flush-keep:` / `browse-keep:` (+ twins
+    # `flush_keep:`, `browse_keep:`). The live checks of 79-50 Task 4 (tools in spoton-messdaten/79-50-r2/) read the kept /
+    # closed-reason lines from here. Before this entry all of them were only counted, never printed (rule 4). Absence reads
+    # "nicht gefunden im Fenster", never "no keep". The `flush-disconnect: closed active HTTP client` line stays in its own
+    # category above (the 79-47 tools key on it).
+    { name => 'Daemon-Log: connect decision and keeps (flush-decide / seek-keep, 79-50 D-34 R2; flush-keep / browse-keep, 79-47)',
+      pat  => qr/\] (?:flush-decide|flush_decide|seek-keep|seek_keep|flush-keep|flush_keep|browse-keep|browse_keep): /, count => 1 },
+    # 79-51 (runaway D2): the shim's drain loop writes `boundary_discarded: stale generation (planted_gen=<g> current_gen=<g>)
+    # total_popped=<n> boundary=<n>` when a marker planted for a departed client meets the next client, and the promotion
+    # block writes `boundary_discarded: orphan at attach (planted_gen=-1 current_gen=<g>) ...` for an orphan marker at or
+    # below total_popped (E4/E5: the 094204 / 094408 fresh streams closed after 0 bytes). The live checks of 79-51 Task 4
+    # read them from here. Before this entry they were only counted, never printed (rule 4). Absence reads "nicht
+    # gefunden im Fenster", never "no discard".
+    { name => 'Daemon-Log: boundary discarded (stale generation / orphan at attach; 79-51 runaway D2)',
+      pat  => qr/\] boundary_discarded: /, count => 1 },
 );
 
 # Rauschkategorien des Daemon-Logs: eigene Behandlung, aber sie zaehlen als
@@ -589,7 +626,14 @@ my $WRITE_SUM_PAT  = qr/write_summary:/;
 # aber kein Array -- genau diese Unterscheidung ist der Messzweck dieser
 # Erweiterung (Regel 2: nie stillschweigend verwerfen).
 my %REC_LISTED = map { $_ => 1 }
-    qw(position_sync playback_changed track_changed device_changed playback_state queue_changed);
+    qw(position_sync playback_changed track_changed device_changed playback_state queue_changed
+       context_changed);
+# 79-46 (D-34): context_changed joined the listed types. Its uri and entity_type
+# sit under `context` (real frame: 84-20-tspike-T3000-seek-storm-261004-222120/
+# ws.jsonl, {"type":"context_changed","context":{"uri":"","entity_type":"",...}};
+# soloist-developer-docs.md:318, :386-388). rec_context() renders both fields
+# explicitly: an empty string as "" and a missing key as FEHLT (rule 2), because
+# an EMPTY context is itself one of the shapes the D-34 measurement separates.
 
 # ---------------------------------------------------------------------------
 # Kleine Helfer
@@ -1955,6 +1999,23 @@ sub rec_field {
     return undef;
 }
 
+# rec_context -- 79-46 (D-34): context.uri and context.entity_type of a
+# context_changed frame, each as the value, '""' for an empty string, or FEHLT
+# when the key (or the context object) is missing. Never undef: an empty
+# context must be visible in the listed line (rule 2).
+sub rec_context {
+    my ($h) = @_;
+    my $c = $h->{context};
+    return ('FEHLT', 'FEHLT') unless ref $c eq 'HASH';
+    my @out;
+    for my $k (qw(uri entity_type)) {
+        if (!defined $c->{$k}) { push @out, 'FEHLT'; }
+        elsif (!ref $c->{$k} && $c->{$k} eq '') { push @out, '""'; }
+        else { push @out, "$c->{$k}"; }
+    }
+    return @out;
+}
+
 sub rec_bool {
     my ($h, $k) = @_;
     return undef unless exists $h->{$k};
@@ -2067,7 +2128,7 @@ sub section_recorder {
         }
 
         my ($ts, $type, $pos, $speed, $status, $uri, $active, $device,
-            $qprev_n, $qup_n, $qup_first, $qprev_last);
+            $qprev_n, $qup_n, $qup_first, $qprev_last, $etype);
         if (exists $d->{frame}) {
             $st{raw}++;
             $saw_raw = 1;
@@ -2131,6 +2192,7 @@ sub section_recorder {
                     ($qprev_n, $qup_n, $qup_first, $qprev_last) =
                         @{$qs}{qw(previous_n upcoming_n upcoming_first previous_last)};
                 }
+                ($uri, $etype) = rec_context($f) if defined $type && $type eq 'context_changed';
             }
         }
         else {
@@ -2150,6 +2212,7 @@ sub section_recorder {
                 ($qprev_n, $qup_n, $qup_first, $qprev_last) =
                     @{$qs}{qw(previous_n upcoming_n upcoming_first previous_last)};
             }
+            ($uri, $etype) = rec_context($d) if defined $type && $type eq 'context_changed';
         }
 
         next unless defined $ts && length $ts;
@@ -2164,7 +2227,7 @@ sub section_recorder {
             if ($sec >= $a{win_start} && $sec <= $a{win_end}) {
                 $st{listed_in}++;
                 my $extra = '';
-                for my $p (['status', $status], ['uri', $uri], ['position_ms', $pos],
+                for my $p (['status', $status], ['uri', $uri], ['entity_type', $etype], ['position_ms', $pos],
                            ['speed', $speed], ['is_active', $active], ['device_name', $device],
                            # 83.2-02: queue_changed-Arraykennzahlen, gleiche
                            # Zeile, gleiches key=value-Format, keine neue Rubrik.

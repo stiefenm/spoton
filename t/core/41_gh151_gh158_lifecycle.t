@@ -202,7 +202,12 @@ sub helperForClient { return undef; }
 # `local *...::Control::for_client = sub { $ctl }` site below keeps driving
 # its $ctl exactly as before (assertions unchanged).
 our @VERBS;
-sub backendFor { return bless { mac => (ref $_[1] ? $_[1]->id : $_[1]) }, 'Test::MockRole41'; }
+# 79-42 (D-33 FULL-2 CR-01): $GATE switches the mock role's connectClaimGate
+# (default 0 = the Soloist shape every existing case uses; 1 = librespot);
+# $NO_ROLE makes backendFor return undef (no role known).
+our $GATE    = 0;
+our $NO_ROLE = 0;
+sub backendFor { return undef if $NO_ROLE; return bless { mac => (ref $_[1] ? $_[1]->id : $_[1]) }, 'Test::MockRole41'; }
 package Test::MockRole41;
 # 84-08: Connect.pm no longer `require`s Control itself -- the mock loads the
 # Control stand-in on first use, exactly like the real Backend::Soloist.
@@ -213,7 +218,7 @@ sub _ctl { require Plugins::SpotOn::Soloist::Control; return Plugins::SpotOn::So
 sub capabilities {
     my $C = 'Plugins::SpotOn::Soloist::Control';
     return {
-        connectClaimGate => 0, connectEntry => 'pertrack', claimOnStart => 0, holdOnChange => 1,
+        connectClaimGate => $Plugins::SpotOn::Unified::DaemonManager::GATE, connectEntry => 'pertrack', claimOnStart => 0, holdOnChange => 1,
         readyReplaysLastTrack => 1,
         holdCapS     => ($C->can('HOLD_CAP_S')     ? $C->HOLD_CAP_S     : undef),
         holdRecheckS => ($C->can('HOLD_RECHECK_S') ? $C->HOLD_RECHECK_S : undef),
@@ -1863,6 +1868,79 @@ for my $rep (0, 2) {
     Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
 }
 
+# --- 79-51 D3 (runaway, E6): the hold is not taken for an LMS stream that has not started playing -------------
+# The 094204 album start: `change ... via=live hold=1` landed on a Redbone stream that never got a byte. LMS counted as
+# playing in the non-strict sense (BUFFERING is neither STOPPED nor PAUSED, StreamingController.pm:1676-1679), but a
+# never-fed stream cannot leave BUFFERING. `_holdSkipReason` reads the pair `_stuckRebuffer` reads: non-strict isPlaying,
+# strict isPlaying(1) false, StreamingController buffering() == 1 (initial buffering).
+{
+    package Test::FakeCtlBuf;
+    our @ISA = ('Test::FakeController');
+    sub buffering { return $_[0]->{buffering}; }
+
+    package Test::FakeClientD3;
+    our @ISA = ('Test::FakeClientSong');
+    # non-strict isPlaying is {isPlaying}; the strict one is {strict}
+    sub isPlaying { my ($self, $really) = @_; return $really ? ($self->{strict} ? 1 : 0) : ($self->{isPlaying} ? 1 : 0); }
+
+    package main;
+
+    sub d3_setup {
+        my (%o) = @_;
+        my ($client, $ctl, $old) = h_setup();
+        bless $client, 'Test::FakeClientD3';
+        $client->{isPlaying}  = 1;
+        $client->{strict}     = $o{strict} ? 1 : 0;
+        $client->{controller} = Test::FakeCtlBuf->new(buffering => $o{buffering});
+        return ($client, $ctl, $old);
+    }
+}
+{
+    my ($client, $ctl, $old) = d3_setup(strict => 0, buffering => 1);
+    h_change($client, $ctl, $H_NEW, 'live');
+    is(scalar(h_log(qr/^Connect: hold skipped reason=not_started /)), 1,
+        '79-51 D3-1: LMS in initial buffering (isPlaying, not isPlaying(1), buffering() 1) -> `Connect: hold skipped reason=not_started`');
+    is(scalar(h_plays()), 1, '79-51 D3-1: ... exactly one `playlist play spoton://track:<new>`');
+    is(scalar(h_inserts()), 0, '79-51 D3-1: ... and no insert (no hold)');
+    Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
+}
+{
+    my ($client, $ctl, $old) = d3_setup(strict => 0, buffering => 2);
+    h_change($client, $ctl, $H_NEW, 'live');
+    is(scalar(h_log(qr/^Connect: hold skipped reason=not_started /)), 0, '79-51 D3-2: a rebuffer (buffering() 2) is not `not_started`');
+    is(scalar(h_plays()), 0, '79-51 D3-2: ... the hold is taken (no immediate play)');
+    is(scalar(h_inserts()), 1, '79-51 D3-2: ... the deferred item is inserted');
+    Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
+}
+{
+    my ($client, $ctl, $old) = d3_setup(strict => 1, buffering => 0);
+    h_change($client, $ctl, $H_NEW, 'live');
+    is(scalar(h_log(qr/^Connect: hold skipped reason=not_started /)), 0, '79-51 D3-3: a playing stream (isPlaying(1), buffering() 0) is not `not_started`');
+    is(scalar(h_plays()), 0, '79-51 D3-3: ... the hold is taken (84-17 H-i unchanged)');
+    is(scalar(h_inserts()), 1, '79-51 D3-3: ... the deferred item is inserted');
+    Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
+}
+
+# --- 79-51 D1-C1: the Connect side of D1's empty position ------------------------------------------------------------
+# A new-context resume names the album's first title and carries NO position (the resume is released for THAT title, never
+# with the paused old title's figure). LMS plays spoton://track:<new> in a Connect session: `pause 0` executes, no
+# startOffset write (Connect.pm `defined $position && $position ne ''`), no jumpToTime.
+{
+    my ($client, $ctl, $old) = h_setup();
+    $client->{song}{url} = "spoton://track:$H_NEW";
+    $client->pluginData(connectStartTime => 0);
+    $client->pluginData(newTrack => 0);
+    @Slim::Control::Request::EXECUTED = ();
+    @Test::FakeController::JUMPS = ();
+    my $so_before = $old->{so};
+    h_connect($client, $ctl, _cmd => 'resume', _p2 => $H_NEW, _p3 => '');
+    is(scalar(h_cmds(sub { ($_[0] // '') eq 'pause' && ($_[1] // '') eq '0' })), 1, "79-51 D1-C1: `resume <new id> ''` executes exactly one `pause 0`");
+    is(scalar(h_plays()), 0, "79-51 D1-C1: ... no re-entry `playlist play` (LMS is on the new title already)");
+    is($old->{so}, $so_before, "79-51 D1-C1: ... and no startOffset write (an empty position)");
+    is(scalar(@Test::FakeController::JUMPS), 0, "79-51 D1-C1: ... and no jumpToTime");
+    Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
+}
+
 {
     no warnings 'redefine';
     *Time::HiRes::time = $H_REAL_TIME;
@@ -2372,6 +2450,158 @@ for my $dur (undef, 0) {
     is(scalar(@pl), 0, '84.3 S10: synthetic -- ... and no `playlist play` re-entry');
     is($lms->pluginData('connectSessionPaused'), 0, '84.3 S10: synthetic -- ... connectSessionPaused is 0 again');
     Plugins::SpotOn::Connect->releaseConnectClaim($lms, 'test');
+}
+
+# ==================================================================
+# 79-42 (D-33 FULL-2 CR-01): CONNECT_START_GRACE (12 s) is librespot's
+# protection (its binary fires Stopped between TrackChanged and Playing).
+# On the Soloist role (connectClaimGate 0) a stop 5 s after a start or a
+# track change is a real app pause and must pause LMS; librespot
+# (connectClaimGate 1) and an unknown role (backendFor undef) keep the
+# grace. Each case binds the claim (Soloist start does not claim) and
+# drives the stop through _connectEvent; the pause is read from EXECUTED.
+# ==================================================================
+sub grace_pause_dispatched {
+    my ($client) = @_;
+    return scalar grep {
+        $_->{cmd} && ref($_->{cmd}) eq 'ARRAY'
+            && ($_->{cmd}[0] // '') eq 'pause'
+            && ($_->{cmd}[1] // '') eq '1'
+            && ($_->{clientid} // '') eq $client->id
+    } @Slim::Control::Request::EXECUTED;
+}
+
+sub grace_case {
+    my (%a) = @_;
+    local $Plugins::SpotOn::Unified::DaemonManager::GATE    = $a{gate} // 0;
+    local $Plugins::SpotOn::Unified::DaemonManager::NO_ROLE = $a{no_role} // 0;
+    my $client = Test::FakeClient->new(power => 1, isPlaying => 1);
+    start_session($client);
+    Plugins::SpotOn::Connect->bindConnectClaim($client, 'transfer');
+    if ($a{change}) {
+        my $changeReq = Test::FakeRequest->new($client, _cmd => 'change', _p2 => 'newtrack79a', _p3 => 'oldtrack79b');
+        Plugins::SpotOn::Connect::_connectEvent($changeReq);
+        $client->pluginData(newTrack => 0);   # past the H7 window, as start_session does
+    }
+    # The writers of connectStartTime (start :2243, change :2467, ...) stamp
+    # "now"; the stop arrives $a{age} seconds later.
+    $client->pluginData(connectStartTime => Time::HiRes::time() - $a{age});
+    $client->pluginData(connectSessionPaused => 0);
+    @Slim::Control::Request::EXECUTED = ();
+    my $stopReq = Test::FakeRequest->new($client, _cmd => 'stop', _p2 => undef);
+    Plugins::SpotOn::Connect::_connectEvent($stopReq);
+    my @r = ($client->pluginData('connectSessionPaused') // 0, grace_pause_dispatched($client));
+    Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
+    return @r;
+}
+
+{
+    my ($paused, $n) = grace_case(gate => 0, age => 5);
+    is($paused, 1, 'D-33 FULL-2 S5: Soloist role, stop 5 s after start -> connectSessionPaused is 1');
+    is($n, 1, 'D-33 FULL-2 S5: Soloist role, stop 5 s after start -> one pause command for the player');
+}
+{
+    my ($paused, $n) = grace_case(gate => 0, age => 5, change => 1);
+    is($paused, 1, 'D-33 FULL-2 S5c: Soloist role, stop 5 s after a track change -> connectSessionPaused is 1');
+    is($n, 1, 'D-33 FULL-2 S5c: Soloist role, stop 5 s after a track change -> one pause command for the player');
+}
+{
+    my ($paused, $n) = grace_case(gate => 1, age => 5);
+    isnt($paused, 1, 'D-33 FULL-2 L5: librespot role, stop 5 s after start -> ignored, connectSessionPaused not 1');
+    is($n, 0, 'D-33 FULL-2 L5: librespot role, stop 5 s after start -> no pause command');
+}
+{
+    my ($paused, $n) = grace_case(gate => 1, age => 13);
+    is($paused, 1, 'D-33 FULL-2 L13: librespot role, stop 13 s after start -> connectSessionPaused is 1');
+    is($n, 1, 'D-33 FULL-2 L13: librespot role, stop 13 s after start -> one pause command for the player');
+}
+{
+    my ($paused, $n) = grace_case(no_role => 1, age => 5);
+    isnt($paused, 1, 'D-33 FULL-2 U5: no role known, stop 5 s after start -> ignored, connectSessionPaused not 1');
+    is($n, 0, 'D-33 FULL-2 U5: no role known, stop 5 s after start -> no pause command');
+}
+
+# ==================================================================
+# D-34 (79-48) P3: Browse forwarding. When the app pauses or plays during an
+# LMS-started Browse, Control forwards it as an LMS pause with its source
+# marker; the pause notification that request causes must not travel back to
+# the daemon (the daemon already did it). A user pause without the marker
+# still goes to the daemon through the role.
+# ==================================================================
+{
+    package Test::FakePauseRequest;
+    sub new {
+        my ($class, $client, %a) = @_;
+        return bless { client => $client, %a }, $class;
+    }
+    sub client   { return $_[0]->{client}; }
+    sub source   { return $_[0]->{source}; }
+    sub getParam { return $_[0]->{params}{ $_[1] }; }
+    sub isCommand {
+        my ($self, $spec) = @_;
+        return (($spec->[0][0] // '') eq 'playlist' && ($spec->[1][0] // '') eq $self->{cmd}) ? 1 : 0;
+    }
+}
+{
+    my $CTL = 'spoton-browse-forward';    # Control's BROWSE_FORWARD_SOURCE (t/soloist/44 pins the two together)
+    my $verbs = sub {
+        my ($client, %a) = @_;
+        @Plugins::SpotOn::Unified::DaemonManager::VERBS = ();
+        Plugins::SpotOn::Connect::_onPause(Test::FakePauseRequest->new($client, %a));
+        return [ @Plugins::SpotOn::Unified::DaemonManager::VERBS ];
+    };
+    my $client = Test::FakeClient->new();
+
+    is_deeply($verbs->($client, cmd => 'pause', params => { _newvalue => 1 }, source => $CTL), [],
+        "D-34 P3: a pause marked with Control's source sends nothing to the daemon");
+    is_deeply($verbs->($client, cmd => 'pause', params => { _newvalue => 0 }, source => $CTL), [],
+        "D-34 P3: an unpause marked with Control's source sends nothing to the daemon");
+    is_deeply($verbs->($client, cmd => 'pause', params => { _newvalue => 1 }), [ 'pause' ],
+        "D-34 P3: an unmarked user pause still goes to the daemon through the role");
+    is_deeply($verbs->($client, cmd => 'pause', params => { _newvalue => 0 }), [ 'play' ],
+        "D-34 P3: an unmarked user unpause still goes to the daemon through the role");
+    is_deeply($verbs->($client, cmd => 'pause', params => { _newvalue => 1 }, source => 'Some::Other::Plugin'), [ 'pause' ],
+        "D-34 P3: only Control's marker is skipped, any other source is a user pause");
+}
+
+# ==================================================================
+# D-34 (79-48) K2: an app seek during LMS-started Browse. Control marks the
+# event (_p4 'browse'); Connect rewrites the song's startOffset exactly like
+# the connect seek (CON-13) -- no ['time', N], which would re-open the stream
+# -- and only for a marked event while Control's mode is browse.
+# ==================================================================
+{
+    my $browse_seek = sub {
+        my (%a) = @_;
+        my $song   = Test::FakeSongSO->new(0);
+        my $client = Test::FakeClientSong->new(power => 1, isPlaying => 1, song => $song, elapsed => 20);
+        $client->pluginData(pendingConnect => 1) if $a{pending};
+        my $ctl = Test::FakeCtlD02->new(mode => $a{mode}, client => $client);
+        @Slim::Control::Request::EXECUTED = ();
+        {
+            no warnings 'redefine';
+            local *Plugins::SpotOn::Soloist::Control::for_client = sub { $ctl };
+            Plugins::SpotOn::Connect::_connectEvent(
+                Test::FakeRequest->new($client, _cmd => 'seek', _p2 => '102.463', (defined $a{p4} ? (_p4 => $a{p4}) : ())));
+        }
+        return ($song, $client);
+    };
+
+    my ($song) = $browse_seek->(mode => 'browse', p4 => 'browse');
+    is(sprintf('%.3f', $song->startOffset), '82.463',
+        "D-34 K2: a browse-marked seek in Control mode browse sets startOffset = target - player elapsed (clock = 102.463)");
+    is(scalar(@Slim::Control::Request::EXECUTED), 0,
+        "D-34 K2: the rewrite sends no LMS request at all (no time command: the stream is not re-opened)");
+
+    ($song) = $browse_seek->(mode => 'browse', p4 => 'browse', pending => 1);
+    is(sprintf('%.3f', $song->startOffset), '82.463',
+        "D-34 K2: a stale pendingConnect does not turn the browse seek into a stored connect progress");
+
+    ($song) = $browse_seek->(mode => 'browse');
+    is($song->startOffset, 0, "D-34 K2: an unmarked seek for a non-Connect player is still dropped (connect-guard unchanged)");
+
+    ($song) = $browse_seek->(mode => 'connect', p4 => 'browse');
+    is($song->startOffset, 0, "D-34 K2: the browse marker is only honoured while Control's mode is browse");
 }
 
 done_testing();

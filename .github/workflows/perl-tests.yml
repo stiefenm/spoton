@@ -116,9 +116,10 @@ jobs:
           test -n "$f" && test "$f" -ge "$n"
           # Expected skips, built at run time: t/librespot/06 always on the
           # soloist leg (its binary is untracked, no checkout has it);
-          # t/soloist/48 only without a C compiler; t/core/42 only without node.
+          # t/soloist/48 only without a C compiler; every Node test file with a
+          # whole-file `plan skip_all` (t/core/42, 65, 72) only without node.
           exp=""
-          command -v node >/dev/null 2>&1 || exp="$exp t/core/42_soloist_settings_js_toggle.t"
+          command -v node >/dev/null 2>&1 || exp="$exp t/core/42_soloist_settings_js_toggle.t t/core/65_account_pair_js.t t/core/72_settings_setup_js.t"
           if [ $other = soloist ]; then
             { command -v gcc >/dev/null 2>&1 || command -v cc >/dev/null 2>&1; } || exp="$exp t/soloist/48_fake_libpulse_harness.t"
           else

@@ -5,6 +5,35 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.0.0-beta.2] - 2026-10-28
+
+**Installing this beta.** This beta is a GitHub pre-release and uses the same repository URL as 4.0.0-beta.1. In LMS, open **Settings > Plugins > Additional Repositories**, add `https://stiefenm.github.io/spoton/beta/repo.xml` and save; the Plugins page then offers SpotOn 4.0.0beta2 as an install, or as an update if 4.0.0beta1 is installed. Without that URL LMS keeps offering 3.5.8, and the final 4.0.0 will be offered as an update over the beta. Removing the URL stops further beta updates; LMS does not move a plugin back to an older version by itself. The zip is downloaded from GitHub's release page, and that download sometimes fails in LMS with `Header line too long (limit is 8192)`: GitHub occasionally sends a header longer than LMS accepts. Try again later, or install by hand as below.
+
+**Installing this beta by hand.** Download `SpotOn-v4.0.0-beta.2.zip` and `SHA256SUMS.txt` from the release page and check the zip's SHA-256 against its line there. Stop LMS. If SpotOn is installed, move the folder `<cachedir>/InstalledPlugins/Plugins/SpotOn` out of `InstalledPlugins/` as a backup. Unzip the archive into `<cachedir>/InstalledPlugins/`, so that `Plugins/SpotOn/` is created there, and give it the owner of the LMS service (on Debian `squeezeboxserver`). Start LMS. To go back, stop LMS and put the backup folder back.
+
+Everything else is as in 4.0.0-beta.1 below.
+
+### Fixed
+
+- Settings page: the step marks of the setup block no longer show up as "â" on some LMS installs.
+- Settings page: after a successful pairing the setup block shows the paired account instead of asking you to pair again.
+- Settings page: the red "Soloist binary not found" line now turns into "Soloist ready" without a page reload once the binary is there.
+- Pairing no longer fails when it overlaps SpotOn's hourly cleanup of leftover processes.
+- Soloist: a pause in the Spotify app right after starting or skipping a track now pauses the LMS player.
+- Track, artist and album names with umlauts and other non-ASCII characters now show correctly in Liked Songs, playlists, albums and the currently playing information. Names stored by 4.0.0-beta.1 are fetched again the next time they are shown.
+- Soloist: the stream quality setting now reaches players whose name has umlauts.
+- The Spotify username no longer appears in server.log or in the diagnostic bundle.
+- Settings page: the Soloist binary line keeps checking after a failed status request.
+- Soloist: while LMS plays a Spotify list, pause, play, seeking, next and previous in the Spotify app now control LMS. Starting something else in the Spotify app hands playback over to the app (Connect mode), while Spotify's own autoplay at the end of the list does not.
+- Soloist, Connect mode: a seek in the Spotify app no longer ends playback on the LMS player a few seconds later.
+- Soloist, Connect mode: starting an album in the Spotify app while the Connect session is paused now plays that album instead of running through several tracks and stopping.
+- Soloist, Connect mode: opening a single track from outside the Spotify app (for example from a link) while a Connect session is paused no longer stops the LMS player about two seconds later.
+
+### Known issues
+
+- Soloist, Connect mode: after a seek in the Spotify app, LMS shows the new position at once, but you hear it only after about 6 to 7 seconds, on some setups later. The music is not meant to stop.
+- Soloist, Connect mode: after restarting a quiet track from the Spotify app, the music starts again from the beginning while the LMS time display can stay at the old position.
+
 ## [4.0.0-beta.1] - 2026-10-25
 
 **Installing this beta.** This beta is a GitHub pre-release with its own repository URL. In LMS, open **Settings > Plugins > Additional Repositories**, add `https://stiefenm.github.io/spoton/beta/repo.xml` and save; the Plugins page then offers SpotOn 4.0.0beta1 as an install or update. Without that URL LMS keeps offering 3.5.8, and the final 4.0.0 will be offered as an update over the beta. Removing the URL stops further beta updates; LMS does not move a plugin back to an older version by itself. The zip is downloaded from GitHub's release page, and that download sometimes fails in LMS with `Header line too long (limit is 8192)`: GitHub occasionally sends a header longer than LMS accepts. Try again later, or install by hand as below. This plugin-manager route is new with this beta; the manual route below is the tested one.

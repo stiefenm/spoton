@@ -129,4 +129,26 @@ is(encode_varint(300), "\xAC\x02", 'encode_varint(300) is multi-byte');
        '79-27 D-18: decode_zigzag returns undef for undef, non-numeric and negative input');
 }
 
+
+# ============================================================
+# 79-43 (D-33 FULL-3 WR-02): wire 2 takes bytes or a character string; a character string is sent as UTF-8
+# and the length is the BYTE length. Binary bytes pass through unchanged.
+# ============================================================
+{
+    my $kueche = "K\x{fc}che";
+    utf8::upgrade($kueche);   # a character string as LMS hands it over (flagged)
+    my $e1 = encode_field(2, 2, $kueche);
+    is(unpack('H*', $e1), unpack('H*', "\x12\x06K\xc3\xbcche"),
+        '79-43 E1 (D-33 FULL-3 WR-02): a flagged "K\x{fc}che" encodes as tag 0x12, byte length 6 and its UTF-8 bytes');
+    ok(!utf8::is_utf8($e1), '79-43 E1: the encoded field is a byte string (not flagged)');
+
+    my $e2 = encode_field(2, 2, "\x00\xff\x10");
+    is(unpack('H*', $e2), '120300ff10', '79-43 E2: unflagged raw bytes pass through unchanged (length byte 3)');
+
+    my $e3 = encode_field(1, 2, encode_field(2, 2, "B\x{fc}ro \x{2615}"));
+    is(unpack('H*', $e3), unpack('H*', "\x0a\x0b\x12\x09B\xc3\xbcro \xe2\x98\x95"),
+        '79-43 E3: a nested encode around "B\x{fc}ro \x{2615}" carries inner length byte 9 (UTF-8) and outer length 11');
+    ok(!utf8::is_utf8($e3), '79-43 E3: the whole nested result is a byte string');
+}
+
 done_testing();

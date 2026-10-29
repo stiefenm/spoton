@@ -1180,6 +1180,7 @@ sub getMetadataFor {
     # that were cached by _fetchTrackMetadata in Connect.pm.
     if ($url && $url =~ m{spoton://connect-}) {
         my $connect_meta = $cache->get('spoton_meta_' . md5_hex($url));
+        undef $connect_meta unless _metaCurrent($connect_meta);   # 79-43: unmarked = miss (refetch heals it)
         if ($connect_meta && $connect_meta->{spotifyUri}
             && $connect_meta->{spotifyUri} =~ m/^spotify:track:([A-Za-z0-9]+)$/) {
             my $trackId    = $1;
@@ -1215,11 +1216,15 @@ sub getMetadataFor {
         $canonical = "spoton://$1:$2";
     }
 
+    # 79-43 (D-33 FULL-3 CR-01): a record without the current format marker can hold the byte form of the names
+    # (beta.1, 7-day TTL); it takes the miss path below (placeholder plus async refetch, which writes it anew).
     my $meta = $cache->get('spoton_meta_' . md5_hex($canonical));
+    undef $meta unless _metaCurrent($meta);
 
     # Fallback: try original URL if normalization didn't help
     if (!$meta && $canonical ne $url) {
         $meta = $cache->get('spoton_meta_' . md5_hex($url));
+        undef $meta unless _metaCurrent($meta);
     }
 
     # D-03, D-04, D-05: cache miss — return placeholder immediately, fire async re-fetch
@@ -1340,7 +1345,9 @@ sub _cacheExplodedTrack {
     my $year = Plugins::SpotOn::Plugin::_releaseYear(
         $albumReleaseDate // ($track->{album} || {})->{release_date}
     );
+    require Plugins::SpotOn::API::SpClient;   # 79-43 (D-33 FULL-3 CR-01): the format marker of spoton_meta records
     $cache->set('spoton_meta_' . md5_hex($trackUrl), {
+        _spoton_fmt => Plugins::SpotOn::API::SpClient::TRACK_META_FORMAT(),
         title     => $track->{name} || '',
         artist    => join(', ', map { $_->{name} } @{ $track->{artists} || [] }),
         album     => $albumName || '',
@@ -1358,7 +1365,9 @@ sub _cacheExplodedEpisode {
     my $cover = _largestImage($ep->{images})
              || _largestImage($show->{images})
              || '/html/images/cover.png';
+    require Plugins::SpotOn::API::SpClient;   # 79-43 (D-33 FULL-3 CR-01): the format marker of spoton_meta records
     $cache->set('spoton_meta_' . md5_hex($epUrl), {
+        _spoton_fmt => Plugins::SpotOn::API::SpClient::TRACK_META_FORMAT(),
         title    => $ep->{name} || '',
         artist   => $show->{name} || '',
         album    => $show->{name} || '',
@@ -1507,6 +1516,7 @@ sub _asyncRefetch {
         }
 
         my %new_meta = (
+            _spoton_fmt => Plugins::SpotOn::API::SpClient::TRACK_META_FORMAT(),   # 79-43 (D-33 FULL-3 CR-01)
             title    => $title,
             artist   => $artist,
             album    => $album,
@@ -1533,6 +1543,19 @@ sub _asyncRefetch {
 
         $cache->set('spoton_meta_' . md5_hex($cacheUrl), \%new_meta, 604800);
 
+        # 79-43 (D-33 FULL-3 CR-01): a Connect history record that was read without the current marker is healed
+        # in place - its names are replaced by the fresh ones, everything else (spotifyUri, type, bitrate) stays.
+        if ($url && $url =~ m{spoton://connect-}) {
+            my $histKey = 'spoton_meta_' . md5_hex($url);
+            my $hist    = $cache->get($histKey);
+            if (ref($hist) eq 'HASH' && !_metaCurrent($hist)) {
+                $cache->set($histKey, {
+                    %$hist,
+                    map { $_ => $new_meta{$_} } qw(_spoton_fmt title artist album duration cover icon year),
+                }, 604800);
+            }
+        }
+
         $new_meta{url} ||= $cacheUrl;
         my $refetchSong;
         if ($client && $client->can('currentSongForUrl')) {
@@ -1558,5 +1581,16 @@ sub _asyncRefetch {
 }
 
 sub _largestImage { Plugins::SpotOn::Plugin::_largestImage(@_) }
+
+# _metaCurrent($meta) -- 79-43 (D-33 FULL-3 CR-01): true when a spoton_meta record carries the current format
+# marker (_spoton_fmt >= SpClient's TRACK_META_FORMAT). A record without it can hold the byte form of the names;
+# every reader that SHOWS names treats it as a miss. Readers of other fields (cover, duration, spotifyUri) do not ask.
+sub _metaCurrent {
+    my ($meta) = @_;
+    return 0 unless ref($meta) eq 'HASH';
+    my $fmt = $meta->{_spoton_fmt};
+    require Plugins::SpotOn::API::SpClient;
+    return (defined $fmt && $fmt =~ /\A\d+\z/ && $fmt >= Plugins::SpotOn::API::SpClient::TRACK_META_FORMAT()) ? 1 : 0;
+}
 
 1;

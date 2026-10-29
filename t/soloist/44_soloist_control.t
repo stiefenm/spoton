@@ -266,6 +266,31 @@ sub shuffle { $SHUFFLE }
 1;
 END
 
+# D-34 (79-48): the source-marked LMS requests Control forwards during Browse
+# (pause 0|1, playlist index +1|-1). The stub keeps the request objects in
+# @EXECUTED (cmd + source), the way t/core/41's own copy does; Control only
+# `require`s it lazily, so every pre-existing test is untouched by it. A stub
+# here (not the LMS tree under /usr/share/perl5) keeps the file hermetic.
+write_stub($stub_dir, 'Slim::Control::Request', <<'END');
+package Slim::Control::Request;
+our @EXECUTED;
+sub new {
+    my ($class, $clientid, $cmdArray) = @_;
+    return bless { clientid => $clientid, cmd => $cmdArray, source => undef }, $class;
+}
+sub source {
+    my $self = shift;
+    $self->{source} = shift if @_;
+    return $self->{source};
+}
+sub execute {
+    my $self = shift;
+    push @EXECUTED, $self;
+    return 1;
+}
+1;
+END
+
 # Records constructor callbacks + post($url) calls, and exposes a deferred-
 # fire mode (t/29 convention) -- AUTO_FIRE 'ok' (default) fires the success
 # callback synchronously inside post(), 'error' fires the error callback,
@@ -417,9 +442,37 @@ sub new {
     push @REQUESTS, { PeerPort => $args{PeerPort}, bufref => \$buf };
     return bless $fh, $class;
 }
+# D-34 (79-48): POST /browse-keep?on=0|1 (the shim's browse flag) is its own
+# channel. Every pre-existing assertion in this file counts /boundary and
+# /seek-arm POSTs through @CALLS/@REQUESTS/@SYSWRITE_CALLS; the keep POST would
+# shift all of those counts without being what they measure, so it is moved
+# out of those lists into @KEEP_WRITES (data, in order) and $ON_KEEP_WRITE
+# (a hook, run at the moment of the write, for ordering checks).
+our @KEEP_WRITES;
+our $ON_KEEP_WRITE;
+# D-34 R2 (79-50): POST /seek-keep (the shim's decision-window keep for a
+# daemon-originated reposition in Connect) is likewise its own channel: it is
+# moved out of @CALLS/@REQUESTS/@SYSWRITE_CALLS into @SEEK_KEEP_WRITES so no
+# pre-existing /boundary or /seek-arm count shifts.
+our @SEEK_KEEP_WRITES;
 sub syswrite {
     my $self = shift;
     my ($data) = @_;
+    if ($data =~ m{^POST /seek-keep }) {
+        pop @CALLS;
+        pop @REQUESTS;
+        push @SEEK_KEEP_WRITES, $data;
+        print { $self } $data;
+        return length($data);
+    }
+    if ($data =~ m{^POST /browse-keep\?}) {
+        pop @CALLS;
+        pop @REQUESTS;
+        push @KEEP_WRITES, $data;
+        $ON_KEEP_WRITE->($data) if $ON_KEEP_WRITE;
+        print { $self } $data;
+        return length($data);
+    }
     push @SYSWRITE_CALLS, $data;
     # A real syswrite() bypasses PerlIO buffering and needs a genuine fd --
     # this stub's socket is scalar-backed (open($fh, '>', \$buf)) so a
@@ -10472,6 +10525,9 @@ END
         my ($c4, $d4, $w4) = $connect_ctl->(mode => 'connect', mac => 'aa:79:38:00:00:04');
         $c4->onEvent($pc->('paused'));
         $c4->onEvent($pc->('playing'));
+        # 79-51 runaway D1: the resume is released by the frame that decides it (the same-title playback_state of the
+        # same millisecond, E3); the playing frame alone only holds it. Contract unchanged: one post, one resume.
+        $c4->onEvent($ps->('playing', $PREV, 5000));
         is($hrs->(), 1, "79-38 D-31: connect, paused on X, playback_changed playing -> exactly one post");
         is(scalar(grep { $_->[1] eq 'resume' } @Slim::Player::Client::EXECUTED), 1,
             "79-38 D-31: connect: the Connect `resume` emit is unchanged");
@@ -11864,5 +11920,1110 @@ sub own_queue_empty {
     }
 }
 
-done_testing();
+# ============================================================
+# D-34 (79-48): during LMS-started Browse on Soloist, LMS stays the owner of
+# everything that moves within its list; Control forwards only a daemon
+# transport change it did not request itself. Frames are the real recorder
+# frames of 79-46 (t/fixtures/uat/d34-*.log, the cases named in 79-D34-RULE.md).
+# ============================================================
+my $D34_SRC = Plugins::SpotOn::Soloist::Control::BROWSE_FORWARD_SOURCE();    # Control's source marker
+my $D34_T1 = 'spotify:track:7GVUmCP00eSsqc4tzj1sDD';
+my $D34_T2 = 'spotify:track:2374M0fQpWi3dLnB54qaLX';
 
+# d34_case($file, $case) -- the rx frames of one case of a fixture, in order:
+# [ { ts => 'HH:MM:SS.mmm', epoch => <float>, msg => <decoded frame> }, ... ].
+sub d34_case {
+    my ($file, $want) = @_;
+    open(my $fh, '<', "$project_dir/t/fixtures/uat/$file") or die "fixture $file missing";
+    my ($cur, @out);
+    my $json = JSON::PP->new->utf8(1);
+    while (my $line = <$fh>) {
+        chomp $line;
+        next unless length $line;
+        my $o = $json->decode($line);
+        if ($o->{dir} eq 'meta') { ($cur) = $o->{frame} =~ /CASE (\w+)/; next; }
+        next unless defined $cur && $cur eq $want && $o->{dir} eq 'rx';
+        push @out, { ts => $o->{ts}, epoch => $o->{epoch}, msg => $json->decode($o->{frame}) };
+    }
+    close($fh);
+    die "fixture $file has no case $want" unless @out;
+    return \@out;
+}
+
+# d34_age($ctl, $gap) -- the fixture's own clock between two frames: every
+# wall-clock stamp Control keeps is moved $gap seconds into the past, so the
+# anchor arithmetic and the echo/takeover windows see the recorded spacing.
+sub d34_age {
+    my ($ctl, $gap) = @_;
+    return unless $gap > 0;
+    my $o = $ctl->observed;
+    for my $k (qw(anchor preResetAnchor entryAnchor)) {
+        my $a = $o->{$k} or next;
+        for my $f (qw(seen_at seen_hr reset_hr)) { $a->{$f} -= $gap if defined $a->{$f}; }
+    }
+    if (ref($o->{ownSend}) eq 'HASH') { $o->{ownSend}{$_} -= $gap for keys %{ $o->{ownSend} }; }
+    $o->{expectEcho}{until} -= $gap if ref($o->{expectEcho}) eq 'HASH' && defined $o->{expectEcho}{until};
+    $o->{seekIssued}{at}    -= $gap if ref($o->{seekIssued}) eq 'HASH' && defined $o->{seekIssued}{at};
+    $o->{ctxForeign}{hr}    -= $gap if ref($o->{ctxForeign}) eq 'HASH' && defined $o->{ctxForeign}{hr};
+}
+
+my %D34_LAST;
+# d34_feed($ctl, $frames, %o) -- hands the frames to onEvent in order, aging
+# Control's stamps by the recorded gap before each one. o{from}/o{to} bound
+# the slice by fixture ts (inclusive, string compare on HH:MM:SS.mmm); o{at}
+# is a list of [ts, coderef]: an own command Control itself issued in the
+# recorded run (an LMS command), run before the first frame at or after ts.
+sub d34_feed {
+    my ($ctl, $frames, %o) = @_;
+    my @at = sort { $a->[0] cmp $b->[0] } @{ $o{at} || [] };
+    my $key = Scalar::Util::refaddr($ctl);
+    for my $f (@$frames) {
+        next if defined $o{from} && $f->{ts} lt $o{from};
+        last if defined $o{to}   && $f->{ts} gt $o{to};
+        d34_age($ctl, $f->{epoch} - $D34_LAST{$key}) if defined $D34_LAST{$key};
+        $D34_LAST{$key} = $f->{epoch};
+        while (@at && $at[0][0] le $f->{ts}) { (shift @at)->[1]->(); }
+        $ctl->onEvent($f->{msg});
+    }
+}
+
+# d34_session($mac, %o) -- a Browse session LMS started: requestTrack(T1)
+# from idle, so the own `play` is pending and its echo is the first
+# track_changed of the recorded case. The title length is known (the
+# context-end test needs it). o{mode} 'connect' builds the connect row
+# instead; o{started} 0 skips requestTrack.
+sub d34_session {
+    my ($mac, %o) = @_;
+    my ($ctl, $daemon, $ws) = fresh_control(
+        mac      => $mac,
+        observed => { wsConnected => 1, is_active => 1, meta => { $D34_T1 => { duration => 203 }, $D34_T2 => { duration => 180 } } },
+    );
+    delete $D34_LAST{ Scalar::Util::refaddr($ctl) };
+    if (($o{mode} // '') eq 'connect') {
+        $ctl->mode('connect');
+        $ctl->wanted({ uri => $D34_T1, position_ms => 0, playing => 1 });
+        $ctl->observed->{track}  = $D34_T1;
+        $ctl->observed->{status} = 'playing';
+    }
+    elsif (($o{started} // 1)) {
+        $ctl->requestTrack($D34_T1, 0, { successCb => sub { } });
+    }
+    return ($ctl, $daemon, $ws);
+}
+
+sub d34_forwarded { return map { [ @{ $_->{cmd} } ] } @Slim::Control::Request::EXECUTED; }
+sub d34_reset { @Slim::Control::Request::EXECUTED = (); @Slim::Player::Client::EXECUTED = (); @IO::Socket::INET::KEEP_WRITES = (); }
+
+# --- P1/P2: app pause and app play on the own title (Case E) -> LMS pause 1 / pause 0 ---
+{
+    d34_reset();
+    local $Slim::Player::Source::PLAYMODE = 'play';
+    my ($ctl, $daemon, $ws) = d34_session('02:d3:40:00:00:01');
+    my $E = d34_case('d34-pause-seek.log', 'E');
+
+    d34_feed($ctl, $E, to => '15:15:20.716');
+    is(scalar(d34_forwarded()), 0, "D-34 P1: before the app pause nothing is forwarded to LMS");
+    my $sent = scalar @{ $ws->sent };
+
+    d34_feed($ctl, $E, from => '15:15:20.717', to => '15:15:20.717');
+    is_deeply([ d34_forwarded() ], [ ['pause', 1] ], "D-34 P1: the app pause on the own title reaches LMS as exactly one pause 1");
+    is($Slim::Control::Request::EXECUTED[0]{source}, $D34_SRC,
+        "D-34 P1: the forwarded request carries Control's source marker");
+    is(scalar @{ $ws->sent }, $sent, "D-34 P1: nothing is sent to the daemon for the app's own pause");
+    is($ctl->wanted->{playing}, 0, "D-34 P1: wanted.playing follows the app's pause (no resume nachziehen)");
+
+    @Slim::Control::Request::EXECUTED = ();
+    local $Slim::Player::Source::PLAYMODE = 'pause';
+    d34_feed($ctl, $E, from => '15:15:20.718', to => '15:15:27.017');
+    is_deeply([ d34_forwarded() ], [ ['pause', 0] ], "D-34 P2: the app play after that pause reaches LMS as exactly one pause 0");
+    is($Slim::Control::Request::EXECUTED[0]{source}, $D34_SRC,
+        "D-34 P2: the forwarded unpause carries the source marker");
+    is($ctl->wanted->{playing}, 1, "D-34 P2: wanted.playing follows the app's play");
+    is(scalar @{ $ws->sent }, $sent, "D-34 P2: nothing is sent to the daemon for the app's own play");
+}
+
+# --- P4: connect mode keeps today's stop emit; nothing is forwarded to LMS ---
+{
+    d34_reset();
+    local $Slim::Player::Source::PLAYMODE = 'play';
+    my ($ctl, $daemon, $ws) = d34_session('02:d3:40:00:00:04', mode => 'connect');
+    my $E = d34_case('d34-pause-seek.log', 'E');
+    d34_feed($ctl, $E, from => '15:15:20.717', to => '15:15:20.717');
+    is(scalar(d34_forwarded()), 0, "D-34 P4: mode connect forwards no LMS request for the app pause");
+    ok((grep { ref($_) eq 'ARRAY' && $_->[0] eq 'spottyconnect' && $_->[1] eq 'stop' } @Slim::Player::Client::EXECUTED),
+        "D-34 P4: mode connect keeps today's spottyconnect stop emit");
+}
+
+# --- P5: the context end under Autoplay OFF (Case A_off) is never read as an app pause ---
+{
+    d34_reset();
+    local $Slim::Player::Source::PLAYMODE = 'play';
+    my ($ctl, $daemon, $ws) = d34_session('02:d3:40:00:00:05');
+    my $A = d34_case('d34-end-off.log', 'A_off');
+    d34_feed($ctl, $A, at => [ [ '15:11:37.100', sub { $ctl->_dispatch('seek', position_ms => 175000, armed => 0) } ] ]);
+    is(scalar(d34_forwarded()), 0, "D-34 P5: the context-end pause under Autoplay OFF reaches LMS as no request");
+    is($ctl->observed->{contextEndPlanted}, $D34_T1,
+        "D-34 P5: the context-end path itself is unchanged (the boundary is planted on the own title)");
+    is($ctl->wanted->{playing}, 1, "D-34 P5: wanted.playing stays 1 (LMS moves on by itself)");
+}
+
+# --- P5b (79-44 Fable review, D-33 WR-01): the same context end with the title's duration UNKNOWN is never an app pause ---
+# _nearTitleEnd answers 0 without a known duration, so the P5 shape (anchor reset to <= 1 s, not moving) carried no evidence
+# at all and was forwarded as LMS pause 1 on a title that is over (wanted.playing 0: the list wedges).
+{
+    d34_reset();
+    local $Slim::Player::Source::PLAYMODE = 'play';
+    my ($ctl, $daemon, $ws) = d34_session('02:d3:40:00:00:51');
+    delete $ctl->observed->{meta}{$D34_T1}{duration};
+    my $A = d34_case('d34-end-off.log', 'A_off');
+    d34_feed($ctl, $A, at => [ [ '15:11:37.100', sub { $ctl->_dispatch('seek', position_ms => 175000, armed => 0) } ] ]);
+    is(scalar(d34_forwarded()), 0, "79-44 WR-01: the context end with an unknown duration reaches LMS as no request");
+    is($ctl->wanted->{playing}, 1, "79-44 WR-01: wanted.playing stays 1 (LMS moves on by itself)");
+}
+
+# --- P5c (79-44 Fable review, D-33 WR-01): an app pause well into the title still forwards when the duration is unknown ---
+# (the guard only reads the reset shape; a real pause is not the reset shape)
+{
+    d34_reset();
+    local $Slim::Player::Source::PLAYMODE = 'play';
+    my ($ctl, $daemon, $ws) = d34_session('02:d3:40:00:00:52');
+    delete $ctl->observed->{meta}{$D34_T1}{duration};
+    my $E = d34_case('d34-pause-seek.log', 'E');
+    d34_feed($ctl, $E, to => '15:15:20.717');
+    is_deeply([ d34_forwarded() ], [ ['pause', 1] ], "79-44 WR-01: an app pause mid-title forwards as pause 1 although the duration is unknown");
+}
+
+# --- P5d (79-44 Fable review, D-33 WR-01): a boundary the carrier already planted is never read as an app pause either ---
+# After the A_off context end (boundary planted) the pre-reset evidence is gone; a pause candidate in the reset shape on the
+# same title, duration known but _nearTitleEnd now 0, must not turn into an LMS pause just because the carrier's evidence aged out.
+{
+    d34_reset();
+    local $Slim::Player::Source::PLAYMODE = 'play';
+    my ($ctl, $daemon, $ws) = d34_session('02:d3:40:00:00:53');
+    my $A = d34_case('d34-end-off.log', 'A_off');
+    d34_feed($ctl, $A, at => [ [ '15:11:37.100', sub { $ctl->_dispatch('seek', position_ms => 175000, armed => 0) } ] ]);
+    is($ctl->observed->{contextEndPlanted}, $D34_T1, "79-44 WR-01 (precondition): the carrier planted the boundary on the own title");
+    d34_reset();
+    delete $ctl->observed->{preResetAnchor};
+    $ctl->observed->{pauseCandidate} = { uri => $D34_T1, hr => Time::HiRes::time() };
+    $ctl->observed->{anchor} = { position_ms => 0, timestamp_ms => 1, speed => 0, seen_at => time(), seen_hr => Time::HiRes::time(), uri => $D34_T1 };
+    is($ctl->_nearTitleEnd($D34_T1), 0, "79-44 WR-01 (precondition): the near-end evidence is gone, the duration is still known");
+    $ctl->_settleBrowsePause({ type => 'position_sync', position => { position_ms => 0 } });
+    is(scalar(d34_forwarded()), 0, "79-44 WR-01: a planted boundary keeps the reset shape from being forwarded as an app pause");
+}
+
+# --- P6: the echo of an LMS pause (Case H) is never forwarded back ---
+{
+    d34_reset();
+    local $Slim::Player::Source::PLAYMODE = 'play';
+    my ($ctl, $daemon, $ws) = d34_session('02:d3:40:00:00:06');
+    my $H = d34_case('d34-lms-pause-echo.log', 'H');
+    d34_feed($ctl, $H, at => [
+        [ '15:23:43.700', sub { $Slim::Player::Source::PLAYMODE = 'pause'; $ctl->requestPause(0); } ],
+        [ '15:23:49.900', sub { $Slim::Player::Source::PLAYMODE = 'play';  $ctl->requestResume; } ],
+    ]);
+    is(scalar(d34_forwarded()), 0, "D-34 P6: the echoes of an LMS pause and an LMS unpause (wanted.playing already moved) forward nothing");
+    is($ctl->wanted->{playing}, 1, "D-34 P6: wanted.playing is 1 again after the LMS unpause");
+
+    # An own pause that does NOT move wanted.playing (the autoplay guard's and
+    # the split-brain exit's `_dispatch('pause')` shape): only the own-command
+    # exclusion keeps its echo from coming back as an "app pause".
+    d34_reset();
+    $Slim::Player::Source::PLAYMODE = 'play';
+    my ($c2, $d2, $w2) = d34_session('02:d3:40:00:00:07');
+    d34_feed($c2, $H, to => '15:23:43.746', at => [ [ '15:23:43.700', sub { $c2->_dispatch('pause') } ] ]);
+    is($c2->wanted->{playing}, 1, "D-34 P6: (precondition) an own _dispatch('pause') leaves wanted.playing at 1");
+    is(scalar(d34_forwarded()), 0, "D-34 P6: the echo of Control's own daemon pause is never forwarded to LMS");
+}
+
+# --- P6b: the internal stop LMS issues during `playlist index +1` (Case J) ---
+{
+    d34_reset();
+    local $Slim::Player::Source::PLAYMODE = 'play';
+    my ($ctl, $daemon, $ws) = d34_session('02:d3:40:00:00:08');
+    my $J = d34_case('d34-lms-skip-echo.log', 'J');
+    # LMS: playlist index +1 -> its internal stop (historic: LMS already plays again) -> getNextTrack(T2)
+    d34_feed($ctl, $J, at => [ [ '15:34:34.820', sub {
+        $ctl->requestPause(1);
+        $ctl->requestTrack($D34_T2, 0, { successCb => sub { } });
+    } ] ]);
+    is(scalar(d34_forwarded()), 0, "D-34 P6b: LMS's own jump (internal stop, getNextTrack, echo) forwards no request back");
+    is($ctl->wanted->{playing}, 1, "D-34 P6b: wanted.playing stays 1 through LMS's own jump");
+}
+
+
+# ============================================================
+# D-34 (79-48) Task 2: app seek and next/previous during Browse, the shim's
+# browse flag (/browse-keep), and the exits that clear it.
+# ============================================================
+
+# d34_settled($mac, %o) -- a Browse session already running when the recorded
+# window opens: mode browse on T1, the daemon on T1 and playing, Control's own
+# `play` sent just now (so the opening frames of the window are its echo and
+# the fixture's own clock ages that stamp out before the app acts).
+sub d34_settled {
+    my ($mac, %o) = @_;
+    my ($ctl, $daemon, $ws) = fresh_control(
+        mac      => $mac,
+        mode     => 'browse',
+        wanted   => { uri => $D34_T1, position_ms => 0, playing => 1 },
+        observed => {
+            wsConnected => 1, is_active => 1, track => $D34_T1, status => 'playing',
+            meta        => { $D34_T1 => { duration => 203 }, $D34_T2 => { duration => 180 } },
+            ownSend     => { play => Time::HiRes::time() },
+            %{ $o{observed} || {} },
+        },
+    );
+    delete $D34_LAST{ Scalar::Util::refaddr($ctl) };
+    return ($ctl, $daemon, $ws);
+}
+
+sub d34_keep_lines { return map { (split /\r\n/, $_)[0] } @IO::Socket::INET::KEEP_WRITES; }
+sub d34_seeks { return grep { ref($_) eq 'ARRAY' && $_->[0] eq 'spottyconnect' && $_->[1] eq 'seek' } @Slim::Player::Client::EXECUTED; }
+
+# --- K1: entering browse posts the shim's keep once; Control's own title changes post nothing ---
+{
+    d34_reset();
+    local $Slim::Player::Source::PLAYMODE = 'play';
+    my ($ctl, $daemon, $ws) = d34_session('02:d3:40:00:01:01', started => 0);
+    is(scalar(d34_keep_lines()), 0, "D-34 K1: (precondition) no keep post before browse starts");
+    $ctl->requestTrack($D34_T1, 0, { successCb => sub { } });
+    is_deeply([ d34_keep_lines() ], [ 'POST /browse-keep?on=1 HTTP/1.0' ],
+        "D-34 K1: entering browse posts /browse-keep?on=1 exactly once");
+    my $E = d34_case('d34-pause-seek.log', 'E');
+    d34_feed($ctl, $E, to => '15:15:03.300');
+    $ctl->requestTrack($D34_T2, 0, { successCb => sub { } });
+    $ctl->onEvent({ type => 'track_changed', item => { uri => $D34_T2 } });
+    is(scalar(d34_keep_lines()), 1, "D-34 K1: Control's own title changes (requestTrack T2, its echo) post nothing more");
+    ok(!grep({ $_ =~ /on=0/ } @IO::Socket::INET::KEEP_WRITES), "D-34 K1: no clear while browse runs");
+}
+
+# --- K1b: every exit from browse posts on=0 exactly once (the flag is never reset by the shim itself) ---
+my $k1b_n = 0;
+for my $exit (
+    [ 'stop/clear (leaveBrowse)',          sub { $_[0]->leaveBrowse; $_[0]->leaveBrowse; } ],
+    [ 'stop of a foreign title (requestPause)', sub { foreign_track($_[0]->mac); $_[0]->requestPause(1); } ],
+    [ 'player leaves Soloist (shutdown)',  sub { $_[0]->shutdown; } ],
+    [ 'daemon session end (device_changed is_active false)', sub { $_[0]->onEvent({ type => 'device_changed', is_active => JSON::PP::false() }); } ],
+) {
+    d34_reset();
+    local $Slim::Player::Source::PLAYMODE = 'play';
+    my ($ctl, $daemon, $ws) = d34_session(sprintf('02:d3:40:00:01:%02x', 16 + $k1b_n++));
+    own_track($ctl->mac);
+    is(scalar(d34_keep_lines()), 1, "D-34 K1b: ($exit->[0]) browse is on");
+    $exit->[1]->($ctl);
+    is_deeply([ d34_keep_lines() ], [ 'POST /browse-keep?on=1 HTTP/1.0', 'POST /browse-keep?on=0 HTTP/1.0' ],
+        "D-34 K1b: $exit->[0] posts on=0 exactly once");
+}
+
+# --- K2: an app seek (Case F) reaches LMS's clock as a marked startOffset seek, no stream re-open ---
+{
+    d34_reset();
+    local $Slim::Player::Source::PLAYMODE = 'play';
+    my ($ctl, $daemon, $ws) = d34_settled('02:d3:40:00:02:01');
+    my $F = d34_case('d34-pause-seek.log', 'F');
+    my $sent = scalar @{ $ws->sent };
+    # the frames of the app seek itself; the title change at 15:23:07.510 is today's
+    # flush-disconnect consequence, which the shim's keep (79-47) removes
+    d34_feed($ctl, $F, to => '15:23:07.200');
+    is_deeply([ d34_seeks() ], [ [ 'spottyconnect', 'seek', '102.463', '', 'browse' ] ],
+        "D-34 K2: the app seek on the own title is emitted once, marked 'browse', at the app's target");
+    is(scalar(d34_forwarded()), 0, "D-34 K2: no time command and no playlist command reaches LMS (the stream is not re-opened)");
+    is(scalar @{ $ws->sent }, $sent, "D-34 K2: nothing is sent to the daemon");
+}
+
+# --- K3: app next / previous (Cases C and D, Autoplay ON and OFF) become LMS playlist index +1 / -1 ---
+for my $case (
+    [ 'next',     'd34-next-prev-on.log',  'C_on',  'ON',  '15:09:53.300', 1, [ [ 'playlist', 'index', '+1' ] ] ],
+    [ 'next',     'd34-next-prev-off.log', 'C_off', 'OFF', '15:12:53.200', 0, [ [ 'playlist', 'index', '+1' ] ] ],
+    [ 'previous', 'd34-next-prev-on.log',  'D_on',  'ON',  '15:10:40.300', 1, [ [ 'playlist', 'index', '-1' ] ] ],
+    [ 'previous', 'd34-next-prev-off.log', 'D_off', 'OFF', '15:13:40.200', 1, [ [ 'playlist', 'index', '-1' ] ] ],
+) {
+    my ($what, $file, $c, $state, $to, $withEcho, $want) = @$case;
+    d34_reset();
+    local $Slim::Player::Source::PLAYMODE = 'play';
+    my ($ctl, $daemon, $ws) = $withEcho ? d34_session("02:d3:40:00:03:$c") : d34_settled("02:d3:40:00:03:$c");
+    $ctl->observed->{queuedByUs} = { $D34_T2 => 1 };
+    my $frames = d34_case($file, $c);
+    my $sent = scalar @{ $ws->sent };
+    d34_feed($ctl, $frames, to => $to);
+    is_deeply([ d34_forwarded() ], $want, "D-34 K3: app $what with Autoplay $state ($c) becomes LMS $want->[0][1] $want->[0][2]");
+    is($Slim::Control::Request::EXECUTED[0]{source}, $D34_SRC, "D-34 K3: ($c) the request carries the source marker");
+    is($ctl->mode, 'browse', "D-34 K3: ($c) no takeover, the session stays Browse");
+    is(scalar(grep { ref($_) eq 'ARRAY' && $_->[0] eq 'spottyconnect' && $_->[1] ne 'volume' } @Slim::Player::Client::EXECUTED), 0, "D-34 K3: ($c) nothing emitted to Connect (the browse volume echo aside)");
+}
+
+# --- K3b: a natural advance onto the prefetched title (the daemon at its end) is LMS's own and is not forwarded ---
+{
+    d34_reset();
+    local $Slim::Player::Source::PLAYMODE = 'play';
+    my ($ctl, $daemon, $ws) = d34_settled('02:d3:40:00:03:b1');
+    $ctl->observed->{queuedByUs} = { $D34_T2 => 1 };
+    my $C = d34_case('d34-next-prev-off.log', 'C_off');
+    d34_feed($ctl, $C, to => '15:12:53.200', at => [ [ '15:12:52.600', sub { d34_age($ctl, 180) } ] ]);
+    is(scalar(d34_forwarded()), 0, "D-34 K3b: a prefetched title reached at the end of the title is no app next (LMS advances by itself)");
+}
+
+# --- K4: a frozen-position repeat still emits nothing in browse; the connect seek is unchanged ---
+{
+    d34_reset();
+    local $Slim::Player::Source::PLAYMODE = 'play';
+    my ($ctl, $daemon, $ws) = d34_settled('02:d3:40:00:04:01');
+    my $F = d34_case('d34-pause-seek.log', 'F');
+    d34_feed($ctl, $F, to => '15:22:46.200');
+    # the daemon reports 41 s mid-title, then goes quiet; 30 s later a buffering
+    # frame repeats exactly that report while the clock moved on (the 84-02 shape)
+    $ctl->onEvent({ type => 'position_sync', position => { position_ms => 41000, timestamp_ms => 1, speed => 1 } });
+    my $anchorPos = $ctl->observed->{anchor}{position_ms};
+    is($anchorPos, 41000, "D-34 K4: (precondition) the anchor holds the 41 s report");
+    d34_age($ctl, 30);
+    $ctl->observed->{status} = 'buffering';
+    $ctl->onEvent({ type => 'playback_state', status => 'buffering', item => { uri => $D34_T1 },
+        position => { position_ms => $anchorPos, speed => 0, timestamp_ms => 2 } });
+    is(scalar(d34_seeks()), 0, "D-34 K4: a position report equal to the prior anchor while time passed (frozen daemon position) emits no seek in browse");
+    is(scalar(d34_forwarded()), 0, "D-34 K4: and forwards nothing to LMS");
+
+    d34_reset();
+    my ($c2, $d2, $w2) = d34_session('02:d3:40:00:04:02', mode => 'connect');
+    $c2->onEvent({ type => 'position_sync', position => { position_ms => 1000, timestamp_ms => 1, speed => 1 } });
+    d34_age($c2, 1);
+    $c2->onEvent({ type => 'position_sync', position => { position_ms => 102463, timestamp_ms => 2, speed => 1 } });
+    is_deeply([ d34_seeks() ], [ [ 'spottyconnect', 'seek', '102.463', '' ] ],
+        "D-34 K4: a connect seek is emitted as before (no browse marker)");
+}
+
+# --- K5: the echo frames of an LMS-side seek (Case I) trigger nothing ---
+{
+    d34_reset();
+    local $Slim::Player::Source::PLAYMODE = 'play';
+    my ($ctl, $daemon, $ws) = d34_settled('02:d3:40:00:05:01');
+    my $I = d34_case('d34-lms-seek-echo.log', 'I');
+    d34_feed($ctl, $I, at => [ [ '15:24:57.250', sub { $ctl->_dispatch('seek', position_ms => 102000, armed => 0); } ] ]);
+    is(scalar(d34_seeks()), 0, "D-34 K5: the echo of an LMS seek (Control's own seek, 137 ms before the frames) emits no seek");
+    is(scalar(d34_forwarded()), 0, "D-34 K5: and forwards no LMS request");
+}
+
+
+# ============================================================
+# D-34 (79-48) Task 3: takeover into Connect only when the app replaces the
+# queue (79-D34-RULE.md: a context_changed to a foreign context, then a foreign
+# track within the window, with no own command pending; an app-queued track when
+# it STARTS). An autoplay continuation and a natural end are not takeovers.
+# ============================================================
+# P3 pin: Connect.pm cannot load Control or spell a Soloist package (the amputation leg's
+# refcheck), so it holds its own copy of the source marker; the two literals must stay equal.
+{
+    open(my $cfh, '<', "$project_dir/Plugins/SpotOn/Connect.pm") or die "Connect.pm unreadable";
+    my $src = do { local $/; <$cfh> };
+    close($cfh);
+    my ($onPause) = $src =~ /(sub _onPause \{.*?\nsub )/s;
+    my ($lit) = ($onPause // '') =~ /\$request->source eq '([^']+)'/;
+    is($lit, $D34_SRC, "D-34 P3: Connect.pm's copy of the source marker equals Control's BROWSE_FORWARD_SOURCE");
+    unlike($D34_SRC, qr/Soloist/, "D-34 P3: the marker spells no Soloist package (core code may carry it)");
+}
+
+# d34_wrap_enter(\@calls) -- records every call of the shared transfer-in sub
+# ([ why, %opts ]) and runs the real one. Returns a guard object; scope = test.
+sub d34_wrap_enter {
+    my ($calls) = @_;
+    no warnings 'redefine';
+    my $orig = \&Plugins::SpotOn::Soloist::Control::_enterConnectSession;
+    *Plugins::SpotOn::Soloist::Control::_enterConnectSession = sub {
+        my ($self, $why, %o) = @_;
+        push @$calls, [ $why, %o ];
+        return $self->$orig($why, %o);
+    };
+    return bless { orig => $orig }, 'D34::Unwrap';
+}
+sub D34::Unwrap::DESTROY {
+    no warnings 'redefine';
+    *Plugins::SpotOn::Soloist::Control::_enterConnectSession = $_[0]{orig};
+}
+sub d34_starts { return grep { ref($_) eq 'ARRAY' && $_->[0] eq 'spottyconnect' && $_->[1] eq 'start' } @Slim::Player::Client::EXECUTED; }
+sub d34_daemon_pauses { my $ws = shift; return grep { $_->[0] eq 'pause' } @{ $ws->sent }; }
+
+# --- T1 / T2 / T6: the app starts another track (Case B) or playlist (Case G) ---
+for my $t (
+    [ q(D-34 T1:), q(T1), q(d34-takeover-track.log),    q(B), q(15:14:32.240), q(0ymW7RlpQ12wFvr3tP8Fqb), q(track) ],
+    [ q(D-34 T2:), q(T2), q(d34-takeover-playlist.log), q(G), q(15:30:10.348), q(6nFsSjK6HtenFUCnDi9rRb), q(playlist) ],
+) {
+    my ($label, $id, $file, $case, $to, $newId, $kind) = @$t;
+    d34_reset();
+    @Plugins::SpotOn::Connect::CLAIMS = ();
+    local $Slim::Player::Source::PLAYMODE = 'play';
+    my ($ctl, $daemon, $ws) = d34_session("02:d3:40:00:06:$id");
+    $ctl->observed->{queuedByUs} = { $D34_T2 => 1 };
+    my @enter;
+    my $guard = d34_wrap_enter(\@enter);
+    my $modeAtClear;
+    local $IO::Socket::INET::ON_KEEP_WRITE = sub { $modeAtClear = $ctl->mode if $_[0] =~ /on=0/; };
+
+    d34_feed($ctl, d34_case($file, $case), to => $to);
+
+    is($ctl->mode, 'connect', "$label the app started a $kind -> Control leaves Browse for connect");
+    is(scalar(@enter), 1, "$label exactly one takeover went through the shared transfer-in sub");
+    is($enter[0][0], 'takeover', "$label ... as its third caller (why 'takeover')");
+    is_deeply([ d34_starts() ], [ [ 'spottyconnect', 'start', $newId, '' ] ],
+        "$label exactly one connect start for the app's track (Connect replaces the LMS playlist with it)");
+    is(scalar(grep { $_->[0] eq 'bind' && ($_->[2] // '') eq 'takeover' } @Plugins::SpotOn::Connect::CLAIMS), 1,
+        "$label the Connect claim is bound from the takeover");
+    is(scalar(d34_daemon_pauses($ws)), 0, "$label the autoplay guard does not pause the app's track");
+    ok(!defined $ctl->observed->{autoplayPaused}, "$label no autoplay marker on the app's track");
+    is($ctl->wanted->{uri}, "spotify:track:$newId", "$label wanted follows the app's track");
+    is(scalar(d34_forwarded()), 0, "$label nothing is forwarded to LMS (the list is replaced by Connect's start)");
+
+    if ($id eq 'T1') {
+        is_deeply([ d34_keep_lines() ], [ 'POST /browse-keep?on=1 HTTP/1.0', 'POST /browse-keep?on=0 HTTP/1.0' ],
+            "D-34 T6: the takeover posts /browse-keep?on=0 (once)");
+        is($modeAtClear, 'browse', "D-34 T6: ... while Control is still in browse, before mode connect");
+    }
+}
+
+# --- T3: an autoplay continuation (Case A_on) is paused by the guard as today, not taken over ---
+{
+    d34_reset();
+    local $Slim::Player::Source::PLAYMODE = 'play';
+    my ($ctl, $daemon, $ws) = d34_session('02:d3:40:00:06:a1');
+    my @enter;
+    my $guard = d34_wrap_enter(\@enter);
+    d34_feed($ctl, d34_case('d34-end-on.log', 'A_on'),
+        at => [ [ '15:08:24.100', sub { $ctl->_dispatch('seek', position_ms => 175000, armed => 0) } ] ]);
+    is($ctl->mode, 'browse', "D-34 T3: the autoplay continuation at a title end does not leave Browse");
+    is(scalar(@enter), 0, "D-34 T3: no takeover");
+    is($ctl->observed->{autoplayPaused}, 'spotify:track:0yNttAVwMr39qyODHNIkrY', "D-34 T3: the guard pauses the foreign title as today");
+    is(scalar(d34_daemon_pauses($ws)), 1, "D-34 T3: exactly one daemon pause (the guard's)");
+    is(scalar(d34_starts()), 0, "D-34 T3: no connect start");
+}
+
+# --- T3b: the natural end under Autoplay OFF (Case A_off) stays the context-end path ---
+{
+    d34_reset();
+    local $Slim::Player::Source::PLAYMODE = 'play';
+    my ($ctl, $daemon, $ws) = d34_session('02:d3:40:00:06:a2');
+    my @enter;
+    my $guard = d34_wrap_enter(\@enter);
+    d34_feed($ctl, d34_case('d34-end-off.log', 'A_off'),
+        at => [ [ '15:11:37.100', sub { $ctl->_dispatch('seek', position_ms => 175000, armed => 0) } ] ]);
+    is($ctl->mode, 'browse', "D-34 T3b: the natural end under Autoplay OFF does not leave Browse");
+    is(scalar(@enter), 0, "D-34 T3b: no takeover");
+    is($ctl->observed->{contextEndPlanted}, $D34_T1, "D-34 T3b: the context-end path plants its boundary as today");
+    is(scalar(d34_starts()), 0, "D-34 T3b: no connect start");
+}
+
+# --- T4: an app-queued track takes over when it STARTS, not when it is queued ---
+{
+    d34_reset();
+    local $Slim::Player::Source::PLAYMODE = 'play';
+    my ($ctl, $daemon, $ws) = d34_session('02:d3:40:00:06:b1');
+    $ctl->observed->{queuedByUs} = { $D34_T2 => 1 };
+    my $Q = 'spotify:track:4cOdK2wGLETKBW3PvgPWqT';
+    my @enter;
+    my $guard = d34_wrap_enter(\@enter);
+    d34_feed($ctl, d34_case('d34-pause-seek.log', 'E'), to => '15:15:03.300');
+    # the app's "add to queue": a queue_changed frame (shape of the real ones, a source 'queue' entry)
+    $ctl->onEvent({ type => 'queue_changed', previous => [],
+        upcoming => [ { uid => 'app-q-1', source => 'queue', item => { uri => $Q, entity_type => 'track' } } ] });
+    is($ctl->mode, 'browse', "D-34 T4: queueing a track in the app does not take over");
+    is(scalar(@enter), 0, "D-34 T4: no transfer-in at queue time");
+    d34_age($ctl, 200);
+    $ctl->onEvent({ type => 'track_changed', item => { uri => $Q, entity_type => 'track' } });
+    is($ctl->mode, 'connect', "D-34 T4: the queued track taking over when it starts");
+    is_deeply([ d34_starts() ], [ [ 'spottyconnect', 'start', '4cOdK2wGLETKBW3PvgPWqT', '' ] ], "D-34 T4: one connect start for it");
+    is(scalar(@enter), 1, "D-34 T4: one takeover through the shared sub");
+    is(scalar(d34_daemon_pauses($ws)), 0, "D-34 T4: and the guard does not pause it");
+
+    # the autoplay shape: the same foreign track, queued from the baseline (stale own entries) or by the context
+    d34_reset();
+    my ($c2, $d2, $w2) = d34_session('02:d3:40:00:06:b2');
+    $c2->observed->{queuedByUs} = { $D34_T2 => 1 };
+    d34_feed($c2, d34_case('d34-pause-seek.log', 'E'), to => '15:15:03.300');
+    $c2->onEvent({ type => 'queue_changed', previous => [],
+        upcoming => [ { uid => 'ctx-1', source => 'context', item => { uri => $Q, entity_type => 'track' } } ] });
+    d34_age($c2, 200);
+    $c2->onEvent({ type => 'track_changed', item => { uri => $Q, entity_type => 'track' } });
+    is($c2->mode, 'browse', "D-34 T4: a context entry (autoplay shape) is no app queue and is not taken over");
+    is(scalar(d34_daemon_pauses($w2)), 1, "D-34 T4: the guard pauses it as today");
+}
+
+# --- T5: the two existing transfer-in callers behave as before (through the shared sub) ---
+{
+    d34_reset();
+    @Plugins::SpotOn::Connect::CLAIMS = ();
+    my @enter;
+    my $guard = d34_wrap_enter(\@enter);
+
+    my ($c1, $d1, $w1) = fresh_control(mac => '02:d3:40:00:07:01', observed => { wsConnected => 1, track => $D34_T1, status => 'playing', volume => 40,
+        anchor => { position_ms => 47000, timestamp_ms => 1, speed => 1, seen_at => time(), seen_hr => Time::HiRes::time(), uri => $D34_T1 } });
+    $c1->observed->{leftBrowseUri} = 'x';
+    $c1->observed->{leftConnectForeign} = 1;
+    $c1->observed->{autoplayPaused} = 'y';
+    $c1->onEvent({ type => 'device_changed', is_active => JSON::PP::true() });
+    is($c1->mode, 'connect', "D-34 T5: device_changed(is_active) transfer-in still enters connect");
+    is_deeply([ @{ $enter[0] || [] }[0, 1, 2] ], [ 'transfer-in', 'fresh', 1 ], "D-34 T5: ... through the shared sub (why transfer-in, fresh)");
+    is_deeply({ map { $_ => $c1->wanted->{$_} } qw(uri position_ms playing volume) },
+        { uri => $D34_T1, position_ms => 47000, playing => 1, volume => 40 }, "D-34 T5: transfer-in wanted as before");
+    ok(!defined $c1->observed->{leftBrowseUri} && !defined $c1->observed->{leftConnectForeign} && !defined $c1->observed->{autoplayPaused},
+        "D-34 T5: transfer-in clears the stop-leave and autoplay markers as before");
+    is(scalar(d34_starts()), 1, "D-34 T5: transfer-in emits its one start");
+
+    d34_reset();
+    @enter = ();
+    my ($c2, $d2, $w2) = fresh_control(mac => '02:d3:40:00:07:02', observed => { wsConnected => 1, volume => 55 });
+    $c2->observed->{leftBrowseUri} = 'x';
+    $c2->onEvent({ type => 'playback_state', status => 'playing', is_active => JSON::PP::true(), item => { uri => $D34_T1 },
+        position => { position_ms => 12000, timestamp_ms => 1, speed => 1 } });
+    is($c2->mode, 'connect', "D-34 T5: playback_state reconnect adoption still enters connect");
+    is($enter[0][0], 'reconnect-to-connect', "D-34 T5: ... through the shared sub (why reconnect-to-connect)");
+    is($c2->wanted->{uri}, $D34_T1, "D-34 T5: reconnect wanted as before");
+    ok(!defined $c2->observed->{leftBrowseUri}, "D-34 T5: reconnect clears the stop-leave marker as before");
+}
+
+
+# ============================================================
+# D-34 R2 (79-50): the Connect app seek keeps LMS's stream. In Connect the app
+# is the controller; an app seek makes the daemon flush on its own, the shim's
+# unarmed flush would close LMS's stream 9 ms later (79-47 R2). The shim now
+# holds that decision open for a bounded window (POST /seek-keep keeps the
+# client, POST /boundary closes it) and Control sends the keep when the daemon's
+# first frame after the flush is a `buffering` playback_state for the title it
+# already observed, with no change pending and no command of its own in flight.
+# Frames: the recorded R2_3 (t/fixtures/uat/r2-connect-seek.log, 79-47 Task 4)
+# and the 79-46 cases C_off / C_on / D_off / E / F / I (the d34 fixtures).
+# ============================================================
+my $R2_T = $D34_T2;    # the title of R2_3 (the title that was already playing)
+
+# r2_connect($mac, $uri) -- a Connect session already running on $uri: the
+# `start` is behind us (startEmittedFor), so a title change takes the 84-17
+# change path, and the observed track is the one the recorded window opens on.
+sub r2_connect {
+    my ($mac, $uri) = @_;
+    my ($ctl, $daemon, $ws) = d34_session($mac, mode => 'connect');
+    $ctl->wanted({ uri => $uri, position_ms => 0, playing => 1 });
+    $ctl->observed->{track}           = $uri;
+    $ctl->observed->{startEmittedFor} = $uri;
+    return ($ctl, $daemon, $ws);
+}
+sub r2_reset {
+    d34_reset();
+    @IO::Socket::INET::SEEK_KEEP_WRITES = ();
+    @IO::Socket::INET::SYSWRITE_CALLS   = ();
+    @IO::Socket::INET::REQUESTS         = ();
+    @IO::Socket::INET::CALLS            = ();
+}
+sub r2_keeps  { return scalar(@IO::Socket::INET::SEEK_KEEP_WRITES); }
+sub r2_drains { return scalar(grep { m{^POST /boundary\?anchor=drain HTTP/1\.0} } @IO::Socket::INET::SYSWRITE_CALLS); }
+
+# --- S1: the recorded connect seek (R2_3): one keep, at the buffering frame of the title already playing ---
+{
+    r2_reset();
+    local $Slim::Player::Source::PLAYMODE = 'play';
+    my ($ctl, $daemon, $ws) = r2_connect('02:d3:50:00:00:01', $R2_T);
+    my $R = d34_case('r2-connect-seek.log', 'R2_3');
+    d34_feed($ctl, $R, from => '18:00:36.453', to => '18:01:11.515');
+    is(r2_keeps(), 0, "D-34 R2-S1: (precondition) no keep before the app seek's first frame (fixture lines 3-6)");
+    d34_feed($ctl, $R, from => '18:01:11.516', to => '18:01:11.516');
+    is(r2_keeps(), 1, "D-34 R2-S1: exactly one POST /seek-keep at the buffering frame of the unchanged title (R2_3 line 8)");
+    like($IO::Socket::INET::SEEK_KEEP_WRITES[0] // '', qr{^POST /seek-keep HTTP/1\.0\r\n}, "D-34 R2-S1: the keep is the bare loopback POST");
+    d34_feed($ctl, $R, from => '18:01:11.517', to => '18:01:11.617');
+    is(r2_keeps(), 1, "D-34 R2-S1: the playing frames after it (lines 10-12) post no second keep");
+    is(r2_drains(), 0, "D-34 R2-S1: a reposition plants no boundary");
+}
+
+# --- S2: an app skip (C_off, C_on) is a title change: no keep, the 84-17 drain boundary and a pending change as today ---
+# C_off lines 2-17 in full. C_on from its playing frame (line 11, 15:09:33.463): lines 2-10 are the recorded run's own
+# session START (the app's play, track_changed of T1, buffering at position 0 -- no skip), which a seed that already sits on
+# T1 (observed.track and startEmittedFor, as the plan has it) reads as a restart on the unchanged title and keeps, correctly.
+for my $c ([ 'C_off', 'd34-next-prev-off.log', 'D-34 R2-S2: C_off', undef ], [ 'C_on', 'd34-next-prev-on.log', 'D-34 R2-S2: C_on', '15:09:33.463' ]) {
+    my ($case, $file, $label, $from) = @$c;
+    r2_reset();
+    local $Slim::Player::Source::PLAYMODE = 'play';
+    my ($ctl, $daemon, $ws) = r2_connect('02:d3:50:00:00:02', $D34_T1);
+    my $C = d34_case($file, $case);
+    d34_feed($ctl, $C, (defined $from ? (from => $from) : ()));
+    is(r2_keeps(), 0, "$label: no POST /seek-keep for the skip (track_changed first, then the new title's buffering frame)");
+    is(r2_drains(), 1, "$label: exactly one POST /boundary?anchor=drain at the track_changed (84-17, as today)");
+    is($ctl->observed->{track}, $D34_T2, "$label: the observed title moved on to the new uri");
+}
+
+# --- S3: an app restart on the unchanged title (D_off line 34): a keep, the title continues from 0 on the kept stream ---
+{
+    r2_reset();
+    local $Slim::Player::Source::PLAYMODE = 'play';
+    my ($ctl, $daemon, $ws) = r2_connect('02:d3:50:00:00:03', $D34_T1);
+    my $D = d34_case('d34-next-prev-off.log', 'D_off');
+    d34_feed($ctl, $D, from => '15:13:21.393', to => '15:13:39.870');
+    is(r2_keeps(), 0, "D-34 R2-S3: (precondition) no keep before the restart (fixture lines 28-32)");
+    d34_feed($ctl, $D, from => '15:13:39.871', to => '15:13:40.116');
+    is(r2_keeps(), 1, "D-34 R2-S3: exactly one POST /seek-keep at the restart's buffering frame (line 34, same title, position 0)");
+}
+
+# --- S4: pause and play bring no buffering frame: no keep ---
+{
+    r2_reset();
+    local $Slim::Player::Source::PLAYMODE = 'play';
+    my ($ctl, $daemon, $ws) = r2_connect('02:d3:50:00:00:04', $D34_T1);
+    d34_feed($ctl, d34_case('d34-pause-seek.log', 'E'), from => '15:15:02.426', to => '15:15:27.017');
+    is(r2_keeps(), 0, "D-34 R2-S4: an app pause and play on the unchanged title post no keep (lines 12-22)");
+}
+
+# --- S5: Browse (79-48 form): the app seek of case F posts no keep, the browse keep is untouched ---
+{
+    r2_reset();
+    local $Slim::Player::Source::PLAYMODE = 'play';
+    my ($ctl, $daemon, $ws) = d34_session('02:d3:50:00:00:05');
+    my $F = d34_case('d34-pause-seek.log', 'F');
+    d34_feed($ctl, $F, to => '15:23:07.119');
+    is(r2_keeps(), 0, "D-34 R2-S5: the browse app seek (case F lines 24-38) posts no POST /seek-keep");
+    is_deeply([ d34_keep_lines() ], [ 'POST /browse-keep?on=1 HTTP/1.0' ],
+        "D-34 R2-S5: the browse keep (/browse-keep?on=1) is posted once, as in 79-48");
+}
+
+# --- S6 (B1): the echo of Control's OWN LMS-side seek posts no keep; the arm still precedes the wire seek ---
+my $R2_I_OWN_SEEK_AT = '15:24:57.241';
+sub r2_own_seek_session {
+    my ($mac, $seek_cb) = @_;
+    my ($ctl, $daemon, $ws) = r2_connect($mac, $D34_T1);
+    my $I = d34_case('d34-lms-seek-echo.log', 'I');
+    d34_feed($ctl, $I, from => '15:24:53.084', to => '15:24:53.693');
+    return ($ctl, $daemon, $ws, $I);
+}
+{
+    r2_reset();
+    local $Slim::Player::Source::PLAYMODE = 'play';
+    my ($ctl, $daemon, $ws, $I) = r2_own_seek_session('02:d3:50:00:00:06');
+    # LMS's seek at 15:24:57.241 of the recorded run: Control's own connect seek row, run at its recorded place
+    d34_feed($ctl, $I, from => '15:24:57.378', to => '15:24:57.476',
+        at => [ [ $R2_I_OWN_SEEK_AT, sub { $ctl->requestTrack($D34_T1, 102000, { source => 'onStream', seek => 1 }); } ] ]);
+    my @sent = map { $_->[0] } @{ $ws->sent };
+    ok(scalar(grep { $_ eq 'seek' } @sent) >= 1, "D-34 R2-S6: (precondition) Control sent its own seek through the connect seek row");
+    is(scalar(grep { m{^POST /seek-arm} } @IO::Socket::INET::SYSWRITE_CALLS), 1, "D-34 R2-S6: the /seek-arm is posted (before the wire seek, as today)");
+    is(r2_keeps(), 0, "D-34 R2-S6: the echo of Control's own seek (buffering at 102000) posts no keep");
+}
+
+# --- S6b (B1, keying): the exclusion is keyed on the own seek's TARGET: an app seek elsewhere right after still gets its keep ---
+{
+    r2_reset();
+    local $Slim::Player::Source::PLAYMODE = 'play';
+    my ($ctl, $daemon, $ws, $I) = r2_own_seek_session('02:d3:50:00:00:07');
+    d34_feed($ctl, $I, from => '15:24:57.378', to => '15:24:57.476',
+        at => [ [ $R2_I_OWN_SEEK_AT, sub { $ctl->requestTrack($D34_T1, 102000, { source => 'onStream', seek => 1 }); } ] ]);
+    is(r2_keeps(), 0, "D-34 R2-S6b: (precondition) the own seek's echo posts no keep");
+    my ($buf) = grep { $_->{msg}{type} eq 'playback_state' && $_->{msg}{status} eq 'buffering' && $_->{ts} eq '15:24:57.378' } @$I;
+    my $copy = JSON::PP->new->utf8(1)->decode(JSON::PP->new->utf8(1)->canonical(1)->encode($buf->{msg}));
+    $copy->{position}{position_ms} = 30000;
+    d34_age($ctl, 0.2);
+    $ctl->onEvent({ %$copy });
+    is(r2_keeps(), 1, "D-34 R2-S6b: a buffering frame at 30000 ms within 1 s after the own seek (an app seek elsewhere) posts exactly one keep");
+}
+
+
+# ============================================================
+# 79-51 D1 (runaway, .planning/debug/album-start-connect-runaway.md): the Connect
+# `resume` waits for the frame that decides it. The `playback_changed playing`
+# frame of an album start arrives BEFORE the context_changed and the item-less
+# playback_state (same millisecond, E1/E2), so at that frame nothing tells a
+# resume of the paused title from a new context. R1..R9 replay the REAL frames of
+# t/fixtures/uat/runaway-album-start.log (cases RUNAWAY, PASS1, RESUME, TRANSFER,
+# TRACKFIRST) through Control; where several frames share a millisecond the slice
+# is cut by array index, never by ts. The shim's /boundary reply is delivered
+# through IO::Socket::INET::READ_REPLY + Slim::Networking::Select::deliver, as in
+# 84-17 (the stub is on @INC from the 84-17 block above).
+# ============================================================
+{
+    my $F51 = 'runaway-album-start.log';
+    my $R51_T1 = 'spotify:track:7GVUmCP00eSsqc4tzj1sDD';
+    my $R51_A1 = 'spotify:track:37BTh5g05cxBIRYMbw8g2T';
+    my $R51_Q1 = 'spotify:track:15taea6JZLAfG5OX0pzfG6';
+    my $R51_T2 = 'spotify:track:2374M0fQpWi3dLnB54qaLX';
+    my $R51_TF_OLD = 'spotify:track:1qRA5BS78u3gME0loMl9AA';
+    my $R51_TF_NEW = 'spotify:track:6lx1n63qJmhzPpirxxksbI';
+    my ($T1ID, $A1ID, $Q1ID, $T2ID, $TFNEWID) = map { (my $x = $_) =~ s/^spotify:track://; $x }
+        ($R51_T1, $R51_A1, $R51_Q1, $R51_T2, $R51_TF_NEW);
+
+    my $reply = sub {
+        my ($via) = @_;
+        my $body = "via=$via boundary=130643728 anchor=drain ring_fill=0 total_pushed=130643728 total_popped=130643728 drops=0 gen=-1\n";
+        return "HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\nContent-Length: " . length($body)
+            . "\r\nConnection: close\r\n\r\n$body";
+    };
+    my $deliver = sub {
+        my ($via) = @_;
+        $IO::Socket::INET::READ_REPLY = $reply->($via);
+        return Slim::Networking::Select::deliver();
+    };
+    my $reset = sub {
+        r2_reset();
+        $IO::Socket::INET::READ_REPLY = undef;
+        @Slim::Networking::Select::READS   = ();
+        @Slim::Networking::Select::REMOVED = ();
+        @Slim::Utils::Timers::TIMERS       = ();
+        @Slim::Utils::Log::WARNINGS        = ();
+    };
+    # the wire as 'cmd|p2|p3[|p4]' strings
+    my $wire = sub { return map { join('|', @{$_}[ 1 .. $#$_ ]) } @Slim::Player::Client::EXECUTED; };
+    my $resumes = sub { return grep { $_->[1] eq 'resume' } @Slim::Player::Client::EXECUTED; };
+    my $gstates = sub { my ($ws) = @_; return scalar(grep { $_->[0] eq 'get_state' } @{ $ws->sent }); };
+    my $resume_timers = sub {
+        my $cb = \&Plugins::SpotOn::Soloist::Control::_resumeDueFire;
+        return scalar(grep { $_->[2] == $cb } @Slim::Utils::Timers::TIMERS);
+    };
+    my $idx = sub { my ($C, @i) = @_; return [ map { $C->[$_] } @i ]; };
+    # the title uris of the frames given: a deep copy for a doctored frame
+    my $clone = sub { return JSON::PP->new->utf8(1)->decode(JSON::PP->new->utf8(1)->canonical(1)->encode($_[0])); };
+
+    # --- R1 (RUNAWAY): the failing run 094204 end to end, without its four SpotOn-caused pause triplets ---
+    # Fixture lines 3-44 = indices 0..41. The triplets (E1: paused, playback_state paused, position_sync at 25.428,
+    # 25.727, 25.928, 26.130 = lines 18-20, 26-28, 34-36, 42-44) are chain link d of the recording: SpotOn's stop forwarded as
+    # a pause after each 0-byte stream; in the repaired world they do not occur. The replay keeps the app's own skips.
+    my @r1_wire;
+    {
+        $reset->();
+        local $Slim::Player::Source::PLAYMODE = 'play';
+        my ($ctl, $daemon, $ws) = r2_connect('02:51:00:00:00:01', $R51_T1);
+        $ctl->observed->{startEmittedFor} = $R51_T1;
+        my $C = d34_case($F51, 'RUNAWAY');
+        is(scalar(@$C), 42, "79-51 D1-R1: (precondition) the RUNAWAY case holds source lines 3-44");
+        my %skip = map { $_ => 1 } (15 .. 17, 23 .. 25, 31 .. 33, 39 .. 41);
+        my @frames = map { $C->[$_] } grep { !$skip{$_} } 0 .. $#$C;
+        # frame 0 = the paused playback_state of T1 at 95802; indices 1..5 = the five frames of 09:42:24.913
+        d34_feed($ctl, [ $frames[0] ]);
+        my $before = scalar(@Slim::Player::Client::EXECUTED);
+        d34_feed($ctl, $idx->(\@frames, 1 .. 5));
+        my @delta = @Slim::Player::Client::EXECUTED[ $before .. $#Slim::Player::Client::EXECUTED ];
+        is(scalar(@delta), 0, "79-51 D1-R1 (b): nothing is emitted for the five frames at 09:42:24.913 (the resume of T1 at the playing frame is gone)");
+        is($gstates->($ws), 0, "79-51 D1-R1 (b): ... and no get_state is sent either");
+        # the rest: the reply of the first change (A1) is delivered at 09:42:25.117 as via=none (no LMS client at the plant),
+        # the other four 10 ms after their track_changed as via=departed
+        my @at = (
+            [ '09:42:25.117', sub { $deliver->('none') } ],
+            [ '09:42:25.337', sub { $deliver->('departed') } ],
+            [ '09:42:25.684', sub { $deliver->('departed') } ],
+            [ '09:42:25.875', sub { $deliver->('departed') } ],
+        );
+        d34_feed($ctl, $idx->(\@frames, 6 .. $#frames), at => \@at);
+        $deliver->('departed');    # the reply of the last title change (09:42:26.083), no frame follows it
+        my @rs = $resumes->();
+        ok(!(grep { $_->[2] eq $T1ID } @rs), "79-51 D1-R1 (a): no resume carries T1 (the paused old title)");
+        is_deeply([ map { [ @$_[1 .. 3] ] } @rs ], [ [ 'resume', $A1ID, '' ] ],
+            "79-51 D1-R1 (c): exactly one resume, A1 with an empty position");
+        my @w = $wire->();
+        my ($ci) = grep { $w[$_] eq "change|$A1ID|$T1ID|none" } 0 .. $#w;
+        ok(defined $ci && ($w[ $ci + 1 ] // '') eq "resume|$A1ID|", "79-51 D1-R1 (c): ... directly after `change A1 T1 none`");
+        is_deeply([ map { $_->[2] } grep { $_->[1] eq 'change' } @Slim::Player::Client::EXECUTED ],
+            [ $A1ID, $Q1ID, '7D4EtbE7LfQiH8CWj7fQoz', '2MuwL6v9qAOUag4fM4m1PA', '2mLgGFWNJQAYHRgNLg7C23' ],
+            "79-51 D1-R1 (d): the change ids in order: the album's first title, then the app's four skips");
+        # (e) a snapshot taken AFTER GREEN (D1_REPLAY_WIRE), a regression pin and not a specification: (a)-(d) are the specification
+        is_deeply(\@w, [
+            'volume|60|',
+            "change|$A1ID|$T1ID|none",
+            "resume|$A1ID|",
+            'seek|0.000||deferred',
+            "change|$Q1ID|$A1ID|departed",
+            "change|7D4EtbE7LfQiH8CWj7fQoz|$Q1ID|departed",
+            "change|2MuwL6v9qAOUag4fM4m1PA|7D4EtbE7LfQiH8CWj7fQoz|departed",
+            "change|2mLgGFWNJQAYHRgNLg7C23|2MuwL6v9qAOUag4fM4m1PA|departed",
+        ], "79-51 D1-R1 (e): the whole wire equals the post-GREEN snapshot (D1_REPLAY_WIRE)");
+        @r1_wire = @w;
+        diag("79-51 R1 wire: " . join(';', @w)) if $ENV{R51_DIAG};
+    }
+
+    # --- R2 (PASS1): pass 1 092233, the same frame form at position 0, then its second plain resume (E10) ---
+    {
+        $reset->();
+        local $Slim::Player::Source::PLAYMODE = 'play';
+        my ($ctl, $daemon, $ws) = r2_connect('02:51:00:00:00:02', $R51_T1);
+        $ctl->observed->{startEmittedFor} = $R51_T1;
+        my $C = d34_case($F51, 'PASS1');
+        is(scalar(@$C), 14, "79-51 D1-R2: (precondition) the PASS1 case holds source lines 3-16");
+        # the reply (via=none) comes after the 09:22:54.418 frames and before the 09:22:54.788 frame
+        d34_feed($ctl, $C, at => [ [ '09:22:54.500', sub { $deliver->('none') } ] ]);
+        my @rs = $resumes->();
+        ok(!(grep { $_->[2] eq $T1ID } @rs), "79-51 D1-R2: no resume carries T1");
+        is_deeply([ map { [ @$_[1 .. 3] ] } @rs ], [ [ 'resume', $A1ID, '' ], [ 'resume', $A1ID, '0.000' ] ],
+            "79-51 D1-R2: exactly two resumes, the new-context one (A1, empty position) and pass 1's plain resume (A1, 0.000)");
+        my @w = $wire->();
+        my ($ci) = grep { $w[$_] eq "change|$A1ID|$T1ID|none" } 0 .. $#w;
+        ok(defined $ci && ($w[ $ci + 1 ] // '') eq "resume|$A1ID|", "79-51 D1-R2: the first resume follows `change A1 T1 none` directly");
+    }
+
+    # --- R3 (RESUME): a plain Connect resume keeps today's arguments, one frame later ---
+    {
+        $reset->();
+        local $Slim::Player::Source::PLAYMODE = 'play';
+        my ($ctl, $daemon, $ws) = r2_connect('02:51:00:00:00:03', $R51_Q1);
+        my $C = d34_case($F51, 'RESUME');
+        is(scalar(@$C), 4, "79-51 D1-R3: (precondition) the RESUME case holds source lines 3-6");
+        d34_feed($ctl, $idx->($C, 0));    # paused at 11981 (its volume frame is the only thing it emits)
+        my $before = scalar(@Slim::Player::Client::EXECUTED);
+        d34_feed($ctl, $idx->($C, 1));    # playback_changed playing alone
+        is(scalar(@Slim::Player::Client::EXECUTED), $before, "79-51 D1-R3: the playing frame alone emits nothing");
+        is($gstates->($ws), 0, "79-51 D1-R3: ... and sends no get_state");
+        d34_feed($ctl, $idx->($C, 2));    # the playback_state of the same millisecond decides it
+        is_deeply([ @Slim::Player::Client::EXECUTED[ $before .. $#Slim::Player::Client::EXECUTED ] ], [ [ 'spottyconnect', 'resume', $Q1ID, '11.981' ] ],
+            "79-51 D1-R3: the deciding playback_state releases exactly today's resume (Q1, 11.981)");
+        is($gstates->($ws), 1, "79-51 D1-R3: ... with one get_state on the daemon socket");
+    }
+
+    # --- R4 (lone playing frame): the decide timer releases today's resume ---
+    {
+        $reset->();
+        my ($ctl, $daemon, $ws) = fresh_control(mac => '02:51:00:00:00:04', mode => 'connect',
+            observed => { is_active => 1, wsConnected => 1, track => 'spotify:track:tid1', status => 'paused', anchor => { position_ms => 42500 } });
+        $ctl->onEvent({ type => 'playback_changed', status => 'playing' });
+        is(scalar(@Slim::Player::Client::EXECUTED), 0, "79-51 D1-R4: a lone playing frame emits nothing at once");
+        is($resume_timers->(), 1, "79-51 D1-R4: exactly one decide timer is armed");
+        Slim::Utils::Timers::fire_due(Time::HiRes::time() + 0.25);
+        is_deeply([ @Slim::Player::Client::EXECUTED ], [ [ 'spottyconnect', 'resume', 'tid1', '42.500' ] ],
+            "79-51 D1-R4: the timer (200 ms) releases exactly one resume tid1 42.500");
+        is($gstates->($ws), 1, "79-51 D1-R4: ... and one get_state");
+        is($resume_timers->(), 0, "79-51 D1-R4: no decide timer is left");
+    }
+
+    # --- R4b (79-44 Fable review, D-33 WR-02): playing, an item-less playback_state, then only position frames ---
+    # No context_changed and no title frame ever follows. HEAD: noItem blocks the timer AND the position release, the record
+    # lives until a frame arrives more than 10 s later and dies as INFO 'stale': the app's resume is lost without a trace while
+    # the daemon plays. The timer decides this shape like a lone playing frame (the item-less snapshot without a
+    # context_changed is the same title in every recorded case), counted from the item-less frame so a title frame that
+    # follows it by 40-76 ms (R8, E10) still gets its full window.
+    {
+        $reset->();
+        my ($ctl, $daemon, $ws) = fresh_control(mac => '02:51:00:00:00:44', mode => 'connect',
+            observed => { is_active => 1, wsConnected => 1, track => 'spotify:track:tid1', status => 'paused', anchor => { position_ms => 42500 } });
+        $ctl->onEvent({ type => 'playback_changed', status => 'playing' });
+        my ($t0) = map { $_->[1] } grep { $_->[2] == \&Plugins::SpotOn::Soloist::Control::_resumeDueFire } @Slim::Utils::Timers::TIMERS;
+        Time::HiRes::sleep(0.06);
+        $ctl->onEvent({ type => 'playback_state', status => 'playing', position => { position_ms => 42500, timestamp_ms => 2, speed => 1 } });
+        $ctl->onEvent({ type => 'position_sync', position => { position_ms => 42600, timestamp_ms => 3, speed => 1 } });
+        $ctl->onEvent({ type => 'position_sync', position => { position_ms => 42700, timestamp_ms => 4, speed => 1 } });
+        is(scalar($resumes->()), 0, "79-44 WR-02: (precondition) the item-less state and the position frames release nothing by themselves");
+        my ($t1) = map { $_->[1] } grep { $_->[2] == \&Plugins::SpotOn::Soloist::Control::_resumeDueFire } @Slim::Utils::Timers::TIMERS;
+        ok(defined $t1 && defined $t0 && $t1 - $t0 >= 0.05,
+            "79-44 WR-02: the item-less frame re-arms the decide timer (it counts from that frame, not from the playing frame)");
+        Slim::Utils::Timers::fire_due(Time::HiRes::time() + 0.25);
+        is_deeply([ map { [ @$_[1 .. 3] ] } $resumes->() ], [ [ 'resume', 'tid1', '42.500' ] ],
+            "79-44 WR-02: the decide timer releases the held resume of the item-less-only shape, today's arguments, exactly once");
+        is($gstates->($ws), 1, "79-44 WR-02: ... with one get_state");
+        ok(!defined $ctl->observed->{resumeDue}, "79-44 WR-02: no held record is left");
+    }
+
+    # --- R4c (79-44 Fable review, D-33 WR-02): a held resume that nothing released is dropped LOUDLY, not at INFO ---
+    {
+        $reset->();
+        my ($ctl, $daemon, $ws) = fresh_control(mac => '02:51:00:00:00:45', mode => 'connect',
+            observed => { is_active => 1, wsConnected => 1, track => 'spotify:track:tid1', status => 'paused', anchor => { position_ms => 42500 } });
+        $ctl->onEvent({ type => 'playback_changed', status => 'playing' });
+        Slim::Utils::Timers::killTimers($ctl, \&Plugins::SpotOn::Soloist::Control::_resumeDueFire);
+        $ctl->observed->{resumeDue}{at} -= 11;
+        @Slim::Utils::Log::WARNINGS = ();
+        $ctl->onEvent({ type => 'position_sync', position => { position_ms => 53000, timestamp_ms => 9, speed => 1 } });
+        is(scalar($resumes->()), 0, "79-44 WR-02: a record older than RESUME_DUE_MAX_S emits no resume");
+        ok((grep { /held resume dropped \(stale\)/ } @Slim::Utils::Log::WARNINGS),
+            "79-44 WR-02: ... and the drop is logged as a warning that names the cause (stale)");
+    }
+
+    # --- R5 (position frame): the 84-17 run-3 pair, today's arguments, released before anything the position frame emits ---
+    {
+        $reset->();
+        my ($ctl, $daemon, $ws) = fresh_control(mac => '02:51:00:00:00:05', mode => 'connect',
+            observed => { is_active => 1, wsConnected => 1, meta => {}, track => 'spotify:track:tid5', status => 'playing',
+                          startEmittedFor => 'spotify:track:tid5',
+                          anchor => { position_ms => 100000, timestamp_ms => 1, speed => 1, seen_at => time(), seen_hr => Time::HiRes::time() } });
+        $ctl->onEvent({ type => 'position_sync', position => { position_ms => 242603, timestamp_ms => 3, speed => 0 } });
+        $ctl->onEvent({ type => 'playback_changed', status => 'playing' });
+        $ctl->onEvent({ type => 'position_sync', position => { position_ms => 242605, timestamp_ms => 4, speed => 1 } });
+        my @rs = $resumes->();
+        is_deeply([ map { [ @$_[1 .. 3] ] } @rs ], [ [ 'resume', 'tid5', '242.603' ] ],
+            "79-51 D1-R5: the resume carries the arguments the playing frame computed (tid5, 242.603), exactly once");
+        my @w = $wire->();
+        my ($ri) = grep { $w[$_] =~ /^resume\|/ } 0 .. $#w;
+        my ($si) = grep { $w[$_] =~ /^seek\|/ && $_ != 0 } 0 .. $#w;
+        ok(defined $ri && (!defined $si || $ri < $si || $si == 0), "79-51 D1-R5: the resume is not preceded by anything the second position_sync emits");
+    }
+
+    # --- R6 (paused again): a pause before the deciding frame drops the held resume ---
+    {
+        $reset->();
+        local $Slim::Player::Source::PLAYMODE = 'play';
+        my ($ctl, $daemon, $ws) = r2_connect('02:51:00:00:00:06', $R51_Q1);
+        my $C = d34_case($F51, 'RESUME');
+        d34_feed($ctl, $idx->($C, 0, 1));
+        $ctl->onEvent({ type => 'playback_changed', status => 'paused' });
+        is(scalar($resumes->()), 0, "79-51 D1-R6: playing then paused again emits no resume");
+        is(scalar(grep { $_->[1] eq 'stop' } @Slim::Player::Client::EXECUTED), 1, "79-51 D1-R6: ... exactly one stop (the pause itself, as today)");
+        is($resume_timers->(), 0, "79-51 D1-R6: no decide timer is left");
+        is($gstates->($ws), 0, "79-51 D1-R6: no get_state either");
+    }
+
+    # --- R7 (the title arrives in a playback_state): the mirror's change first, then the resume for THAT title ---
+    {
+        $reset->();
+        local $Slim::Player::Source::PLAYMODE = 'play';
+        my ($ctl, $daemon, $ws) = r2_connect('02:51:00:00:00:07', $R51_T1);
+        $ctl->observed->{startEmittedFor} = $R51_T1;
+        my $C = d34_case($F51, 'RUNAWAY');
+        d34_feed($ctl, $idx->($C, 0));
+        # the item-less playback_state (line 7 = index 4) is doctored INSIDE this test, on its own copy, to name A1
+        my $doctored = $clone->($C->[4]);
+        $doctored->{msg}{item} = { uri => $R51_A1, entity_type => 'track' };
+        d34_feed($ctl, [ $C->[1], $C->[2], $C->[3], $doctored, $C->[5] ]);
+        my @w = grep { /^(?:change|resume)\|/ } $wire->();
+        is_deeply(\@w, [ "change|$A1ID|$T1ID", "resume|$A1ID|" ],
+            "79-51 D1-R7: the playback_state mirror's `change A1 T1` first, then `resume A1` with an empty position");
+    }
+
+    # --- R8 (TRANSFER): the transfer-in without a context_changed keeps today's wire; the resume goes out at the same-uri track_changed ---
+    {
+        $reset->();
+        local $Slim::Player::Source::PLAYMODE = 'play';
+        my ($ctl, $daemon, $ws) = r2_connect('02:51:00:00:00:08', $R51_T2);
+        $ctl->observed->{status} = 'paused';
+        my $C = d34_case($F51, 'TRANSFER');
+        is(scalar(@$C), 12, "79-51 D1-R8: (precondition) the TRANSFER case holds source lines 3-14");
+        d34_feed($ctl, $C);
+        $deliver->('none');
+        my @w = $wire->();
+        diag("79-51 R8 wire: " . join(';', @w)) if $ENV{R51_DIAG};
+        # recorded at HEAD (plan 79-51 Task 1 RED step), before the Control change:
+        my @D1_TRANSFER_WIRE_HEAD = ('volume|60|', "start|$T2ID|100.094", "resume|$T2ID|100.094", 'seek|0.000|');
+        is_deeply(\@w, \@D1_TRANSFER_WIRE_HEAD, "79-51 D1-R8: the wire equals the one this test produced at HEAD (D1_TRANSFER_WIRE_HEAD)");
+        my @rs = $resumes->();
+        is_deeply([ map { [ @$_[1 .. 3] ] } @rs ], [ [ 'resume', $T2ID, '100.094' ] ],
+            "79-51 D1-R8: the playing frame's resume keeps today's arguments (T2, 100.094)");
+    }
+
+    # --- R9 (TRACKFIRST): the recorded track-first start (E9) ---
+    # Corrected at GREEN (deviation, recorded in the SUMMARY): the plan expected HEAD to emit `resume 6lx1 0.104` here. It emits
+    # NO resume: track_changed (line 4) writes observed.status = playing (Control.pm _debugStatusTransition), so the playing
+    # frame (line 5) is not a Paused->Playing transition and opens no resume. The recorded frames therefore pin "no resume at all"
+    # (green at HEAD, a guard); the anchor-title check at the playing frame is pinned by R9b on a doctored status.
+    {
+        $reset->();
+        local $Slim::Player::Source::PLAYMODE = 'play';
+        my ($ctl, $daemon, $ws) = r2_connect('02:51:00:00:00:09', $R51_TF_OLD);
+        $ctl->observed->{status} = 'paused';
+        $ctl->observed->{anchor} = { position_ms => 104, timestamp_ms => 1, speed => 0, seen_at => time(), seen_hr => Time::HiRes::time(), uri => $R51_TF_OLD };
+        my $C = d34_case($F51, 'TRACKFIRST');
+        is(scalar(@$C), 7, "79-51 D1-R9: (precondition) the TRACKFIRST case holds source lines 3-9");
+        d34_feed($ctl, $C);
+        $deliver->('none');
+        diag("79-51 R9 wire: " . join(';', $wire->())) if $ENV{R51_DIAG};
+        is(scalar($resumes->()), 0, "79-51 D1-R9: the recorded track-first start emits no resume at all (track_changed already wrote status playing)");
+        ok(scalar(grep { $_ eq "change|$TFNEWID|" . ($R51_TF_OLD =~ s/^spotify:track://r) . "|none" } $wire->()), "79-51 D1-R9: ... only the change to the new title");
+    }
+
+    # --- R9b (TRACKFIRST, doctored status): the anchor belongs to the OLD title, so the resume carries no position ---
+    # The recorded frames never reach the resume branch (see R9), so the status is doctored in this test's own session: after
+    # line 4 (track_changed of the new title) the status is set back to paused, the state a `playback_changed paused` of the
+    # daemon between track_changed and playing would leave (the anchor still holds the old title's 0.104 s). HEAD then emits
+    # `resume <new> 0.104`: the old title's position for the new title (T-79-190, Connect.pm sets LMS's clock to it).
+    {
+        $reset->();
+        local $Slim::Player::Source::PLAYMODE = 'play';
+        my ($ctl, $daemon, $ws) = r2_connect('02:51:00:00:00:0a', $R51_TF_OLD);
+        $ctl->observed->{status} = 'paused';
+        $ctl->observed->{anchor} = { position_ms => 104, timestamp_ms => 1, speed => 0, seen_at => time(), seen_hr => Time::HiRes::time(), uri => $R51_TF_OLD };
+        my $C = d34_case($F51, 'TRACKFIRST');
+        d34_feed($ctl, $idx->($C, 0, 1));    # paused at 104, track_changed of the new title
+        $ctl->observed->{status} = 'paused'; # doctored: see above
+        d34_feed($ctl, $idx->($C, 2 .. 6));
+        $deliver->('none');
+        my @rs = $resumes->();
+        is_deeply([ map { [ @$_[1 .. 3] ] } @rs ], [ [ 'resume', $TFNEWID, '' ] ],
+            "79-51 D1-R9b: the resume names the new title with an empty position (HEAD sends the old title's 0.104)");
+    }
+}
+
+# ============================================================
+# 79-52 G1 (album-start deadline stop, .planning/debug/album-start-deadline-stop.md):
+# the keep for a re-loaded title. For a bare-track OpenUri the Spotify app sends two
+# `prepare play` commands; when the second lands while the first load is still corked
+# the daemon flushes again and then sends only `context_changed` (album) and a
+# `playback_state playing` of the SAME title (variant V3, 7 of 20 real runs). The shim's
+# decision window (2000 ms) then gets neither keep nor boundary and closes LMS's fresh
+# stream at its deadline. The REAL frames of two V3 runs (V3_SAME: the title already
+# paused on the session; V3_CHANGE: another title paused, so the first frame is a title
+# change with its pending 84-17 change) and of six negatives (V1, V1B, V2, V0: the
+# other album-start variants; SKIP: an app skip; CSEEK: an app seek) come from
+# t/fixtures/uat/album-start-deadline.log. The negatives post exactly the keeps and
+# drains the code posted before 79-52. Replies of the shim's /boundary are delivered as
+# in the 79-51 block.
+# ============================================================
+{
+    my $F52 = 'album-start-deadline.log';
+    my $reply = sub {
+        my ($via) = @_;
+        my $body = "via=$via boundary=130643728 anchor=drain ring_fill=0 total_pushed=130643728 total_popped=130643728 drops=0 gen=-1\n";
+        return "HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\nContent-Length: " . length($body)
+            . "\r\nConnection: close\r\n\r\n$body";
+    };
+    my $deliver = sub {
+        my ($via) = @_;
+        $IO::Socket::INET::READ_REPLY = $reply->($via);
+        return Slim::Networking::Select::deliver();
+    };
+    my $reset = sub {
+        r2_reset();
+        $IO::Socket::INET::READ_REPLY = undef;
+        @Slim::Networking::Select::READS   = ();
+        @Slim::Networking::Select::REMOVED = ();
+        @Slim::Utils::Timers::TIMERS       = ();
+        @Slim::Utils::Log::WARNINGS        = ();
+    };
+    # the title the session sits on before the case: the item uri of its first track playback_state
+    my $seed = sub {
+        my ($F) = @_;
+        my ($first) = grep { $_->{msg}{type} eq 'playback_state' && ref($_->{msg}{item}) eq 'HASH'
+            && ($_->{msg}{item}{uri} // '') =~ /^spotify:track:/ } @$F;
+        return $first->{msg}{item}{uri};
+    };
+
+    # --- V3_SAME (run 123930): paused 7GVU; the keep at the buffering frame, the second at the playing frame after the album context ---
+    {
+        $reset->();
+        local $Slim::Player::Source::PLAYMODE = 'play';
+        my $F = d34_case($F52, 'V3_SAME');
+        is(scalar(@$F), 16, "79-52 G1-V3_SAME: (precondition) the case holds source lines 3-18");
+        my ($ctl, $daemon, $ws) = r2_connect('02:52:00:00:00:01', $seed->($F));
+        d34_feed($ctl, $F, to => '12:39:52.723');
+        is(r2_keeps(), 1, "79-52 G1-V3_SAME: (precondition) up to the album context_changed (12:39:52.723) exactly one keep, the one at the buffering frame");
+        d34_feed($ctl, $F, from => '12:39:53.030', to => '12:39:53.030');
+        is(r2_keeps(), 2, "79-52 G1-V3_SAME: the playing frame of the re-loaded title (12:39:53.030) posts the second keep");
+        is(r2_drains(), 0, "79-52 G1-V3_SAME: a same-title re-load plants no boundary");
+        diag("79-52 G1_COUNTS V3_SAME keeps=" . r2_keeps() . " drains=" . r2_drains()) if $ENV{R52_DIAG};
+    }
+
+    # --- V3_CHANGE (run 130219): paused Rosanna, the app's track is a title change; the pending change blocks the buffering keep, the reply clears it ---
+    {
+        $reset->();
+        local $Slim::Player::Source::PLAYMODE = 'play';
+        my $F = d34_case($F52, 'V3_CHANGE');
+        is(scalar(@$F), 16, "79-52 G1-V3_CHANGE: (precondition) the case holds source lines 3-18");
+        my ($ctl, $daemon, $ws) = r2_connect('02:52:00:00:00:02', $seed->($F));
+        d34_feed($ctl, $F, to => '13:02:41.223', at => [ [ '13:02:40.956', sub { $deliver->('departed') } ] ]);
+        is(r2_keeps(), 0, "79-52 G1-V3_CHANGE: (precondition) up to the album context_changed (13:02:41.223) no keep: the pending change blocked the buffering frame");
+        ok(!$ctl->observed->{pendingChange}, "79-52 G1-V3_CHANGE: (precondition) the shim's reply (departed, 13:02:40.956) cleared the pending change");
+        d34_feed($ctl, $F, from => '13:02:41.514', to => '13:02:41.515');
+        is(r2_keeps(), 1, "79-52 G1-V3_CHANGE: the playing frame of the re-loaded title (13:02:41.515) posts the keep");
+        is(r2_drains(), 1, "79-52 G1-V3_CHANGE: exactly the one boundary of the title change");
+        diag("79-52 G1_COUNTS V3_CHANGE keeps=" . r2_keeps() . " drains=" . r2_drains()) if $ENV{R52_DIAG};
+    }
+
+    # --- the six negatives: the keeps and drains of the code before 79-52, on the real frames of the other variants, a skip and a seek ---
+    my $mac = 0;
+    for my $n ([ 'V1', 2, 2 ], [ 'V1B', 2, 2 ], [ 'V2', 2, 2 ], [ 'V0', 3, 1 ], [ 'SKIP', 0, 2 ], [ 'CSEEK', 1, 0 ]) {
+        my ($case, $wantKeeps, $wantDrains) = @$n;
+        $reset->();
+        local $Slim::Player::Source::PLAYMODE = 'play';
+        my $F = d34_case($F52, $case);
+        my ($ctl, $daemon, $ws) = r2_connect(sprintf('02:52:00:00:01:%02x', ++$mac), $seed->($F));
+        for my $f (@$F) {
+            d34_feed($ctl, [ $f ]);
+            $deliver->('live') if $ctl->observed->{pendingChange};
+        }
+        is(r2_keeps(), $wantKeeps, "79-52 G1-NEG $case: exactly $wantKeeps keep(s), as before 79-52");
+        is(r2_drains(), $wantDrains, "79-52 G1-NEG $case: exactly $wantDrains boundary drain(s), as before 79-52");
+        diag("79-52 G1_COUNTS $case keeps=" . r2_keeps() . " drains=" . r2_drains()) if $ENV{R52_DIAG};
+    }
+}
+
+done_testing();

@@ -297,6 +297,19 @@ PLUGIN_SPOTON_SOLOIST_PAIR_HOWTO
 	PL	Włącz backend Soloist i poczekaj, aż uruchomi się demon, następnie jednorazowo wybierz ten odtwarzacz w selektorze urządzeń w aplikacji Spotify. Parowanie odbywa się dla każdego odtwarzacza osobno i w pełni automatycznie - nie jest potrzebny wiersz poleceń; dane uwierzytelniające są przechowywane lokalnie.
 	SV	Aktivera Soloist-backend och vänta tills daemonen startar, välj sedan den här spelaren en gång i enhetsväljaren i din Spotify-app. Parkoppling sker per spelare och helt automatiskt - ingen kommandorad behövs; autentiseringsuppgifter sparas lokalt.
 
+PLUGIN_SPOTON_SOLOIST_PAIR_ANOTHER
+	CS	Spárovat další přehrávač
+	DA	Par endnu en afspiller
+	DE	Weiteren Player koppeln
+	EN	Pair another player
+	ES	Emparejar otro reproductor
+	FR	Associer un autre lecteur
+	IT	Associa un altro lettore
+	NL	Nog een speler koppelen
+	NO	Par en spiller til
+	PL	Sparuj kolejny odtwarzacz
+	SV	Parkoppla en spelare till
+
 PLUGIN_SPOTON_SOLOIST_DAEMON_RUNNING
 	CS	Daemon běží
 	DA	Daemon kører
@@ -3469,6 +3482,32 @@ PLUGIN_SPOTON_ACCOUNT_PAIR_JUST_PAIRED
 	NO	Kontoen er nettopp paret - last siden på nytt for å se den.
 	PL	Konto zostało właśnie sparowane - odśwież stronę, aby je zobaczyć.
 	SV	Kontot har just kopplats - ladda om sidan för att se det.
+
+PLUGIN_SPOTON_ACCOUNT_PAIRED
+	CS	Propojeno:
+	DA	Parret:
+	DE	Gekoppelt:
+	EN	Paired:
+	ES	Vinculado:
+	FR	Associé :
+	IT	Associato:
+	NL	Gekoppeld:
+	NO	Paret:
+	PL	Sparowano:
+	SV	Kopplat:
+
+PLUGIN_SPOTON_ACCOUNT_PAIR_ANOTHER
+	CS	Propojit další účet
+	DA	Par endnu en konto
+	DE	Weiteres Konto koppeln
+	EN	Pair another account
+	ES	Vincular otra cuenta
+	FR	Associer un autre compte
+	IT	Associa un altro account
+	NL	Nog een account koppelen
+	NO	Par en konto til
+	PL	Sparuj kolejne konto
+	SV	Koppla ett konto till
 
 PLUGIN_SPOTON_ACCOUNT_NEEDS_PAIRING
 	CS	Propojte prosím účet jednou

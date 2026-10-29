@@ -1513,6 +1513,49 @@ sub resolve_raw_route {
 }
 
 # ============================================================
+# 79-39 Task 3 (D-32 F2): pairedAccounts is the sorted list of account ids
+# whose login chain is usable (TokenManager->hasValidLogin), and accountStepOk
+# is 1 exactly when that list is not empty. Step 1 of the setup block shows
+# "Gekoppelt: <names>" from it instead of repeating the call to action.
+# ============================================================
+{
+    require Plugins::SpotOn::Settings;
+    require Plugins::SpotOn::API::TokenManager;
+    my $prefs          = Slim::Utils::Prefs::preferences('plugin.spoton');
+    my $accountsBefore = $prefs->get('accounts');
+    my $activeBefore   = $prefs->get('activeAccount');
+    my $backendBefore  = $prefs->get('backend');
+    $prefs->set('backend', 'librespot');
+    $prefs->set('accounts', {
+        cccc3333 => { displayName => 'Carol', spotifyUserId => 'carol' },
+        aaaa1111 => { displayName => 'Alice', spotifyUserId => 'alice' },
+        bbbb2222 => { displayName => 'Bob',   spotifyUserId => 'bob' },
+    });
+    $prefs->set('activeAccount', 'aaaa1111');
+
+    my @cases = (
+        [ {},                                         [],                       0, 'no valid login' ],
+        [ { bbbb2222 => 1 },                          [ 'bbbb2222' ],           1, 'one valid login' ],
+        [ { cccc3333 => 1, aaaa1111 => 1 },           [ 'aaaa1111', 'cccc3333' ], 1, 'two valid logins, sorted' ],
+        [ { cccc3333 => 1, aaaa1111 => 1, bbbb2222 => 1 }, [ 'aaaa1111', 'bbbb2222', 'cccc3333' ], 1, 'all valid' ],
+    );
+    for my $c (@cases) {
+        my ($valid, $want, $stepOk, $label) = @$c;
+        local %Plugins::SpotOn::API::TokenManager::valid_login = %$valid;
+        my $params = {};
+        Plugins::SpotOn::Settings->handler(undef, $params, sub { }, undef, undef);
+        is_deeply($params->{pairedAccounts}, $want,
+            "79-39: pairedAccounts is the sorted list of accounts with a valid login ($label)");
+        is($params->{accountStepOk}, $stepOk,
+            "79-39: accountStepOk is $stepOk exactly when pairedAccounts is " . ($stepOk ? 'not empty' : 'empty') . " ($label)");
+    }
+
+    $prefs->set('accounts', $accountsBefore || {});
+    $prefs->set('activeAccount', $activeBefore // '');
+    $prefs->set('backend', $backendBefore);
+}
+
+# ============================================================
 # 85-11 Task 1 (D-24, D-21, D-01 UI half, T-85-22): the settings template.
 # The PKCE / Client-ID / Keymaster-fallback UI is gone, the pairing button
 # sits OUTSIDE the librespot-fields block (both backends see it), the page
@@ -1846,6 +1889,126 @@ sub resolve_raw_route {
     Slim::Player::Client::set_mock_clients();
     $p->set('diagnosticMode', 0);
     $p->set('backend', 'librespot');
+}
+
+
+# ============================================================
+# 79-43 (D-33 FULL-3 WR-01): the diagnostic bundle carries no Spotify username. Every stored spotifyUserId is
+# redacted (raw, UTF-8 bytes and URI-escaped) over the whole bundle, header and log extracts; the display-name
+# fallback shows the masked form. The spak_/auth_data/Bearer redaction is unchanged (B2).
+# ============================================================
+{
+    require Plugins::SpotOn::Settings;
+    require Encode;
+    my $p   = Slim::Utils::Prefs::preferences('plugin.spoton');
+    my $srv = Slim::Utils::Prefs::preferences('server');
+    no warnings 'redefine';
+    local $main::VERSION = '9.1.1-test';
+    local *Plugins::SpotOn::Plugin::_pluginDataFor = sub { '9.9.9-test' };
+    my $spotonDir = File::Spec->catdir($srv->get('cachedir'), 'spoton');
+    make_path($spotonDir);
+    for my $old (glob("$spotonDir/*-connect.log"), glob("$spotonDir/*-unified.log"), glob("$spotonDir/*-soloist.log*")) {
+        unlink $old;
+    }
+    my $write = sub { my ($f, $text) = @_; open(my $fh, '>', $f) or die "$f: $!"; print $fh $text; close($fh); };
+    my $uid    = "j\x{fc}rgen.m";
+    my $uidUtf = Encode::encode('UTF-8', $uid);           # how a log file holds it
+    my $uidEsc = 'j%C3%BCrgen.m';                          # uri_escape_utf8, as in a spclient path
+    $write->("$spotonDir/0200005a1143-soloist.log", "boot\n[soloist] authenticated as $uidUtf ok\nauth spak_B2SECRET43 end\n");
+    my $logdir = tempdir(CLEANUP => 1);
+    $write->("$logdir/server.log", "[x] SpotOn: SpClient: HTTP 503 error for user-profile-view/v3/profile/$uidEsc: 503\n[x] SpotOn: Bearer abc.B2-43 seen\n[x] SpotOn: rootlist for playlist/v2/user/other.user/rootlist\n");
+    $srv->set('logdir', $logdir);
+    Slim::Player::Client::set_mock_clients(FakeBundleClient->new(name => 'Kitchen', id => '02:00:00:5a:11:43'));
+    my $accountsBefore = $p->get('accounts');
+    my $activeBefore   = $p->get('activeAccount');
+    $p->set('accounts', { b1430001 => { spotifyUserId => $uid }, b1430002 => { spotifyUserId => 'other.user', displayName => 'Other' } });
+    $p->set('activeAccount', 'b1430001');
+    $p->set('diagnosticMode', 1);
+    $p->set('backend', 'librespot');
+
+    @Slim::Web::HTTP::http_responses = ();
+    my $res = FakeSettingsResponse->new();
+    Plugins::SpotOn::Settings::_diagnosticBundleHandler(undef, $res);
+    my $ref  = $Slim::Web::HTTP::http_responses[0][2];
+    my $body = $ref ? $$ref : '';
+    my $text = eval { Encode::decode('UTF-8', $body) } // '';
+
+    is($res->code, 200, '79-43 B1: the bundle answers 200');
+    my ($dn) = $text =~ /^  Display name: (.*)$/m;
+    is($dn // 'no display name line', "j\x{fc}r****", '79-43 B1 (D-33 FULL-3 WR-01): the display-name fallback shows the masked form (first three characters plus ****)');
+    unlike($text, qr/\Q$uid\E/, '79-43 B1: the raw spotifyUserId appears nowhere in the bundle');
+    unlike($text, qr/\Q$uidUtf\E/, '79-43 B1: its UTF-8 byte form (as a log file holds it) appears nowhere');
+    unlike($body, qr/\Q$uidUtf\E/, '79-43 B1: ... not even in the encoded body');
+    unlike($text, qr/\Q$uidEsc\E/i, '79-43 B1: its URI-escaped form appears nowhere');
+    unlike($text, qr/other\.user/, '79-43 B1: a second stored account id is redacted too');
+    like($text, qr/authenticated as \[REDACTED\] ok/, '79-43 B1: the daemon log line survives with the user replaced');
+    like($text, qr{profile/\[REDACTED\]: 503}, '79-43 B1: the server.log line survives with the escaped user replaced');
+    unlike($text, qr/spak_B2SECRET43|abc\.B2-43/, '79-43 B2: the spak_ and Bearer redaction is unchanged');
+
+    $p->set('accounts', $accountsBefore);
+    $p->set('activeAccount', $activeBefore);
+    $srv->set('logdir', undef);
+    Slim::Player::Client::set_mock_clients();
+    $p->set('diagnosticMode', 0);
+    unlink "$spotonDir/0200005a1143-soloist.log";
+}
+
+# ============================================================
+# 79-44 (D-33 review WR-04): the bundle redaction replaces the user id as a TOKEN, not as a substring anywhere. A short
+# id ("max") used to eat HOLD_MAX_S, Maxwell and maximum (substring, case-insensitive) and garble the user's one support
+# artifact. The id still disappears where it stands alone (also after a slash, in a log line, in its URI-escaped form in
+# either hex case), and the other accounts' ids stay redacted.
+# ============================================================
+{
+    require Plugins::SpotOn::Settings;
+    require Encode;
+    my $p   = Slim::Utils::Prefs::preferences('plugin.spoton');
+    my $srv = Slim::Utils::Prefs::preferences('server');
+    no warnings 'redefine';
+    local $main::VERSION = '9.1.1-test';
+    local *Plugins::SpotOn::Plugin::_pluginDataFor = sub { '9.9.9-test' };
+    my $spotonDir = File::Spec->catdir($srv->get('cachedir'), 'spoton');
+    make_path($spotonDir);
+    for my $old (glob("$spotonDir/*-connect.log"), glob("$spotonDir/*-unified.log"), glob("$spotonDir/*-soloist.log*")) {
+        unlink $old;
+    }
+    my $write = sub { my ($f, $text) = @_; open(my $fh, '>', $f) or die "$f: $!"; print $fh $text; close($fh); };
+    my $uid    = 'max';
+    my $uid2   = "j\x{fc}rgen.m";
+    my $uid2Lo = 'j%c3%bcrgen.m';                          # the same escape in lower-case hex
+    $write->("$spotonDir/0200005a1144-soloist.log", "boot\nHOLD_MAX_S=180 Maxwell maximum smax max_ready\n[soloist] authenticated as max ok\nuser/max/playlists\n");
+    my $logdir = tempdir(CLEANUP => 1);
+    $write->("$logdir/server.log", "[x] SpotOn: SpClient: HTTP 503 error for profile/$uid2Lo: 503\n[x] SpotOn: Thomas Maximilian HOLD_MAX_S Max end\n");
+    $srv->set('logdir', $logdir);
+    Slim::Player::Client::set_mock_clients(FakeBundleClient->new(name => 'Kitchen', id => '02:00:00:5a:11:44'));
+    my $accountsBefore = $p->get('accounts');
+    my $activeBefore   = $p->get('activeAccount');
+    $p->set('accounts', { b1440001 => { spotifyUserId => $uid }, b1440002 => { spotifyUserId => $uid2 } });
+    $p->set('activeAccount', 'b1440001');
+    $p->set('diagnosticMode', 1);
+    $p->set('backend', 'librespot');
+
+    @Slim::Web::HTTP::http_responses = ();
+    my $res = FakeSettingsResponse->new();
+    Plugins::SpotOn::Settings::_diagnosticBundleHandler(undef, $res);
+    my $ref  = $Slim::Web::HTTP::http_responses[0][2];
+    my $body = $ref ? $$ref : '';
+    my $text = eval { Encode::decode('UTF-8', $body) } // '';
+
+    is($res->code, 200, '79-44 WR-04: the bundle answers 200');
+    like($text, qr/HOLD_MAX_S=180 Maxwell maximum smax max_ready/, '79-44 WR-04: a short id does not garble words that merely contain it (HOLD_MAX_S, Maxwell, maximum, smax, max_ready)');
+    like($text, qr/Thomas Maximilian HOLD_MAX_S Max end/, '79-44 WR-04: ... nor the server.log extract, and the id is case-sensitive (a capital "Max" is not the id "max")');
+    like($text, qr/authenticated as \[REDACTED\] ok/, '79-44 WR-04: the id standing alone in a log line is still redacted');
+    like($text, qr{user/\[REDACTED\]/playlists}, '79-44 WR-04: ... and after a slash in a path');
+    like($text, qr{profile/\[REDACTED\]: 503}, '79-44 WR-04: the lower-case hex URI escape of the other account is still redacted');
+    unlike($text, qr/\bmax\b/, '79-44 WR-04: the bare id appears nowhere as a token');
+
+    $p->set('accounts', $accountsBefore);
+    $p->set('activeAccount', $activeBefore);
+    $srv->set('logdir', undef);
+    Slim::Player::Client::set_mock_clients();
+    $p->set('diagnosticMode', 0);
+    unlink "$spotonDir/0200005a1144-soloist.log";
 }
 
 done_testing();

@@ -331,6 +331,7 @@ END
 # error paths can all be exercised without a real SpClient.pm.
 write_stub($stub_dir, 'Plugins::SpotOn::API::SpClient', <<'END');
 package Plugins::SpotOn::API::SpClient;
+use constant TRACK_META_FORMAT => 2;   # 79-43 (D-33 FULL-3 CR-01): the format marker of the real module
 use constant SPOTON_DEFAULT_CLIENT_ID => 'test-client-id-stub';
 use constant SPCLIENT_RATE_LIMIT_KEY => 'spoton_spclient_rate_limit';   # WR-03: tied to SpClient.pm by a source check
 our $next_has_login5        = 1;

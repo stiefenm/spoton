@@ -18,3 +18,21 @@ signal-desktop*
 test_*.py
 tmp*/
 *.key
+# credential file, never ship (D-33 FULL-5 WR-08)
+credentials.json
+# credential file, never ship (D-33 FULL-5 WR-08)
+*.pem
+# credential file, never ship (D-33 FULL-5 WR-08)
+*.p12
+# credential file, never ship (D-33 FULL-5 WR-08)
+*.pfx
+# credential file, never ship (D-33 FULL-5 WR-08)
+.env
+# credential file, never ship (D-33 FULL-5 WR-08)
+.env.*
+# credential file, never ship (D-33 FULL-5 WR-08)
+*.sudoers
+# credential file, never ship (D-33 FULL-5 WR-08)
+.npmrc
+# forum monitor, moved to private CI (D-33 FULL-5 CR-01 follow-up)
+.github/workflows/forum-monitor.yml

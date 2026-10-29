@@ -44,8 +44,13 @@ sub encode_varint {
 }
 
 # encode_field($field, $wire, $data)
-# $wire == 2 (length-delimited): $data is a byte string -- emits tag + varint
-#   length + bytes.
+# $wire == 2 (length-delimited): $data is a byte string OR a character string
+#   -- emits tag + varint length + bytes. 79-43 (D-33 FULL-3 WR-02): a
+#   character string (utf8::is_utf8) is sent as its UTF-8 bytes and the length
+#   is the BYTE length; an unflagged value is taken as bytes and passes through
+#   unchanged (binary fields, nested messages). A text whose source can hold a
+#   Latin-1 representation of characters (an LMS player name) is upgraded by
+#   its caller first, so both representations travel as UTF-8.
 # $wire == 0 (varint): $data is a non-negative integer -- emits tag + varint.
 # Any other $wire: emits tag + $data verbatim (caller-supplied raw bytes;
 # not used by Phase 75 callers, kept for completeness/symmetry with parse).
@@ -53,7 +58,9 @@ sub encode_field {
     my ($field, $wire, $data) = @_;
     my $tag = encode_varint(($field << 3) | $wire);
     if ($wire == 2) {
-        return $tag . encode_varint(length $data) . $data;
+        my $bytes = $data;
+        utf8::encode($bytes) if utf8::is_utf8($bytes);   # characters -> UTF-8 bytes (79-43)
+        return $tag . encode_varint(length $bytes) . $bytes;
     }
     elsif ($wire == 0) {
         return $tag . encode_varint($data);

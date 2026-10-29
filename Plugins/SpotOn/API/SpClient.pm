@@ -63,6 +63,14 @@ use constant EXTMETA_KIND_TRACK_V4   => 10;   # extension_kind.proto: ARTIST_V4=
 # inside the hit path (the FIX-01 problem: N synchronous SQLite INSERTs in one callback block LMS).
 use constant TRACK_META_TTL          => 90 * 86400;
 use constant TRACK_META_RENEW_AFTER  => 30 * 86400;
+# 79-43 (D-33 FULL-3 CR-01): the format of a stored metadata/4/track value. _storeTrackMeta writes
+# _spoton_fmt => TRACK_META_FORMAT; a read whose value lacks it or carries a lower one is a MISS at both readers
+# (_request, _enrichTracks) and is fetched again, the refetch overwrites it. Format 2 = names are character
+# strings (the batch decoder before 79-43 stored UTF-8 bytes for up to 90 days). Rejected alternatives:
+#   bumping SPOTON_CACHE_VERSION - flushes every SpotOn entry (login5 tokens, migration journal, Soloist state);
+#   a one-shot sweep of spoton_spclient_resp_* keys - DbCache lists no keys, and a sweep is migration code;
+#   decoding in place on read - guesses the representation of every stored string.
+use constant TRACK_META_FORMAT       => 2;
 use constant RENEW_BATCH             => 50;
 use constant APRESOLVE_URL           => 'https://apresolve.spotify.com/?type=spclient';
 use constant SPCLIENT_FALLBACK_HOST  => 'gew4-spclient.spotify.com:443';
@@ -417,7 +425,7 @@ sub _request {
     if (my $retryUntil = $cache->get(SPCLIENT_RATE_LIMIT_KEY)) {
         my $remaining = $retryUntil - Time::HiRes::time();
         if ($remaining > 0) {
-            main::INFOLOG && $log->info("SpClient: request to $cleanPath short-circuited (cached rate limit)");
+            main::INFOLOG && $log->info("SpClient: request to " . _logPath($cleanPath) . " short-circuited (cached rate limit)");
             $cb->(undef, { error => 'rate_limited_local', code => 429 });
             return;
         }
@@ -429,8 +437,12 @@ sub _request {
         $params->{_cacheKey} = $cacheKey;
         # 79-27 D-20: _refreshCache skips the READ only (a track that starts playing is fetched fresh) and keeps
         # the write below, so the fresh result overwrites the entry. _noCache, by contrast, skips both.
-        if (!$params->{_refreshCache} && (my $cached = $cache->get($cacheKey))) {
-            main::INFOLOG && $log->info("SpClient: cache hit for $cleanPath");
+        my $cached = $params->{_refreshCache} ? undef : $cache->get($cacheKey);
+        # 79-43 (D-33 FULL-3 CR-01): a track value without the current format marker is a miss, decided BEFORE
+        # _noteTrackHit so it is never queued for renewal; the refetch below overwrites it.
+        undef $cached if $cached && $cleanPath =~ m{^metadata/4/track/} && !$class->_trackMetaCurrent($cached);
+        if ($cached) {
+            main::INFOLOG && $log->info("SpClient: cache hit for " . _logPath($cleanPath));
             $class->_noteTrackHit($cacheKey, $cached) if $cleanPath =~ m{^metadata/4/track/};
             $cb->($cached);
             return;
@@ -462,9 +474,20 @@ sub _request {
         $class->_doRequest($method, $cleanPath, $params, $userCb);
         1;
     } or do {
-        $log->error("SpClient: dispatch failed for $cleanPath: $@");
+        $log->error("SpClient: dispatch failed for " . _logPath($cleanPath) . ": $@");
         $userCb->(undef, { error => 'internal_error' });
     };
+}
+
+# _logPath($path) -- 79-43 (D-33 FULL-3 WR-01): the request path as it may appear in a log line. The username
+# (profile/<u>, spotify:user:<u>, /user/<u>, raw or URI-escaped) and everything after spotify:search: are masked;
+# the request path, the cache key and the request itself are never changed - only what is logged.
+sub _logPath {
+    my ($p) = @_;
+    return '' unless defined $p;
+    $p =~ s{(profile/|spotify:user:|/user/)[^/:?]+}{$1****}g;
+    $p =~ s{spotify:search:.*}{spotify:search:****}s;
+    return $p;
 }
 
 # _doRequest($class, $method, $cleanPath, $params, $userCb)
@@ -501,7 +524,7 @@ sub _doRequest {
             my $accept = $params->{_accept} || 'application/json';
 
             # T-02-10: never log the Authorization header value -- path+method only.
-            main::INFOLOG && $log->info("SpClient: $method $cleanPath");
+            main::INFOLOG && $log->info("SpClient: $method " . _logPath($cleanPath));
 
             my $http = Slim::Networking::SimpleAsyncHTTP->new(
                 sub {
@@ -515,7 +538,7 @@ sub _doRequest {
                     elsif ($content =~ /\S/) {
                         $result = eval { from_json($content) };
                         if ($@) {
-                            $log->error("SpClient: JSON parse error for $cleanPath: $@");
+                            $log->error("SpClient: JSON parse error for " . _logPath($cleanPath) . ": $@");
                             $userCb->(undef, { error => 'parse_error' });
                             return;
                         }
@@ -557,7 +580,7 @@ sub _doRequest {
 
                         # D-03: own rate key -- never touches spoton_rate_limit.
                         $cache->set(SPCLIENT_RATE_LIMIT_KEY, Time::HiRes::time() + $retryAfter, $retryAfter);
-                        $log->warn("SpClient: 429 rate limited for ${retryAfter}s on $cleanPath");
+                        $log->warn("SpClient: 429 rate limited for ${retryAfter}s on " . _logPath($cleanPath));
 
                         $userCb->(undef, { error => 'rate_limited', code => 429 });
                         return;
@@ -572,24 +595,24 @@ sub _doRequest {
                         # means the account cannot authenticate right now and
                         # is reported as 'unauthorized' at once (D-07a).
                         if (!$params->{_retried401}) {
-                            $log->warn("SpClient: 401 for $cleanPath, retrying once with a fresh token (D-07a)");
+                            $log->warn("SpClient: 401 for " . _logPath($cleanPath) . ", retrying once with a fresh token (D-07a)");
                             $params->{_retried401} = 1;
                             eval {
                                 $class->_doRequest($method, $cleanPath, $params, $userCb);
                                 1;
                             } or do {
-                                $log->error("SpClient: 401 retry dispatch failed for $cleanPath: $@");
+                                $log->error("SpClient: 401 retry dispatch failed for " . _logPath($cleanPath) . ": $@");
                                 $userCb->(undef, { error => 'internal_error' });
                             };
                             return;
                         }
 
-                        $log->warn("SpClient: 401 for $cleanPath after remint retry -- reporting unauthorized");
+                        $log->warn("SpClient: 401 for " . _logPath($cleanPath) . " after remint retry -- reporting unauthorized");
                         $userCb->(undef, { error => 'unauthorized', code => 401 });
                         return;
                     }
 
-                    $log->error("SpClient: HTTP $code error for $cleanPath: $error");
+                    $log->error("SpClient: HTTP $code error for " . _logPath($cleanPath) . ": " . _logPath($error));   # an error text can carry the URL
                     $userCb->(undef, { error => $error, code => $code });
                 },
                 { timeout => REQUEST_TIMEOUT, cache => 0 },
@@ -613,7 +636,7 @@ sub _doRequest {
                 $http->$method($url, @callArgs);
                 1;
             } or do {
-                $log->error("SpClient: HTTP dispatch failed for $cleanPath: $@");
+                $log->error("SpClient: HTTP dispatch failed for " . _logPath($cleanPath) . ": $@");
                 $userCb->(undef, { error => 'internal_error' });
             };
         });
@@ -913,7 +936,9 @@ sub _enrichTracks {
         }
 
         my $cacheKey = $class->_trackCacheKey($accountId, $hexId);
-        if (my $cached = $cache->get($cacheKey)) {
+        my $cached = $cache->get($cacheKey);
+        undef $cached if $cached && !$class->_trackMetaCurrent($cached);   # 79-43: unmarked = miss, before _noteTrackHit
+        if ($cached) {
             $class->_noteTrackHit($cacheKey, $cached);   # 79-27 D-19: a due entry is renewed by the drain, not here
             $results[$i] = $class->_normalizeTrack($cached) || $class->_trackStub($id);
             next;
@@ -1015,7 +1040,16 @@ sub _storeTrackMeta {
     my ($class, $cacheKey, $hexId, $meta) = @_;
     return unless ref($meta) eq 'HASH';
     my $ttl = $class->_cacheTTL("metadata/4/track/$hexId");
-    $cache->set($cacheKey, { %$meta, _spoton_cached_at => time() }, $ttl) if $ttl > 0;
+    $cache->set($cacheKey, { %$meta, _spoton_cached_at => time(), _spoton_fmt => TRACK_META_FORMAT }, $ttl) if $ttl > 0;
+}
+
+# _trackMetaCurrent($class, $value) -- 79-43 (D-33 FULL-3 CR-01): true when a cached metadata/4/track value carries
+# the current format marker (_spoton_fmt >= TRACK_META_FORMAT). Anything else is a miss at every reader.
+sub _trackMetaCurrent {
+    my ($class, $value) = @_;
+    return 0 unless ref($value) eq 'HASH';
+    my $fmt = $value->{_spoton_fmt};
+    return (defined $fmt && $fmt =~ /\A\d+\z/ && $fmt >= TRACK_META_FORMAT) ? 1 : 0;
 }
 
 # _noteTrackHit($class, $cacheKey, $value) -- 79-27 D-19: called from every metadata/4/track cache HIT. An
@@ -1052,6 +1086,7 @@ sub _flushTrackRenewals {
         my $key   = shift @_renewOrder;
         my $value = delete $_renewPending{$key} or next;
         next unless $key =~ m{metadata/4/track/([0-9a-f]{32})\z};
+        next unless $class->_trackMetaCurrent($value);   # 79-43: never stamp the marker on an old-format value
         $class->_storeTrackMeta($key, $1, $value);
         $n++;
     }
@@ -1109,10 +1144,13 @@ sub _decodeTrackMessage {
     my $t = $PB->can('parse_fields')->($bytes) or return undef;
 
     my $hex = sub { my $b = shift; return (defined $b && length $b) ? unpack('H*', $b) : undef };
+    # 79-43 (D-33 FULL-3 CR-01, the 85-16 rootlist rule of _parseRootlist): protobuf strings arrive as UTF-8
+    # bytes; names leave this decoder as Perl character strings, exactly like the JSON path's.
+    my $str = sub { my $s = shift; utf8::decode($s) if defined $s; return $s };
 
     my %m;
     $m{gid}  = $hex->($PB->can('field_first')->($t, 1));
-    $m{name} = $PB->can('field_first')->($t, 2);
+    $m{name} = $str->($PB->can('field_first')->($t, 2));
 
     my $dur = $PB->can('decode_zigzag')->($PB->can('field_first')->($t, 7));
     $m{duration} = $dur if defined $dur;
@@ -1123,7 +1161,7 @@ sub _decodeTrackMessage {
     my @artists;
     for my $aBytes (@{ $t->{4} || [] }) {
         my $a = $PB->can('parse_fields')->($aBytes) or next;
-        push @artists, { gid => $hex->($PB->can('field_first')->($a, 1)), name => $PB->can('field_first')->($a, 2) };
+        push @artists, { gid => $hex->($PB->can('field_first')->($a, 1)), name => $str->($PB->can('field_first')->($a, 2)) };
     }
     $m{artist} = \@artists;
 
@@ -1131,7 +1169,7 @@ sub _decodeTrackMessage {
     if (defined(my $alBytes = $PB->can('field_first')->($t, 3))) {
         if (my $al = $PB->can('parse_fields')->($alBytes)) {
             $album{gid}  = $hex->($PB->can('field_first')->($al, 1));
-            $album{name} = $PB->can('field_first')->($al, 2);
+            $album{name} = $str->($PB->can('field_first')->($al, 2));
             if (defined(my $cgBytes = $PB->can('field_first')->($al, 17))) {
                 my $cg = $PB->can('parse_fields')->($cgBytes) || {};
                 my @images;

@@ -442,6 +442,60 @@ static atomic_int g_seek_flush_armed = 0;
 static struct timeval g_seek_arm_at;
 #define SEEK_ARM_TTL_MS 3000
 
+/* 79-47 (D-34, user decision "beta.2: auch App-Uebernahme"): browse keep.
+ * In browse (LMS owns the playlist) an app seek, and an app next/previous
+ * before Control redirects it to LMS, makes the daemon flush on its own. An
+ * unarmed flush is treated as a title boundary below (g_flush_disconnect):
+ * it closed LMS's stream about 41 ms later, LMS read EOF and played the next
+ * item (.planning/debug/pi-group-connect-seek-pause.md, 79-46 Case F).
+ * Control's own browse title changes never need that disconnect: its plays
+ * are armed (Control.pm _reconcilePlan, armed whenever a track is observed),
+ * a natural end is ended by the drain POST /boundary, and an LMS skip opens a
+ * new GET /stream (takeover). So while browse keep is set an UNARMED flush
+ * keeps the client, exactly as an armed flush does, without touching the
+ * seek-arm counter (whose drain gate would withhold audio until its TTL).
+ * Set and cleared ONLY by POST /browse-keep?on=1 / ?on=0 (Control, 79-48);
+ * without that POST the shim behaves as before 79-47. Not reset by
+ * /boundary, a client change or a timeout: Control owns it for the whole
+ * browse session and clears it when it leaves browse (Connect app skips
+ * still need the unarmed disconnect). Single writer: the HTTP thread (the
+ * POST handler); read by the flush caller's thread in pa_stream_flush --
+ * atomic_int, the g_seek_flush_armed precedent. */
+static atomic_int g_browse_keep = 0;
+
+/* 79-50 (D-34 R2): the connect decision window. In a Connect session an app
+ * seek makes the daemon flush on its own, the flush is unarmed, and the
+ * disconnect it raises used to run at the HTTP thread's next wake-up, 9 ms
+ * later (79-47 R2, R2_3: close 18:01:11.518 for a flush at 18:01:11.509).
+ * Control only learns that the flush was a seek from the daemon's first frame,
+ * 6-7 ms after the flush (E1), and an app skip looks exactly the same to the
+ * shim at flush time (E3: cork 0->1 and a flush with corked=1 in one
+ * millisecond, both). So an unarmed, not-browse-kept flush stamps a decision
+ * deadline (now + W) BEFORE it raises g_flush_disconnect, and the HTTP thread
+ * holds the disconnect open until the decision is final:
+ *   - POST /seek-keep (Control, a buffering frame on the unchanged title)
+ *     keeps the client: the flag and the deadline are cleared;
+ *   - POST /boundary (Control, track_changed = the skip) or the deadline ends
+ *     the window: the disconnect runs as before;
+ *   - a late /seek-arm consumed by the pending disconnect and a takeover (a
+ *     new GET /stream) end it too (every canceller of g_flush_disconnect also
+ *     clears the deadline).
+ * The window is OPEN iff g_flush_disconnect is set AND the deadline lies in
+ * the future (_flush_decide_open). While it is open the drain pops nothing (the
+ * post-flush audio is withheld) and the client write is never cut. W is
+ * SPOTON_FAKEPULSE_FLUSH_DECIDE_MS (read by the flush caller thread, like
+ * _hold_gap_env_ms), 0..5000, 0 = no window, unset or invalid = 2000: a skip
+ * ends by its /boundary whatever W is, so the deadline only decides when no
+ * signal arrives at all (Control stalled or dead), and a larger W lets a
+ * stalled Control still deliver its keep at no cost beyond a later close of a
+ * stream that would close anyway. The deadline is a wrap-safe _mono_ms() value
+ * (atomic_long: lock-free on every target, armhf included), 0 = none. */
+#define FLUSH_DECIDE_MS_DEFAULT 2000
+#define FLUSH_DECIDE_MS_MAX     5000
+static atomic_long g_flush_decide_deadline = 0;   /* _mono_ms() deadline, 0 = no window */
+static atomic_long g_flush_decide_t0 = 0;          /* _mono_ms() of the flush that opened it, 0 = none */
+static atomic_int  g_flush_decide_promoted = 0;    /* 1 = ended by POST /boundary (the skip) */
+
 /* Phase 77 Spike 2 (Bounded Endpoint Prototype): forward declaration, same
  * reason as g_debug_trace's forward declaration above -- the BOUNDARY()
  * macro (real definition further below, next to the other trace macros)
@@ -658,6 +712,27 @@ static volatile int64_t g_boundary_client_generation = NO_CLIENT_GENERATION;
  * unarmed skip before any client re-attached -- the first plant consumed
  * the record (one-shot), the second is planted via=none.
  *
+ * CORRECTED AGAIN (79-51 runaway D2, 2026-10-27, .planning/debug/album-start-
+ * connect-runaway.md E4/E5): the bounded-EOF closes (pre-pop and post-pop) now
+ * RECORD their client too, like the write-error and flush-disconnect closes.
+ * Measured case (E4, 094204): client g=15 closed at 25.106, the next plant at
+ * 25.328 had nobody attached and an empty ring (`gen=-1 via=none ring_fill=0`),
+ * LMS's fresh client attached at 25.338 and was closed in the same millisecond
+ * (`wrote=0`); LMS stopped and the stop was forwarded as the daemon's pause.
+ * With the record that plant reads via=departed and its marker belongs to the
+ * departed client, so the next attach discards it (stale generation). The cost,
+ * stated honestly: the record is made on EVERY bounded close, a normal title end
+ * included. Without a flush, a plant made after a bounded close and before the
+ * next attach therefore no longer bounds that attacher (cell D2-C7, T-79-195);
+ * after a flush (every real skip) the bytes before the marker belong to the next
+ * title and discarding is right (cell D2-C6, the 3346f9e reasoning). Known
+ * uncovered ordering (2) above (a second plant before any attach) is handled
+ * only by the orphan discard at promotion (E5: 094408 :20.536/.550, no predecessor
+ * at all), and only when the marker sits at or below total_popped (the ring was
+ * empty at the plant, the measured burst shape); bytes pushed between the flush
+ * and that plant keep the old bound. D-04 (a marker ABOVE total_popped with no
+ * departed record) is untouched.
+ *
  * Ownership/locking: same rationale as g_client_generation and
  * g_boundary_client_generation above -- written and read EXCLUSIVELY by
  * _http_thread_fn (the write-error-close branch of the drain loop, the
@@ -835,6 +910,44 @@ static long _mono_ms(void) {
     struct timespec t;
     clock_gettime(CLOCK_MONOTONIC, &t);
     return (long)(t.tv_sec * 1000L + t.tv_nsec / 1000000L);
+}
+
+/* 79-50 (D-34 R2): the decision window helpers. Atomics only, callable from the
+ * flush caller thread and the HTTP thread. Elapsed times are wrap-safe
+ * differences of _mono_ms() (a 32-bit long on armhf). */
+static long _flush_decide_env_ms(void) {
+    const char *e = getenv("SPOTON_FAKEPULSE_FLUSH_DECIDE_MS");
+    if (e && *e) {
+        char *end = NULL;
+        long v = strtol(e, &end, 10);
+        if (end != e && *end == '\0' && v >= 0 && v <= FLUSH_DECIDE_MS_MAX) {
+            return v;
+        }
+    }
+    return FLUSH_DECIDE_MS_DEFAULT;
+}
+
+static long _mono_since(long t0) {
+    return (long)((unsigned long)_mono_ms() - (unsigned long)t0);
+}
+
+/* 1 iff a disconnect is pending AND its decision window has not run out. */
+static int _flush_decide_open(void) {
+    if (!g_flush_disconnect) {
+        return 0;
+    }
+    long dl = atomic_load(&g_flush_decide_deadline);
+    if (dl == 0) {
+        return 0;
+    }
+    return (long)((unsigned long)dl - (unsigned long)_mono_ms()) > 0;
+}
+
+/* Ends the window whatever ended it: deadline, t0 and the promotion mark. */
+static void _flush_decide_clear(void) {
+    atomic_store(&g_flush_decide_deadline, 0);
+    atomic_store(&g_flush_decide_t0, 0);
+    atomic_store(&g_flush_decide_promoted, 0);
 }
 
 /* 79-37 D-31: the hold clock. 64-bit milliseconds of CLOCK_MONOTONIC; unlike
@@ -1256,6 +1369,17 @@ static size_t _ring_pop_timed(ring_buffer_t *r, unsigned char *out, size_t maxle
     }
 
     size_t chunk = 0;
+    /* 79-50 (D-34 R2, E5): with a flush-disconnect pending (its decision window open,
+     * or decided and not yet executed) no pop may take a byte, and like the hold cap
+     * the check sits HERE, after the wait and under the lock: the drain loop usually
+     * waits on data_avail with the gate in front of it already passed (the ring was
+     * empty), the flush then raises the flag, and the first post-flush push wakes
+     * that very pop -- the bytes of the next title would leave the ring for the old
+     * client (C_off wrote=4096) or, with a keep, be lost for the kept one. */
+    if (g_flush_disconnect) {
+        pthread_mutex_unlock(&r->lock);
+        return 0;
+    }
     /* D-31 HOLD_CAP_BEGIN */
     /* 79-37: while a gap hold stands no pop may take a byte at or past the old
      * title's end. The cap sits HERE, after the wait and under the lock: the
@@ -1609,6 +1733,18 @@ static void _serve_boundary(pending_conn_t *p, int client_fd) {
     if (flush_pending) {
         want_drain = 0;
     }
+    /* 79-50 (D-34 R2): the skip. Control's /boundary (sent on track_changed) is
+     * the signal that this flush was a title change, not a seek: the decision
+     * window ends at once and the disconnect becomes final -- the loop top then
+     * closes the old client at its next tick (reason=boundary), exactly as the
+     * unarmed flush did before 79-50. Without the block the window would run
+     * to its deadline. */
+    /* D-34 R2_PROMOTE_BEGIN */
+    if (flush_pending && _flush_decide_open()) {
+        atomic_store(&g_flush_decide_promoted, 1);
+        atomic_store(&g_flush_decide_deadline, 0);
+    }
+    /* D-34 R2_PROMOTE_END */
     pthread_mutex_lock(&g_ring.lock);
     int64_t pushed_now = g_ring.total_pushed;
     int64_t popped_now = g_ring.total_popped;
@@ -1801,6 +1937,7 @@ static int _serve_seek_arm(pending_conn_t *p, int client_fd, const char *via) {
 
     if (g_flush_disconnect && client_fd >= 0) {
         g_flush_disconnect = 0;
+        _flush_decide_clear();   /* 79-50 (W4): a late arm ends the decision window too */
         _http_write_all(p->fd, (const unsigned char *)seek_arm_resp,
                          sizeof(seek_arm_resp) - 1);
         close(p->fd);
@@ -1904,6 +2041,152 @@ static void _serve_hold_release(pending_conn_t *p) {
     }
 }
 
+/* 79-47 (D-34): POST /browse-keep?on=1|0 sets or clears g_browse_keep (see
+ * its doc comment). A sibling control request of /seek-arm and /hold-release:
+ * served and answered WITHOUT the GET /stream takeover, never touches
+ * client_fd. LOOPBACK-ONLY (403 before any state is read or written, the
+ * listener binds INADDR_ANY). A request without on=1 or on=0 in its request
+ * line answers 400 and changes nothing. The reply body is the state after
+ * the request: `browse_keep=<0|1>`. */
+static void _serve_browse_keep(pending_conn_t *p) {
+    if (!p->from_loopback) {
+        static const char forbidden_resp[] =
+            "HTTP/1.0 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        _http_write_all(p->fd, (const unsigned char *)forbidden_resp,
+                         sizeof(forbidden_resp) - 1);
+        close(p->fd);
+        p->fd = -1;
+        p->len = 0;
+        return;
+    }
+    int want = -1;
+    if (_head_line_has(p, "on=1")) {
+        want = 1;
+    } else if (_head_line_has(p, "on=0")) {
+        want = 0;
+    }
+    if (want < 0) {
+        static const char bad_resp[] =
+            "HTTP/1.0 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        _http_write_all(p->fd, (const unsigned char *)bad_resp, sizeof(bad_resp) - 1);
+        close(p->fd);
+        p->fd = -1;
+        p->len = 0;
+        BOUNDARY("browse_keep: refused (no on=0|1) keep=%d", (int)atomic_load(&g_browse_keep));
+        return;
+    }
+    int was = atomic_exchange(&g_browse_keep, want);
+    char body[32];
+    snprintf(body, sizeof(body), "browse_keep=%d\n", want);
+    char reply[160];
+    int reply_len = snprintf(reply, sizeof(reply),
+        "HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
+        (int)strlen(body), body);
+    if (reply_len > 0 && (size_t)reply_len < sizeof(reply)) {
+        _http_write_all(p->fd, (const unsigned char *)reply, (size_t)reply_len);
+    }
+    close(p->fd);
+    p->fd = -1;
+    p->len = 0;
+    if (g_debug_trace) {
+        char _ts[32];
+        _trace_ts(_ts, sizeof(_ts));
+        fprintf(stderr, "[fakepulse %s] browse-keep: %d -> %d\n", _ts, was, want);
+    }
+    BOUNDARY("browse_keep: %d -> %d", was, want);
+}
+
+/* 79-50 (D-34 R2): POST /seek-keep keeps the client of an unarmed flush whose
+ * decision window is open (see g_flush_decide_deadline's doc comment). Control
+ * sends it when the daemon's first frame after the flush is a `buffering`
+ * playback_state for the title it already observed (an app seek or restart),
+ * 6-7 ms after the flush (E1). A sibling control request of /seek-arm and
+ * /browse-keep: served and answered WITHOUT the GET /stream takeover, parameterless
+ * (no body or query parsing), LOOPBACK-ONLY (403 before any state is read, the
+ * listener binds INADDR_ANY). Keep case: a disconnect is pending, a client is
+ * attached and the decision is still open -> clear g_flush_disconnect and the
+ * deadline, reply `seek_keep=1`. Anything else (nothing pending, a decision that
+ * is already final: /boundary came first, the deadline ran out) -> reply
+ * `seek_keep=0` and change nothing. It never touches g_seek_flush_armed or
+ * g_browse_keep, so it can never arm the drain gate. `client_fd` is the HTTP
+ * thread's current streaming client (read-only here). */
+static void _serve_seek_keep(pending_conn_t *p, int client_fd) {
+    if (!p->from_loopback) {
+        static const char forbidden_resp[] =
+            "HTTP/1.0 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        _http_write_all(p->fd, (const unsigned char *)forbidden_resp,
+                         sizeof(forbidden_resp) - 1);
+        close(p->fd);
+        p->fd = -1;
+        p->len = 0;
+        return;
+    }
+    int kept = 0;
+    long after_ms = 0;
+    int pending_now = (g_flush_disconnect && client_fd >= 0);
+    if (pending_now && _flush_decide_open()) {
+        long t0 = atomic_load(&g_flush_decide_t0);
+        after_ms = (t0 != 0) ? _mono_since(t0) : 0;
+        g_flush_disconnect = 0;
+        _flush_decide_clear();
+        kept = 1;
+    }
+    char body[32];
+    snprintf(body, sizeof(body), "seek_keep=%d\n", kept);
+    char reply[160];
+    int reply_len = snprintf(reply, sizeof(reply),
+        "HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
+        (int)strlen(body), body);
+    if (reply_len > 0 && (size_t)reply_len < sizeof(reply)) {
+        _http_write_all(p->fd, (const unsigned char *)reply, (size_t)reply_len);
+    }
+    close(p->fd);
+    p->fd = -1;
+    p->len = 0;
+    if (g_debug_trace) {
+        char _ts[32];
+        _trace_ts(_ts, sizeof(_ts));
+        if (kept) {
+            fprintf(stderr, "[fakepulse %s] seek-keep: kept active HTTP client after_ms=%ld\n", _ts, after_ms);
+        } else {
+            fprintf(stderr, "[fakepulse %s] seek-keep: nothing pending\n", _ts);
+        }
+    }
+    if (kept) {
+        BOUNDARY("seek_keep: kept after_ms=%ld", after_ms);
+    } else {
+        BOUNDARY("seek_keep: noop reason=%s", pending_now ? "decided" : "none");
+    }
+}
+
+/* Serves the request in `p` if it is a complete control request; returns 1 if
+ * it was one (served and closed), 0 otherwise (a stream request or an unread
+ * head: untouched). The one classification the settle, the in-place newcomer
+ * rule and the write loop share. */
+static int _pending_serve_control(pending_conn_t *p, int client_fd, const char *via) {
+    if (_pending_is_control(p, "/boundary")) {
+        _serve_boundary(p, client_fd);
+        return 1;
+    }
+    if (_pending_is_control(p, "/seek-arm")) {
+        _serve_seek_arm(p, client_fd, via);
+        return 1;
+    }
+    if (_pending_is_control(p, "/hold-release")) {
+        _serve_hold_release(p);
+        return 1;
+    }
+    if (_pending_is_control(p, "/browse-keep")) {
+        _serve_browse_keep(p);
+        return 1;
+    }
+    if (_pending_is_control(p, "/seek-keep")) {
+        _serve_seek_keep(p, client_fd);
+        return 1;
+    }
+    return 0;
+}
+
 /* The single pending slot is about to be taken by a newer connection.
  * Finish reading its current occupant first and serve it if it turns
  * out to be a complete control request; preempt (close) it only
@@ -1917,16 +2200,7 @@ static void _pending_settle(pending_conn_t *p, int client_fd, const char *via) {
     if (p->fd < 0) {
         return;
     }
-    if (_pending_is_control(p, "/boundary")) {
-        _serve_boundary(p, client_fd);
-        return;
-    }
-    if (_pending_is_control(p, "/seek-arm")) {
-        _serve_seek_arm(p, client_fd, via);
-        return;
-    }
-    if (_pending_is_control(p, "/hold-release")) {
-        _serve_hold_release(p);
+    if (_pending_serve_control(p, client_fd, via)) {
         return;
     }
     /* A newer connection preempts a still-unconfirmed pending stream
@@ -1948,8 +2222,55 @@ static int _pending_accept(pending_conn_t *p, int client_fd, const char *via) {
     if (newfd < 0) {
         return 0;
     }
+    int from_loopback =
+        (peer_len >= (socklen_t)sizeof(peer_addr))
+        && (peer_addr.sin_family == AF_INET)
+        && (peer_addr.sin_addr.s_addr == htonl(INADDR_LOOPBACK));
     if (p->fd >= 0) {
+        /* 79-50 (D-34 R2, B1): a control newcomer never costs a waiting stream
+         * request. Any loopback POST -- /seek-keep above all, which is frame-driven
+         * and so not ordered against LMS's GET the way the arm is -- used to settle
+         * (and, for a stream occupant, CLOSE) the slot's GET /stream: LMS's own seek
+         * restart (ProtocolHandler.pm:1026-1034, a new GET 10-15 ms before the keep)
+         * would die and the player stop. So the NEWCOMER is read first (non-blocking,
+         * at most 5 ms for its head); a complete control request is served in place
+         * and the occupant stays untouched, including its read state. An earlier
+         * control request still waiting in the slot is served first, so the order of
+         * control requests never changes. Anything else settles the occupant exactly
+         * as before and the newcomer, with the bytes already read, takes the slot. */
+        pending_conn_t nc;
+        nc.fd = newfd;
+        nc.len = 0;
+        nc.buf[0] = '\0';
+        nc.from_loopback = from_loopback;
+        gettimeofday(&nc.started, NULL);
+        _set_nonblocking(newfd);
+        struct pollfd nfd;
+        nfd.fd = newfd;
+        nfd.events = POLLIN;
+        nfd.revents = 0;
+        (void)poll(&nfd, 1, 5);
+        _pending_try_read(&nc);
+        if (nc.fd < 0) {
+            return 1;    /* the newcomer went away before sending a head: the occupant is untouched */
+        }
+        if (_pending_is_control(&nc, "/boundary") || _pending_is_control(&nc, "/seek-arm")
+            || _pending_is_control(&nc, "/hold-release") || _pending_is_control(&nc, "/browse-keep")
+            || _pending_is_control(&nc, "/seek-keep")) {
+            _pending_try_read(p);
+            if (p->fd >= 0 && _pending_serve_control(p, client_fd, via)) {
+                /* the earlier control request is served first */
+            }
+            (void)_pending_serve_control(&nc, client_fd, via);
+            return 1;
+        }
         _pending_settle(p, client_fd, via);
+        p->fd = nc.fd;
+        p->len = nc.len;
+        memcpy(p->buf, nc.buf, nc.len + 1);
+        p->from_loopback = nc.from_loopback;
+        p->started = nc.started;
+        return 1;
     }
     _set_nonblocking(newfd);
     p->fd = newfd;
@@ -1961,10 +2282,7 @@ static int _pending_accept(pending_conn_t *p, int client_fd, const char *via) {
                             _pending_head_complete() return
                             true for a brand-new connection
                             that hasn't sent a single byte */
-    p->from_loopback =
-        (peer_len >= (socklen_t)sizeof(peer_addr))
-        && (peer_addr.sin_family == AF_INET)
-        && (peer_addr.sin_addr.s_addr == htonl(INADDR_LOOPBACK));
+    p->from_loopback = from_loopback;
     gettimeofday(&p->started, NULL);
     return 1;
 }
@@ -2005,6 +2323,8 @@ static void _flush_backlog_pass(pending_conn_t *p, int client_fd) {
     _pending_try_read(p);
     if (_pending_is_control(p, "/seek-arm")) {
         _serve_seek_arm(p, client_fd, "pending");
+    } else if (_pending_is_control(p, "/seek-keep")) {
+        _serve_seek_keep(p, client_fd);    /* 79-50: the keep of the decision window, served wherever the arm is */
     }
     for (int i = 0; i < FLUSH_BACKLOG_PASS_MAX && g_flush_disconnect; i++) {
         struct pollfd lfd;
@@ -2020,6 +2340,8 @@ static void _flush_backlog_pass(pending_conn_t *p, int client_fd) {
         _pending_try_read(p);
         if (_pending_is_control(p, "/seek-arm")) {
             _serve_seek_arm(p, client_fd, "backlog");
+        } else if (_pending_is_control(p, "/seek-keep")) {
+            _serve_seek_keep(p, client_fd);
         }
     }
 }
@@ -2132,6 +2454,10 @@ static int _http_write_client(int client_fd, const unsigned char *data, size_t n
                 _serve_seek_arm(pending, client_fd, "write-wait");
             } else if (_pending_is_control(pending, "/hold-release")) {
                 _serve_hold_release(pending);
+            } else if (_pending_is_control(pending, "/browse-keep")) {
+                _serve_browse_keep(pending);
+            } else if (_pending_is_control(pending, "/seek-keep")) {
+                _serve_seek_keep(pending, client_fd);    /* 79-50 D-34 R2 */
             }
         }
         if (pending->fd >= 0 && !_pending_head_complete(pending)
@@ -2145,7 +2471,10 @@ static int _http_write_client(int client_fd, const unsigned char *data, size_t n
             /* the control requests above ran first: a seek-arm that arrived
              * with the flush consumes it (_serve_seek_arm), and only a flush
              * that is still pending ends the write */
-            if (g_flush_disconnect) {
+            /* 79-50 (D-34 R2, C7): while the decision window is open the chunk in
+             * flight is completed, never cut -- 2 only once the decision is final
+             * (the keep clears the flag, the boundary or the deadline ends it) */
+            if (g_flush_disconnect && !_flush_decide_open()) {
                 return 2;
             }
             if (pending->fd >= 0
@@ -2195,7 +2524,29 @@ static void *_http_thread_fn(void *arg) {
         if (g_flush_disconnect && client_fd >= 0) {
             _flush_backlog_pass(&pending, client_fd);
         }
-        if (g_flush_disconnect && client_fd >= 0) {
+        /* 79-50 (D-34 R2): the decision is final unless a window is open (an
+         * unarmed flush holds its disconnect for FLUSH_DECIDE_MS so Control's
+         * /seek-keep can arrive, see g_flush_decide_deadline). While it is open the
+         * backlog pass above still runs and serves a queued /seek-keep, /seek-arm
+         * or /boundary. Cutting the marked block restores the immediate close. */
+        int decide_open = 0;
+        /* D-34 R2_DEFER_BEGIN */
+        decide_open = (g_flush_disconnect && client_fd >= 0) ? _flush_decide_open() : 0;
+        /* D-34 R2_DEFER_END */
+        if (g_flush_disconnect && client_fd >= 0 && !decide_open) {
+            long decide_t0 = atomic_load(&g_flush_decide_t0);
+            if (decide_t0 != 0) {
+                /* the window ran its course: the first of /boundary and the deadline decided */
+                const char *why = atomic_load(&g_flush_decide_promoted) ? "boundary" : "deadline";
+                long after = _mono_since(decide_t0);
+                if (g_debug_trace) {
+                    char _ts[32];
+                    _trace_ts(_ts, sizeof(_ts));
+                    fprintf(stderr, "[fakepulse %s] flush-decide: closed reason=%s after_ms=%ld\n", _ts, why, after);
+                }
+                BOUNDARY("flush_decide: closed reason=%s after_ms=%ld", why, after);
+            }
+            _flush_decide_clear();
             close(client_fd);
             client_fd = -1;
             _ring_set_client(0, "disconnect", 0);   /* 79-37 D-31 (the flush itself released the hold as "flush") */
@@ -2300,12 +2651,29 @@ static void *_http_thread_fn(void *arg) {
             continue;
         }
 
+        if (_pending_is_control(&pending, "/browse-keep")) {
+            /* 79-47 D-34: served like the three above, never a stream takeover. */
+            _serve_browse_keep(&pending);
+            continue;
+        }
+
+        if (_pending_is_control(&pending, "/seek-keep")) {
+            /* 79-50 D-34 R2: the keep of the decision window, never a stream takeover. */
+            _serve_seek_keep(&pending, client_fd);
+            continue;
+        }
+
         if (pending.fd >= 0
             && (_pending_head_complete(&pending) || pending.len >= sizeof(pending.buf) - 1))
         {
             /* Full request head arrived (or the bounded buffer filled,
              * matching the old discard function's give-up-parsing
              * behavior) -- NOW take over. */
+            /* 79-50 (D-34 R2, M1): captured BEFORE the close below (it used to be read
+             * after `client_fd = -1`, so it was always 0 and the clear further down
+             * ran on every takeover; the intent stated in the comment below is
+             * "was a client superseded"). */
+            int was_supersede = (client_fd >= 0);
             if (client_fd >= 0) {
                 close(client_fd);
                 client_fd = -1;
@@ -2321,9 +2689,11 @@ static void *_http_thread_fn(void *arg) {
              * client existed to consume it (the flush targeted an already-
              * disconnected client), clear it now — before the new client is
              * promoted — so the fresh client isn't killed on its first
-             * empty-ring pass.  Only when superseding (client_fd was >= 0),
-             * the flush-disconnect was already consumed at the loop top. */
-            int was_supersede = (client_fd >= 0);
+             * empty-ring pass.  Before 79-50 a superseded client's flush-
+             * disconnect was always consumed at the loop top; with an open
+             * decision window it is not, so BOTH branches clear it (and the
+             * deadline): the old client is closed by the takeover itself, and
+             * the new one must never be closed by the old window. */
 
             if (_http_write_all(pending.fd, (const unsigned char *)HTTP_RESPONSE_HEADER,
                                  sizeof(HTTP_RESPONSE_HEADER) - 1) == 0) {
@@ -2342,10 +2712,39 @@ static void *_http_thread_fn(void *arg) {
                  * plant. See g_departed_client_generation's doc comment
                  * above g_boundary_at_pushed. */
                 g_departed_client_generation = NO_CLIENT_GENERATION;
+                /* 79-51 D2_ORPHAN_BEGIN */
+                /* 79-51 runaway D2 (E4/E5): an orphan marker (planted with nobody attached and no departed record,
+                 * NO_CLIENT_GENERATION) that stands at or below total_popped can only bound the client attaching
+                 * now to 0 bytes: no byte of the title it was planted for is left in the ring (094204 :25.328/.338
+                 * and 094408 :20.536/.550, `gen=-1 via=none ring_fill=0`). Discard it here, at promotion. A marker
+                 * ABOVE total_popped stays: bytes stand before it, D-04 (rapid skip, last boundary wins) inherits it.
+                 * Thread note: g_boundary_at_pushed is also cleared to -1 by the audio thread (stream re-create,
+                 * pa_stream_flush); this block only ever writes -1 too, so the race is an idempotent clear. */
+                if (g_boundary_at_pushed >= 0 && g_boundary_client_generation == NO_CLIENT_GENERATION) {
+                    pthread_mutex_lock(&g_ring.lock);
+                    int64_t orphan_popped = g_ring.total_popped;
+                    pthread_mutex_unlock(&g_ring.lock);
+                    int64_t orphan_at = g_boundary_at_pushed;
+                    if (orphan_at >= 0 && orphan_at <= orphan_popped) {
+                        BOUNDARY("boundary_discarded: orphan at attach (planted_gen=%lld current_gen=%lld) total_popped=%lld boundary=%lld",
+                                 (long long)g_boundary_client_generation, (long long)g_client_generation,
+                                 (long long)orphan_popped, (long long)orphan_at);
+                        g_boundary_at_pushed = -1;
+                    }
+                }
+                /* 79-51 D2_ORPHAN_END */
                 _ring_set_client(1, "attach", (int64_t)g_client_generation);   /* 79-37 D-31 */
-                if (!was_supersede && g_flush_disconnect) {
+                /* D-34 R2_TAKEOVER_BEGIN */
+                if (g_flush_disconnect) {
+                    if (was_supersede && g_debug_trace) {
+                        char _ts[32];
+                        _trace_ts(_ts, sizeof(_ts));
+                        fprintf(stderr, "[fakepulse %s] flush-decide: ended by takeover\n", _ts);
+                    }
                     g_flush_disconnect = 0;
                 }
+                _flush_decide_clear();
+                /* D-34 R2_TAKEOVER_END */
                 /* 76-07 (WINDOWS #5): t3 -- a new GET /stream client is
                  * attached and will be served from the next drain pass. */
                 if (g_debug_trace) {
@@ -2403,7 +2802,13 @@ static void *_http_thread_fn(void *arg) {
             }
             _hold_timeout_check();   /* 79-37 D-31: one timeout check per drain tick */
             size_t drained_this_tick = 0;
-            while (g_seek_flush_armed <= 0 && drained_this_tick < HTTP_DRAIN_BUDGET) {
+            /* 79-50 (D-34 R2): while a flush-disconnect is pending -- its decision window
+             * open, or decided but not yet executed (the loop top closes it first thing
+             * next iteration) -- the post-flush audio is withheld too: nothing of the next
+             * title may reach the old client if the window ends in a skip (E5, C_off wrote=4096
+             * of it before the close). Beside the seek-arm gate; both keep every other
+             * control request served by the outer poll() tick. */
+            while (g_seek_flush_armed <= 0 && !g_flush_disconnect && drained_this_tick < HTTP_DRAIN_BUDGET) {
             unsigned char chunk[HTTP_DRAIN_CHUNK];
             /* 84-17 (plan-checker W2): pop only up to the marker. The old
              * loop popped a whole 16 KB chunk and cut it at the marker
@@ -2430,6 +2835,9 @@ static void *_http_thread_fn(void *arg) {
                     if (remaining <= 0) {
                         BOUNDARY("boundary_reached: closing client fd=%d wrote=0 total_popped=%lld boundary=%lld trimmed=0",
                                  client_fd, (long long)popped_now, (long long)bnd);
+                        /* 79-51 D2_DEPART_BEGIN */
+                        g_departed_client_generation = g_client_generation;   /* 79-51 runaway D2 (E4): a bounded close departs its client too */
+                        /* 79-51 D2_DEPART_END */
                         close(client_fd);
                         client_fd = -1;
                         _ring_set_client(0, "boundary", 0);   /* 79-37 D-31 */
@@ -2559,6 +2967,9 @@ static void *_http_thread_fn(void *arg) {
                 } else if (at_boundary) {
                     BOUNDARY("boundary_reached: closing client fd=%d wrote=%zu total_popped=%lld boundary=%lld trimmed=%zu",
                              client_fd, write_n, (long long)popped_after, (long long)boundary, n - write_n);
+                    /* 79-51 D2_DEPART_BEGIN */
+                    g_departed_client_generation = g_client_generation;   /* 79-51 runaway D2 (E4): a bounded close departs its client too */
+                    /* 79-51 D2_DEPART_END */
                     close(client_fd);
                     client_fd = -1;
                     _ring_set_client(0, "boundary", 0);   /* 79-37 D-31 */
@@ -2925,6 +3336,7 @@ __attribute__((constructor))
 static void _fake_libpulse_init(void) {
     signal(SIGPIPE, SIG_IGN);
     g_flush_disconnect = 0;
+    _flush_decide_clear();   /* 79-50 */
     g_boundary_at_pushed = -1;  /* Phase 77 Spike 2: explicit reset, matching g_flush_disconnect */
     g_seek_flush_armed = 0;  /* Phase 77 Task 2: explicit reset, same one-shot-flag lifecycle */
 
@@ -3711,7 +4123,51 @@ pa_operation *pa_stream_flush(pa_stream *s, pa_stream_success_cb_t cb, void *use
         if (expected > 0) {
             /* armed flush consumed -- stay connected */
         } else {
-            g_flush_disconnect = 1;
+            /* 79-47 (D-34): an unarmed flush while browse keep is set is the
+             * daemon's own flush for a title Control did not change (an app
+             * seek, an app next/previous before Control redirects it): keep
+             * the client, exactly as an armed flush does. The arm above is
+             * consumed first, so a connect /seek-arm keeps its meaning. The
+             * marked block is what t/soloist/48's browse-keep mutant cuts:
+             * without it every unarmed flush disconnects, as before 79-47. */
+            int keep = 0;
+            /* D-34 BROWSE_KEEP_BEGIN */
+            keep = atomic_load(&g_browse_keep) ? 1 : 0;
+            /* D-34 BROWSE_KEEP_END */
+            if (keep) {
+                if (g_debug_trace) {
+                    char _ts[32];
+                    _trace_ts(_ts, sizeof(_ts));
+                    fprintf(stderr, "[fakepulse %s] flush-keep: browse keep set, active HTTP client stays\n", _ts);
+                }
+                BOUNDARY("flush_keep: browse keep set, no flush-disconnect");
+            } else {
+                /* 79-50 (D-34 R2): the unarmed, not-browse-kept flush. The decision
+                 * deadline is stored BEFORE the flag: the HTTP thread must never see
+                 * the flag without it and close at once. W = 0 is no window (the
+                 * contract of every older cell and of a shim without 79-50). */
+                long decide_ms = _flush_decide_env_ms();
+                if (decide_ms > 0) {
+                    long now = _mono_ms();
+                    long dl = (long)((unsigned long)now + (unsigned long)decide_ms);
+                    if (dl == 0) {
+                        dl = 1;    /* 0 means "no window" */
+                    }
+                    atomic_store(&g_flush_decide_promoted, 0);
+                    atomic_store(&g_flush_decide_t0, now != 0 ? now : 1);
+                    atomic_store(&g_flush_decide_deadline, dl);
+                    g_flush_disconnect = 1;
+                    if (g_debug_trace) {
+                        char _ts[32];
+                        _trace_ts(_ts, sizeof(_ts));
+                        fprintf(stderr, "[fakepulse %s] flush-decide: open window_ms=%ld\n", _ts, decide_ms);
+                    }
+                    BOUNDARY("flush_decide: open window_ms=%ld", decide_ms);
+                } else {
+                    _flush_decide_clear();
+                    g_flush_disconnect = 1;
+                }
+            }
         }
     }
     if (cb) {
@@ -5701,6 +6157,790 @@ static void _test_hold_negative_clock(pa_stream *s, int port, int *failures) {
     _test_hold_cleanup(port);
 }
 
+/* ==================================================================== */
+/* 79-47 (D-34): browse keep -- harness cells                           */
+/* ==================================================================== */
+/* An app seek (and an app next/previous before Control redirects it) makes
+ * the daemon flush on its own while LMS's stream is a browse title. Unarmed,
+ * that flush closed LMS's client and LMS played the next item. With POST
+ * /browse-keep?on=1 such a flush keeps the client; Control's own title
+ * changes (the drain POST /boundary, a new GET /stream) still end the old
+ * stream. These cells only reach the shim through its HTTP endpoint, so they
+ * compile against a shim without the endpoint (RED). */
+
+/* POSTs /browse-keep?on=<v> and copies the reply body; returns 1 on a 200
+ * with a body. */
+static int _test_browse_keep_post(int port, const char *query, char *body, size_t cap) {
+    char path[64];
+    snprintf(path, sizeof(path), "/browse-keep%s", query);
+    return _test_post_control_body(port, path, body, cap);
+}
+
+static void _test_browse_cleanup(int port) {
+    char b[128];
+    (void)_test_browse_keep_post(port, "?on=0", b, sizeof(b));
+    _test_hold_cleanup(port);
+}
+
+/* S1: keep set, the daemon flushes on its own (no arm): the client stays and
+ * gets exactly the post-flush bytes; the held refill of the old position is
+ * dropped with the flush, as on the armed path. */
+static void _test_browse_keep_flush(pa_stream *s, int port, int *failures) {
+    const char *name = "browse: with browse keep set an unarmed flush keeps the client and it gets only post-flush bytes";
+    const size_t lenC = 32768;
+    char kb[128];
+    kb[0] = '\0';
+    int keep_ok = _test_browse_keep_post(port, "?on=1", kb, sizeof(kb));
+    _test_hc_t c;
+    _test_hold_open(s, port, "100", "2000", &c);
+    size_t leaked = 0, got = 0, extra = 0;
+    long first = -1, bad = -1;
+    int eof = 0, eof2 = 0, fd_flag = -1, armed_after = -1;
+    if (c.gotA) {
+        usleep(150000);
+        _test_hold_push(s, _TEST_HOLD_LEN_B, 0.5f);
+        leaked = _test_hold_read_window(c.fd, 60, &eof2);
+        pa_operation *op = pa_stream_flush(s, NULL, NULL);
+        if (op) {
+            pa_operation_unref(op);
+        }
+        fd_flag = (int)g_flush_disconnect;
+        armed_after = (int)g_seek_flush_armed;
+        _test_hold_push(s, lenC, 0.75f);
+        unsigned char *buf = malloc(lenC);
+        got = _test_hold_collect(c.fd, 1500, lenC, buf, &first, &eof);
+        bad = buf ? _test_hold_bad_samples(buf, got, 0.75f) : -1;
+        free(buf);
+        extra = _test_hold_read_window(c.fd, 300, &eof2);
+    }
+    int64_t hold_at, armed;
+    char reason[16];
+    _test_hold_state(&hold_at, &armed, reason, sizeof(reason));
+    char facts[512];
+    snprintf(facts, sizeof(facts), "keep_post=%d body='%.20s' (want browse_keep=1) gotA=%d leaked=%zu (want 0) flush_disconnect=%d (want 0) seek_armed=%d (want 0) got=%zu (want %zu) bad_samples=%ld (want 0) first_byte_ms=%ld (want <= 250) extra=%zu (want 0) eof=%d%d (want 00) release='%s' (want flush)",
+             keep_ok, kb, c.gotA, leaked, fd_flag, armed_after, got, lenC, bad, first, extra, eof, eof2, reason);
+    int ok = keep_ok && strncmp(kb, "browse_keep=1", 13) == 0 && c.gotA && leaked == 0 && fd_flag == 0
+          && armed_after == 0 && got == lenC && bad == 0 && first >= 0 && first <= 250 && extra == 0
+          && !eof && !eof2 && strcmp(reason, "flush") == 0;
+    if (c.fd >= 0) close(c.fd);
+    _test_hold_verdict(failures, ok, name, facts);
+    _test_browse_cleanup(port);
+}
+
+/* S2: without keep (never set, and set then cleared) an unarmed flush closes
+ * the client exactly as before 79-47. */
+static void _test_browse_default_flush(pa_stream *s, int port, int *failures) {
+    const char *name = "browse: without browse keep an unarmed flush still closes the client (never set, and after on=0)";
+    int eof_a = 0, eof_b = 0, off_ok = 0, on_ok = 0;
+    size_t after_a = 99, after_b = 99;
+    char ob[128], nb[128];
+    ob[0] = nb[0] = '\0';
+    _test_hc_t c;
+    /* leg a: never set */
+    _test_hold_open(s, port, "0", NULL, &c);
+    int gotA_a = c.gotA;
+    if (c.gotA) {
+        pa_operation *op = pa_stream_flush(s, NULL, NULL);
+        if (op) {
+            pa_operation_unref(op);
+        }
+        after_a = _test_hold_read_to_eof(c.fd, 3000, &eof_a);
+    }
+    if (c.fd >= 0) close(c.fd);
+    _test_browse_cleanup(port);
+    /* leg b: on, then off */
+    on_ok = _test_browse_keep_post(port, "?on=1", nb, sizeof(nb));
+    off_ok = _test_browse_keep_post(port, "?on=0", ob, sizeof(ob));
+    _test_hold_open(s, port, "0", NULL, &c);
+    int gotA_b = c.gotA;
+    if (c.gotA) {
+        pa_operation *op = pa_stream_flush(s, NULL, NULL);
+        if (op) {
+            pa_operation_unref(op);
+        }
+        after_b = _test_hold_read_to_eof(c.fd, 3000, &eof_b);
+    }
+    if (c.fd >= 0) close(c.fd);
+    char facts[512];
+    snprintf(facts, sizeof(facts), "never_set: gotA=%d eof=%d (want 1) after=%zu (want 0); on_off: on_post=%d body='%.20s' off_post=%d body='%.20s' (want browse_keep=0) gotA=%d eof=%d (want 1) after=%zu (want 0)",
+             gotA_a, eof_a, after_a, on_ok, nb, off_ok, ob, gotA_b, eof_b, after_b);
+    int ok = gotA_a && eof_a && after_a == 0 && on_ok && off_ok && strncmp(ob, "browse_keep=0", 13) == 0
+          && gotA_b && eof_b && after_b == 0;
+    _test_hold_verdict(failures, ok, name, facts);
+    _test_browse_cleanup(port);
+}
+
+/* S3a: keep set, a natural title end: the gap hold arms and Control's drain
+ * POST /boundary ends the old stream at the old title's last byte. */
+static void _test_browse_keep_drain(pa_stream *s, int port, int *failures) {
+    const char *name = "browse: with browse keep set the drain POST /boundary still ends the title and the gap hold applies";
+    char kb[128], body[512];
+    kb[0] = body[0] = '\0';
+    int keep_ok = _test_browse_keep_post(port, "?on=1", kb, sizeof(kb));
+    _test_hc_t c;
+    _test_hold_open(s, port, "100", "2000", &c);
+    size_t leaked = 0, after = 0;
+    int eof = 0, eof2 = 0, post_ok = 0;
+    int64_t armed_after_push = -1;
+    if (c.gotA) {
+        usleep(150000);
+        _test_hold_push(s, _TEST_HOLD_LEN_B, 0.5f);
+        int64_t h0;
+        char r0[16];
+        _test_hold_state(&h0, &armed_after_push, r0, sizeof(r0));
+        leaked = _test_hold_read_window(c.fd, 100, &eof2);
+        post_ok = _test_post_control_body(port, "/boundary?anchor=drain", body, sizeof(body));
+        after = _test_hold_read_to_eof(c.fd, 3000, &eof);
+    }
+    char via[16], hold[16];
+    _test_body_str(body, "via=", via, sizeof(via));
+    _test_body_str(body, "hold=", hold, sizeof(hold));
+    long long hold_at = _test_body_i64(body, "hold_at=");
+    long long want_at = (long long)c.base + (long long)_TEST_HOLD_LEN_A;
+    char facts[512];
+    snprintf(facts, sizeof(facts), "keep_post=%d gotA=%d hold_armed=%lld (want 1) leaked=%zu (want 0) post_ok=%d via='%s' (want live) hold='%s' (want consumed) hold_at=%lld (want %lld) eof=%d (want 1) after=%zu (want 0)",
+             keep_ok, c.gotA, (long long)armed_after_push, leaked, post_ok, via, hold, hold_at, want_at, eof, after);
+    int ok = keep_ok && c.gotA && armed_after_push == 1 && leaked == 0 && !eof2 && post_ok
+          && strcmp(via, "live") == 0 && strcmp(hold, "consumed") == 0 && hold_at == want_at && eof && after == 0;
+    if (c.fd >= 0) close(c.fd);
+    _test_hold_verdict(failures, ok, name, facts);
+    _test_browse_cleanup(port);
+}
+
+/* S3b: keep set, Control's own title change through LMS (a new GET /stream):
+ * the old client is superseded, the new one gets the new bytes. */
+static void _test_browse_keep_takeover(pa_stream *s, int port, int *failures) {
+    const char *name = "browse: with browse keep set a new GET /stream still supersedes the old client";
+    const size_t lenC = 32768;
+    char kb[128];
+    kb[0] = '\0';
+    int keep_ok = _test_browse_keep_post(port, "?on=1", kb, sizeof(kb));
+    _test_hc_t c;
+    _test_hold_open(s, port, "0", NULL, &c);
+    int old_eof = 0, eof = 0, fd2 = -1;
+    size_t got = 0;
+    long first = -1, bad = -1;
+    if (c.gotA) {
+        fd2 = _test_hold_attach(port);
+        old_eof = _test_saw_eof(c.fd, 1500);
+        if (fd2 >= 0) {
+            _test_hold_push(s, lenC, 0.75f);
+            unsigned char *buf = malloc(lenC);
+            got = _test_hold_collect(fd2, 1500, lenC, buf, &first, &eof);
+            bad = buf ? _test_hold_bad_samples(buf, got, 0.75f) : -1;
+            free(buf);
+        }
+    }
+    char facts[512];
+    snprintf(facts, sizeof(facts), "keep_post=%d gotA=%d new_attached=%d old_eof=%d (want 1) new_got=%zu (want %zu) bad_samples=%ld (want 0) eof=%d (want 0)",
+             keep_ok, c.gotA, fd2 >= 0, old_eof, got, lenC, bad, eof);
+    int ok = keep_ok && c.gotA && fd2 >= 0 && old_eof && got == lenC && bad == 0 && !eof;
+    if (c.fd >= 0) close(c.fd);
+    if (fd2 >= 0) close(fd2);
+    _test_hold_verdict(failures, ok, name, facts);
+    _test_browse_cleanup(port);
+}
+
+/* S4: keep set, the connect /seek-arm path: the arm is consumed by the flush
+ * (not left standing to close the drain gate), the client is kept. */
+static void _test_browse_keep_armed(pa_stream *s, int port, int *failures) {
+    const char *name = "browse: with browse keep set an armed flush consumes the arm and keeps the client";
+    const size_t lenC = 32768;
+    char kb[128];
+    kb[0] = '\0';
+    int keep_ok = _test_browse_keep_post(port, "?on=1", kb, sizeof(kb));
+    _test_hc_t c;
+    _test_hold_open(s, port, "0", NULL, &c);
+    int armpost = 0, eof = 0, armed_after = -1;
+    size_t got = 0;
+    long first = -1, bad = -1;
+    if (c.gotA) {
+        armpost = _test_post_control(port, "/seek-arm");
+        pa_operation *op = pa_stream_flush(s, NULL, NULL);
+        if (op) {
+            pa_operation_unref(op);
+        }
+        armed_after = (int)g_seek_flush_armed;
+        _test_hold_push(s, lenC, 0.75f);
+        unsigned char *buf = malloc(lenC);
+        got = _test_hold_collect(c.fd, 1500, lenC, buf, &first, &eof);
+        bad = buf ? _test_hold_bad_samples(buf, got, 0.75f) : -1;
+        free(buf);
+    }
+    char facts[512];
+    snprintf(facts, sizeof(facts), "keep_post=%d gotA=%d arm_post=%d seek_armed_after=%d (want 0) got=%zu (want %zu) bad_samples=%ld (want 0) first_byte_ms=%ld (want <= 250) eof=%d (want 0)",
+             keep_ok, c.gotA, armpost, armed_after, got, lenC, bad, first, eof);
+    int ok = keep_ok && c.gotA && armpost && armed_after == 0 && got == lenC && bad == 0
+          && first >= 0 && first <= 250 && !eof;
+    if (c.fd >= 0) close(c.fd);
+    _test_hold_verdict(failures, ok, name, facts);
+    _test_browse_cleanup(port);
+}
+
+/* S5: a POST without on=0|1 is refused (400) and changes nothing: an unarmed
+ * flush afterwards still closes the client. */
+static void _test_browse_keep_bad(pa_stream *s, int port, int *failures) {
+    const char *name = "browse: a POST /browse-keep without on=0 or on=1 is refused and changes nothing";
+    int fd = _test_post_raw(port, "/browse-keep");
+    char resp[128];
+    size_t rlen = 0;
+    if (fd >= 0) {
+        struct timeval start;
+        gettimeofday(&start, NULL);
+        while (rlen < sizeof(resp) - 1 && _elapsed_ms(&start) < 1500) {
+            struct pollfd pfd; pfd.fd = fd; pfd.events = POLLIN;
+            if (poll(&pfd, 1, 50) > 0) {
+                ssize_t n = read(fd, resp + rlen, sizeof(resp) - 1 - rlen);
+                if (n <= 0) break;
+                rlen += (size_t)n;
+            }
+        }
+        close(fd);
+    }
+    resp[rlen] = '\0';
+    int refused = strncmp(resp, "HTTP/1.0 400 ", 13) == 0;
+    _test_hc_t c;
+    _test_hold_open(s, port, "0", NULL, &c);
+    int eof = 0;
+    size_t after = 99;
+    if (c.gotA) {
+        pa_operation *op = pa_stream_flush(s, NULL, NULL);
+        if (op) {
+            pa_operation_unref(op);
+        }
+        after = _test_hold_read_to_eof(c.fd, 3000, &eof);
+    }
+    char facts[256];
+    snprintf(facts, sizeof(facts), "reply='%.15s' (want HTTP/1.0 400) gotA=%d eof=%d (want 1) after=%zu (want 0)",
+             resp, c.gotA, eof, after);
+    int ok = refused && c.gotA && eof && after == 0;
+    if (c.fd >= 0) close(c.fd);
+    _test_hold_verdict(failures, ok, name, facts);
+    _test_browse_cleanup(port);
+}
+
+static void _test_browse_cases(pa_stream *s, int port, int *failures) {
+    _test_browse_keep_flush(s, port, failures);
+    _test_browse_default_flush(s, port, failures);
+    _test_browse_keep_drain(s, port, failures);
+    _test_browse_keep_takeover(s, port, failures);
+    _test_browse_keep_armed(s, port, failures);
+    _test_browse_keep_bad(s, port, failures);
+}
+
+/* ==================================================================== */
+/* 79-50 (D-34 R2): the connect decision window -- harness cells        */
+/* ==================================================================== */
+/* In a Connect session an app seek makes the daemon flush on its own. The
+ * flush is unarmed, so the shim used to close LMS's stream at the next tick,
+ * before Control (which learns the flush was a seek from the daemon's first
+ * frame, 6-7 ms later) could say so (79-47 R2, R2_3: close 9 ms after the
+ * flush). With SPOTON_FAKEPULSE_FLUSH_DECIDE_MS (the window, default 2000)
+ * the shim holds an unarmed flush-disconnect open, withholds the post-flush
+ * audio, and decides at the first signal: POST /seek-keep keeps the client,
+ * POST /boundary (the skip) or the deadline closes it. These cells only reach
+ * the shim through its HTTP endpoints, the env knob and pa_stream_flush, so
+ * they compile against a shim without the window (RED). Every cell sets its
+ * own window and restores 0 (the contract of every older cell). */
+
+static void _test_connect_cleanup(int port) {
+    setenv("SPOTON_FAKEPULSE_FLUSH_DECIDE_MS", "0", 1);
+    _test_hold_cleanup(port);
+}
+
+/* A clean ring, an attached client that read all of title A, the window set. */
+static void _test_connect_open(pa_stream *s, int port, const char *window_ms, _test_hc_t *c) {
+    _test_hold_open(s, port, "0", NULL, c);
+    setenv("SPOTON_FAKEPULSE_FLUSH_DECIDE_MS", window_ms, 1);
+}
+
+static void _test_connect_flush(pa_stream *s) {
+    pa_operation *op = pa_stream_flush(s, NULL, NULL);
+    if (op) {
+        pa_operation_unref(op);
+    }
+}
+
+/* ms from t0 until the peer's EOF (10 ms granularity), counting the bytes that
+ * arrive meanwhile into *bytes; -1 when there is no EOF within max_ms. */
+static long _test_connect_eof_ms(int fd, const struct timeval *t0, int max_ms, size_t *bytes) {
+    int eof = 0;
+    while (_elapsed_ms(t0) < max_ms) {
+        size_t n = _test_hold_read_window(fd, 10, &eof);
+        if (bytes) {
+            *bytes += n;
+        }
+        if (eof) {
+            return _elapsed_ms(t0);
+        }
+    }
+    return -1;
+}
+
+/* C1: a keep inside the window keeps the client; it gets exactly the post-flush bytes and stays open past the deadline. */
+static void _test_connect_c1(pa_stream *s, int port, int *failures) {
+    const char *name = "connect: R2-C1 a keep inside the decision window keeps the client and it gets the post-flush bytes";
+    const size_t lenC = 32768;
+    _test_hc_t c;
+    _test_connect_open(s, port, "1000", &c);
+    char body[128];
+    body[0] = '\0';
+    int keep_ok = 0, eof_pre = 0, eof = 0, eof2 = 0;
+    size_t pre = 0, got = 0, extra = 0;
+    long first = -1, bad = -1;
+    if (c.gotA) {
+        _test_connect_flush(s);
+        _test_hold_push(s, lenC, 0.75f);
+        pre = _test_hold_read_window(c.fd, 120, &eof_pre);
+        keep_ok = _test_post_control_body(port, "/seek-keep", body, sizeof(body));
+        unsigned char *buf = malloc(lenC);
+        got = _test_hold_collect(c.fd, 1500, lenC, buf, &first, &eof);
+        bad = buf ? _test_hold_bad_samples(buf, got, 0.75f) : -1;
+        free(buf);
+        extra = _test_hold_read_window(c.fd, 1100, &eof2);   /* past the 1000 ms deadline */
+    }
+    char facts[512];
+    snprintf(facts, sizeof(facts), "gotA=%d held_before_keep=%zu eof_before_keep=%d (want 0 and 0) keep_post=%d body='%.16s' (want seek_keep=1) got=%zu (want %zu) bad_samples=%ld (want 0) first_byte_ms=%ld (want <= 250) extra=%zu eof=%d%d (want 00)",
+             c.gotA, pre, eof_pre, keep_ok, body, got, lenC, bad, first, extra, eof, eof2);
+    int ok = c.gotA && pre == 0 && !eof_pre && keep_ok && strncmp(body, "seek_keep=1", 11) == 0
+          && got == lenC && bad == 0 && first >= 0 && first <= 250 && extra == 0 && !eof && !eof2;
+    if (c.fd >= 0) close(c.fd);
+    _test_hold_verdict(failures, ok, name, facts);
+    _test_connect_cleanup(port);
+}
+
+/* C2: POST /boundary inside the window (the skip) ends it at once: the old client gets EOF and none of the next title. */
+static void _test_connect_c2(pa_stream *s, int port, int *failures) {
+    const char *name = "connect: R2-C2 a boundary inside the decision window closes the old client at once with no byte of the next title";
+    const size_t lenC = 32768;
+    _test_hc_t c;
+    _test_connect_open(s, port, "1000", &c);
+    char body[512], via[16];
+    body[0] = via[0] = '\0';
+    int post_ok = 0, eof_pre = 0;
+    size_t pre = 0, after = 0;
+    long ms = -1;
+    if (c.gotA) {
+        _test_connect_flush(s);
+        _test_hold_push(s, lenC, 0.75f);
+        pre = _test_hold_read_window(c.fd, 110, &eof_pre);
+        post_ok = _test_post_control_body(port, "/boundary", body, sizeof(body));
+        struct timeval tr;
+        gettimeofday(&tr, NULL);
+        ms = _test_connect_eof_ms(c.fd, &tr, 600, &after);
+        _test_body_str(body, "via=", via, sizeof(via));
+    }
+    char facts[512];
+    snprintf(facts, sizeof(facts), "gotA=%d held_before_boundary=%zu eof_before_boundary=%d (want 0 and 0) post_ok=%d via='%s' (want departed) eof_after_reply_ms=%ld (want 0..100) bytes_after=%zu (want 0)",
+             c.gotA, pre, eof_pre, post_ok, via, ms, after);
+    int ok = c.gotA && pre == 0 && !eof_pre && post_ok && strcmp(via, "departed") == 0
+          && ms >= 0 && ms <= 100 && after == 0;
+    if (c.fd >= 0) close(c.fd);
+    _test_hold_verdict(failures, ok, name, facts);
+    _test_connect_cleanup(port);
+}
+
+/* C3: no signal at all: the window fails safe to today's close at its deadline, nothing of the next title on the old client. */
+static void _test_connect_c3(pa_stream *s, int port, int *failures) {
+    const char *name = "connect: R2-C3 with no signal the window closes the client at its deadline and withholds the next title";
+    const size_t lenC = 32768;
+    _test_hc_t c;
+    _test_connect_open(s, port, "300", &c);
+    size_t bytes = 0;
+    long ms = -1;
+    if (c.gotA) {
+        struct timeval t0;
+        gettimeofday(&t0, NULL);
+        _test_connect_flush(s);
+        _test_hold_push(s, lenC, 0.75f);
+        ms = _test_connect_eof_ms(c.fd, &t0, 1500, &bytes);
+    }
+    char facts[256];
+    snprintf(facts, sizeof(facts), "gotA=%d eof_after_flush_ms=%ld (want 250..450) bytes=%zu (want 0)", c.gotA, ms, bytes);
+    int ok = c.gotA && ms >= 250 && ms <= 450 && bytes == 0;
+    if (c.fd >= 0) close(c.fd);
+    _test_hold_verdict(failures, ok, name, facts);
+    _test_connect_cleanup(port);
+}
+
+/* C4: the boundary's decision is final: a keep after it is refused and the client still ends. */
+static void _test_connect_c4(pa_stream *s, int port, int *failures) {
+    const char *name = "connect: R2-C4 a keep after a boundary is refused and the client still ends";
+    const size_t lenC = 32768;
+    _test_hc_t c;
+    _test_connect_open(s, port, "1000", &c);
+    char bb[512], kb[128];
+    bb[0] = kb[0] = '\0';
+    int b_ok = 0, k_ok = 0;
+    size_t pre = 0, after = 0;
+    int eof_pre = 0;
+    long ms = -1;
+    if (c.gotA) {
+        _test_connect_flush(s);
+        _test_hold_push(s, lenC, 0.75f);
+        pre = _test_hold_read_window(c.fd, 60, &eof_pre);
+        b_ok = _test_post_control_body(port, "/boundary", bb, sizeof(bb));
+        k_ok = _test_post_control_body(port, "/seek-keep", kb, sizeof(kb));
+        struct timeval tr;
+        gettimeofday(&tr, NULL);
+        ms = _test_connect_eof_ms(c.fd, &tr, 600, &after);
+    }
+    char facts[512];
+    snprintf(facts, sizeof(facts), "gotA=%d held_before=%zu eof_before=%d (want 0 and 0) boundary_post=%d keep_post=%d body='%.16s' (want seek_keep=0) eof_ms=%ld (want 0..300) bytes_after=%zu (want 0)",
+             c.gotA, pre, eof_pre, b_ok, k_ok, kb, ms, after);
+    int ok = c.gotA && pre == 0 && !eof_pre && b_ok && k_ok && strncmp(kb, "seek_keep=0", 11) == 0
+          && ms >= 0 && ms <= 300 && after == 0;
+    if (c.fd >= 0) close(c.fd);
+    _test_hold_verdict(failures, ok, name, facts);
+    _test_connect_cleanup(port);
+}
+
+/* C5: a keep with nothing pending changes nothing: no arm, audio flows, and a later unarmed flush still opens a window. */
+static void _test_connect_c5(pa_stream *s, int port, int *failures) {
+    const char *name = "connect: R2-C5 a keep with nothing pending is a no-op (no arm, audio flows) and a later unarmed flush still opens a window";
+    const size_t lenX = 16384;
+    _test_hc_t c;
+    _test_connect_open(s, port, "1000", &c);
+    char body[128];
+    body[0] = '\0';
+    int keep_ok = 0, armed0 = -1, armed1 = -1, eof_win = 0;
+    size_t got = 0, win = 0;
+    long first = -1, bad = -1;
+    int eof = 0;
+    if (c.gotA) {
+        armed0 = (int)g_seek_flush_armed;
+        keep_ok = _test_post_control_body(port, "/seek-keep", body, sizeof(body));
+        armed1 = (int)g_seek_flush_armed;
+        _test_hold_push(s, lenX, 0.5f);
+        unsigned char *buf = malloc(lenX);
+        got = _test_hold_collect(c.fd, 400, lenX, buf, &first, &eof);
+        bad = buf ? _test_hold_bad_samples(buf, got, 0.5f) : -1;
+        free(buf);
+        _test_connect_flush(s);
+        _test_hold_push(s, lenX, 0.75f);
+        win = _test_hold_read_window(c.fd, 150, &eof_win);   /* the window holds: no close, no byte */
+    }
+    char facts[512];
+    snprintf(facts, sizeof(facts), "gotA=%d keep_post=%d body='%.16s' (want seek_keep=0) armed %d->%d (want equal) got=%zu (want %zu) bad_samples=%ld first_byte_ms=%ld (want <= 200) later_flush: held=%zu eof=%d (want 0 and 0)",
+             c.gotA, keep_ok, body, armed0, armed1, got, lenX, bad, first, win, eof_win);
+    int ok = c.gotA && keep_ok && strncmp(body, "seek_keep=0", 11) == 0 && armed0 == armed1 && armed1 == 0
+          && got == lenX && bad == 0 && first >= 0 && first <= 200 && win == 0 && !eof_win && !eof;
+    if (c.fd >= 0) close(c.fd);
+    _test_hold_verdict(failures, ok, name, facts);
+    _test_connect_cleanup(port);
+}
+
+/* C6: window 0 is the contract of every older cell: an unarmed flush closes at the next tick, as before 79-50. */
+static void _test_connect_c6(pa_stream *s, int port, int *failures) {
+    const char *name = "connect: R2-C6 with window 0 an unarmed flush closes at the next tick as before 79-50";
+    const size_t lenC = 32768;
+    _test_hc_t c;
+    _test_connect_open(s, port, "0", &c);
+    size_t bytes = 0;
+    long ms = -1;
+    if (c.gotA) {
+        struct timeval t0;
+        gettimeofday(&t0, NULL);
+        _test_connect_flush(s);
+        _test_hold_push(s, lenC, 0.75f);
+        ms = _test_connect_eof_ms(c.fd, &t0, 1500, &bytes);
+    }
+    /* The bytes are not asserted: with no window the post-flush push races the close and the old client may get
+     * part of it (79-50 E5, C_off wrote=4096 before its close) -- exactly the pre-79-50 behaviour this cell pins. */
+    char facts[256];
+    snprintf(facts, sizeof(facts), "gotA=%d eof_after_flush_ms=%ld (want <= 150) bytes_before_eof=%zu (not asserted)", c.gotA, ms, bytes);
+    int ok = c.gotA && ms >= 0 && ms <= 150;
+    if (c.fd >= 0) close(c.fd);
+    _test_hold_verdict(failures, ok, name, facts);
+    _test_connect_cleanup(port);
+}
+
+/* C7: a keep while a write is stalled: the chunk in flight is completed, never cut, while the decision is open. */
+static void _test_connect_c7(pa_stream *s, int port, int *failures) {
+    const char *name = "connect: R2-C7 a keep while a write is stalled completes the chunk in flight and then delivers the post-flush bytes";
+    const size_t lenC = 32768;
+    _test_wr_reset();
+    setenv("SPOTON_FAKEPULSE_FLUSH_DECIDE_MS", "2000", 1);
+    int fd = _test_wr_attach(port);
+    int stalled = 0, keep_ok = 0;
+    char body[128];
+    body[0] = '\0';
+    long long popped0 = 0, popped_flush = 0;
+    size_t want_ramp = 0, ramp_ok = 0, tail_ok = 0;
+    int got_all = 0;
+    if (fd >= 0) {
+        pthread_mutex_lock(&g_ring.lock);
+        popped0 = (long long)g_ring.total_popped;
+        pthread_mutex_unlock(&g_ring.lock);
+        _test_wr_push(s, 0, _TEST_WR_SAMPLES);
+        stalled = _test_wr_wait_stalled();
+        pthread_mutex_lock(&g_ring.lock);
+        popped_flush = (long long)g_ring.total_popped;
+        pthread_mutex_unlock(&g_ring.lock);
+        want_ramp = (size_t)(popped_flush - popped0);
+        _test_connect_flush(s);
+        _test_hold_push(s, lenC, 0.75f);
+        keep_ok = _test_post_control_body(port, "/seek-keep", body, sizeof(body));
+        unsigned char *buf = malloc(want_ramp + lenC);
+        if (buf && _test_read_bytes(fd, buf, want_ramp + lenC, 8000) == 0) {
+            got_all = 1;
+            ramp_ok = 1;
+            for (size_t i = 0; i + 3 < want_ramp; i += 4) {
+                int32_t v;
+                memcpy(&v, buf + i, 4);
+                if (v != _test_f32_to_s32(_test_wr_ramp_f(i / 4))) {
+                    ramp_ok = 0;
+                    break;
+                }
+            }
+            tail_ok = (_test_hold_bad_samples(buf + want_ramp, lenC, 0.75f) == 0);
+        }
+        free(buf);
+    }
+    char facts[512];
+    snprintf(facts, sizeof(facts), "attached=%d writer_stalled=%d popped_before_flush=%zu B keep_post=%d body='%.16s' (want seek_keep=1) read_all=%d ramp_complete_and_contiguous=%zu (want 1) post_flush_bytes_follow_directly=%zu (want 1)",
+             fd >= 0, stalled, want_ramp, keep_ok, body, got_all, ramp_ok, tail_ok);
+    int ok = fd >= 0 && stalled && want_ramp > 0 && keep_ok && strncmp(body, "seek_keep=1", 11) == 0
+          && got_all && ramp_ok && tail_ok;
+    if (fd >= 0) close(fd);
+    _test_hold_verdict(failures, ok, name, facts);
+    setenv("SPOTON_FAKEPULSE_FLUSH_DECIDE_MS", "0", 1);
+    _test_wr_reset();
+}
+
+/* C8: browse keep set: the 79-47 keep is unchanged -- no window is opened and the audio is not withheld. */
+static void _test_connect_c8(pa_stream *s, int port, int *failures) {
+    const char *name = "connect: R2-C8 with browse keep set an unarmed flush keeps the client and opens no decision window";
+    const size_t lenC = 32768;
+    char kb[128], trace[8192];
+    kb[0] = trace[0] = '\0';
+    int keep_ok = _test_browse_keep_post(port, "?on=1", kb, sizeof(kb));
+    _test_hc_t c;
+    _test_connect_open(s, port, "1000", &c);
+    size_t got = 0;
+    long first = -1, bad = -1;
+    int eof = 0;
+    if (c.gotA) {
+        _test_trace_t tr;
+        int traced = (_test_trace_begin(&tr) == 0);
+        _test_connect_flush(s);
+        _test_hold_push(s, lenC, 0.75f);
+        unsigned char *buf = malloc(lenC);
+        got = _test_hold_collect(c.fd, 1500, lenC, buf, &first, &eof);
+        bad = buf ? _test_hold_bad_samples(buf, got, 0.75f) : -1;
+        free(buf);
+        if (traced) {
+            _test_trace_end(&tr, trace, sizeof(trace));
+        }
+    }
+    int win_lit = (strstr(trace, "flush-decide: open") != NULL);
+    int keep_lit = (strstr(trace, "flush-keep: browse keep set") != NULL);
+    char facts[512];
+    snprintf(facts, sizeof(facts), "keep_post=%d gotA=%d got=%zu (want %zu) bad_samples=%ld first_byte_ms=%ld (want <= 250) eof=%d (want 0) flush_keep_line=%d (want 1) flush_decide_open_line=%d (want 0)",
+             keep_ok, c.gotA, got, lenC, bad, first, eof, keep_lit, win_lit);
+    int ok = keep_ok && c.gotA && got == lenC && bad == 0 && first >= 0 && first <= 250 && !eof && keep_lit && !win_lit;
+    if (c.fd >= 0) close(c.fd);
+    _test_hold_verdict(failures, ok, name, facts);
+    _test_browse_cleanup(port);
+    setenv("SPOTON_FAKEPULSE_FLUSH_DECIDE_MS", "0", 1);
+}
+
+/* C9 (B1): a GET /stream waiting in the pending slot survives a control newcomer: the keep is served in place. */
+static void _test_connect_c9(pa_stream *s, int port, int *failures) {
+    const char *name = "connect: R2-C9 a /seek-keep arriving while a GET /stream waits in the pending slot is served in place and the GET survives";
+    const size_t lenC = 32768;
+    char body[128], trace[8192];
+    body[0] = trace[0] = '\0';
+    _test_ring_reset();
+    _test_trace_t tr;
+    int traced = (_test_trace_begin(&tr) == 0);
+    int g = _test_connect_loopback(port);        /* no head yet: accepted into the pending slot, idle */
+    usleep(150000);
+    int keep_ok = (g >= 0) ? _test_post_control_body(port, "/seek-keep", body, sizeof(body)) : 0;
+    static const char getReq[] = "GET /stream HTTP/1.0\r\n\r\n";
+    int hdr = 0;
+    size_t got = 0;
+    long first = -1, bad = -1;
+    int eof = 0;
+    if (g >= 0 && write(g, getReq, sizeof(getReq) - 1) > 0) {
+        hdr = (_test_read_header(g, 3000) == 0);
+        if (hdr) {
+            _test_hold_push(s, lenC, 0.75f);
+            unsigned char *buf = malloc(lenC);
+            got = _test_hold_collect(g, 1500, lenC, buf, &first, &eof);
+            bad = buf ? _test_hold_bad_samples(buf, got, 0.75f) : -1;
+            free(buf);
+        }
+    }
+    if (traced) {
+        _test_trace_end(&tr, trace, sizeof(trace));
+    }
+    int attach_lit = (strstr(trace, "client-attach: new /stream client") != NULL);
+    char facts[512];
+    snprintf(facts, sizeof(facts), "waiting_get_connected=%d keep_post=%d body='%.16s' (want seek_keep=0) get_promoted=%d client_attach_line=%d (want 1) got=%zu (want %zu) bad_samples=%ld eof=%d (want 0)",
+             g >= 0, keep_ok, body, hdr, attach_lit, got, lenC, bad, eof);
+    int ok = g >= 0 && keep_ok && strncmp(body, "seek_keep=0", 11) == 0 && hdr && attach_lit
+          && got == lenC && bad == 0 && !eof;
+    if (g >= 0) close(g);
+    _test_hold_verdict(failures, ok, name, facts);
+    _test_connect_cleanup(port);
+}
+
+/* C10 (W4): a late /seek-arm consumed by the pending disconnect ends the window: audio flows and nothing closes at the deadline. */
+static void _test_connect_c10(pa_stream *s, int port, int *failures) {
+    const char *name = "connect: R2-C10 a late seek-arm consumed by the pending disconnect ends the window and the audio flows";
+    const size_t lenC = 32768;
+    _test_hc_t c;
+    _test_connect_open(s, port, "1000", &c);
+    int arm_ok = 0, eof_pre = 0, eof = 0, eof2 = 0;
+    size_t pre = 0, got = 0, extra = 0;
+    long first = -1, bad = -1;
+    int armed_after = -1;
+    if (c.gotA) {
+        _test_connect_flush(s);
+        _test_hold_push(s, lenC, 0.75f);
+        pre = _test_hold_read_window(c.fd, 120, &eof_pre);
+        arm_ok = _test_post_control(port, "/seek-arm");
+        armed_after = (int)g_seek_flush_armed;
+        unsigned char *buf = malloc(lenC);
+        got = _test_hold_collect(c.fd, 300, lenC, buf, &first, &eof);
+        bad = buf ? _test_hold_bad_samples(buf, got, 0.75f) : -1;
+        free(buf);
+        extra = _test_hold_read_window(c.fd, 1100, &eof2);   /* past the old deadline */
+    }
+    char facts[512];
+    snprintf(facts, sizeof(facts), "gotA=%d held_before_arm=%zu eof_before_arm=%d (want 0 and 0) arm_post=%d armed_after=%d (want 0, consumed) got=%zu (want %zu) bad_samples=%ld first_byte_ms=%ld (want <= 200) extra=%zu eof=%d%d (want 00)",
+             c.gotA, pre, eof_pre, arm_ok, armed_after, got, lenC, bad, first, extra, eof, eof2);
+    int ok = c.gotA && pre == 0 && !eof_pre && arm_ok && armed_after == 0 && got == lenC && bad == 0
+          && first >= 0 && first <= 200 && extra == 0 && !eof && !eof2;
+    if (c.fd >= 0) close(c.fd);
+    _test_hold_verdict(failures, ok, name, facts);
+    _test_connect_cleanup(port);
+}
+
+/* C11 (M1): a GET /stream taking over inside the window closes the old client and the new one is never closed by the old window. */
+static void _test_connect_c11(pa_stream *s, int port, int *failures) {
+    const char *name = "connect: R2-C11 a takeover inside the decision window ends the window: the new client gets audio and is not closed at the deadline";
+    const size_t lenC = 32768;
+    _test_hc_t c;
+    _test_connect_open(s, port, "1000", &c);
+    int fd2 = -1, a_eof = 0, eof = 0, eof_late = 0;
+    size_t got = 0, got_late = 0;
+    long first = -1, first_late = -1, bad = -1, bad_late = -1;
+    struct timeval t0;
+    if (c.gotA) {
+        gettimeofday(&t0, NULL);
+        _test_connect_flush(s);
+        usleep(120000);
+        fd2 = _test_hold_attach(port);
+        a_eof = _test_saw_eof(c.fd, 300);
+        if (fd2 >= 0) {
+            _test_hold_push(s, lenC, 0.75f);
+            unsigned char *buf = malloc(lenC);
+            got = _test_hold_collect(fd2, 1500, lenC, buf, &first, &eof);
+            bad = buf ? _test_hold_bad_samples(buf, got, 0.75f) : -1;
+            free(buf);
+            long wait_ms = 1500 - (long)_elapsed_ms(&t0);   /* the deadline (1000 ms) plus 500 ms */
+            if (wait_ms > 0) {
+                usleep((useconds_t)wait_ms * 1000);
+            }
+            _test_hold_push(s, lenC, 0.5f);
+            buf = malloc(lenC);
+            got_late = _test_hold_collect(fd2, 1500, lenC, buf, &first_late, &eof_late);
+            bad_late = buf ? _test_hold_bad_samples(buf, got_late, 0.5f) : -1;
+            free(buf);
+        }
+    }
+    char facts[512];
+    snprintf(facts, sizeof(facts), "gotA=%d new_attached=%d old_eof=%d (want 1) new_got=%zu (want %zu) bad=%ld first_byte_ms=%ld (want <= 200) eof=%d (want 0); after the old deadline + 500 ms: got=%zu (want %zu) bad=%ld eof=%d (want 0)",
+             c.gotA, fd2 >= 0, a_eof, got, lenC, bad, first, eof, got_late, lenC, bad_late, eof_late);
+    int ok = c.gotA && fd2 >= 0 && a_eof && got == lenC && bad == 0 && first >= 0 && first <= 200 && !eof
+          && got_late == lenC && bad_late == 0 && !eof_late;
+    if (c.fd >= 0) close(c.fd);
+    if (fd2 >= 0) close(fd2);
+    _test_hold_verdict(failures, ok, name, facts);
+    _test_connect_cleanup(port);
+}
+
+/* An off-loopback /seek-keep is refused (403) and changes nothing; like the hold off-loopback cell it prints `skip:` without a non-local IPv4. */
+static void _test_connect_off_loopback(pa_stream *s, int port, int *failures) {
+    const char *name = "connect: R2-off-loopback POST /seek-keep is refused off-loopback";
+    struct ifaddrs *ifa0 = NULL, *ifa;
+    struct in_addr lan;
+    int haveLan = 0;
+    if (getifaddrs(&ifa0) == 0) {
+        for (ifa = ifa0; ifa && !haveLan; ifa = ifa->ifa_next) {
+            if (ifa->ifa_addr && ifa->ifa_addr->sa_family == AF_INET && (ifa->ifa_flags & IFF_UP)
+                && !(ifa->ifa_flags & IFF_LOOPBACK)) {
+                lan = ((struct sockaddr_in *)ifa->ifa_addr)->sin_addr;
+                haveLan = 1;
+            }
+        }
+        freeifaddrs(ifa0);
+    }
+    if (!haveLan) {
+        printf("skip: %s (no non-loopback IPv4 address on this host; the loopback guard is the first statement of the handler)\n", name);
+        return;
+    }
+    _test_hc_t c;
+    _test_connect_open(s, port, "1000", &c);
+    char lresp[128];
+    lresp[0] = '\0';
+    size_t llen = 0;
+    int eof_pre = 0;
+    size_t pre = 0;
+    if (c.gotA) {
+        _test_connect_flush(s);
+        int lfd = socket(AF_INET, SOCK_STREAM, 0);
+        struct sockaddr_in la;
+        memset(&la, 0, sizeof(la));
+        la.sin_family = AF_INET;
+        la.sin_addr = lan;
+        la.sin_port = htons((uint16_t)port);
+        if (lfd >= 0 && connect(lfd, (struct sockaddr *)&la, sizeof(la)) == 0) {
+            static const char lreq[] = "POST /seek-keep HTTP/1.0\r\nConnection: close\r\n\r\n";
+            if (write(lfd, lreq, sizeof(lreq) - 1) > 0) {
+                for (int i = 0; i < 30 && llen < sizeof(lresp) - 1; i++) {
+                    struct pollfd lp;
+                    lp.fd = lfd;
+                    lp.events = POLLIN;
+                    if (poll(&lp, 1, 100) > 0) {
+                        ssize_t n = read(lfd, lresp + llen, sizeof(lresp) - 1 - llen);
+                        if (n <= 0) break;
+                        llen += (size_t)n;
+                    }
+                }
+            }
+        }
+        lresp[llen] = '\0';
+        if (lfd >= 0) close(lfd);
+        pre = _test_hold_read_window(c.fd, 50, &eof_pre);   /* the window is still open: no close, no byte */
+    }
+    int l403 = (llen >= 12 && strncmp(lresp, "HTTP/1.0 403", 12) == 0);
+    char facts[256];
+    snprintf(facts, sizeof(facts), "gotA=%d answer 403=%d (%.12s) window still open: held=%zu eof=%d (want 0 and 0)",
+             c.gotA, l403, lresp, pre, eof_pre);
+    int ok = c.gotA && l403 && pre == 0 && !eof_pre;
+    if (c.fd >= 0) close(c.fd);
+    _test_hold_verdict(failures, ok, name, facts);
+    _test_connect_cleanup(port);
+}
+
+static void _test_connect_cases(pa_stream *s, int port, int *failures) {
+    _test_connect_c1(s, port, failures);
+    _test_connect_c2(s, port, failures);
+    _test_connect_c3(s, port, failures);
+    _test_connect_c4(s, port, failures);
+    _test_connect_c5(s, port, failures);
+    _test_connect_c6(s, port, failures);
+    _test_connect_c7(s, port, failures);
+    _test_connect_c8(s, port, failures);
+    _test_connect_c9(s, port, failures);
+    _test_connect_c10(s, port, failures);
+    _test_connect_c11(s, port, failures);
+    _test_connect_off_loopback(s, port, failures);
+}
+
 static void _test_hold_cases(pa_stream *s, int port, int *failures) {
     _test_hold_archive(s, port, failures);
     _test_hold_timeout(s, port, failures);
@@ -5716,9 +6956,309 @@ static void _test_hold_cases(pa_stream *s, int port, int *failures) {
     _test_hold_negative_clock(s, port, failures);
 }
 
+/* ==================================================================== */
+/* 79-51 (runaway D2): the departed record at a bounded close, the orphan */
+/* discard at promotion -- harness cells                                  */
+/* ==================================================================== */
+/* The album-start runaway (.planning/debug/album-start-connect-runaway.md, E4/E5):
+ * a plant made with nobody attached and a ring that holds nothing of its own
+ * (094204 :25.328/.338, 094408 :20.536/.550: `gen=-1 via=none ring_fill=0`) was
+ * inherited by LMS's fresh stream, which was closed after 0 bytes and made LMS
+ * stop. The cells below are shaped like those recordings and like a bounded EOF
+ * followed by a skip flush. Every cell starts and ends with a clean ring, no
+ * departed record and no marker (_test_hold_cleanup). They reach the shim only
+ * through its HTTP endpoints, pa_stream_write/pa_stream_flush and the two
+ * generation globals, so they compile against a shim without the fix (RED). */
+
+#define _TEST_RW_CHUNK 16384
+
+typedef struct {
+    int       ok;
+    char      via[16];
+    long long gen;
+    long long boundary;
+    long long popped;
+    char      body[512];
+} _test_rw_reply_t;
+
+/* A plain POST /boundary (the connect-mode drain anchor is not needed: the cells
+ * plant at the shim's own total_pushed) and its parsed reply. */
+static void _test_rw_post(int port, _test_rw_reply_t *r) {
+    r->ok = _test_post_control_body(port, "/boundary", r->body, sizeof(r->body));
+    _test_body_str(r->body, "via=", r->via, sizeof(r->via));
+    r->gen      = _test_body_i64(r->body, "gen=");
+    r->boundary = _test_body_i64(r->body, "boundary=");
+    r->popped   = _test_body_i64(r->body, "total_popped=");
+}
+
+/* The generation of the client that attached last (the promotion writes it after
+ * the response head left, so give the HTTP thread a moment). */
+static long long _test_rw_gen_now(void) {
+    usleep(60000);
+    return (long long)g_client_generation;
+}
+
+/* Client A attaches, reads `len` bytes of its title, and a plain POST /boundary
+ * (ring empty: the marker stands at the read pointer, via=live) gives it its
+ * bounded EOF at the PRE-POP site. *gen = A's generation (the reply's gen=). */
+static int _test_rw_client_ends_prepop(pa_stream *s, int port, size_t len, long long *gen) {
+    *gen = -1;
+    int fd = _test_hold_attach(port);
+    if (fd < 0) {
+        return 0;
+    }
+    _test_hold_push(s, len, 0.25f);
+    unsigned char *sink = malloc(len);
+    int got = (sink && _test_read_bytes(fd, sink, len, 3000) == 0);
+    free(sink);
+    int eof = 0;
+    if (got) {
+        _test_rw_reply_t r;
+        _test_rw_post(port, &r);
+        if (r.ok && strcmp(r.via, "live") == 0) {
+            *gen = r.gen;
+        }
+        eof = _test_saw_eof(fd, 1000);
+    }
+    close(fd);
+    return got && *gen >= 0 && eof;
+}
+
+/* Client B attaches and the harness asks the one question of the runaway: is the
+ * fresh stream served, or closed in the millisecond it attached? got = bytes
+ * within 500 ms, eof_early = EOF seen while collecting, eof_late = EOF in the
+ * 300 ms after. */
+static void _test_rw_serve(int port, size_t want, size_t *got, int *eof_early, int *eof_late, int *attached) {
+    *got = 0; *eof_early = 0; *eof_late = 0;
+    int fd = _test_hold_attach(port);
+    *attached = (fd >= 0);
+    if (fd < 0) {
+        return;
+    }
+    long first = -1;
+    *got = _test_hold_collect(fd, 500, want, NULL, &first, eof_early);
+    if (!*eof_early) {
+        (void)_test_hold_read_window(fd, 300, eof_late);
+    }
+    close(fd);
+}
+
+/* C1 (D2-a, the 094204 25.106 then 25.328 shape): a bounded EOF records its client. */
+static void _test_runaway_c1(pa_stream *s, int port, int *failures) {
+    const char *name = "runaway: D2-C1 a bounded EOF records its client: the next plant (nobody attached, ring empty) reads via=departed and the fresh client is not closed at 0 bytes";
+    _test_hold_cleanup(port);
+    /* A: planted first with nobody attached and bytes in the ring (the D-04 shape), then attached: it reads exactly
+     * its bytes and ends at the POST-POP site. */
+    _test_hold_push(s, _TEST_RW_CHUNK, 0.25f);
+    _test_rw_reply_t r1, r2;
+    _test_rw_post(port, &r1);
+    int fd = _test_hold_attach(port);
+    long long gA = -1;
+    size_t gotA = 0;
+    int eofA = 0;
+    if (fd >= 0) {
+        gA = _test_rw_gen_now();
+        long first = -1;
+        gotA = _test_hold_collect(fd, 1500, _TEST_RW_CHUNK, NULL, &first, &eofA);
+        if (!eofA) {
+            eofA = _test_saw_eof(fd, 1000);
+        }
+        close(fd);
+    }
+    /* nobody attached, the ring empty: the 094204 second plant */
+    _test_rw_post(port, &r2);
+    _test_hold_push(s, _TEST_RW_CHUNK, 0.5f);
+    size_t gotB = 0;
+    int eofB1 = 0, eofB2 = 0, attB = 0;
+    _test_rw_serve(port, _TEST_RW_CHUNK, &gotB, &eofB1, &eofB2, &attB);
+    char facts[512];
+    snprintf(facts, sizeof(facts), "first_plant via='%s' (want none) A gen=%lld got=%zu (want %d) eof=%d second_plant via='%s' (want departed) gen=%lld (want A's) B got=%zu (want >= 1) eof=%d%d (want 00)",
+             r1.via, gA, gotA, _TEST_RW_CHUNK, eofA, r2.via, r2.gen, gotB, eofB1, eofB2);
+    int ok = r1.ok && r2.ok && fd >= 0 && gotA == _TEST_RW_CHUNK && eofA && strcmp(r1.via, "none") == 0
+          && strcmp(r2.via, "departed") == 0 && r2.gen == gA && attB && gotB >= 1 && !eofB1 && !eofB2;
+    _test_hold_verdict(failures, ok, name, facts);
+    _test_hold_cleanup(port);
+}
+
+/* C2 (D2-b, the 094408 20.536 then 20.550 shape): an orphan plant at the read pointer is discarded at the attach. */
+static void _test_runaway_c2(pa_stream *s, int port, int *failures) {
+    const char *name = "runaway: D2-C2 an orphan plant at or below total_popped is discarded when the next client attaches (the fresh client is served)";
+    _test_hold_cleanup(port);
+    _test_trace_t tr;
+    char trace[16384];
+    trace[0] = '\0';
+    int traced = (_test_trace_begin(&tr) == 0);
+    int old_spike = g_boundary_spike;
+    g_boundary_spike = 1;
+    _test_rw_reply_t r;
+    _test_rw_post(port, &r);
+    _test_hold_push(s, _TEST_RW_CHUNK, 0.5f);
+    size_t got = 0;
+    int eof1 = 0, eof2 = 0, att = 0;
+    _test_rw_serve(port, _TEST_RW_CHUNK, &got, &eof1, &eof2, &att);
+    g_boundary_spike = old_spike;
+    if (traced) {
+        _test_trace_end(&tr, trace, sizeof(trace));
+    }
+    int discarded = strstr(trace, "boundary_discarded: orphan at attach") != NULL;
+    char facts[512];
+    snprintf(facts, sizeof(facts), "plant via='%s' (want none) boundary=%lld total_popped=%lld (want equal) B got=%zu (want %d) eof=%d%d (want 00) boundary_discarded_orphan=%d (want 1)",
+             r.via, r.boundary, r.popped, got, _TEST_RW_CHUNK, eof1, eof2, discarded);
+    int ok = traced && r.ok && strcmp(r.via, "none") == 0 && r.boundary == r.popped && att
+          && got == _TEST_RW_CHUNK && !eof1 && !eof2 && discarded;
+    _test_hold_verdict(failures, ok, name, facts);
+    _test_hold_cleanup(port);
+}
+
+/* C3 (D-04 kept): a marker ABOVE total_popped with no departed record is inherited by the next client. */
+static void _test_runaway_c3(pa_stream *s, int port, int *failures) {
+    const char *name = "runaway: D2-C3 a plant above total_popped with no departed record is still inherited (D-04: the next client gets exactly its bytes, then EOF)";
+    _test_hold_cleanup(port);
+    _test_hold_push(s, _TEST_RW_CHUNK, 0.25f);
+    _test_rw_reply_t r;
+    _test_rw_post(port, &r);
+    int fd = _test_hold_attach(port);
+    int eof = 0;
+    size_t got = 0;
+    if (fd >= 0) {
+        got = _test_hold_read_to_eof(fd, 2000, &eof);
+        close(fd);
+    }
+    char facts[256];
+    snprintf(facts, sizeof(facts), "plant via='%s' (want none) client got=%zu (want exactly %d) eof=%d (want 1)", r.via, got, _TEST_RW_CHUNK, eof);
+    int ok = r.ok && strcmp(r.via, "none") == 0 && fd >= 0 && got == _TEST_RW_CHUNK && eof;
+    _test_hold_verdict(failures, ok, name, facts);
+    _test_hold_cleanup(port);
+}
+
+/* C4 (one-shot kept): the departed record is consumed by one plant. */
+static void _test_runaway_c4(pa_stream *s, int port, int *failures) {
+    const char *name = "runaway: D2-C4 the departed record is one-shot: a second plant with nobody attached reads via=none";
+    _test_hold_cleanup(port);
+    long long gA = -1;
+    int a_ok = _test_rw_client_ends_prepop(s, port, _TEST_RW_CHUNK, &gA);
+    _test_rw_reply_t r1, r2;
+    _test_rw_post(port, &r1);    /* consumes the record (via=departed after 79-51) */
+    _test_rw_post(port, &r2);
+    char facts[256];
+    snprintf(facts, sizeof(facts), "A ended=%d first plant via='%s' second plant via='%s' (want none)", a_ok, r1.via, r2.via);
+    int ok = a_ok && r1.ok && r2.ok && strcmp(r2.via, "none") == 0;
+    _test_hold_verdict(failures, ok, name, facts);
+    _test_hold_cleanup(port);
+}
+
+/* C5 (attach clears): a live attach clears the record, so a plant with a client attached reads via=live. */
+static void _test_runaway_c5(pa_stream *s, int port, int *failures) {
+    const char *name = "runaway: D2-C5 a live attach clears the departed record: a plant while the new client is attached reads via=live with its generation";
+    _test_hold_cleanup(port);
+    long long gA = -1;
+    int a_ok = _test_rw_client_ends_prepop(s, port, _TEST_RW_CHUNK, &gA);
+    int fd = _test_hold_attach(port);
+    long long gC = (fd >= 0) ? _test_rw_gen_now() : -1;
+    _test_rw_reply_t r;
+    memset(&r, 0, sizeof(r));
+    if (fd >= 0) {
+        _test_rw_post(port, &r);
+        close(fd);
+    }
+    char facts[256];
+    snprintf(facts, sizeof(facts), "A ended=%d C gen=%lld plant via='%s' (want live) gen=%lld (want C's)", a_ok, gC, r.via, r.gen);
+    int ok = a_ok && fd >= 0 && r.ok && strcmp(r.via, "live") == 0 && r.gen == gC && gC > gA;
+    _test_hold_verdict(failures, ok, name, facts);
+    _test_hold_cleanup(port);
+}
+
+/* C6 (D2-a's own case, the real skip shape: record plus flush; second review items H and I). */
+static void _test_runaway_c6(pa_stream *s, int port, int *failures) {
+    const char *name = "runaway: D2-C6 after a bounded EOF and a skip flush the next plant reads via=departed and its marker is discarded at the attach (the next title is not cut at 8192 bytes)";
+    const size_t lenB1 = 8192, lenRest = 16384;
+    _test_hold_cleanup(port);
+    _test_trace_t tr;
+    char trace[16384];
+    trace[0] = '\0';
+    int traced = (_test_trace_begin(&tr) == 0);
+    int old_spike = g_boundary_spike;
+    g_boundary_spike = 1;
+    long long gA = -1;
+    int a_ok = _test_rw_client_ends_prepop(s, port, _TEST_RW_CHUNK, &gA);
+    /* nobody attached: the intermediate title's bytes land, the skip flushes them (total_popped advances), the next
+     * title's first 8192 bytes land, then the plant */
+    _test_hold_push(s, _TEST_RW_CHUNK, 0.25f);
+    long long popped0, popped1;
+    pthread_mutex_lock(&g_ring.lock); popped0 = g_ring.total_popped; pthread_mutex_unlock(&g_ring.lock);
+    pa_operation *op = pa_stream_flush(s, NULL, NULL);
+    if (op) {
+        pa_operation_unref(op);
+    }
+    pthread_mutex_lock(&g_ring.lock); popped1 = g_ring.total_popped; pthread_mutex_unlock(&g_ring.lock);
+    _test_hold_push(s, lenB1, 0.5f);
+    _test_rw_reply_t r;
+    _test_rw_post(port, &r);
+    _test_hold_push(s, lenRest, 0.5f);
+    size_t got = 0;
+    int eof1 = 0, eof2 = 0, att = 0;
+    _test_rw_serve(port, lenB1 + lenRest, &got, &eof1, &eof2, &att);
+    g_boundary_spike = old_spike;
+    if (traced) {
+        _test_trace_end(&tr, trace, sizeof(trace));
+    }
+    int stale = strstr(trace, "boundary_discarded: stale generation") != NULL;
+    char facts[640];
+    snprintf(facts, sizeof(facts), "A ended=%d total_popped %lld -> %lld (want advanced) plant via='%s' (want departed) boundary=%lld total_popped=%lld (want above) B got=%zu (want > %zu, all %zu) eof=%d%d (want 00) boundary_discarded_stale=%d (want 1)",
+             a_ok, popped0, popped1, r.via, r.boundary, r.popped, got, lenB1, lenB1 + lenRest, eof1, eof2, stale);
+    int ok = traced && a_ok && popped1 > popped0 && r.ok && strcmp(r.via, "departed") == 0 && r.boundary > r.popped
+          && att && got > lenB1 && got == lenB1 + lenRest && !eof1 && !eof2 && stale;
+    _test_hold_verdict(failures, ok, name, facts);
+    _test_hold_cleanup(port);
+}
+
+/* C7 (D2-a's cost, pinned): after a bounded EOF and NO flush a plant made before the next attach no longer bounds the
+ * intermediate entry. HEAD bounded it (via=none, inherited). No recording shows the ordering; the cell pins the accepted
+ * cost so that any later change is deliberate (T-79-192, T-79-195). */
+static void _test_runaway_c7(pa_stream *s, int port, int *failures) {
+    const char *name = "runaway: D2-C7 after a bounded EOF without a flush the next plant is discarded at the attach: the next client is not bounded at the marker (accepted cost, pinned)";
+    const size_t lenB1 = _TEST_RW_CHUNK, lenAfter = _TEST_RW_CHUNK;
+    _test_hold_cleanup(port);
+    long long gA = -1;
+    int a_ok = _test_rw_client_ends_prepop(s, port, _TEST_RW_CHUNK, &gA);
+    _test_hold_push(s, lenB1, 0.25f);    /* the intermediate title, no flush */
+    _test_rw_reply_t r;
+    _test_rw_post(port, &r);
+    _test_hold_push(s, lenAfter, 0.5f);  /* bytes after the marker */
+    size_t got = 0;
+    int eof1 = 0, eof2 = 0, att = 0;
+    _test_rw_serve(port, lenB1 + lenAfter, &got, &eof1, &eof2, &att);
+    char facts[512];
+    snprintf(facts, sizeof(facts), "A ended=%d plant via='%s' (want departed) boundary=%lld total_popped=%lld (want above) B got=%zu (want %zu: B1 and the bytes after the marker) eof=%d%d (want 00; HEAD bounded B at %zu)",
+             a_ok, r.via, r.boundary, r.popped, got, lenB1 + lenAfter, eof1, eof2, lenB1);
+    int ok = a_ok && r.ok && strcmp(r.via, "departed") == 0 && r.boundary > r.popped && att
+          && got == lenB1 + lenAfter && !eof1 && !eof2;
+    _test_hold_verdict(failures, ok, name, facts);
+    _test_hold_cleanup(port);
+}
+
+static void _test_runaway_cases(pa_stream *s, int port, int *failures) {
+    _test_runaway_c1(s, port, failures);
+    _test_runaway_c2(s, port, failures);
+    _test_runaway_c3(s, port, failures);
+    _test_runaway_c4(s, port, failures);
+    _test_runaway_c5(s, port, failures);
+    _test_runaway_c6(s, port, failures);
+    _test_runaway_c7(s, port, failures);
+}
+
 int main(void) {
     int failures = 0;
     const int hold_only = (getenv("FAKE_LIBPULSE_TEST_HOLD_ONLY") != NULL);
+    /* 79-47 (D-34): the browse-keep cells alone, used by t/soloist/48 for the
+     * browse-keep mutant (the old unarmed flush-disconnect). */
+    const int browse_only = (getenv("FAKE_LIBPULSE_TEST_BROWSE_ONLY") != NULL);
+    /* 79-50 (D-34 R2): the connect decision-window cells alone, used by t/soloist/48
+     * for the window mutants (the R2_DEFER / R2_PROMOTE / R2_TAKEOVER blocks). */
+    const int connect_only = (getenv("FAKE_LIBPULSE_TEST_CONNECT_ONLY") != NULL);
+    /* 79-51 (runaway D2): the departed-record / orphan-discard cells alone, used by t/soloist/48
+     * for the D2 mutants (the 79-51 D2_DEPART and D2_ORPHAN blocks). */
+    const int runaway_only = (getenv("FAKE_LIBPULSE_TEST_RUNAWAY_ONLY") != NULL);
 
     /* 84-20: stdout and stderr go to one pipe under prove; a block-buffered
      * stdout let a FAIL line land inside a half-written `ok:` line, which the
@@ -5731,10 +7271,14 @@ int main(void) {
     /* 79-37 D-31: the gap hold is off for every older cell; each hold cell
      * sets its own knobs and restores 0. */
     setenv("SPOTON_FAKEPULSE_HOLD_GAP_MS", "0", 1);
+    /* 79-50 D-34 R2: the connect decision window is off for every older cell (an
+     * unarmed flush closes at the next tick, the contract they were written
+     * under); each connect cell sets its own window and restores 0. */
+    setenv("SPOTON_FAKEPULSE_FLUSH_DECIDE_MS", "0", 1);
 
     /* quick-261022-ca3: the read helpers must measure a sub-second budget in
      * elapsed milliseconds across a wall-clock second boundary. */
-    if (!hold_only) {
+    if (!hold_only && !browse_only && !connect_only && !runaway_only) {
         long ms_b = 0, ms_h = 0, ms_r = 0;
         int rc_b = _test_boundary_probe(0, &ms_b);
         int rc_h = _test_boundary_probe(1, &ms_h);
@@ -5797,12 +7341,36 @@ int main(void) {
      * hold-only mode (FAKE_LIBPULSE_TEST_HOLD_ONLY, used by t/soloist/48 for
      * the hold-cap mutant) executes exactly the code path and order of the
      * full run. */
+    if (runaway_only) {
+        _test_runaway_cases(s, port, &failures);
+        printf("Runaway-only run: failures=%d\n", failures);
+        unlink(portFilePath);
+        return failures > 0 ? 1 : 0;
+    }
+    if (connect_only) {
+        _test_connect_cases(s, port, &failures);
+        printf("Connect-only run: failures=%d\n", failures);
+        unlink(portFilePath);
+        return failures > 0 ? 1 : 0;
+    }
+    if (browse_only) {
+        _test_browse_cases(s, port, &failures);
+        printf("Browse-only run: failures=%d\n", failures);
+        unlink(portFilePath);
+        return failures > 0 ? 1 : 0;
+    }
     _test_hold_cases(s, port, &failures);
     if (hold_only) {
         printf("Hold-only run: failures=%d\n", failures);
         unlink(portFilePath);
         return failures > 0 ? 1 : 0;
     }
+    /* 79-47 (D-34): the browse-keep cells, right after the hold cells. */
+    _test_browse_cases(s, port, &failures);
+    /* 79-50 (D-34 R2): the connect decision-window cells, right after the browse cells. */
+    _test_connect_cases(s, port, &failures);
+    /* 79-51 (runaway D2): the departed-record / orphan-discard cells, right after the connect cells. */
+    _test_runaway_cases(s, port, &failures);
 
     int client = _test_connect_loopback(port);
     if (client < 0) {
@@ -6327,7 +7895,11 @@ int main(void) {
 
     /* via=live (a streaming client attached at POST time, plain path:
      * today's placement at total_pushed), then via=none right after the
-     * bounded EOF left nobody attached (the rapid-skip situation). */
+     * bounded EOF left nobody attached (the rapid-skip situation).
+     * Corrected 79-51 (2026-10-27): after a bounded EOF the next plant now reads
+     * via=departed (cell runaway: D2-C1); the via=none read below is made with the
+     * departed record cleared first. The rapid-skip bound after a bounded EOF is
+     * kept only after a flush (C6); without a flush it is given up (C7, T-79-195). */
     {
         _test_brun_t run;
         _test_boundary_run(s, port, "/boundary", 44100 * 2 * 1, 44100 * 2 / 2, &run);
@@ -6356,8 +7928,13 @@ int main(void) {
             printf("ok: live boundary without the anchor query is planted at total_pushed (boundary=%lld, client received exactly up to it)\n", boundary);
         }
 
-        /* The bounded EOF left nobody attached and no departed record. */
+        /* The bounded EOF left nobody attached and no departed record.
+         * Corrected 79-51 (2026-10-27): after 79-51 runaway D2 a bounded EOF DOES leave a departed record, and the next
+         * plant reads via=departed (cell runaway: D2-C1). This cell's own claim -- no client ever attached to this
+         * plant -- is kept by clearing the record before the POST. The rapid-skip bound after a bounded EOF is kept
+         * only after a flush (C6 shows why discarding is right there); without a flush it is given up (C7, T-79-195). */
         char none_body[512];
+        g_departed_client_generation = NO_CLIENT_GENERATION;
         g_boundary_at_pushed = -1;
         int none_ok = _test_post_control_body(port, "/boundary", none_body, sizeof(none_body));
         char via2[16], anchor2[16];

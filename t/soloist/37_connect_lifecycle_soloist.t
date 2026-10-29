@@ -517,8 +517,20 @@ if ($hold_block) {
 # stop / playlist clear.
 my @marker_clear_sites = $control =~
     /(delete \$self->observed->\{leftBrowseUri\}; delete \$self->observed->\{leftConnectForeign\};)/g;
-is(scalar(@marker_clear_sites), 2,
-    "84.1-07 G8: the marker's same-line clear appears exactly twice (requestTrack, transfer-in)");
+# D-34 (79-48): the transfer-in body moved into the shared _enterConnectSession
+# (three callers); its clear of the marker is the `fresh` branch there. The
+# same-line clear that remains is requestTrack's.
+is(scalar(@marker_clear_sites), 1,
+    "84.1-07 G8: the marker's same-line clear appears once (requestTrack); the transfer-in clears it in _enterConnectSession");
+{
+    my ($enter_block) = $control =~ /(sub _enterConnectSession \{.*?\n\}\n)/s;
+    ok($enter_block, "84.1-07 G8 (D-34): _enterConnectSession block parseable");
+    my $enter_code = join("\n", grep { !/^\s*#/ } split /\n/, ($enter_block // ''));
+    like($enter_code, qr/if \(\$o\{fresh\}\) \{\s*delete \$self->observed->\{leftConnectForeign\};/,
+        "84.1-07 G8 (D-34): a fresh session (the transfer-in, the takeover) clears leftConnectForeign in the shared sub");
+    like($control, qr/_enterConnectSession\('transfer-in', fresh => 1\)/,
+        "84.1-07 G8 (D-34): the device_changed transfer-in calls the shared sub as a fresh session");
+}
 
 ok((index($control, 'sub endForeignLeave') >= 0), "84.1-07 G8: Control.pm defines endForeignLeave");
 
@@ -542,10 +554,15 @@ ok((index($control, 'sub endForeignLeave') >= 0), "84.1-07 G8: Control.pm define
 # G9: the two WR-01 same-line clears, and the WR-04 stamp on the same
 # line as the existing logged_in assignment.
 {
-    my @reconnect_clear = $control =~
-        /(\$self->mode\('connect'\); delete \$self->observed->\{leftBrowseUri\};)/g;
-    is(scalar(@reconnect_clear), 1,
-        "84.1-08 G9: mode('connect'); delete leftBrowseUri; appears once (reconnect adoption)");
+    # D-34 (79-48): the reconnect adoption's mode flip and marker clear live in the
+    # shared _enterConnectSession now (callers: reconnect adoption, transfer-in, takeover).
+    my @reconnect_calls = $control =~ /(_enterConnectSession\('reconnect-to-connect'\))/g;
+    is(scalar(@reconnect_calls), 1,
+        "84.1-08 G9: the reconnect adoption enters connect through the shared sub exactly once");
+    my ($enter_block) = $control =~ /(sub _enterConnectSession \{.*?\n\}\n)/s;
+    my $enter_code = join("\n", grep { !/^\s*#/ } split /\n/, ($enter_block // ''));
+    like($enter_code, qr/\$self->mode\('connect'\);.*delete \$self->observed->\{leftBrowseUri\};/s,
+        "84.1-08 G9: the shared sub flips the mode to connect and clears leftBrowseUri");
 
     my @anymode_clear = $control =~
         /(\$self->observed->\{is_active\} = 0; delete \$self->observed->\{leftBrowseUri\};)/g;

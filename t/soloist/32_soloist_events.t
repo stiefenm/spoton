@@ -416,7 +416,10 @@ local $Slim::Utils::Prefs::FAKE_VALUES{enableSpotifyConnect} = 1;
 {
     my ($ctl, $daemon, $ws) = new_control(mode => 'connect',
         observed => { is_active => 1, track => 'spotify:track:tid1', status => 'paused', anchor => { position_ms => 42500 } });
-    my $got = run_fixtures($ctl, '{"type":"playback_changed","status":"playing"}');
+    # 79-51 runaway D1: the resume is released by the frame that decides it -- here the same-title playback_state that
+    # follows the playing frame (E3); the contract (one resume tid1 42.500, one get_state) is unchanged.
+    my $got = run_fixtures($ctl, '{"type":"playback_changed","status":"playing"}',
+        '{"type":"playback_state","status":"playing","item":{"uri":"spotify:track:tid1"}}');
     is_deeply($got, [ [ 'spottyconnect', 'resume', 'tid1', '42.500' ] ],
         "playback_changed status=playing after a real pause emits 'resume' with 3-decimal position");
     is_deeply($ws->sent, [ [ 'get_state', {} ] ],

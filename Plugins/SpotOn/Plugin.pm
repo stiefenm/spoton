@@ -71,9 +71,11 @@ sub _flushDeferredMeta {
             $bitrate = '320k';
             $type    = 'Spotify';
         }
+        require Plugins::SpotOn::API::SpClient;   # 79-43 (D-33 FULL-3 CR-01): the format marker of spoton_meta records
         $cache->set(
             'spoton_meta_' . md5_hex($p->{url}),
             {
+                _spoton_fmt => Plugins::SpotOn::API::SpClient::TRACK_META_FORMAT(),
                 title    => $p->{title},
                 artist   => $p->{artist},
                 album    => $p->{album},
@@ -568,6 +570,15 @@ sub _killOrphanedProcesses {
         if ($INC{'Plugins/SpotOn/Unified/DaemonManager.pm'}) {
             %unifiedPids = map { $_ => 1 }
                 Plugins::SpotOn::Unified::DaemonManager->helperPids();
+        }
+
+        # D-33 FULL-1 CR-01: the ZeroConf pairing helper is the same binary
+        # as the swept helper (`--discover-once`) and lives only in
+        # Credentials' %_pairing -- protect it for both the Unix and the
+        # Windows branch, which read the same set.
+        if ($INC{'Plugins/SpotOn/API/Credentials.pm'}) {
+            my $pairingPid = Plugins::SpotOn::API::Credentials->pairingPid;
+            $unifiedPids{$pairingPid} = 1 if $pairingPid;
         }
 
         my ($helper) = Plugins::SpotOn::Helper->get();
@@ -1332,7 +1343,9 @@ sub _trackItem {
         };
     } else {
         my %trackIds = _extractTrackIds($track);
+        require Plugins::SpotOn::API::SpClient;   # 79-43 (D-33 FULL-3 CR-01): the format marker of spoton_meta records
         $cache->set('spoton_meta_' . md5_hex($spoton_url), {
+            _spoton_fmt => Plugins::SpotOn::API::SpClient::TRACK_META_FORMAT(),
             title     => $title,
             artist    => $artist,
             album     => $album,
@@ -2471,7 +2484,9 @@ sub _episodeItem {
     # Duration/date as visible sub-item — songinfo hides the parent item's line2
     push @contextItems, { name => $line2, type => 'textarea' } if $line2;
 
+    require Plugins::SpotOn::API::SpClient;   # 79-43 (D-33 FULL-3 CR-01): the format marker of spoton_meta records
     $cache->set('spoton_meta_' . md5_hex($spoton_url), {
+        _spoton_fmt => Plugins::SpotOn::API::SpClient::TRACK_META_FORMAT(),
         title    => $title,
         artist   => $showName,
         album    => $showName,
@@ -3018,6 +3033,10 @@ sub _trackInfoItemsCLI {
     my $track = Slim::Schema->objectForUrl({ url => $url });
     unless (blessed($track)) {
         my $meta = $cache->get('spoton_meta_' . md5_hex($url)) || {};
+        # 79-43 (D-33 FULL-3 CR-01): a record without the current format marker can hold the byte form of the
+        # names (beta.1); it is the miss it would be without a record.
+        require Plugins::SpotOn::API::SpClient;
+        $meta = {} unless ($meta->{_spoton_fmt} // 0) >= Plugins::SpotOn::API::SpClient::TRACK_META_FORMAT();
         $track = Slim::Schema->updateOrCreate({
             url        => $url,
             attributes => {
@@ -3685,7 +3704,9 @@ sub _albumTrackItem {
         };
     } else {
         my %trackIds = _extractTrackIds($track);
+        require Plugins::SpotOn::API::SpClient;   # 79-43 (D-33 FULL-3 CR-01): the format marker of spoton_meta records
         $cache->set('spoton_meta_' . md5_hex($spoton_url), {
+            _spoton_fmt => Plugins::SpotOn::API::SpClient::TRACK_META_FORMAT(),
             title    => $title,
             artist   => $artists,
             album    => $albumName,
@@ -4050,6 +4071,7 @@ sub _refreshMetaForClient {
             artist   => join(', ', map { $_->{name} } @{ $track->{artists} || [] }),
             album    => ($track->{album} || {})->{name} // '',
             duration => ($track->{duration_ms} || 0) / 1000,
+            _spoton_fmt => Plugins::SpotOn::API::SpClient::TRACK_META_FORMAT(),   # 79-43: the names above are fresh characters
         );
         $fresh{cover} = $fresh{icon} = $image if $image;
         $cache->set($key, \%fresh, 604800);

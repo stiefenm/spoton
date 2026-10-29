@@ -120,7 +120,7 @@ tx_summary() {
       while (my $l = <$fh>) {
         my $r = eval { decode_json($l) } or next;
         next unless ref $r eq "HASH" && ($r->{dir} // "") eq "tx";
-        my $fr = eval { decode_json($r->{frame}) } or next;
+        my $fr = eval { JSON::PP->new->decode($r->{frame}) } or next;
         $n{ $fr->{command} // "?" }++ if ref $fr eq "HASH";
       }
     }
@@ -155,6 +155,9 @@ final() {
 # read_q <file>  -> R_RC R_ACTIVE R_DEV R_STATUS R_ITEM R_N   ("-" = not seen)
 # Counting rule = acceptance-x86.sh queue_count: the tx get_queue frame, then the
 # FIRST rx queue_changed; count upcoming[] entries with source == "queue".
+# 79-46: the frame field is a CHARACTER string after the outer decode_json (the recorder writes
+# real Unicode), so the inner decode is character-level -- decode_json there failed on any
+# accented title with "malformed UTF-8" and made the read unreadable.
 read_q() {
   local f=$1 info kv
   timeout 20 "${WS[@]}" --mac "$MAC" --expect-device "$UAT_NAME" \
@@ -166,7 +169,7 @@ read_q() {
     while (my $l = <$fh>) {
       my $r = eval { decode_json($l) } or next; next unless ref $r eq "HASH";
       my $fr = $r->{frame}; next unless defined $fr && !ref $fr && $fr =~ /^\{/;
-      my $x = eval { decode_json($fr) } or next; next unless ref $x eq "HASH";
+      my $x = eval { JSON::PP->new->decode($fr) } or next; next unless ref $x eq "HASH";
       my $dir = $r->{dir} // "";
       if ($dir eq "tx" && ($x->{command} // "") eq "get_queue") { $tx = 1; next }
       next unless $dir eq "rx";

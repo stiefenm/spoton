@@ -291,6 +291,7 @@ END
 # ProtocolHandler.pm's _asyncRefetch now calls SpClient->getTrack, D-08)
 write_stub($stub_dir, 'Plugins::SpotOn::API::SpClient', <<'END');
 package Plugins::SpotOn::API::SpClient;
+use constant TRACK_META_FORMAT => 2;   # 79-43: the format marker of the real module
 our $mock_track = undef;
 sub getTrack {
     my ($class, $account_id, $track_id, $cb) = @_;
@@ -468,6 +469,7 @@ subtest 'getMetadataFor returns cached Browse metadata' => sub {
     # Clear cache state and set a known entry
     Slim::Utils::Cache->new->clear();
     Slim::Utils::Cache->new->set($cache_key, {
+        _spoton_fmt => 2,   # 79-43 (D-33 FULL-3 CR-01): a record in the current format
         title    => 'Test Track',
         artist   => 'Test Artist',
         album    => 'Test Album',
@@ -518,6 +520,7 @@ subtest 'Connect URL with spotifyUri in cache returns metadata with play field' 
 
     Slim::Utils::Cache->new->clear();
     Slim::Utils::Cache->new->set($cache_key, {
+        _spoton_fmt => 2,   # 79-43 (D-33 FULL-3 CR-01): a record in the current format
         title      => 'Connect Track',
         artist     => 'Connect Artist',
         album      => 'Connect Album',
@@ -622,6 +625,7 @@ subtest 'Connect URL returns Browse mode label not Connect' => sub {
 
     Slim::Utils::Cache->new->clear();
     Slim::Utils::Cache->new->set($cache_key, {
+        _spoton_fmt => 2,   # 79-43 (D-33 FULL-3 CR-01): a record in the current format
         title      => 'Another Connect Track',
         artist     => 'Another Artist',
         album      => 'Another Album',
@@ -657,6 +661,7 @@ subtest 'COMPAT-03: HTTP track URL canonicalizes to spoton:// cache key' => sub 
 
     Slim::Utils::Cache->new->clear();
     Slim::Utils::Cache->new->set($cache_key, {
+        _spoton_fmt => 2,   # 79-43 (D-33 FULL-3 CR-01): a record in the current format
         title    => 'HTTP Canon Track',
         artist   => 'HTTP Canon Artist',
         album    => 'HTTP Canon Album',
@@ -687,6 +692,7 @@ subtest 'COMPAT-03: HTTP track URL with ?start_position= still hits cache' => su
 
     Slim::Utils::Cache->new->clear();
     Slim::Utils::Cache->new->set($cache_key, {
+        _spoton_fmt => 2,   # 79-43 (D-33 FULL-3 CR-01): a record in the current format
         title    => 'Seek Canon Track',
         artist   => 'Seek Canon Artist',
         album    => 'Seek Canon Album',
@@ -717,6 +723,7 @@ subtest 'COMPAT-03: HTTP episode URL canonicalizes to spoton://episode:ID cache 
 
     Slim::Utils::Cache->new->clear();
     Slim::Utils::Cache->new->set($cache_key, {
+        _spoton_fmt => 2,   # 79-43 (D-33 FULL-3 CR-01): a record in the current format
         title    => 'Episode Canon',
         artist   => 'Podcast',
         album    => '',
