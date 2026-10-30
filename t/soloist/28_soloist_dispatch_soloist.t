@@ -1705,6 +1705,22 @@ Plugins::SpotOn::Unified::DaemonManager->init();
         $setup->('', 'ldd (some other loader) 9.9');
         is($DM->glibcVersion(), undef, "74b-03 D-09: an ldd line that does not name GLIBC or GNU libc is ignored");
 
+        # 79-55 (GH #184): piCorePlayer's ldd prints "ldd (GNU libc) 2.40." with a trailing dot
+        $setup->('', 'ldd (GNU libc) 2.40.');
+        is($DM->glibcVersion(), '2.40', "79-55 G1: ldd line 'ldd (GNU libc) 2.40.' (trailing dot, piCorePlayer) parses to 2.40");
+        @Plugins::SpotOn::Status::RECORDED = ();
+        @Plugins::SpotOn::Unified::DaemonManager::GLIBC_PROBES = (
+            [ "$pdir/no-such-getconf", 'GNU_LIBC_VERSION' ],
+            [ $fake->('ldd (GNU libc) 2.40.') ],
+        );
+        $DM->_resetGlibcCache();
+        is($DM->glibcVersion(), '2.40', "79-55 G2: getconf missing, ldd with trailing dot gives 2.40");
+        $setup->('', 'ldd (some other loader) 9.9.');
+        is($DM->glibcVersion(), undef, "79-55 G3: the trailing dot does not widen the GLIBC / GNU libc condition");
+        # 79-55 R1 (IN-06): the version must be a whole token, never the tail of a longer one
+        $setup->('', 'ldd (GNU libc) 2.40.1');
+        is($DM->glibcVersion(), undef, "79-55 R1 G4: 'ldd (GNU libc) 2.40.1' is not read as 40.1 (token anchor)");
+
         # the message is a message only: the start path decisions stay
         $setup->('glibc 2.36', '');
         is($DM->backendName(), 'soloist', "74b-03 D-09: backendName stays soloist on an old glibc (no automatic fallback)");

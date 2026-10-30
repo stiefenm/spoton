@@ -732,7 +732,8 @@ sub new {
     my ($class, $opts, @args) = @_;
     die "Proc::Background::SPAWN_DIE: simulated spawn failure\n" if $SPAWN_DIE;
     my $proc = Test::FakeSmokeProc->new($opts);
-    push @NEW_CALLS, { opts => $opts, args => [@args], proc => $proc };
+    # 79-55: env snapshot at spawn time (additive; older blocks ignore it)
+    push @NEW_CALLS, { opts => $opts, args => [@args], proc => $proc, env => { %ENV } };
     return $proc;
 }
 sub reset_calls { @NEW_CALLS = (); $SPAWN_DIE = 0; }
@@ -1551,6 +1552,273 @@ sub _fire_last_timer {
         ok(defined $body && $body =~ /_rotateLogAtStart/ && $body =~ /_logCapTick/,
             '74b-04: start() rotates before the open and arms the cap timer');
     }
+}
+
+# ============================================================
+# 79-55 (GH #184, forum #329): piCorePlayer starts LMS as root with
+# --user tc and LMS drops only the effective ids, so every child is exec'd
+# with AT_SECURE=1 and the loader strips LD_PRELOAD / LD_LIBRARY_PATH (the
+# fake-libpulse shim never loads). When real and effective ids differ,
+# _spawnProcess spawns through a perl wrapper that sets the real ids to the
+# effective ones and then execs the unchanged soloist argv in place.
+# The _idsDiffer seam is overridden; no test here needs root.
+# ============================================================
+{
+    my $SD = 'Plugins::SpotOn::Unified::SoloistDaemon';
+    my @SIX = qw(LD_LIBRARY_PATH LD_PRELOAD PIPEWIRE_REMOTE PIPEWIRE_RUNTIME_DIR
+                 SPOTON_FAKEPULSE_DEBUG SPOTON_SOLOIST_HTTP_PORT_FILE);
+
+    my %envSave = %ENV;
+    delete @ENV{ @SIX, 'XDG_RUNTIME_DIR' };
+
+    my $shimDir  = tempdir(CLEANUP => 1);
+    my $decoyDir = tempdir(CLEANUP => 1);
+    open(my $sf, '>', "$shimDir/libpulse.so.0") or die "79-55 shim stub: $!";
+    close($sf);
+    my $searchPath = "$shimDir:$decoyDir";
+
+    no warnings 'redefine';
+    local *Plugins::SpotOn::Soloist::libPath       = sub { return $shimDir; };
+    local *Plugins::SpotOn::Soloist::libSearchPath = sub { return $searchPath; };
+
+    my $idsDiffer = 0;
+    local *Plugins::SpotOn::Unified::SoloistDaemon::_idsDiffer = sub { return $idsDiffer; };
+
+    my $portFile = "$shimDir/port";
+    my @input    = ('/fake/bin/soloist', '-x');
+
+    # ---- S1 ids equal: argv and env exactly as before 79-55 ----
+    my $s1env;
+    {
+        $idsDiffer = 0;
+        Proc::Background::reset_calls();
+        my %before = %ENV;
+        my ($proc, $err) = (bless [], $SD)->_spawnProcess([@input], undef, $portFile);
+        my $call = $Proc::Background::NEW_CALLS[-1];
+        ok($proc && $call, '79-55 S1: ids equal -- Proc::Background->new was called');
+        is_deeply($call->{args}, \@input, '79-55 S1: ids equal -- argv identical to the input');
+        $s1env = $call->{env};
+        is($s1env->{LD_PRELOAD}, "$shimDir/libpulse.so.0", '79-55 S1: LD_PRELOAD is the shim');
+        like($s1env->{LD_LIBRARY_PATH} // '', qr/^\Q$searchPath\E/, '79-55 S1: LD_LIBRARY_PATH begins with the search path');
+        is($s1env->{SPOTON_SOLOIST_HTTP_PORT_FILE}, $portFile, '79-55 S1: port file exported');
+        is($s1env->{SPOTON_FAKEPULSE_DEBUG}, 1, '79-55 S1: SPOTON_FAKEPULSE_DEBUG=1');
+        is($s1env->{PIPEWIRE_RUNTIME_DIR}, '/nonexistent', '79-55 S1: PIPEWIRE_RUNTIME_DIR blocked');
+        is($s1env->{PIPEWIRE_REMOTE}, '/nonexistent', '79-55 S1: PIPEWIRE_REMOTE blocked');
+        ok(!exists $s1env->{XDG_RUNTIME_DIR}, '79-55 S1: no XDG_RUNTIME_DIR in the child env');
+        is_deeply({ %ENV }, \%before, '79-55 S1: parent %ENV restored after the spawn');
+    }
+
+    # ---- S2 ids differ: wrapper argv; S8 the test process ids never change ----
+    {
+        $idsDiffer = 1;
+        Proc::Background::reset_calls();
+        my @idsBefore = ($<, $>, "$(", "$)");
+        my ($proc, $err) = (bless [], $SD)->_spawnProcess([@input], undef, $portFile);
+        my @idsAfter  = ($<, $>, "$(", "$)");
+        my $call = $Proc::Background::NEW_CALLS[-1];
+        my @a = $call ? @{ $call->{args} } : ();
+        my @pairs = map { "$_=$s1env->{$_}" } grep { defined $s1env->{$_} } sort @SIX;
+        is(scalar(@pairs), 6, '79-55 S2: all six pair names are defined in the S1 env');
+        is($a[0], $^X, '79-55 S2: ids differ -- argv[0] is $^X');
+        is($a[1], '-e', '79-55 S2: ids differ -- argv[1] is -e');
+        ok(defined $a[2] && length $a[2], '79-55 S2: ids differ -- argv[2] is a non-empty code string');
+        # 79-55 R1 (WR-01): a perl-level -- right after the code ends perl's own
+        # switch parsing, so the wrapper's literal -- survives even with zero pairs
+        is($a[3], '--', '79-55 R1 S2: argv[3] is the perl-level -- (WR-01)');
+        is_deeply([ @a[4 .. ($#a < 9 ? $#a : 9)] ], \@pairs, '79-55 S2: exactly the six NAME=VALUE items, sorted, with the S1 values');
+        is($a[10], '--', '79-55 S2: a literal -- follows the pairs');
+        is_deeply([ @a[11 .. $#a] ], \@input, '79-55 S2: the input args follow unchanged');
+        is_deeply($call ? $call->{env} : undef, $s1env, '79-55 S2: the recorded env equals S1');
+        is_deeply(\@idsAfter, \@idsBefore, '79-55 S8: the test process ids are unchanged by the spawn');
+    }
+
+    # ---- S3 the smoke spawn goes through the same argv choice ----
+    {
+        $idsDiffer = 1;
+        my $tmpRoot = tempdir(CLEANUP => 1);
+        local *Plugins::SpotOn::Soloist::readKey  = sub { return 'fake-spak-key-79-55'; };
+        local *Plugins::SpotOn::Soloist::_rootDir = sub { return $tmpRoot; };
+        Proc::Background::reset_calls();
+        Slim::Networking::Select::reset_calls();
+
+        my ($cb_ok, $cb_info, $cb_calls) = (undef, undef, 0);
+        $SD->smokeTest('/fake/candidate/soloist', sub { ($cb_ok, $cb_info) = @_; $cb_calls++; });
+
+        my $call = $Proc::Background::NEW_CALLS[-1];
+        my @a = $call ? @{ $call->{args} } : ();
+        is($a[0], $^X, '79-55 S3: smoke spawn with ids differing -- argv[0] is $^X');
+        # the wrapper's own separator: index 3 holds the perl-level -- (79-55 R1, asserted in S2)
+        my ($sep) = grep { $_ > 3 && $a[$_] eq '--' } 0 .. $#a;
+        if (defined $sep) {
+            my @tail = @a[($sep + 1) .. $#a];
+            my %opt;
+            for (my $i = 0; $i < $#tail; $i++) { $opt{ $tail[$i] } = $tail[$i + 1] if $tail[$i] =~ /^-[DC]$/; }
+            my @expect = $SD->_spawnArgs('/fake/candidate/soloist', 'fake-spak-key-79-55',
+                Plugins::SpotOn::Unified::SoloistDaemon::SMOKE_DEVICE_NAME(), $opt{'-D'}, $opt{'-C'}, 0, 0);
+            is_deeply(\@tail, \@expect, '79-55 S3: the items after -- are the _spawnArgs list, -k and key unchanged');
+        }
+        else {
+            fail('79-55 S3: the items after -- are the _spawnArgs list (no -- separator in the smoke argv)');
+        }
+
+        if ($call) {
+            my $wfh = $call->{proc}->write_handle;
+            syswrite($wfh, "soloist 1.3.8.70 build 1 (20260101) (gabc123) (linux/x86_64)\nclient expires in 77 days\n");
+            my $readCb = $Slim::Networking::Select::ADD_READ_CALLS[-1][1];
+            $readCb->() if $readCb;
+        }
+        is($cb_calls, 1, '79-55 S3: smoke cb fires once');
+        ok($cb_ok, '79-55 S3: smoke cb ok=1');
+        is($cb_info && $cb_info->{days}, 77, '79-55 S3: smoke cb days parsed from the banner');
+    }
+
+    # real wrapper runs (no root): argv from the builder, target prints its pid and env
+    my $target = 'print join("|", $$, map { defined $ENV{$_} ? $ENV{$_} : "UNDEF" } qw(LD_LIBRARY_PATH SPOTON_SOLOIST_HTTP_PORT_FILE SPOTON_FAKEPULSE_DEBUG)), "\n"';
+    my $wdir = tempdir(CLEANUP => 1);
+    my %wpairs = (LD_LIBRARY_PATH => $wdir, SPOTON_SOLOIST_HTTP_PORT_FILE => "$wdir/p", SPOTON_FAKEPULSE_DEBUG => 1);
+    my $canBuild = $SD->can('_secureExecArgv');
+
+    my $runList = sub {
+        my @argv = @_;
+        local @ENV{qw(LD_LIBRARY_PATH SPOTON_SOLOIST_HTTP_PORT_FILE SPOTON_FAKEPULSE_DEBUG)};
+        delete @ENV{qw(LD_LIBRARY_PATH SPOTON_SOLOIST_HTTP_PORT_FILE SPOTON_FAKEPULSE_DEBUG)};
+        my $pid = open(my $fh, '-|', @argv);
+        return (undef, undef, undef) unless $pid;
+        my $out = do { local $/; <$fh> };
+        close($fh);
+        return ($pid, $?, $out);
+    };
+
+    # ---- S4 real wrapper run ----
+    if ($canBuild) {
+        my @argv = $canBuild->(\%wpairs, $^X, '-e', $target);
+        my ($pid, $st, $out) = $runList->(@argv);
+        is($out, "$pid|$wdir|$wdir/p|1\n", '79-55 S4: the target sees the three values and runs under the pid open returned (exec in place)');
+        is($st, 0, '79-55 S4: wrapper exit status 0');
+    }
+    else {
+        fail('79-55 S4: real wrapper run (no _secureExecArgv builder in SoloistDaemon)');
+    }
+
+    # ---- S5 the same under -T ----
+    if ($canBuild) {
+        local $ENV{PATH} = '/usr/bin:/bin';
+        my @argv = $canBuild->(\%wpairs, $^X, '-e', $target);
+        splice(@argv, 1, 0, '-T');
+        my ($pid, $st, $out) = $runList->(@argv);
+        is($out, "$pid|$wdir|$wdir/p|1\n", '79-55 S5: under -T the target sees the same values and pid');
+        is($st, 0, '79-55 S5: wrapper exit status 0 under -T');
+    }
+    else {
+        fail('79-55 S5: real wrapper run under -T (no _secureExecArgv builder in SoloistDaemon)');
+    }
+
+    # ---- S6 a pair named outside the six ----
+    if ($canBuild) {
+        my @argv = $canBuild->({ SPOTON_NOT_ALLOWED => 'x' }, $^X, '-e', 'print "TARGET-RAN\n"');
+        my $pid = open(my $fh, '-|');
+        die "79-55 S6 fork: $!" unless defined $pid;
+        if (!$pid) {
+            open(STDERR, '>&', \*STDOUT);
+            exec { $argv[0] } @argv or do { print "S6-EXEC-FAILED\n"; require POSIX; POSIX::_exit(127); };
+        }
+        my $out = do { local $/; <$fh> };
+        close($fh);
+        my $st = $?;
+        is($st >> 8, 2, '79-55 S6: a name outside the six -- exit status 2');
+        unlike($out, qr/TARGET-RAN/, '79-55 S6: the target never ran');
+        my @bad = grep { /^\[spoton-exec\] bad wrapper arguments/ } split /\n/, $out;
+        is(scalar(@bad), 1, '79-55 S6: exactly one [spoton-exec] bad wrapper arguments line on stderr');
+    }
+    else {
+        fail('79-55 S6: bad wrapper arguments (no _secureExecArgv builder in SoloistDaemon)');
+    }
+
+    # ---- S9 (79-55 R1, WR-01) zero NAME=VALUE pairs: the target argv arrives intact ----
+    if ($canBuild) {
+        my @argv = $canBuild->({}, $^X, '-e', 'print join("|", $$, scalar(@ARGV), @ARGV), "\n"', 'a', '-b');
+        my ($pid, $st, $out) = $runList->(@argv);
+        is($out, "$pid|2|a|-b\n", '79-55 R1 S9: zero pairs -- the target runs with its own argv intact');
+        is($st, 0, '79-55 R1 S9: zero pairs -- wrapper exit status 0');
+    }
+    else {
+        fail('79-55 R1 S9: zero pairs (no _secureExecArgv builder in SoloistDaemon)');
+    }
+
+    # ---- S10 (79-55 R1, WR-02) one allowlist: the constant feeds the wrapper ----
+    {
+        open(my $sfh, '<', "$project_dir/Plugins/SpotOn/Unified/SoloistDaemon.pm") or die $!;
+        my $src = do { local $/; <$sfh> };
+        close($sfh);
+        my ($body) = $src =~ /(\nsub _secureExecWrapperCode \{.*?\nEND_WRAPPER\n.*?\n\})/s;
+        my @hard = $body ? grep { index($body, $_) >= 0 } @SIX : @SIX;
+        is_deeply(\@hard, [], '79-55 R1 S10: the wrapper code names none of the six variables literally (WR-02, one source)');
+        my $code = $SD->can('_secureExecWrapperCode') ? $SD->_secureExecWrapperCode() : '';
+        my @consts = $SD->can('SECURE_EXEC_ENV_NAMES') ? $SD->SECURE_EXEC_ENV_NAMES() : ();
+        my $want = 'qw(' . join(' ', @consts) . ')';
+        ok(@consts == 6 && index($code, $want) >= 0, '79-55 R1 S10: the wrapper allowlist is the SECURE_EXEC_ENV_NAMES list, interpolated');
+    }
+    if ($canBuild) {
+        # 79-55 R2 (WR-01 R2): the real-run list comes from the constant,
+        # not from a hand-kept copy, and the loader's stderr is kept: its
+        # complaint about the fake LD_PRELOAD value is the proof that the
+        # target's loader saw LD_PRELOAD (no secure exec past the wrapper).
+        my @names = $SD->can('SECURE_EXEC_ENV_NAMES') ? $SD->SECURE_EXEC_ENV_NAMES() : @SIX;
+        my %six = map { $_ => "v-$_" } @names;
+        my $t6 = 'print join("|", $$, map { defined $ENV{$_} ? $ENV{$_} : "UNDEF" } qw(' . join(' ', @names) . ')), "\n"';
+        my @argv = $canBuild->(\%six, $^X, '-e', $t6);
+        local @ENV{@names};
+        delete @ENV{@names};
+        my ($errFh, $errFile) = File::Temp::tempfile(UNLINK => 1);
+        open(my $saveErr, '>&', \*STDERR) or die $!;
+        open(STDERR, '>&', $errFh) or die $!;
+        my $pid = open(my $fh, '-|', @argv);
+        my $out = $pid ? do { local $/; <$fh> } : undef;
+        close($fh) if $pid;
+        my $status = $?;
+        open(STDERR, '>&', $saveErr) or die $!;
+        my $err = do { local $/; open(my $r, '<', $errFile) or die $!; <$r> };
+        is($out, join('|', $pid, map { "v-$_" } @names) . "\n", '79-55 R1 S10: the real wrapper exports all six names');
+        is($status, 0, '79-55 R1 S10: wrapper exit status 0 with all six names');
+        like($err // '', qr/\Q'v-LD_PRELOAD'\E/, '79-55 R2 S10: the target loader saw LD_PRELOAD (its stderr complaint is kept, not lost)');
+    }
+    else {
+        fail('79-55 R1 S10: all six names (no _secureExecArgv builder in SoloistDaemon)');
+    }
+
+    # ---- S11 (79-55 R2, WR-01 R2) %ok is the only name gate in the wrapper ----
+    # A future allowlist entry with a digit must pass the wrapper's parser:
+    # the code's own allowlist is extended in place and the real wrapper runs.
+    {
+        my $code = $SD->can('_secureExecWrapperCode') ? $SD->_secureExecWrapperCode() : '';
+        (my $ext = $code) =~ s/\bqw\(([^)]*)\)/qw($1 SPOTON_X2)/;
+        my $t = 'print defined $ENV{SPOTON_X2} ? $ENV{SPOTON_X2} : "UNDEF"';
+        local $ENV{SPOTON_X2};
+        delete $ENV{SPOTON_X2};
+        my $pid = $ext ne $code
+            ? open(my $fh, '-|', $^X, '-e', $ext, '--', 'SPOTON_X2=v-x2', '--', $^X, '-e', $t)
+            : undef;
+        my $out = $pid ? do { local $/; <$fh> } : undef;
+        close($fh) if $pid;
+        is($out, 'v-x2', '79-55 R2 S11: an allowlisted name with a digit reaches the target (the regex is not a second allowlist)');
+    }
+
+    # ---- S7 ids differ but $^X is not executable: direct spawn plus one warn line ----
+    {
+        $idsDiffer = 1;
+        Proc::Background::reset_calls();
+        @Slim::Utils::Log::logged = ();
+        {
+            local $^X = '/nonexistent/perl';
+            (bless [], $SD)->_spawnProcess([@input], undef, $portFile);
+        }
+        my $call = $Proc::Background::NEW_CALLS[-1];
+        is_deeply($call ? $call->{args} : undef, \@input, '79-55 S7: perl not executable -- argv identical to the input');
+        my @w = grep { /cannot re-exec through perl/ && /\/nonexistent\/perl/ } @Slim::Utils::Log::logged;
+        is(scalar(@w), 1, '79-55 S7: one warn line naming the missing perl');
+    }
+
+    %ENV = %envSave;
 }
 
 done_testing();

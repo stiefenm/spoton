@@ -2462,7 +2462,9 @@ sub glibcVersion {
         }
         # ldd --version: "ldd (Debian GLIBC 2.36-9+deb12u4) 2.36" or
         # "ldd (GNU libc) 2.35". Counts only when it names GLIBC / GNU libc.
-        if ($line =~ /GLIBC|GNU\s+libc/i && $line =~ /(\d+)\.(\d+)\s*$/) {
+        # 79-55 (#184): piCorePlayer prints "ldd (GNU libc) 2.40." (trailing dot).
+        # 79-55 R1 (IN-06): the version is a whole token, never the tail of 2.40.1.
+        if ($line =~ /GLIBC|GNU\s+libc/i && $line =~ /(?:^|\s)(\d+)\.(\d+)\.?\s*$/) {
             $version = "$1.$2";
             last PROBE;
         }

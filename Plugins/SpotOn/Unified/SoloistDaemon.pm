@@ -202,6 +202,95 @@ sub _spawnArgs {
 	return @args;
 }
 
+# 79-55 (GH #184, forum #329): piCorePlayer's init script starts LMS as root
+# with --user tc and LMS drops only the effective ids, so every child is
+# exec'd with AT_SECURE=1 and the loader silently removes LD_PRELOAD and
+# LD_LIBRARY_PATH: the fake-libpulse shim never loads.
+# _idsDiffer() -- true when the real uid/gid differ from the effective ones.
+# Read on every call (never cached); also the test seam.
+sub _idsDiffer {
+	return 1 if $< != $>;
+	return 1 if (0 + $() != (0 + $));
+	return 0;
+}
+
+# The six variables that must reach Soloist through the wrapper's argv,
+# because the wrapper perl itself is exec'd in secure mode and loses LD_*.
+use constant SECURE_EXEC_ENV_NAMES => qw(
+	LD_LIBRARY_PATH LD_PRELOAD SPOTON_SOLOIST_HTTP_PORT_FILE
+	SPOTON_FAKEPULSE_DEBUG PIPEWIRE_RUNTIME_DIR PIPEWIRE_REMOTE
+);
+
+# _secureExecWrapperCode() -- the perl -e program of the wrapper (79-55).
+# It is SpotOn's own process changing its own real ids and environment and
+# then exec'ing the unchanged Soloist binary with unchanged arguments; the
+# binary itself is never modified, patched or wrapped (Spotify terms V.11).
+# Steps: (1) NAME=VALUE items up to a literal --, names from the six only;
+# (2) untaint argv, values and PATH/IFS/CDPATH/ENV/BASH_ENV/TERM unchanged
+# (perl enables taint by itself when the real uid is not 0 and differs from
+# the effective uid); (3) real gid := effective gid, real uid := effective
+# uid, never the effective ids or the group list; (4) re-read and report a
+# failed change, then go on; (5) export the pairs; (6) exec in place (same
+# pid), list form, no shell.
+# 79-55 R1 (WR-02): the allowlist is SECURE_EXEC_ENV_NAMES, interpolated
+# into the code, so sender and wrapper can never disagree. 79-55 R2
+# (WR-01 R2): the item parser takes any name up to the first =, so %ok is
+# the only name gate and a new constant entry needs no second edit.
+sub _secureExecWrapperCode {
+	my $names = join(' ', SECURE_EXEC_ENV_NAMES);
+	(my $code = <<'END_WRAPPER') =~ s/__SECURE_EXEC_ENV_NAMES__/$names/;
+my %ok = map { $_ => 1 } qw(__SECURE_EXEC_ENV_NAMES__);
+my (%set, $sep);
+while (@ARGV) {
+	my $item = shift @ARGV;
+	if ($item eq '--') { $sep = 1; last; }
+	if ($item =~ /\A([^=]+)=(.*)\z/s && $ok{$1}) { $set{$1} = $2; next; }
+	last;
+}
+unless ($sep && @ARGV) {
+	print STDERR "[spoton-exec] bad wrapper arguments\n";
+	exit 2;
+}
+@ARGV = map { /\A(.*)\z/s; $1 } @ARGV;
+for my $n (keys %set) { ($set{$n}) = $set{$n} =~ /\A(.*)\z/s; }
+for my $n (qw(PATH IFS CDPATH ENV BASH_ENV TERM)) {
+	next unless defined $ENV{$n};
+	($ENV{$n}) = $ENV{$n} =~ /\A(.*)\z/s;
+}
+my $egid = 0 + $);
+$( = $egid;
+$< = $>;
+my ($ru, $eu, $rg, $eg) = ($<, $>, 0 + $(, 0 + $));
+if ($ru != $eu || $rg != $eg) {
+	print STDERR "[spoton-exec] could not set real ids to effective ids: ruid=$ru euid=$eu rgid=$rg egid=$eg\n";
+}
+$ENV{$_} = $set{$_} for sort keys %set;
+my $err;
+{
+	no warnings;
+	eval { exec { $ARGV[0] } @ARGV };
+	$err = $@ ? $@ : "$!";
+}
+chomp $err;
+print STDERR "[spoton-exec] exec failed: $err\n";
+exit 127;
+END_WRAPPER
+	return $code;
+}
+
+# _secureExecArgv(\%pairs, @args) -- the wrapper argv: $^X, -e, the code,
+# a perl-level -- (79-55 R1, WR-01: perl consumes it, so the wrapper's own
+# separator stays literal even with zero pairs), one NAME=VALUE per defined
+# pair sorted by name, a literal --, then @args unchanged.
+sub _secureExecArgv {
+	my ($pairs, @args) = @_;
+	return (
+		$^X, '-e', _secureExecWrapperCode(), '--',
+		(map { "$_=$pairs->{$_}" } grep { defined $pairs->{$_} } sort keys %$pairs),
+		'--', @args,
+	);
+}
+
 # _spawnProcess($self, \@args, $stderr_fh, $httpPortFile) -- Phase 83.3 plan
 # 03: factored out of start() (env save/set, Proc::Background->new, env
 # restore, PLUS the STDERR untie/retie that must bracket the same fork) so
@@ -263,12 +352,33 @@ sub _spawnProcess {
 	$ENV{PIPEWIRE_REMOTE}      = '/nonexistent';
 	delete $ENV{XDG_RUNTIME_DIR};
 
+	# 79-55 (#184): with equal ids the argv stays byte-identical; with
+	# differing ids (piCorePlayer) spawn through the secure-exec wrapper so
+	# the loader keeps LD_PRELOAD / LD_LIBRARY_PATH. The LMS parent's ids are
+	# never changed.
+	my @spawnArgv = @$args;
+	if (_idsDiffer()) {
+		if (-f $^X && -x _) {
+			my %pairs;
+			for my $name (SECURE_EXEC_ENV_NAMES) {
+				$pairs{$name} = $ENV{$name} if defined $ENV{$name};
+			}
+			@spawnArgv = _secureExecArgv(\%pairs, @$args);
+			main::INFOLOG && $log->is_info && $log->info(sprintf(
+				'Soloist spawn through the secure-exec wrapper (79-55): real uid %d, effective uid %d, real gid %d, effective gid %d',
+				$<, $>, 0 + $(, 0 + $)));
+		}
+		else {
+			$log->warn("cannot re-exec through perl ($^X is not an executable file); starting soloist directly, the audio shim will not load on this host");
+		}
+	}
+
 	my $proc;
 	eval {
 		$proc = Proc::Background->new(
 			{ 'die_upon_destroy' => 1,
 			  ($stderr_fh ? (stdout => $stderr_fh, stderr => $stderr_fh) : ()) },
-			@$args,
+			@spawnArgv,
 		);
 	};
 	my $spawnError = $@;

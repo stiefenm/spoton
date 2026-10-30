@@ -5,6 +5,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.0.0-beta.2.2] - 2026-10-30
+
+**Installing this hotfix.** Same beta repository URL as before (`https://stiefenm.github.io/spoton/beta/repo.xml`); the Plugins page offers SpotOn 4.0.0beta2.2 as an update over 4.0.0beta2.1. Restart LMS after the update.
+
+### Fixed
+
+- Soloist on piCorePlayer played no audio, neither from the Spotify app nor from the SpotOn menus: the daemon fell back to a silent audio driver and restarted every few seconds. LMS on piCorePlayer starts as root and switches only its effective user, and Linux then drops the library settings SpotOn passes to Soloist. On such systems SpotOn now starts Soloist with matching user ids; all other systems start it exactly as before. ([#184](https://github.com/stiefenm/spoton/issues/184))
+- The diagnostics no longer show "glibc: not detected" when `ldd --version` ends with a dot after the version number, as on piCorePlayer, and the backend hint now sees the glibc version there.
+
+Everything else is as in 4.0.0-beta.2.1 below.
+
 ## [4.0.0-beta.2.1] - 2026-10-29
 
 **Installing this hotfix.** Same beta repository URL as before (`https://stiefenm.github.io/spoton/beta/repo.xml`); the Plugins page offers SpotOn 4.0.0beta2.1 as an update over 4.0.0beta2. Restart LMS after the update. Everything else is as in 4.0.0-beta.2 below.
