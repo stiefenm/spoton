@@ -152,6 +152,15 @@ sub handler {
         if ($paramRef->{backend} eq 'soloist' && $paramRef->{streamFormat} eq 'ogg') {
             $paramRef->{streamFormat} = 'auto';
         }
+        # 79-60 (handoff item 6): the MP3 rule takes its rate from LMS's own per-player
+        # "Bitrate limiting" (server pref maxBitrate; custom-convert.conf smp mp3
+        # IFB:{BITRATE=--abr %B}); without a limit lame runs at its default. The page
+        # names that setting and its current value next to the output format.
+        my $maxBitrate = preferences('server')->client($client)->get('maxBitrate');
+        $paramRef->{mp3Limit} = (defined $maxBitrate && $maxBitrate =~ /^\d+$/ && $maxBitrate > 0)
+            ? string('PLUGIN_SPOTON_MP3_LIMIT_KBPS', $maxBitrate)
+            : string('PLUGIN_SPOTON_MP3_LIMIT_NONE');
+
         # COMPAT-01: no legacy-pref fallback chain (D-05 — streamingMode has no predecessor pref)
         $paramRef->{streamingMode} = $prefs->client($client)->get('streamingMode') || 'global';
 

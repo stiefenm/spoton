@@ -257,7 +257,26 @@ sub _classifyGrpcStatus {
 # and the user's authorization is fine (quick-261018-ife, WR-18); every other
 # token failure stays 'no_token'. Never logs the token, headers, or body -- method name + outcome
 # class only (T-02-10 idiom).
+#
+# 79-61 (FULL-3 WR-03): every request passes SpClient's central gate (the
+# shared concurrency cap and 429 key); a cached rate limit answers
+# 'unreachable' without any HTTP, and a 429 from playback-settings is recorded
+# in the shared key (SpClient->noteRateLimit).
 sub _request {
+    my ($class, $method, $body, $cb) = @_;
+
+    require Plugins::SpotOn::API::SpClient;
+    Plugins::SpotOn::API::SpClient->gate("playback-settings $method", sub {
+        my ($release) = @_;
+        $class->_requestUngated($method, $body, sub { $release->(); $cb->(@_); });
+    }, sub {
+        my ($why) = @_;
+        main::INFOLOG && $log->info("Soloist::Quality: $method class=unreachable (spclient gate: $why)");
+        $cb->(undef, { class => 'unreachable', http => 429, source => 'spclient_gate', reason => $why });
+    });
+}
+
+sub _requestUngated {
     my ($class, $method, $body, $cb) = @_;
 
     require Plugins::SpotOn::API::Login5;
@@ -316,6 +335,12 @@ sub _request {
                     ? ($response->code || 0) : 0;
                 if (!$code && $error && $error =~ /^(\d{3})\b/) {
                     $code = $1;
+                }
+
+                if (($code || 0) == 429) {
+                    my $retryAfter = ($response && ref $response && $response->can('header'))
+                        ? $response->header('Retry-After') : undef;
+                    Plugins::SpotOn::API::SpClient->noteRateLimit($retryAfter);
                 }
 
                 my $httpClass = $class->_classifyHttpError($code || undef);
@@ -593,6 +618,7 @@ sub applyChange {
         return;
     }
 
+    my @macs;
     for my $c (Slim::Player::Client::clients()) {
         my $stored = $prefs->client($c)->get('soloistQuality');
         next if defined $stored && $stored ne 'global';    # this player has its own override
@@ -600,8 +626,21 @@ sub applyChange {
         my $mac = $c->id;
         next unless $class->deviceIdForMac($mac);          # first-start hook will write once it exists
 
-        $class->_writeAndVerify($mac, $level, { kind => 'global' });
+        push @macs, $mac;
     }
+    # 79-61 (FULL-3 WR-03): one player at a time -- the next write starts
+    # when the previous write-and-verify has finished, instead of a burst of
+    # one write (plus read-backs) per player against the shared rate limit.
+    $class->_applyGlobalSerial($level, @macs);
+}
+
+sub _applyGlobalSerial {
+    my ($class, $level, @macs) = @_;
+    my $mac = shift @macs;
+    return unless defined $mac;
+    $class->_writeAndVerify($mac, $level, { kind => 'global' }, sub {
+        $class->_applyGlobalSerial($level, @macs);
+    });
 }
 
 # onDaemonReady($class, $mac) -- D-12(b)/D-13: the ONLY other write

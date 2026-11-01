@@ -508,7 +508,7 @@ for my $row (@SO) {
 
     # Case 3: every non-ready state -> errorCb with the mapped message
     my %MSG = (
-        soloist_unsupported_os => 'Soloist is not supported on this platform (Windows/macOS)',
+        soloist_unsupported_os => 'SpotOn supports Soloist on Linux only, not on this platform (Windows/macOS)',
         soloist_missing_binary => 'Soloist binary not installed',
         soloist_missing_key    => 'Soloist not authorized (missing key)',
         soloist_build_expired  => 'Soloist build has expired - please update the plugin',
@@ -1053,5 +1053,58 @@ cmp_ok(scalar(@emits), '>=', 7, 'events: at least 7 literal _emit call sites in 
 my %seven = map { $_ => 1 } @SEVEN;
 is_deeply([ grep { !$seven{$_} } @emits ], [], 'events: every Control _emit verb is one of the seven');
 like($control_src, qr/\('spottyconnect', \$cmd/, "events: Control's _emit dispatches through ['spottyconnect', \$cmd, ...]");
+
+# 79-60 (forum #333): query('playingMode' | 'deliveredFormat' | 'qualityLevelKey') -- the
+# Now Playing label's backend reads (Plugin.pm names no Soloist module, it asks the role).
+{
+    no warnings 'redefine', 'once';
+    present();
+    is($S->new($MAC)->query('playingMode'), 'connect', "79-60: soloist query('playingMode') -> 'connect' for Control mode connect");
+    $Plugins::SpotOn::Soloist::Control::CTL = Plugins::SpotOn::Soloist::Control->new('browse');
+    is($S->new($MAC)->query('playingMode'), 'browse', "79-60: soloist query('playingMode') -> 'browse' for Control mode browse");
+    absent();
+    is($S->new($MAC)->query('playingMode'), undef, "79-60: soloist query('playingMode') without Control -> undef");
+
+    my @df;
+    local $INC{'Plugins/SpotOn/Soloist/DeliveredFormat.pm'} = $INC{'Plugins/SpotOn/Soloist/DeliveredFormat.pm'} // __FILE__;
+    local *Plugins::SpotOn::Soloist::DeliveredFormat::deliveredFor = sub { shift; push @df, [@_]; return { codec => 'flac', bitrate => 1400000 } };
+    is_deeply($S->new($MAC)->query('deliveredFormat', uri => 'spotify:track:1k1Bqnv2R0uJXQN4u6LKYt'), { codec => 'flac', bitrate => 1400000 },
+        "79-60: soloist query('deliveredFormat') -> the DeliveredFormat record");
+    is_deeply(\@df, [ [ $MAC, 'spotify:track:1k1Bqnv2R0uJXQN4u6LKYt' ] ], "79-60: deliveredFormat asks DeliveredFormat for this player's mac and the uri");
+    is($S->new($MAC)->query('deliveredFormat'), undef, "79-60: soloist query('deliveredFormat') without uri -> undef");
+
+    local $INC{'Plugins/SpotOn/Soloist/Quality.pm'} = $INC{'Plugins/SpotOn/Soloist/Quality.pm'} // __FILE__;
+    local *Plugins::SpotOn::Soloist::Quality::effectiveLevelForClient = sub { 5 };
+    local *Plugins::SpotOn::Soloist::Quality::labelFor = sub { $_[1] == 5 ? 'PLUGIN_SPOTON_SOLOIST_QUALITY_LOSSLESS' : '' };
+    is($S->new($MAC)->query('qualityLevelKey', client => 'c'), 'PLUGIN_SPOTON_SOLOIST_QUALITY_LOSSLESS', "79-60: soloist query('qualityLevelKey') -> the level's i18n key");
+    present();
+}
+
+# 79-63 R1 (79-REVIEW-BETA3 CR-01): the Auth Health Connect row asks the
+# helper's own role (core names no backend class). A SoloistDaemon carries no
+# account; its PLAYER resolves one through Plugin::_getAccountId (the 79-60
+# rule, moved here verbatim), and the row lists players.
+{
+    no warnings 'redefine', 'once';
+    ok($S->can('accountIdForHelper'), 'R1 CR-01: soloist accountIdForHelper exists');
+    ok($S->can('authHealthListsPlayers'), 'R1 CR-01: soloist authHealthListsPlayers exists');
+    local $INC{'Plugins/SpotOn/Plugin.pm'} = $INC{'Plugins/SpotOn/Plugin.pm'} // __FILE__;
+    my %acct = ('aa:00:00:00:63:01' => 'acctA');
+    my @asked;
+    local *Slim::Player::Client::getClient = sub { my $m = shift; return $acct{$m} ? bless({ mac => $m }, 'Test::Client63') : undef };
+    local *Plugins::SpotOn::Plugin::_getAccountId = sub { my $c = shift; push @asked, ref $c ? $c->{mac} : 'undef'; return $c ? $acct{ $c->{mac} } : 'activeAcct' };
+    my $h = bless { mac => 'aa:00:00:00:63:01' }, 'Test::Helper63';
+    { package Test::Helper63; sub mac { $_[0]{mac} } }
+    is(eval { $S->accountIdForHelper($h) }, 'acctA', "R1 CR-01: soloist accountIdForHelper -> the account of the helper's player");
+    is_deeply(\@asked, ['aa:00:00:00:63:01'], 'R1 CR-01: the account is resolved from the client of the helper mac');
+    @asked = ();
+    my $gone = bless { mac => 'aa:00:00:00:63:09' }, 'Test::Helper63';
+    is(eval { $S->accountIdForHelper($gone) }, 'activeAcct', 'R1 CR-01: no client -> _getAccountId(undef) as in 79-60 (IN-03 kept for 4.0.x)');
+    local *Plugins::SpotOn::Plugin::_getAccountId = sub { undef };
+    is(eval { $S->accountIdForHelper($h) }, '', "R1 CR-01: an undef account reads ''");
+    local *Plugins::SpotOn::Plugin::_getAccountId = sub { die "boom\n" };
+    is(eval { $S->accountIdForHelper($h) }, '', "R1 CR-01: a dying account lookup reads '' (eval-guarded as in 79-60)");
+    is(eval { $S->authHealthListsPlayers }, 1, 'R1 CR-01: soloist authHealthListsPlayers -> 1');
+}
 
 done_testing();

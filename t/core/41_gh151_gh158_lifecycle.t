@@ -2604,4 +2604,112 @@ sub grace_case {
     is($song->startOffset, 0, "D-34 K2: the browse marker is only honoured while Control's mode is browse");
 }
 
+# ==================================================================
+# 79-61 (79-REVIEW-FULL-2 WR-04): the newTrack gate ran BEFORE the stop
+# 'inactive' handler, contradicting the handler's own comment ("handled
+# BEFORE the newTrack/grace suppressions below"). A transfer away 1-2 s after
+# the start (spclient round trip still open) was swallowed: no pause, no
+# power restore, LMS kept playing a dead stream.
+# ==================================================================
+{
+    my $client = Test::FakeClient->new(power => 0, isPlaying => 1);
+    start_session($client);
+    $client->pluginData(newTrack => 1);    # the metadata fetch is still in flight
+    my $ctl = Test::FakeCtlD02->new(client => $client, mode => 'connect');
+    no warnings 'redefine';
+    local *Plugins::SpotOn::Soloist::Control::for_client = sub { $ctl };
+    Plugins::SpotOn::Connect->bindConnectClaim($client, 'transfer');
+    @Slim::Control::Request::EXECUTED = ();
+    my $stopReq = Test::FakeRequest->new($client, _cmd => 'stop', _p2 => 'inactive');
+    Plugins::SpotOn::Connect::_connectEvent($stopReq);
+    my @pause = grep { $_->{cmd} && ref($_->{cmd}) eq 'ARRAY' && ($_->{cmd}[0] // '') eq 'pause' && ($_->{cmd}[1] // '') eq '1' } @Slim::Control::Request::EXECUTED;
+    is(scalar(@pause), 1, '79-61 WR-04: a session end (stop inactive) inside the newTrack window still pauses the player');
+    is(power_off_dispatched(), 1, '79-61 WR-04: ... and restores the pre-session power state');
+
+    # a plain (unmarked) stop inside the window is still ignored, as before
+    my $c2 = Test::FakeClient->new(power => 1, isPlaying => 1);
+    start_session($c2);
+    $c2->pluginData(newTrack => 1);
+    @Slim::Control::Request::EXECUTED = ();
+    Plugins::SpotOn::Connect::_connectEvent(Test::FakeRequest->new($c2, _cmd => 'stop'));
+    is(scalar(grep { $_->{cmd} && ($_->{cmd}[0] // '') eq 'pause' } @Slim::Control::Request::EXECUTED), 0,
+        '79-61 WR-04: an unmarked stop inside the newTrack window is still ignored');
+    Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test') if Plugins::SpotOn::Connect->can('releaseConnectClaim');
+}
+
+# ==================================================================
+# 79-61 (79-REVIEW-FULL-2 WR-03): two-player transfer on one account. When
+# the NEW player's claim (device_changed is_active:true) arrives before the
+# OLD player's own is_active:false, bindConnectClaim moves the claim first;
+# the old player's `stop inactive` then failed the isSpotifyConnect test and
+# the old LMS player kept "playing" a stream its daemon no longer feeds.
+# The loser is paused when its own Control was still in connect mode (D-D2
+# unchanged: bindConnectClaim still emits no stop for it).
+# ==================================================================
+{
+    my $old = Test::FakeClient->new(power => 1, isPlaying => 1);
+    my $new = Test::FakeClient->new(power => 1, isPlaying => 0);
+    my %ctl = (
+        $old->id => Test::FakeCtlD02->new(client => $old, mode => 'connect', observed => { is_active => 1 }),
+        $new->id => Test::FakeCtlD02->new(client => $new, mode => 'connect', observed => { is_active => 1 }),
+    );
+    no warnings 'redefine';
+    local *Plugins::SpotOn::Soloist::Control::for_client = sub { $ctl{ ref $_[1] ? $_[1]->id : $_[1] } };
+    start_session($old);
+    Plugins::SpotOn::Connect->bindConnectClaim($old, 'transfer');
+    ok(Plugins::SpotOn::Connect->isSpotifyConnect($old), '79-61 WR-03: harness -- the old player holds the claim');
+
+    # B's claim first (frame order B-active, A-inactive)
+    Plugins::SpotOn::Connect->bindConnectClaim($new, 'transfer');
+    ok(!Plugins::SpotOn::Connect->isSpotifyConnect($old), '79-61 WR-03: harness -- the new player took the claim');
+    my @stopsForOld = grep { ($_->{clientid} // '') eq $old->id && $_->{cmd} && ($_->{cmd}[0] // '') eq 'pause' } @Slim::Control::Request::EXECUTED;
+    is(scalar(@stopsForOld), 0, '79-61 WR-03: bindConnectClaim itself still emits no pause for the loser (D-D2)');
+
+    @Slim::Control::Request::EXECUTED = ();
+    Plugins::SpotOn::Connect::_connectEvent(Test::FakeRequest->new($old, _cmd => 'stop', _p2 => 'inactive'));
+    my @pause = grep { $_->{cmd} && ref($_->{cmd}) eq 'ARRAY' && ($_->{cmd}[0] // '') eq 'pause' && ($_->{cmd}[1] // '') eq '1' } @Slim::Control::Request::EXECUTED;
+    is(scalar(@pause), 1, '79-61 WR-03: the old player is paused by its own stop inactive although the claim moved first');
+    is(($pause[0] && $pause[0]->{clientid}) // 'none', $old->id,
+        '79-61 WR-03: the pause goes to the old player');
+    ok(Plugins::SpotOn::Connect->isSpotifyConnect($new), '79-61 WR-03: the new player keeps the claim');
+
+    # the old player's Control already left connect mode -> nothing to pause (no stray pause)
+    my $idle = Test::FakeClient->new(power => 1, isPlaying => 1);
+    $ctl{ $idle->id } = Test::FakeCtlD02->new(client => $idle, mode => 'browse');
+    @Slim::Control::Request::EXECUTED = ();
+    Plugins::SpotOn::Connect::_connectEvent(Test::FakeRequest->new($idle, _cmd => 'stop', _p2 => 'inactive'));
+    is(scalar(grep { $_->{cmd} && ($_->{cmd}[0] // '') eq 'pause' } @Slim::Control::Request::EXECUTED), 0,
+        '79-61 WR-03: a player whose Control is not in connect mode and holds no claim is not paused');
+    Plugins::SpotOn::Connect->releaseConnectClaim($new, 'test') if Plugins::SpotOn::Connect->can('releaseConnectClaim');
+}
+
+# ==================================================================
+# 79-61 (79-REVIEW-FULL-2 WR-06): the Phase 76 restart gate only looked at
+# the daemon's uptime (< RESTART_START_GRACE = 5 s); a Soloist daemon adopts
+# a restored session up to 8.4 s after spawn (DaemonManager.pm:84-89), so a
+# restored, playing session past the 5 s mark self-started LMS. A start that
+# its backend marks 'restored' (_p4) is suppressed by provenance whatever
+# the uptime; an unmarked start past the window still plays (user transfer).
+# ==================================================================
+{
+    my $playCount = sub { scalar grep { $_->{cmd} && ref($_->{cmd}) eq 'ARRAY' && ($_->{cmd}[0] // '') eq 'playlist' && ($_->{cmd}[1] // '') eq 'play' } @Slim::Control::Request::EXECUTED };
+    local $Plugins::SpotOn::Unified::DaemonManager::UPTIME = 7;    # past the 5 s window, inside the measured 8.4 s tail
+
+    my $c1 = Test::FakeClient->new(power => 1, isPlaying => 0);
+    @Slim::Control::Request::EXECUTED = ();
+    Plugins::SpotOn::Connect::_connectEvent(Test::FakeRequest->new($c1, _cmd => 'start', _p2 => '', _p3 => '', _p4 => 'restored'));
+    is($playCount->(), 0, '79-61 WR-06: a start marked restored at uptime 7 s with an idle player does not self-start LMS');
+
+    my $c2 = Test::FakeClient->new(power => 1, isPlaying => 0);
+    @Slim::Control::Request::EXECUTED = ();
+    Plugins::SpotOn::Connect::_connectEvent(Test::FakeRequest->new($c2, _cmd => 'start', _p2 => '', _p3 => ''));
+    is($playCount->(), 1, '79-61 WR-06: an unmarked start at uptime 7 s (a user transfer) still plays');
+
+    my $c3 = Test::FakeClient->new(power => 1, isPlaying => 1);
+    @Slim::Control::Request::EXECUTED = ();
+    Plugins::SpotOn::Connect::_connectEvent(Test::FakeRequest->new($c3, _cmd => 'start', _p2 => '', _p3 => '', _p4 => 'restored'));
+    is($playCount->(), 1, '79-61 WR-06: the isPlaying exception (daemon-crash recovery) also holds for a restored start');
+    for my $c ($c1, $c2, $c3) { Plugins::SpotOn::Connect->releaseConnectClaim($c, 'test') if Plugins::SpotOn::Connect->can('releaseConnectClaim'); }
+}
+
 done_testing();

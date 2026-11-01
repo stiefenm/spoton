@@ -1,0 +1,610 @@
+{
+ "_comment": "79-59 trimmed real Pathfinder home reply (op home, sectionItemsLimit 50, 2026-10-31T13:34 CET): the row that carries the daylist (HomeShortsSectionData, no title) and the Made For You row. Spotify-generated playlists (37i9dQZF1E*/37i9dQZEVX*) keep their real uri and name; every other item is neutralised (fake uri, generic name); no greeting, no user name, no attributes, no avatar urls.",
+ "data": {
+  "home": {
+   "__typename": "HomeResponsePayload",
+   "sectionContainer": {
+    "sections": {
+     "items": [
+      {
+       "data": {
+        "__typename": "HomeShortsSectionData"
+       },
+       "sectionItems": {
+        "items": [
+         {
+          "content": {
+           "__typename": "UnknownType",
+           "uri": "spotify:user:@:collection"
+          },
+          "data": null,
+          "uri": "spotify:user:@:collection"
+         },
+         {
+          "content": {
+           "__typename": "AlbumResponseWrapper",
+           "data": {
+            "__typename": "Album",
+            "name": "Album 1 (neutralised)",
+            "uri": "spotify:album:79x59FIXTUREAL01xxxxxx"
+           }
+          },
+          "uri": "spotify:album:79x59FIXTUREAL01xxxxxx"
+         },
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "name": "Playlist 1 (neutralised)",
+            "ownerV2": {
+             "data": {
+              "__typename": "User",
+              "name": "Listener",
+              "uri": "spotify:user:listener"
+             }
+            },
+            "uri": "spotify:playlist:79x59FIXTUREPL01xxxxxx"
+           }
+          },
+          "uri": "spotify:playlist:79x59FIXTUREPL01xxxxxx"
+         },
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "name": "Playlist 2 (neutralised)",
+            "ownerV2": {
+             "data": {
+              "__typename": "User",
+              "name": "Listener",
+              "uri": "spotify:user:listener"
+             }
+            },
+            "uri": "spotify:playlist:79x59FIXTUREPL02xxxxxx"
+           }
+          },
+          "uri": "spotify:playlist:79x59FIXTUREPL02xxxxxx"
+         },
+         {
+          "content": {
+           "__typename": "AlbumResponseWrapper",
+           "data": {
+            "__typename": "Album",
+            "name": "Album 2 (neutralised)",
+            "uri": "spotify:album:79x59FIXTUREAL02xxxxxx"
+           }
+          },
+          "uri": "spotify:album:79x59FIXTUREAL02xxxxxx"
+         },
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://pickasso.spotifycdn.com/image/ab67c0de0000bada/dt/v1/img/release-radar-v4/7fw0E8WHdG3r9SuPBcGmWk/en",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Release Radar",
+            "ownerV2": {
+             "data": {
+              "__typename": "User",
+              "name": "Spotify",
+              "uri": "spotify:user:spotify"
+             }
+            },
+            "uri": "spotify:playlist:37i9dQZEVXbkoDWHZvXaFe"
+           }
+          },
+          "uri": "spotify:playlist:37i9dQZEVXbkoDWHZvXaFe"
+         },
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "images": {
+             "items": [
+              {
+               "sources": []
+              }
+             ]
+            },
+            "name": "Fun Workout Mix",
+            "ownerV2": {
+             "data": {
+              "__typename": "User",
+              "name": "Spotify",
+              "uri": "spotify:user:spotify"
+             }
+            },
+            "uri": "spotify:playlist:37i9dQZF1EIdBKZUQJyqDm"
+           }
+          },
+          "uri": "spotify:playlist:37i9dQZF1EIdBKZUQJyqDm"
+         },
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "images": {
+             "items": [
+              {
+               "sources": []
+              }
+             ]
+            },
+            "name": "daylist",
+            "ownerV2": {
+             "data": {
+              "__typename": "User",
+              "name": "Spotify",
+              "uri": "spotify:user:spotify"
+             }
+            },
+            "uri": "spotify:playlist:37i9dQZF1EP6YuccBxUcC1"
+           }
+          },
+          "uri": "spotify:playlist:37i9dQZF1EP6YuccBxUcC1"
+         },
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://pickasso.spotifycdn.com/image/ab67c0de0000deef/dt/v1/img/dw/cover/en",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Discover Weekly",
+            "ownerV2": {
+             "data": {
+              "__typename": "User",
+              "name": "Spotify",
+              "uri": "spotify:user:spotify"
+             }
+            },
+            "uri": "spotify:playlist:37i9dQZEVXcLuBdTdkGtju"
+           }
+          },
+          "uri": "spotify:playlist:37i9dQZEVXcLuBdTdkGtju"
+         },
+         {
+          "content": {
+           "__typename": "AlbumResponseWrapper",
+           "data": {
+            "__typename": "Album",
+            "name": "Album 3 (neutralised)",
+            "uri": "spotify:album:79x59FIXTUREAL03xxxxxx"
+           }
+          },
+          "uri": "spotify:album:79x59FIXTUREAL03xxxxxx"
+         },
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "name": "Playlist 3 (neutralised)",
+            "ownerV2": {
+             "data": {
+              "__typename": "User",
+              "name": "Listener",
+              "uri": "spotify:user:listener"
+             }
+            },
+            "uri": "spotify:playlist:79x59FIXTUREPL03xxxxxx"
+           }
+          },
+          "uri": "spotify:playlist:79x59FIXTUREPL03xxxxxx"
+         },
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "name": "Playlist 4 (neutralised)",
+            "ownerV2": {
+             "data": {
+              "__typename": "User",
+              "name": "Listener",
+              "uri": "spotify:user:listener"
+             }
+            },
+            "uri": "spotify:playlist:79x59FIXTUREPL04xxxxxx"
+           }
+          },
+          "uri": "spotify:playlist:79x59FIXTUREPL04xxxxxx"
+         },
+         {
+          "content": {
+           "__typename": "EpisodeOrChapterResponseWrapper",
+           "data": {
+            "__typename": "Episode",
+            "name": "Episode 1 (neutralised)",
+            "uri": "spotify:episode:79x59FIXTUREEP01xxxxxx"
+           }
+          },
+          "uri": "spotify:episode:79x59FIXTUREEP01xxxxxx"
+         },
+         {
+          "content": {
+           "__typename": "AlbumResponseWrapper",
+           "data": {
+            "__typename": "Album",
+            "name": "Album 4 (neutralised)",
+            "uri": "spotify:album:79x59FIXTUREAL04xxxxxx"
+           }
+          },
+          "uri": "spotify:album:79x59FIXTUREAL04xxxxxx"
+         },
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "name": "Playlist 5 (neutralised)",
+            "ownerV2": {
+             "data": {
+              "__typename": "User",
+              "name": "Listener",
+              "uri": "spotify:user:listener"
+             }
+            },
+            "uri": "spotify:playlist:79x59FIXTUREPL05xxxxxx"
+           }
+          },
+          "uri": "spotify:playlist:79x59FIXTUREPL05xxxxxx"
+         },
+         {
+          "content": {
+           "__typename": "EpisodeOrChapterResponseWrapper",
+           "data": {
+            "__typename": "Episode",
+            "name": "Episode 2 (neutralised)",
+            "uri": "spotify:episode:79x59FIXTUREEP02xxxxxx"
+           }
+          },
+          "uri": "spotify:episode:79x59FIXTUREEP02xxxxxx"
+         },
+         {
+          "content": {
+           "__typename": "AlbumResponseWrapper",
+           "data": {
+            "__typename": "Album",
+            "name": "Album 5 (neutralised)",
+            "uri": "spotify:album:79x59FIXTUREAL05xxxxxx"
+           }
+          },
+          "uri": "spotify:album:79x59FIXTUREAL05xxxxxx"
+         },
+         {
+          "content": {
+           "__typename": "EpisodeOrChapterResponseWrapper",
+           "data": {
+            "__typename": "Episode",
+            "name": "Episode 3 (neutralised)",
+            "uri": "spotify:episode:79x59FIXTUREEP03xxxxxx"
+           }
+          },
+          "uri": "spotify:episode:79x59FIXTUREEP03xxxxxx"
+         },
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "name": "Playlist 6 (neutralised)",
+            "ownerV2": {
+             "data": {
+              "__typename": "User",
+              "name": "Listener",
+              "uri": "spotify:user:listener"
+             }
+            },
+            "uri": "spotify:playlist:79x59FIXTUREPL06xxxxxx"
+           }
+          },
+          "uri": "spotify:playlist:79x59FIXTUREPL06xxxxxx"
+         },
+         {
+          "content": {
+           "__typename": "EpisodeOrChapterResponseWrapper",
+           "data": {
+            "__typename": "Episode",
+            "name": "Episode 4 (neutralised)",
+            "uri": "spotify:episode:79x59FIXTUREEP04xxxxxx"
+           }
+          },
+          "uri": "spotify:episode:79x59FIXTUREEP04xxxxxx"
+         }
+        ],
+        "totalCount": 43
+       },
+       "uri": "spotify:section:0JQ5DAIiKWzVFULQfUm85Y"
+      },
+      {
+       "data": {
+        "__typename": "HomeGenericSectionData",
+        "title": {
+         "transformedLabel": "Made For Listener",
+         "translatedBaseText": "Made For {0}"
+        }
+       },
+       "sectionItems": {
+        "items": [
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://pickasso.spotifycdn.com/image/ab67c0de0000deef/dt/v1/img/daily/1/ab6761610000e5ebb85798ee0300dccb92866469/en",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Daily Mix 1",
+            "ownerV2": {
+             "data": {
+              "__typename": "User",
+              "name": "Spotify",
+              "uri": "spotify:user:spotify"
+             }
+            },
+            "uri": "spotify:playlist:37i9dQZF1E3a6pKpVe40mF"
+           }
+          },
+          "uri": "spotify:playlist:37i9dQZF1E3a6pKpVe40mF"
+         },
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://pickasso.spotifycdn.com/image/ab67c0de0000deef/dt/v1/img/daily/2/ab6761610000e5eb4217f9689f738a294181a9d6/en",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Daily Mix 2",
+            "ownerV2": {
+             "data": {
+              "__typename": "User",
+              "name": "Spotify",
+              "uri": "spotify:user:spotify"
+             }
+            },
+            "uri": "spotify:playlist:37i9dQZF1E3agjx7jh6NAH"
+           }
+          },
+          "uri": "spotify:playlist:37i9dQZF1E3agjx7jh6NAH"
+         },
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://pickasso.spotifycdn.com/image/ab67c0de0000deef/dt/v1/img/daily/3/ab6761610000e5ebfbd882dd80b0d6cd021ffcfd/en",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Daily Mix 3",
+            "ownerV2": {
+             "data": {
+              "__typename": "User",
+              "name": "Spotify",
+              "uri": "spotify:user:spotify"
+             }
+            },
+            "uri": "spotify:playlist:37i9dQZF1E36NB7mrxWwbJ"
+           }
+          },
+          "uri": "spotify:playlist:37i9dQZF1E36NB7mrxWwbJ"
+         },
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://pickasso.spotifycdn.com/image/ab67c0de0000deef/dt/v1/img/daily/4/ab6761610000e5ebcbcf3781f4fab1248088e6e1/en",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Daily Mix 4",
+            "ownerV2": {
+             "data": {
+              "__typename": "User",
+              "name": "Spotify",
+              "uri": "spotify:user:spotify"
+             }
+            },
+            "uri": "spotify:playlist:37i9dQZF1E36AMXEwzycvH"
+           }
+          },
+          "uri": "spotify:playlist:37i9dQZF1E36AMXEwzycvH"
+         },
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://pickasso.spotifycdn.com/image/ab67c0de0000deef/dt/v1/img/daily/5/ab6761610000e5eb13582a0b6b88f214735ece98/en",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Daily Mix 5",
+            "ownerV2": {
+             "data": {
+              "__typename": "User",
+              "name": "Spotify",
+              "uri": "spotify:user:spotify"
+             }
+            },
+            "uri": "spotify:playlist:37i9dQZF1E35inxxG3M2aK"
+           }
+          },
+          "uri": "spotify:playlist:37i9dQZF1E35inxxG3M2aK"
+         },
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://pickasso.spotifycdn.com/image/ab67c0de0000deef/dt/v1/img/daily/6/ab6761610000e5eb9d51a41ee2f307c8fb60c93b/en",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Daily Mix 6",
+            "ownerV2": {
+             "data": {
+              "__typename": "User",
+              "name": "Spotify",
+              "uri": "spotify:user:spotify"
+             }
+            },
+            "uri": "spotify:playlist:37i9dQZF1E37VP7CF6t3aw"
+           }
+          },
+          "uri": "spotify:playlist:37i9dQZF1E37VP7CF6t3aw"
+         },
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "images": {
+             "items": [
+              {
+               "sources": []
+              }
+             ]
+            },
+            "name": "DJ",
+            "ownerV2": {
+             "data": {
+              "__typename": "User",
+              "name": "Spotify",
+              "uri": "spotify:user:spotify"
+             }
+            },
+            "uri": "spotify:playlist:37i9dQZF1EYkqdzj48dyYq"
+           }
+          },
+          "uri": "spotify:playlist:37i9dQZF1EYkqdzj48dyYq"
+         },
+         {
+          "content": {
+           "__typename": "PlaylistResponseWrapper",
+           "data": {
+            "__typename": "Playlist",
+            "images": {
+             "items": [
+              {
+               "sources": [
+                {
+                 "height": null,
+                 "url": "https://pickasso.spotifycdn.com/image/ab67c0de0000deef/dt/v1/img/dw/cover/en",
+                 "width": null
+                }
+               ]
+              }
+             ]
+            },
+            "name": "Discover Weekly",
+            "ownerV2": {
+             "data": {
+              "__typename": "User",
+              "name": "Spotify",
+              "uri": "spotify:user:spotify"
+             }
+            },
+            "uri": "spotify:playlist:37i9dQZEVXcLuBdTdkGtju"
+           }
+          },
+          "uri": "spotify:playlist:37i9dQZEVXcLuBdTdkGtju"
+         }
+        ],
+        "totalCount": 9
+       },
+       "uri": "spotify:section:0JQ5DAUnp4wcj0bCb3wh3S"
+      }
+     ],
+     "totalCount": 2
+    }
+   }
+  }
+ }
+}

@@ -1592,8 +1592,15 @@ my $TID = 'spotify:track:11dFghVXANMlKmJXsNCbNl';    # track_changed.json's uri
 # (82-REVIEW.md CR-01, Absatz Ergaenzend: postSeek is no longer suppressed
 # for position_ms == 0 -- a `play uri` on the current session title behaves
 # like a resume at the daemon, so 0 is the most important case, not a
-# special-cased no-op). ---
+# special-cased no-op).
+# S1 (debug silent-browse-start-headers-closed, user decision 2026-11-01): the
+# daemon was KNOWN to be on another title (previousXYZ), so the echoed title is
+# a new one and its first position frame decides: a frame at the old session
+# position (the CR-01 resume, 19431 ms) still gets exactly one seek 0; a frame
+# at 0 gets none (S1-2). The case without a known previous title keeps the seek
+# at the echo (S1-5). ---
 {
+    @Slim::Utils::Timers::TIMERS = ();
     my ($ctl, $daemon, $ws) = fresh_control(
         observed => { wsConnected => 1, meta => { $TID => { duration => 200 } }, track => 'spotify:track:previousXYZ', status => 'playing' },
     );
@@ -1605,9 +1612,15 @@ my $TID = 'spotify:track:11dFghVXANMlKmJXsNCbNl';    # track_changed.json's uri
         "CR-01: mismatch target 0 -- play uri sent (position_ms is never on the wire for play)");
 
     $ctl->onEvent(decode_frame(load_fixture('track_changed.json')));
+    is_deeply($ws->sent, [ [ 'play', { uri => $TID } ] ],
+        "CR-01: mismatch target 0 -- S1: no seek at the echo of a new title, the first position frame decides");
+
+    my $resume = decode_frame(load_fixture('playback_state.json'));
+    $resume->{position} = { position_ms => 19431, timestamp_ms => 1793545995272, speed => 1 };
+    $ctl->onEvent($resume);
 
     is_deeply($ws->sent, [ [ 'play', { uri => $TID } ], [ 'seek', { position_ms => 0 } ] ],
-        "CR-01: mismatch target 0 -- postSeek fires seek 0 after the echo confirms the uri");
+        "CR-01: mismatch target 0 -- postSeek fires seek 0 when the first frame shows the resume at 19431 ms");
     is($success, 1, "CR-01: mismatch target 0 -- successCb still fires once");
 }
 
@@ -1694,6 +1707,301 @@ my $TID = 'spotify:track:11dFghVXANMlKmJXsNCbNl';    # track_changed.json's uri
 
     is_deeply($ws->sent, [ [ 'play', {} ] ], "CR-01 Fall G: connect mode is exempt -- bare play only, no forced seek");
     is($success, 1, "CR-01 Fall G: successCb fires once");
+}
+
+# ============================================================
+# S1 (debug silent-browse-start-headers-closed, side finding; user decision
+# 2026-11-01 "Jetzt in beta.3 richtig beheben"): every Browse start sent
+# `seek 0` twice to a daemon that already starts the new title at 0 -- the
+# onStream twin (successCb fired inside the echo -> requestTrack -> Treffer
+# with the OLD title's anchor) and the echo's postSeek 0 (CR-01 Fall D).
+# Both were armed, Soloist does not flush for a seek to where it is, and the
+# shim's drain gate held the audio for its 3 s arm TTL (live s1/s4: first
+# audio byte exactly at seek_arm_expired). Rule: only send or arm a seek that
+# can flush -- a postSeek 0 is decided by the new title's first position
+# frame, and the twin plans no seek before that frame. The CR-01 resume case
+# (the daemon resumes the echoed title at an old position) still gets seek 0.
+# Frames are the live order (79-63/s4 ws trace): track_changed, then
+# playback_state buffering at 0, then position_sync.
+# ============================================================
+my $S1_PREV = 'spotify:track:previousS1title00000000';
+
+sub s1_state_frame {
+    my ($uri, $status, $posMs, $speed) = @_;
+    my $f = decode_frame(load_fixture('playback_state.json'));
+    $f->{status}   = $status;
+    $f->{item}{uri} = $uri;
+    $f->{position} = { position_ms => $posMs, timestamp_ms => 1793545995272, speed => $speed };
+    return $f;
+}
+
+sub s1_sync_frame {
+    my ($posMs, $speed) = @_;
+    return { type => 'position_sync', position => { position_ms => $posMs, timestamp_ms => 1793545995272, speed => $speed } };
+}
+
+sub s1_arms {
+    return scalar grep { ${ $_->{bufref} } =~ m{^POST /seek-arm} } @IO::Socket::INET::REQUESTS;
+}
+
+sub s1_seeks {
+    my ($ws) = @_;
+    return [ map { $_->[1]{position_ms} } grep { $_->[0] eq 'seek' } @{ $ws->sent } ];
+}
+
+sub s1_control {
+    my (%o) = @_;
+    @IO::Socket::INET::REQUESTS = ();
+    @Slim::Utils::Timers::TIMERS = ();
+    return fresh_control(
+        mode     => 'browse',
+        observed => {
+            wsConnected => 1, volume => 100,
+            meta        => ($o{meta_known} ? { $TID => { duration => 200 } } : {}),
+            (exists $o{track} ? (track => $o{track}) : (track => $S1_PREV)),
+            status      => 'playing',
+            ($o{no_anchor} ? () : (anchor => { position_ms => 21788, seen_at => Time::HiRes::time(), uri => ($o{track} // $S1_PREV) })),
+            ($o{queue_head} ? (queueHead => { uri => $TID }) : ()),
+        },
+    );
+}
+
+# S1-1 (the live shape): getNextTrack's successCb re-enters requestTrack as the
+# onStream twin INSIDE the echo; the new title's first frames read 0. The play
+# is the only command and the only arm.
+{
+    my ($ctl, $daemon, $ws) = s1_control(meta_known => 1);
+    my $twin = 0;
+    $ctl->requestTrack($TID, 0, { source => 'getNextTrack',
+        successCb => sub { $twin++; $ctl->requestTrack($TID, 0, { source => 'onStream', seek => 0 }) } });
+    $ctl->onEvent(decode_frame(load_fixture('track_changed.json')));
+    $ctl->onEvent(s1_state_frame($TID, 'buffering', 0, 0));
+    $ctl->onEvent(s1_sync_frame(0, 0));
+    Slim::Utils::Timers::fire_due(Time::HiRes::time() + 5);
+    is($twin, 1, "S1-1: the onStream twin ran inside the echo");
+    is_deeply(s1_seeks($ws), [], "S1-1 RED: a fresh title whose first frame reads 0 gets no seek (twin and postSeek)");
+    is(s1_arms(), 1, "S1-1 RED: one /seek-arm only (the play's own), no arm the daemon never consumes");
+}
+
+# S1-2 (CR-01 Fall D shape without a twin): the echo's postSeek 0 alone.
+{
+    my ($ctl, $daemon, $ws) = s1_control(meta_known => 1);
+    $ctl->requestTrack($TID, 0, { source => 'getNextTrack', successCb => sub { } });
+    $ctl->onEvent(decode_frame(load_fixture('track_changed.json')));
+    $ctl->onEvent(s1_state_frame($TID, 'buffering', 0, 0));
+    Slim::Utils::Timers::fire_due(Time::HiRes::time() + 5);
+    is_deeply(s1_seeks($ws), [], "S1-2 RED: the echo's postSeek 0 is dropped when the new title's first frame reads 0");
+    is(s1_arms(), 1, "S1-2 RED: no arm for the dropped postSeek");
+}
+
+# S1-3 (twin rule on its own): the queue-head path (wire skip_next) carries no
+# postSeek for 0 at all; the twin used to seek from the old title's anchor.
+{
+    my ($ctl, $daemon, $ws) = s1_control(meta_known => 1, queue_head => 1);
+    $ctl->requestTrack($TID, 0, { source => 'getNextTrack',
+        successCb => sub { $ctl->requestTrack($TID, 0, { source => 'onStream', seek => 0 }) } });
+    is($ws->sent->[0][0], 'skip_next', "S1-3: precondition -- the queue-head path is on the wire");
+    $ctl->onEvent(decode_frame(load_fixture('track_changed.json')));
+    $ctl->onEvent(s1_state_frame($TID, 'buffering', 0, 0));
+    Slim::Utils::Timers::fire_due(Time::HiRes::time() + 5);
+    is_deeply(s1_seeks($ws), [], "S1-3 RED: the twin plans no seek before the new title's first position frame");
+}
+
+# S1-4 (CR-01 guard, known previous title): the daemon resumes the echoed title
+# at an old position -- seek 0 must follow that frame, armed.
+{
+    my ($ctl, $daemon, $ws) = s1_control(meta_known => 1);
+    $ctl->requestTrack($TID, 0, { source => 'getNextTrack',
+        successCb => sub { $ctl->requestTrack($TID, 0, { source => 'onStream', seek => 0 }) } });
+    $ctl->onEvent(decode_frame(load_fixture('track_changed.json')));
+    $ctl->onEvent(s1_state_frame($TID, 'playing', 19431, 1));
+    $ctl->onEvent(s1_sync_frame(19431, 1));
+    Slim::Utils::Timers::fire_due(Time::HiRes::time() + 5);
+    is_deeply(s1_seeks($ws), [0], "S1-4 CR-01 guard: a resume at 19431 ms after our play still gets exactly one seek 0");
+    is(s1_arms(), 2, "S1-4 CR-01 guard: that seek is armed (play arm + seek arm)");
+}
+
+# S1-5 (CR-01 guard, Control did not know the daemon's title): idle daemon,
+# observed.track undef -- the resume case CR-01 Fall D was written for.
+{
+    my ($ctl, $daemon, $ws) = s1_control(meta_known => 1, track => undef, no_anchor => 1);
+    $ctl->requestTrack($TID, 0, { source => 'getNextTrack', successCb => sub { } });
+    $ctl->onEvent(decode_frame(load_fixture('track_changed.json')));
+    $ctl->onEvent(s1_state_frame($TID, 'playing', 19431, 1));
+    Slim::Utils::Timers::fire_due(Time::HiRes::time() + 5);
+    is_deeply(s1_seeks($ws), [0], "S1-5 CR-01 guard: unknown previous title, resume at 19431 ms -- seek 0");
+}
+
+# S1-6 (fallback): no position frame at all after the echo -- the postSeek 0 is
+# sent once the check window ends, as before S1 (never lost).
+{
+    my ($ctl, $daemon, $ws) = s1_control(meta_known => 1);
+    $ctl->requestTrack($TID, 0, { source => 'getNextTrack', successCb => sub { } });
+    $ctl->onEvent(decode_frame(load_fixture('track_changed.json')));
+    Slim::Utils::Timers::fire_due(Time::HiRes::time() + 5);
+    is_deeply(s1_seeks($ws), [0], "S1-6 guard: without any position frame the postSeek 0 still goes out");
+}
+
+# S1-7 (unchanged): a postSeek above the tolerance (resume N) is sent at the
+# echo as before -- it moves a fresh title, so the daemon flushes.
+{
+    my ($ctl, $daemon, $ws) = s1_control(meta_known => 1);
+    $ctl->requestTrack($TID, 30000, { source => 'getNextTrack', successCb => sub { } });
+    $ctl->onEvent(decode_frame(load_fixture('track_changed.json')));
+    is_deeply(s1_seeks($ws), [30000], "S1-7 guard: postSeek 30000 goes out at the echo, before any position frame");
+}
+
+# S1-8 (frame attribution): a late frame of the OLD title after the echo does
+# not decide the check; the new title's frame does.
+{
+    my ($ctl, $daemon, $ws) = s1_control(meta_known => 1);
+    $ctl->requestTrack($TID, 0, { source => 'getNextTrack', successCb => sub { } });
+    $ctl->onEvent(decode_frame(load_fixture('track_changed.json')));
+    $ctl->onEvent(s1_state_frame($S1_PREV, 'playing', 21788, 1));
+    my $after_old = s1_seeks($ws);
+    $ctl->onEvent(s1_state_frame($TID, 'buffering', 0, 0));
+    Slim::Utils::Timers::fire_due(Time::HiRes::time() + 5);
+    is_deeply([ $after_old, s1_seeks($ws) ], [ [], [] ], "S1-8 RED: an old-title frame after the echo sends nothing, the new title's frame at 0 decides: no seek");
+}
+
+# S1-9 (WR-02 class guard): the echo's own volume replay opens a set_volume
+# slot; a CR-01 resume frame arrives while it is open. The deferred seek must
+# not take that slot (its volume_changed echo would read as foreign and be
+# mirrored to LMS) -- it goes out after the slot settled (since R3 WR-01 at the
+# window's end, because the next frame here is item-less).
+{
+    my ($ctl, $daemon, $ws) = s1_control(meta_known => 1);
+    $ctl->requestTrack($TID, 0, { source => 'getNextTrack', successCb => sub { } });
+    $ctl->requestVolume(50, { force => 1 });    # folded into the open play as postVolume
+    @Slim::Player::Client::EXECUTED = ();
+    $ctl->onEvent(decode_frame(load_fixture('track_changed.json')));
+    my $pend = $ctl->pending ? $ctl->pending->{cmd} : '-';
+    $ctl->onEvent(s1_state_frame($TID, 'playing', 19431, 1));
+    my $seeks_open = s1_seeks($ws);
+    $ctl->onEvent({ type => 'volume_changed', volume => 50 });
+    my $pend_after = $ctl->pending ? $ctl->pending->{cmd} : '-';
+    $ctl->onEvent(s1_sync_frame(20431, 1));
+    Slim::Utils::Timers::fire_due(Time::HiRes::time() + 5);
+    is($pend, 'set_volume', "S1-9: precondition -- the echo's volume replay holds the slot");
+    is_deeply($seeks_open, [], "S1-9 guard: no seek while the set_volume slot is open");
+    is($pend_after, '-', "S1-9 guard: the volume_changed echo matched its own set_volume slot");
+    # R3 WR-01: the next frame here is an item-less position_sync, which never
+    # sends (S1-15) -- the seek comes from the window's end once the slot settled.
+    is_deeply(s1_seeks($ws), [0], "S1-9 guard: the CR-01 seek 0 follows once the slot settled (window end; an item-less sync never sends)");
+    is_deeply([ grep { join(' ', map { $_ // '' } @$_) =~ /volume/ } @Slim::Player::Client::EXECUTED ], [], "S1-9 guard: no foreign volume mirror to LMS");
+}
+
+# S1-10 (a real seek settles the check): LMS seeks the fresh title to 30 s
+# inside the check window (onStream with seekdata); the next frame reads that
+# position. The held-back postSeek 0 must not answer it -- it would undo the
+# user's seek.
+{
+    my ($ctl, $daemon, $ws) = s1_control(meta_known => 1);
+    $ctl->requestTrack($TID, 0, { source => 'getNextTrack', successCb => sub { } });
+    $ctl->onEvent(decode_frame(load_fixture('track_changed.json')));
+    $ctl->requestTrack($TID, 30000, { source => 'onStream', seek => 1 });
+    $ctl->onEvent(s1_state_frame($TID, 'playing', 30000, 1));
+    $ctl->onEvent(s1_sync_frame(30120, 1));
+    Slim::Utils::Timers::fire_due(Time::HiRes::time() + 5);
+    is_deeply(s1_seeks($ws), [30000], "S1-10 RED: a seek sent for the title after the echo settles the check -- no seek 0 undoes it");
+}
+
+# S1-11..S1-14 (79-REVIEW-BETA3-R3 WR-01, user decision "Jetzt beheben"): two
+# frame kinds carry no usable item uri -- every position_sync, and a
+# playback_state whose item.uri is "" -- and were attributed to observed.track,
+# which the echo has already set to the NEW title. The recorded daemon stream
+# t/fixtures/soloist/s01-lms-driven.jsonl has exactly such a pair at the OLD
+# title's position (playback_state playing item.uri "" and position_sync 10832
+# speed 1, 37 ms before the next track_changed). Landing after our echo, that
+# frame must neither send nor drop the check: only a frame WITH the checked item
+# uri may decide first, and an item-less frame never sends.
+my @S1_REC = map { decode_frame($_) } load_fixture('s01-lms-driven.jsonl');
+my ($S1_ITEMLESS_STATE) = grep { ($_->{type} // '') eq 'playback_state' && ref($_->{item}) eq 'HASH'
+    && ($_->{item}{uri} // 'x') eq '' && ref($_->{position}) eq 'HASH' && ($_->{position}{position_ms} // 0) == 10832 } @S1_REC;
+my ($S1_ITEMLESS_SYNC) = grep { ($_->{type} // '') eq 'position_sync' && ref($_->{position}) eq 'HASH'
+    && ($_->{position}{position_ms} // 0) == 10832 && ($_->{position}{speed} // 0) == 1 } @S1_REC;
+ok($S1_ITEMLESS_STATE && $S1_ITEMLESS_SYNC, "S1-11: precondition -- the recorded item-less playback_state and position_sync (10832 ms) are in the fixture");
+
+sub s1_rec {
+    my ($frame, $posMs) = @_;
+    my $f = JSON::PP->new->decode(JSON::PP->new->encode($frame));    # a private copy
+    $f->{position}{position_ms} = $posMs if defined $posMs;
+    return $f;
+}
+
+# S1-11 (recorded playback_state, item.uri ""): the old title's position after the echo sends nothing; the new title's buffering 0 drops.
+{
+    my ($ctl, $daemon, $ws) = s1_control(meta_known => 1);
+    $ctl->requestTrack($TID, 0, { source => 'getNextTrack', successCb => sub { } });
+    $ctl->onEvent(decode_frame(load_fixture('track_changed.json')));
+    $ctl->onEvent(s1_rec($S1_ITEMLESS_STATE));
+    my $after_itemless = s1_seeks($ws);
+    $ctl->onEvent(s1_state_frame($TID, 'buffering', 0, 0));
+    Slim::Utils::Timers::fire_due(Time::HiRes::time() + 5);
+    is_deeply([ $after_itemless, s1_seeks($ws) ], [ [], [] ], "S1-11 RED: a recorded item-less playback_state at the old title's 10832 ms sends no seek, the new title's frame at 0 decides");
+    is(s1_arms(), 1, "S1-11 RED: no arm beyond the play's own");
+}
+
+# S1-12 (recorded position_sync 10832 speed 1): same, the item-less sync never sends.
+{
+    my ($ctl, $daemon, $ws) = s1_control(meta_known => 1);
+    $ctl->requestTrack($TID, 0, { source => 'getNextTrack', successCb => sub { } });
+    $ctl->onEvent(decode_frame(load_fixture('track_changed.json')));
+    $ctl->onEvent(s1_rec($S1_ITEMLESS_SYNC));
+    my $after_itemless = s1_seeks($ws);
+    $ctl->onEvent(s1_state_frame($TID, 'buffering', 0, 0));
+    Slim::Utils::Timers::fire_due(Time::HiRes::time() + 5);
+    is_deeply([ $after_itemless, s1_seeks($ws) ], [ [], [] ], "S1-12 RED: a recorded item-less position_sync at 10832 ms sends no seek, the new title's frame at 0 decides");
+}
+
+# S1-13 (an item-less frame near 0 must not drop): the recorded item-less
+# playback_state with its position set to 800 ms lands first; the new title's
+# own frame at 19431 (the CR-01 resume) must still get exactly one seek 0.
+{
+    my ($ctl, $daemon, $ws) = s1_control(meta_known => 1);
+    $ctl->requestTrack($TID, 0, { source => 'getNextTrack', successCb => sub { } });
+    $ctl->onEvent(decode_frame(load_fixture('track_changed.json')));
+    $ctl->onEvent(s1_rec($S1_ITEMLESS_STATE, 800));
+    $ctl->onEvent(s1_state_frame($TID, 'playing', 19431, 1));
+    Slim::Utils::Timers::fire_due(Time::HiRes::time() + 5);
+    is_deeply(s1_seeks($ws), [0], "S1-13 RED: an item-less frame at 800 ms does not drop the check, the title's 19431 frame still gets one seek 0");
+}
+
+# S1-14 (sibling of WR-01, the twin rule): metadata still unknown, so the
+# successCb (and with it the onStream twin) runs only when the duration
+# arrives -- AFTER the recorded item-less frame wrote the anchor with
+# observed.track. The twin must still treat the new title as having had no
+# frame of its own and plan no seek.
+{
+    my ($ctl, $daemon, $ws) = s1_control();
+    my $twin = 0;
+    $ctl->requestTrack($TID, 0, { source => 'getNextTrack',
+        successCb => sub { $twin++; $ctl->requestTrack($TID, 0, { source => 'onStream', seek => 0 }) } });
+    $ctl->onEvent(decode_frame(load_fixture('track_changed.json')));
+    $ctl->onEvent(s1_rec($S1_ITEMLESS_STATE));
+    $ctl->noteDuration($TID, 200);
+    my $after_twin = s1_seeks($ws);
+    $ctl->onEvent(s1_state_frame($TID, 'buffering', 0, 0));
+    Slim::Utils::Timers::fire_due(Time::HiRes::time() + 5);
+    is($twin, 1, "S1-14: precondition -- the twin ran on the duration, after the item-less frame");
+    is_deeply([ $after_twin, s1_seeks($ws) ], [ [], [] ], "S1-14 RED: the twin plans no seek from an anchor an item-less frame wrote");
+}
+
+# S1-15 (R3 WR-01, "an item-less frame never sends"): a frame naming the title
+# (19431, the CR-01 resume) arrives while the echo's set_volume holds the slot,
+# so the check stays open with the title seen; once the slot settled, the
+# recorded item-less frame (10832) must still not send -- the window's end does.
+{
+    my ($ctl, $daemon, $ws) = s1_control(meta_known => 1);
+    $ctl->requestTrack($TID, 0, { source => 'getNextTrack', successCb => sub { } });
+    $ctl->requestVolume(50, { force => 1 });
+    $ctl->onEvent(decode_frame(load_fixture('track_changed.json')));
+    $ctl->onEvent(s1_state_frame($TID, 'playing', 19431, 1));
+    $ctl->onEvent({ type => 'volume_changed', volume => 50 });
+    $ctl->onEvent(s1_rec($S1_ITEMLESS_SYNC));
+    my $after_itemless = s1_seeks($ws);
+    Slim::Utils::Timers::fire_due(Time::HiRes::time() + 5);
+    is_deeply([ $after_itemless, s1_seeks($ws) ], [ [], [0] ], "S1-15: an item-less frame never sends, even after the title was seen -- the window's end sends the CR-01 seek 0");
 }
 
 # --- emission policy: mode browse + volume_changed (foreign, no pending,
@@ -2753,9 +3061,9 @@ my $NEXT_TID = 'spotify:track:3n3Ppam7vgaVa1iaRUc9Lp';    # s01-pure-daemon-queu
     $ctl->requestTrack($TID, 0, {});
     $ctl->onEvent(decode_frame(load_fixture('track_changed.json')));
 
-    is_deeply($ws->sent, [ [ 'play', { uri => $TID } ], [ 'seek', { position_ms => 0 } ], [ 'add_to_queue', { uri => $NEXT_TID } ] ],
-        "prefetch: track_changed echo in browse with next entry spoton://track:Y -- CR-01's postSeek 0 fires before "
-        . "add_to_queue (82-08)");
+    is_deeply($ws->sent, [ [ 'play', { uri => $TID } ], [ 'add_to_queue', { uri => $NEXT_TID } ] ],
+        "prefetch: track_changed echo in browse with next entry spoton://track:Y -- add_to_queue at the echo "
+        . "(S1: CR-01's postSeek 0 waits for the first position frame)");
 }
 
 # --- next entry is an episode -> no add_to_queue ---
@@ -2771,8 +3079,8 @@ my $NEXT_TID = 'spotify:track:3n3Ppam7vgaVa1iaRUc9Lp';    # s01-pure-daemon-queu
     $ctl->requestTrack($TID, 0, {});
     $ctl->onEvent(decode_frame(load_fixture('track_changed.json')));
 
-    is_deeply($ws->sent, [ [ 'play', { uri => $TID } ], [ 'seek', { position_ms => 0 } ] ],
-        "prefetch: next entry is an episode -- no add_to_queue (CR-01's postSeek 0 still fires, 82-08)");
+    is_deeply($ws->sent, [ [ 'play', { uri => $TID } ] ],
+        "prefetch: next entry is an episode -- no add_to_queue (S1: CR-01's postSeek 0 waits for the first position frame)");
 }
 
 # --- no next entry -> nothing ---
@@ -2788,8 +3096,8 @@ my $NEXT_TID = 'spotify:track:3n3Ppam7vgaVa1iaRUc9Lp';    # s01-pure-daemon-queu
     $ctl->requestTrack($TID, 0, {});
     $ctl->onEvent(decode_frame(load_fixture('track_changed.json')));
 
-    is_deeply($ws->sent, [ [ 'play', { uri => $TID } ], [ 'seek', { position_ms => 0 } ] ],
-        "prefetch: no next entry -- nothing sent (CR-01's postSeek 0 still fires, 82-08)");
+    is_deeply($ws->sent, [ [ 'play', { uri => $TID } ] ],
+        "prefetch: no next entry -- nothing sent (S1: CR-01's postSeek 0 waits for the first position frame)");
 }
 
 # --- queue_changed fixture line from s01-pure-daemon-queue.jsonl ->
@@ -2889,8 +3197,8 @@ sub n4_queue_changed {
     $ctl->requestTrack($TID, 0, {});
     $ctl->onEvent(decode_frame(load_fixture('track_changed.json')));
 
-    is_deeply($ws->sent, [ [ 'play', { uri => $TID } ], [ 'seek', { position_ms => 0 } ] ],
-        "F-18-N4 change 1: next uri already a source:queue entry -- no second add_to_queue");
+    is_deeply($ws->sent, [ [ 'play', { uri => $TID } ] ],
+        "F-18-N4 change 1: next uri already a source:queue entry -- no second add_to_queue (S1: no postSeek 0 at the echo)");
     ok(exists $ctl->observed->{queuedByUs}{$NEXT_TID},
         "F-18-N4 change 1: the origin marker still names the next uri (the natural advance stays a recognised prefetch hit)");
 }
@@ -2913,8 +3221,8 @@ sub n4_queue_changed {
         "F-18-N4 change 1 (real order): the placeholder queue_changed does not replace the known queue list");
     $ctl->onEvent(decode_frame(load_fixture('track_changed.json')));
 
-    is_deeply($ws->sent, [ [ 'play', { uri => $TID } ], [ 'seek', { position_ms => 0 } ] ],
-        "F-18-N4 change 1 (real order): placeholder, then echo -- the queued next uri is still not queued again");
+    is_deeply($ws->sent, [ [ 'play', { uri => $TID } ] ],
+        "F-18-N4 change 1 (real order): placeholder, then echo -- the queued next uri is still not queued again (S1: no postSeek 0 at the echo)");
 }
 
 # --- change 1 control: a queue that does NOT hold the next uri -> add_to_queue still goes out
@@ -2931,8 +3239,8 @@ sub n4_queue_changed {
     $ctl->requestTrack($TID, 0, {});
     $ctl->onEvent(decode_frame(load_fixture('track_changed.json')));
 
-    is_deeply($ws->sent, [ [ 'play', { uri => $TID } ], [ 'seek', { position_ms => 0 } ], [ 'add_to_queue', { uri => $NEXT_TID } ] ],
-        "F-18-N4 change 1 control: the uri is only a source:context entry, not queued -- add_to_queue goes out");
+    is_deeply($ws->sent, [ [ 'play', { uri => $TID } ], [ 'add_to_queue', { uri => $NEXT_TID } ] ],
+        "F-18-N4 change 1 control: the uri is only a source:context entry, not queued -- add_to_queue goes out (S1: no postSeek 0 at the echo)");
 }
 
 # --- change 2: queue head == target -> skip_next consumes it (a `play X` never consumes a head equal to X,
@@ -4602,9 +4910,9 @@ my $TID_4PTG = 'spotify:track:4PTG3Z6ehGkBFwjybzWkR8';    # Lauf 1: the requeste
     $ctl->onEvent(decode_frame(load_fixture('track_changed.json')));
 
     is_deeply($ws->sent,
-        [ [ 'play', { uri => $TID } ], [ 'seek', { position_ms => 0 } ],
+        [ [ 'play', { uri => $TID } ],
           [ 'add_to_queue', { uri => $NEXT_TID } ], [ 'set_volume', { volume => 50 } ] ],
-        "R2-WR02: Fall A -- prefetch's add_to_queue now goes out BEFORE the volume replay opens its own pending");
+        "R2-WR02: Fall A -- prefetch's add_to_queue now goes out BEFORE the volume replay opens its own pending (S1: no postSeek 0 at the echo)");
 
     $ctl->onEvent({ type => 'volume_changed', volume => 50 });
 
@@ -6942,6 +7250,10 @@ my $authProbeTimers = sub {
         "82-42A Fall-8: the WR-05 probe fires before the defer, same ordering as Fall-7");
     ok($ctl->_deferredTrackRequest, "82-42A Fall-8: the request is deferred");
 
+    # 79-57 IN-05: the TTL guard compares LMS's title with the deferred one,
+    # so LMS is on that title here (the stub client's default is another).
+    own_track($mac, 'spoton://track:' . $TID =~ s/^spotify:track://r);
+
     # No reply ever arrives -- let the TTL fully expire.
     Slim::Utils::Timers::fire_due(Time::HiRes::time() + Plugins::SpotOn::Soloist::Control::WS_RETRY_TTL_S() + 1);
 
@@ -6954,12 +7266,16 @@ my $authProbeTimers = sub {
         "82-42A Fall-8 (79-53): order is stop, hint, errorCb (the stop makes LMS drop the errorCb as stale)")
         or diag("ORDER=@Slim::Player::Client::ORDER");
 
+    # 79-57 IN-01: the TTL on a known-unpaired daemon names the pairing cause
+    # (key unpaired-ttl), not "never became ready" (ws-retry).
     is(scalar(@Plugins::SpotOn::Status::RECORDED), 2,
-        "82-42A Fall-8: exactly two ring entries total -- Schritt 2's own 'unpaired' write plus the TTL's 'ws-retry' write");
+        "82-42A Fall-8 (79-57 IN-01): exactly two ring entries total -- Schritt 2's own 'unpaired' write plus the TTL's 'unpaired-ttl' write");
     my @unpaired = grep { ($_->[3] // '') eq $daemon->mac . ':unpaired' } @Plugins::SpotOn::Status::RECORDED;
     is(scalar(@unpaired), 1, "82-42A Fall-8: the 'unpaired' entry (unchanged, R2-CR03) still stands");
+    my @ttl = grep { ($_->[3] // '') eq $daemon->mac . ':unpaired-ttl' } @Plugins::SpotOn::Status::RECORDED;
+    is(scalar(@ttl), 1, "82-42A Fall-8 (79-57 IN-01): exactly one unpaired-ttl ring entry for the TTL expiry");
     my @wsretry = grep { ($_->[3] // '') =~ /:ws-retry:\Q$TID\E$/ } @Plugins::SpotOn::Status::RECORDED;
-    is(scalar(@wsretry), 1, "82-42A Fall-8 (ttl-visible): exactly one ws-retry ring entry for the TTL expiry");
+    is(scalar(@wsretry), 0, "82-42A Fall-8 (79-57 IN-01): no ws-retry 'never became ready' entry for a pairing cause");
 }
 
 # --- 82-42A Fall-9 (Sondierung-laeuft-trotzdem-Probe, die Falle aus dem
@@ -7110,6 +7426,7 @@ sub s53_cleanup {
     $ctl->requestTrack($TID, 0, { source => 'getNextTrack', errorCb => sub { push @Slim::Player::Client::ORDER, 'errorCb'; push @err, [@_] } });
     ok($ctl->_deferredTrackRequest, "79-53 S5: deferred first");
     is(scalar(@Slim::Player::Client::ORDER), 0, "79-53 S5: nothing sent to the player while deferred");
+    own_track($mac, 'spoton://track:' . $TID =~ s/^spotify:track://r);    # 79-57 IN-05: LMS on the deferred title
     Slim::Utils::Timers::fire_due(Time::HiRes::time() + Plugins::SpotOn::Soloist::Control::WS_RETRY_TTL_S() + 1);
     is_deeply([ @Slim::Player::Client::ORDER ],
         [ 'exec:stop', 'hint:STR(PLUGIN_SPOTON_SOLOIST_NOT_PAIRED)', 'errorCb' ],
@@ -8232,7 +8549,9 @@ sub s53_ttl_fire {
     ok(!$successX, "83.1-02 Task 3 wr05 Fall-1: X's successCb never fired");
     ok(defined $ctl->_awaitMeta, "83.1-02 Task 3 wr05 Fall-1: awaitMeta now armed for Y");
     is($ctl->_awaitMeta->{uri}, $Y, "83.1-02 Task 3 wr05 Fall-1: awaitMeta holds Y's uri");
-    is(scalar(@Slim::Utils::Timers::TIMERS), 1,
+    # S1: Y's play started from the known title X, so the echo also arms the
+    # postSeek check window (_postSeekCheckFire); the claim is about _tMetaFire.
+    is(scalar(grep { $_->[2] == \&Plugins::SpotOn::Soloist::Control::_tMetaFire } @Slim::Utils::Timers::TIMERS), 1,
         "83.1-02 Task 3 wr05 Fall-1: still exactly ONE _tMetaFire timer -- the old one was killed, not left standing (WR-06 timer-pairing class closed)");
 
     Slim::Utils::Timers::fire_due(Time::HiRes::time() + 2);
@@ -13328,6 +13647,357 @@ sub r2_own_seek_session {
         is(r2_keeps(), $wantKeeps, "79-52 G1-NEG $case: exactly $wantKeeps keep(s), as before 79-52");
         is(r2_drains(), $wantDrains, "79-52 G1-NEG $case: exactly $wantDrains boundary drain(s), as before 79-52");
         diag("79-52 G1_COUNTS $case keeps=" . r2_keeps() . " drains=" . r2_drains()) if $ENV{R52_DIAG};
+    }
+}
+
+# ============================================================
+# 79-57: unpaired-hotfix review follow-ups IN-01..IN-05
+# (todos/pending/unpaired-hotfix-review-followups.md). Synthetic MACs only.
+# ============================================================
+my $TID_SPOTON = 'spoton://track:' . ($TID =~ s/^spotify:track://r);
+
+# --- 79-57 IN-01: at the TTL with wsConnected and paired=0 the ring names the
+# pairing cause (unpaired-ttl), and there is no "never became ready" entry.
+{
+    s53_reset();
+    my $mac = 'aa:bb:cc:dd:57:01';
+    $Plugins::SpotOn::Soloist::FS{$mac} = 1;
+    my ($ctl, $daemon, $ws) = s53_state($mac);
+    my @err = s53_ttl_fire($ctl, $mac, sub { own_track($mac, $TID_SPOTON) });
+    my @ttl = grep { ($_->[3] // '') eq "$mac:unpaired-ttl" } @Plugins::SpotOn::Status::RECORDED;
+    is(scalar(@ttl), 1, "79-57 IN-01: the TTL writes one unpaired-ttl entry");
+    like($ttl[0] ? $ttl[0][2] : '', qr/^\Q$mac\E: daemon not paired \(login did not arrive within 20s\)$/,
+        "79-57 IN-01: the unpaired-ttl text names the pairing cause");
+    is(scalar(grep { ($_->[2] // '') =~ /never became ready/ } @Plugins::SpotOn::Status::RECORDED), 0,
+        "79-57 IN-01: no 'never became ready' entry when the cause is pairing");
+    is_deeply($err[0], [ 'PROBLEM_OPENING', 'Soloist daemon not paired' ], "79-57 IN-01: errorCb unchanged");
+    s53_cleanup($ctl);
+}
+
+# --- 79-57 IN-01 (control): wsConnected=0 at the TTL keeps the ws-retry
+# "never became ready" entry; no unpaired-ttl entry.
+{
+    s53_reset();
+    my $mac = 'aa:bb:cc:dd:57:11';
+    $Plugins::SpotOn::Soloist::FS{$mac} = 0;
+    my ($ctl, $daemon, $ws) = fresh_control(mac => $mac, uptime => 100,
+        observed => { wsConnected => 0, meta => {} });
+    $ctl->requestTrack($TID, 0, { source => 'getNextTrack', errorCb => sub { } });
+    Slim::Utils::Timers::fire_due(Time::HiRes::time() + Plugins::SpotOn::Soloist::Control::WS_RETRY_TTL_S() + 1);
+    is(scalar(grep { ($_->[2] // '') =~ /never became ready/ } @Plugins::SpotOn::Status::RECORDED), 1,
+        "79-57 IN-01 control: a never-ready daemon still reads 'never became ready'");
+    is(scalar(grep { ($_->[3] // '') eq "$mac:unpaired-ttl" } @Plugins::SpotOn::Status::RECORDED), 0,
+        "79-57 IN-01 control: no unpaired-ttl entry without a known-unpaired daemon");
+    s53_cleanup($ctl);
+}
+
+# --- 79-57 IN-02: a refusal inside the first 15 s of a fresh daemon writes an
+# unpaired-refused entry; the 'unpaired' grace gate stays as it was.
+{
+    s53_reset();
+    my $mac = 'aa:bb:cc:dd:57:02';
+    $Plugins::SpotOn::Soloist::FS{$mac} = 0;
+    my ($ctl, $daemon, $ws) = fresh_control(mac => $mac, uptime => 5,
+        observed => { wsConnected => 1, paired => 0, meta => {} });
+    $ctl->requestTrack($TID, 0, { source => 'getNextTrack', errorCb => sub { } });
+    my @ref = grep { ($_->[3] // '') eq "$mac:unpaired-refused" } @Plugins::SpotOn::Status::RECORDED;
+    is(scalar(@ref), 1, "79-57 IN-02: a refusal at uptime 5 s writes one unpaired-refused entry");
+    like($ref[0] ? $ref[0][2] : '', qr/^\Q$mac\E: playback refused, this player is not paired with Soloist yet$/,
+        "79-57 IN-02: the unpaired-refused text");
+    is(scalar(grep { ($_->[3] // '') eq "$mac:unpaired" } @Plugins::SpotOn::Status::RECORDED), 0,
+        "79-57 IN-02: the 'unpaired' entry stays grace-gated inside 15 s");
+    s53_cleanup($ctl);
+}
+
+# --- 79-57 IN-04: the D-01 planner reads no file; it takes the stored-session
+# answer from $opts->{hasStoredSession} (undef keeps the old deferral).
+{
+    s53_reset();
+    my $mac = 'aa:bb:cc:dd:57:04';
+    my $calls = 0;
+    no warnings 'redefine';
+    local *Plugins::SpotOn::Soloist::isPairedForClient = sub { $calls++; return 1 };
+    my ($ctl, $daemon, $ws) = fresh_control(mac => $mac, uptime => 100,
+        observed => { wsConnected => 1, paired => 0, meta => {} }, wanted => { uri => $TID });
+    my $intents = $ctl->_reconcilePlan('requestTrack', { hasStoredSession => 0, errorCb => sub { } }, Time::HiRes::time());
+    is($calls, 0, "79-57 IN-04: _reconcilePlan performs no stored-session read");
+    is(scalar(grep { ($_->{op} // '') eq 'refuse_unpaired' } @$intents), 1,
+        "79-57 IN-04: hasStoredSession => 0 in \$opts refuses (the planner trusts its input)");
+    $ctl->_deferredTrackRequest(undef);
+
+    local *Plugins::SpotOn::Soloist::isPairedForClient = sub { $calls++; return 0 };
+    $intents = $ctl->_reconcilePlan('requestTrack', { errorCb => sub { } }, Time::HiRes::time());
+    is($calls, 0, "79-57 IN-04: still no read without the key");
+    is(scalar(grep { ($_->{op} // '') eq 'refuse_unpaired' } @$intents), 0,
+        "79-57 IN-04: an absent hasStoredSession keeps the old meaning (deferral)");
+    ok($ctl->_deferredTrackRequest, "79-57 IN-04: and the request is deferred");
+    s53_cleanup($ctl);
+
+    # _reconcile itself still reads it once per requestTrack (S1 path)
+    s53_reset();
+    $calls = 0;
+    my ($ctl2, $daemon2, $ws2) = s53_state('aa:bb:cc:dd:57:14');
+    $ctl2->requestTrack($TID, 0, { source => 'getNextTrack', errorCb => sub { } });
+    is($calls, 1, "79-57 IN-04: requestTrack on an unpaired daemon reads the stored session exactly once, outside the planner");
+    is(scalar(grep { /^exec:stop/ } @Slim::Player::Client::ORDER), 1, "79-57 IN-04: and the refusal still stops once");
+    s53_cleanup($ctl2);
+}
+
+# --- 79-57 IN-05: LMS on a DIFFERENT spoton:// title than the deferred one
+# at the TTL: no stop, no hint; the errorCb still fires.
+{
+    s53_reset();
+    my $mac = 'aa:bb:cc:dd:57:05';
+    $Plugins::SpotOn::Soloist::FS{$mac} = 1;
+    my ($ctl, $daemon, $ws) = s53_state($mac);
+    my @err = s53_ttl_fire($ctl, $mac, sub { own_track($mac, 'spoton://track:0therTitle000000000000') });
+    is_deeply([ @Slim::Player::Client::ORDER ], [ 'errorCb' ],
+        "79-57 IN-05: another spoton:// title at the TTL -> no stop, no hint, errorCb still fires")
+        or diag("ORDER=@Slim::Player::Client::ORDER");
+    is_deeply($err[0], [ 'PROBLEM_OPENING', 'Soloist daemon not paired' ], "79-57 IN-05: errorCb args unchanged");
+    s53_cleanup($ctl);
+}
+
+# --- 79-57 IN-05 (episode): the deferred spotify:episode:<id> matches
+# spoton://episode:<id>.
+{
+    s53_reset();
+    my $mac = 'aa:bb:cc:dd:57:15';
+    $Plugins::SpotOn::Soloist::FS{$mac} = 1;
+    my ($ctl, $daemon, $ws) = s53_state($mac);
+    my $ctlClass = 'Plugins::SpotOn::Soloist::Control';
+    my $can = $ctlClass->can('_lmsSongIs');
+    ok($can, "79-57 IN-05: _lmsSongIs exists");
+    own_track($mac, 'spoton://episode:4rOoJ6Egrf8K2IrywzwOMk');
+    is($can ? $ctl->_lmsSongIs('spotify:episode:4rOoJ6Egrf8K2IrywzwOMk') : undef, 1, "79-57 IN-05: an episode matches its spoton:// url");
+    is($can ? $ctl->_lmsSongIs('spotify:episode:0therEpisode0000000000') : undef, 0, "79-57 IN-05: another episode does not");
+    is($can ? $ctl->_lmsSongIs('spotify:track:4rOoJ6Egrf8K2IrywzwOMk') : undef, 0, "79-57 IN-05: a track id does not match an episode url");
+    s53_cleanup($ctl);
+}
+
+# ============================================================
+# 79-61 (79-REVIEW-FULL-2 WR-02): _postBoundaryRead built a closure cycle
+# ($release -> $capCb -> $finish -> $release) that Perl's reference counting
+# never frees: after every boundary POST the three closures stayed alive with
+# everything they capture -- the Control object, the socket and the caller's
+# $cb. Probe: the caller's $cb captures a sentinel; once the read has
+# completed (by reply, by the cap timer, or by the abort closure) and every
+# outside reference is dropped, a weak copy of the sentinel must be undef.
+# Runs with the Slim::Networking::Select stub the 84-17 block put on @INC.
+# ============================================================
+{
+    require Scalar::Util;
+    require Slim::Networking::Select;
+    my $body = "via=live boundary=1 anchor=drain ring_fill=0 total_pushed=0 total_popped=0 drops=0 gen=1\n";
+    my $raw  = "HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\nContent-Length: " . length($body)
+        . "\r\nConnection: close\r\n\r\n$body";
+
+    for my $how (qw(reply cap abort)) {
+        @Slim::Networking::Select::READS = ();
+        @Slim::Utils::Timers::TIMERS     = ();
+        $IO::Socket::INET::READ_REPLY    = undef;
+        $IO::Socket::INET::FAIL          = 0;
+        my ($ctl, $daemon, $ws) = fresh_control(mac => 'aa:79:61:00:02:01', mode => 'connect');    # Control holds the daemon weakly
+
+        my $weak;
+        my $got;
+        {
+            my $sentinel = { name => "sentinel-$how" };
+            $weak = $sentinel;
+            Scalar::Util::weaken($weak);
+            my $abort = $ctl->_postBoundaryRead('/boundary?anchor=drain', sub { $got = $_[0]; my $keep = $sentinel; });
+            ok(ref $abort eq 'CODE', "79-61 WR-02 ($how): harness -- the boundary read is armed");
+            if ($how eq 'reply') {
+                $IO::Socket::INET::READ_REPLY = $raw;
+                Slim::Networking::Select::deliver();
+                is(($got && $got->{via}) // 'none', 'live', "79-61 WR-02 ($how): harness -- the reply completed the read");
+            }
+            elsif ($how eq 'cap') {
+                Slim::Utils::Timers::fire_due(Time::HiRes::time() + 1);
+                is(($got && $got->{via}) // 'none', 'timeout', "79-61 WR-02 ($how): harness -- the cap completed the read");
+            }
+            else {
+                $abort->();
+                ok(!defined $got, "79-61 WR-02 ($how): harness -- the abort completes without calling cb");
+            }
+            undef $abort;
+        }
+        @Slim::Networking::Select::READS = ();
+        @Slim::Utils::Timers::TIMERS     = ();
+        ok(!defined $weak, "79-61 WR-02 ($how): nothing the boundary read captured outlives it (no closure cycle)");
+    }
+}
+
+# ============================================================
+# 79-61 (79-REVIEW-FULL-2 WR-06): the restart auto-play gate in Connect.pm
+# keyed only on the daemon's uptime (< 5 s), but a Soloist daemon logs in and
+# adopts a restored session up to 8.4 s after spawn. The reconnect adoption
+# (playback_state from idle, the restored-session path) now marks its start
+# 'restored' (_p4) so Connect suppresses it by provenance, whatever the
+# uptime. A device_changed transfer-in (a user action) carries no marker.
+# ============================================================
+{
+    @Plugins::SpotOn::Connect::CLAIMS = ();
+    $Plugins::SpotOn::Connect::ACTIVE = undef;
+    @Slim::Player::Client::EXECUTED   = ();
+    my ($ctl, $daemon, $ws) = fresh_control(
+        mac      => 'aa:79:61:00:06:01',
+        mode     => 'idle',
+        observed => { wsConnected => 1, meta => {} },
+    );
+    $ctl->onEvent(decode_frame(load_fixture('playback_state.json')));
+    is($ctl->mode, 'connect', '79-61 WR-06: harness -- the playback_state from idle is the reconnect adoption');
+    my @starts = grep { ($_->[0] // '') eq 'spottyconnect' && ($_->[1] // '') eq 'start' } @Slim::Player::Client::EXECUTED;
+    is(scalar(@starts), 1, '79-61 WR-06: the adoption emits exactly one start');
+    is(($starts[0] && $starts[0][4]) // 'none', 'restored', '79-61 WR-06: the adoption start carries the restored marker (_p4)');
+    $Plugins::SpotOn::Connect::ACTIVE = undef; @Plugins::SpotOn::Connect::CLAIMS = ();
+}
+
+# --- 79-66 (user decision 2026-10-31, analysis finding 1): command_result and
+# options_changed are documented Soloist frames. They are recorded only (no warn,
+# no state change, no command, no step of onEvent's playback steps); any other
+# type outside the handler tables still writes exactly one warn line. ---
+{
+    my $MAC66 = 'aa:bb:cc:dd:66:01';
+    my $unk = sub { scalar(grep { /Control: classify unknown/ } @Slim::Utils::Log::WARNINGS) };
+    my ($tid66) = $TID =~ /^spotify:track:(.+)$/;
+
+    # R1: the real command_result fixture is recorded, no warn
+    {
+        @Slim::Utils::Log::WARNINGS = ();
+        my ($ctl, $daemon, $ws) = fresh_control(mac => $MAC66, mode => 'connect',
+            observed => { wsConnected => 1, track => $TID, status => 'playing' });
+        $ctl->onEvent(decode_frame(load_fixture('command_result.json')));
+        is($unk->(), 0, '79-66 R1: command_result writes no classify-unknown warn');
+        my $cr = $ctl->observed->{lastCommandResult} // {};
+        is($cr->{command}, 'seek', '79-66 R1: observed->{lastCommandResult}{command} is the frame\'s command');
+        ok(($cr->{at} // 0) > 0, '79-66 R1: observed->{lastCommandResult}{at} is set');
+    }
+
+    # R2: the three real options_changed frames of s04 are recorded, nothing is sent
+    {
+        my @lineNos;
+        {
+            open(my $fh, '<', "$project_dir/t/fixtures/soloist/s04-connect-skip.jsonl") or die 's04 missing';
+            while (my $l = <$fh>) {
+                next if $l =~ /^#/ || $l !~ /\S/;
+                my $rec = eval { decode_frame($l) } or next;
+                my $fr = eval { decode_frame($rec->{frame}) } or next;
+                push @lineNos, $. if ref($fr) eq 'HASH' && ($fr->{type} // '') eq 'options_changed';
+            }
+            close($fh);
+        }
+        is_deeply(\@lineNos, [12, 26, 61], '79-66 R2 guard: s04 holds exactly three options_changed frames at :12, :26, :61');
+
+        @Slim::Utils::Log::WARNINGS = ();
+        my $execBefore = scalar(@Slim::Player::Client::EXECUTED);
+        my ($ctl, $daemon, $ws) = fresh_control(mac => $MAC66, mode => 'connect',
+            observed => { wsConnected => 1, track => $TID, status => 'playing' });
+        my @frames = grep { ref($_) eq 'HASH' && ($_->{type} // '') eq 'options_changed' }
+            map { my $f = $_->{frame}; (defined $f && $f =~ /^\{/) ? decode_frame($f) : () }
+            map { decode_frame($_) } load_fixture('s04-connect-skip.jsonl');
+        is(scalar(@frames), 3, '79-66 R2 guard: three options_changed frames decoded');
+        my @speeds = (0, 1, 0);
+        for my $i (0 .. $#frames) {
+            $ctl->onEvent($frames[$i]);
+            is($unk->(), 0, "79-66 R2: options_changed frame " . ($i + 1) . " writes no classify-unknown warn");
+            my %opt = %{ $ctl->observed->{options} // {} };
+            ok(($opt{at} // 0) > 0, "79-66 R2: options_changed frame " . ($i + 1) . " carries a record time");
+            delete $opt{at};
+            is_deeply(\%opt, { shuffle => 0, repeat => 'off', playback_speed => $speeds[$i],
+                               modes => { context_enhancement => 'NONE' } },
+                "79-66 R2: options_changed frame " . ($i + 1) . " recorded as observed->{options} (playback_speed $speeds[$i])");
+        }
+        is_deeply($ws->sent, [], '79-66 R2: no command sent to the daemon');
+        is(scalar(@Slim::Player::Client::EXECUTED), $execBefore, '79-66 R2: nothing executed on the LMS player');
+    }
+
+    # R3 (lock): an ack never completes the pending command and fires no callback
+    {
+        @Slim::Utils::Log::WARNINGS = ();
+        my ($ok, $err) = (0, 0);
+        my $succ = sub { $ok++ };
+        my $fail = sub { $err++ };
+        my ($ctl, $daemon, $ws) = fresh_control(mac => $MAC66, mode => 'connect',
+            wanted   => { uri => $TID },
+            observed => { wsConnected => 1, track => $TID, status => 'playing' },
+            pending  => { cmd => 'seek', successCb => $succ, errorCb => $fail });
+        my $pendingBefore = { %{ $ctl->pending } };
+        my $wantedBefore  = { %{ $ctl->wanted } };
+        $ctl->onEvent(decode_frame(load_fixture('command_result.json')));
+        is_deeply($ctl->pending, $pendingBefore, '79-66 R3: pending unchanged (same callbacks)');
+        is($ok + $err, 0, '79-66 R3: neither successCb nor errorCb fired');
+        is_deeply($ctl->wanted, $wantedBefore, '79-66 R3: wanted unchanged');
+        is($ctl->observed->{track}, $TID, '79-66 R3: observed.track unchanged');
+        is($ctl->observed->{status}, 'playing', '79-66 R3: observed.status unchanged');
+        is_deeply($ws->sent, [], '79-66 R3: no command sent');
+    }
+
+    # R4 (lock): neither frame steps a held resume (no stale drop)
+    {
+        @Slim::Utils::Log::WARNINGS = ();
+        my ($ctl, $daemon, $ws) = fresh_control(mac => $MAC66, mode => 'connect',
+            observed => { wsConnected => 1, track => $TID, status => 'playing',
+                          resumeDue => { track => $TID, id => $tid66, pos => 0, at => Time::HiRes::time() - 11 } });
+        $ctl->onEvent(decode_frame(load_fixture('command_result.json')));
+        ok(defined $ctl->observed->{resumeDue}, '79-66 R4: command_result leaves the held resume in place');
+        $ctl->onEvent({ type => 'options_changed', options => { shuffle => 0, repeat => 'off', playback_speed => 1, modes => {} } });
+        ok(defined $ctl->observed->{resumeDue}, '79-66 R4: options_changed leaves the held resume in place');
+        is(scalar(grep { /held resume dropped \(stale\)/ } @Slim::Utils::Log::WARNINGS), 0,
+            '79-66 R4: no stale drop warn');
+    }
+
+    # R5 (deliberately unchanged): both types still classify unknown
+    {
+        my ($ctl, $daemon, $ws) = fresh_control(mac => $MAC66, mode => 'connect',
+            observed => { wsConnected => 1, track => $TID, status => 'playing' });
+        $ctl->onEvent(decode_frame(load_fixture('command_result.json')));
+        is($ctl->observed->{lastClass}, 'unknown', '79-66 R5: command_result keeps lastClass unknown');
+        my $oc = { type => 'options_changed', options => { shuffle => 0, repeat => 'off', playback_speed => 1 } };
+        $ctl->onEvent($oc);
+        is($ctl->observed->{lastClass}, 'unknown', '79-66 R5: options_changed keeps lastClass unknown');
+        my ($class, $detail) = Plugins::SpotOn::Soloist::Control::_classify($oc, {}, {}, undef, 'connect', 1000);
+        is_deeply([ $class, $detail ], [ 'unknown', 'options_changed' ], '79-66 R5: _classify(options_changed) is (unknown, options_changed)');
+    }
+
+    # R6 (tolerance lock): an unknown future type still warns exactly once
+    {
+        @Slim::Utils::Log::WARNINGS = ();
+        my ($ctl, $daemon, $ws) = fresh_control(mac => $MAC66, mode => 'connect',
+            observed => { wsConnected => 1, track => $TID, status => 'playing' });
+        $ctl->onEvent({ type => 'future_event' });
+        is($unk->(), 1, '79-66 R6: an unknown future type writes exactly one classify-unknown warn');
+    }
+
+    # R7: malformed payloads are recorded without their invalid values, never warned
+    {
+        for my $bad ({}, 'BAD CMD;') {
+            @Slim::Utils::Log::WARNINGS = ();
+            my ($ctl, $daemon, $ws) = fresh_control(mac => $MAC66, mode => 'connect',
+                observed => { wsConnected => 1, track => $TID, status => 'playing' });
+            my $label = ref($bad) ? 'a hash' : "'$bad'";
+            $ctl->onEvent({ type => 'command_result', command => $bad });
+            is($unk->(), 0, "79-66 R7: command_result with command=$label writes no warn");
+            my $cr = $ctl->observed->{lastCommandResult} // {};
+            ok(!defined $cr->{command}, "79-66 R7: command=$label is not recorded");
+            ok(($cr->{at} // 0) > 0, "79-66 R7: command=$label still records the ack time");
+        }
+        @Slim::Utils::Log::WARNINGS = ();
+        my ($ctl, $daemon, $ws) = fresh_control(mac => $MAC66, mode => 'connect',
+            observed => { wsConnected => 1, track => $TID, status => 'playing' });
+        $ctl->onEvent({ type => 'options_changed', options => 'x' });
+        is($unk->(), 0, '79-66 R7: options_changed with a non-hash options writes no warn');
+        ok(!exists $ctl->observed->{options}, '79-66 R7: options_changed with a non-hash options leaves observed->{options} unchanged');
+    }
+
+    # R8: the ack log line is the contract with extract-run.pl and d34-scenarios.sh
+    {
+        my $f = Plugins::SpotOn::Soloist::Control->can('_commandResultLogLine');
+        ok($f, '79-66 R8: Control has _commandResultLogLine');
+        is($f ? $f->('seek', $MAC66) : undef, "Control: command_result -- command=seek ($MAC66)",
+            '79-66 R8: the ack line for seek is byte-exact');
+        is($f ? $f->(undef, $MAC66) : undef, "Control: command_result -- command=- ($MAC66)",
+            '79-66 R8: an unnamed command renders as -');
     }
 }
 

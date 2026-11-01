@@ -214,6 +214,7 @@ our @created = ();
 our $auto_mode = 'none';    # none | success | error
 our $auto_error = 'simulated network error';
 our $candidate_version = '1.3.8.70';
+our $candidate_script;    # 79-57: when set, the archived soloist is this script verbatim
 
 sub new {
     my ($class, $cb, $ecb, $opts) = @_;
@@ -225,7 +226,7 @@ sub get {
     my ($self, $url) = @_;
     $self->{url} = $url;
     if ($auto_mode eq 'success') {
-        _build_fixture_archive($self->{opts}{saveAs}, $candidate_version);
+        _build_fixture_archive($self->{opts}{saveAs}, $candidate_version, $candidate_script);
         $self->{cb}->($self);
     } elsif ($auto_mode eq 'error') {
         $self->{ecb}->($self, $auto_error);
@@ -236,10 +237,17 @@ sub content { '' }
 sub reset_stub { @created = (); $auto_mode = 'none'; }
 
 sub _build_fixture_archive {
-    my ($archivePath, $version) = @_;
+    my ($archivePath, $version, $script) = @_;
     require File::Temp;
     my $srcDir = File::Temp::tempdir(CLEANUP => 1);
     open(my $fh, '>', "$srcDir/soloist") or die "fixture write failed: $!";
+    if (defined $script) {
+        print $fh $script;
+        close($fh);
+        chmod(0755, "$srcDir/soloist");
+        system('tar', 'czf', $archivePath, '-C', $srcDir, 'soloist');
+        return;
+    }
     print $fh "#!/bin/sh\n";
     print $fh "if [ \"\$1\" = '--version' ]; then\n";
     print $fh "  echo 'soloist $version build 1 (20260101) (gabc123) (linux/x86_64)'\n";
@@ -983,6 +991,36 @@ sub seed_active_binary {
         "Case 12b: activeVersion() returns undef for a below-pin binary");
     my (undef, $ver) = Plugins::SpotOn::Soloist::get();
     is($ver, undef, "Case 12b: get() also returns undef for the same below-pin binary");
+}
+
+# Case 13 (79-57, GH #177): a candidate the dynamic loader cannot start
+# (the real loader message of the unchanged binary in debian:trixie-slim,
+# exit 127) fails with the named library, not version_unparsable; a
+# candidate printing garbage with exit 0 still reads version_unparsable.
+{
+    my $fixture = "$project_dir/t/fixtures/soloist-loader/libatomic-missing.stderr.txt";
+    reset_env();
+    seed_active_binary('1.3.8.68');
+
+    $Slim::Networking::SimpleAsyncHTTP::auto_mode       = 'success';
+    $Slim::Networking::SimpleAsyncHTTP::candidate_script = "#!/bin/sh\ncat '$fixture' >&2\nexit 127\n";
+
+    Plugins::SpotOn::Soloist::renewBinary(reason => 'manual');
+
+    is(Plugins::SpotOn::Soloist::renewalState()->{phase}, 'failed', "Case 13 (79-57 #177): state is 'failed'");
+    is(Plugins::SpotOn::Soloist::renewalState()->{detail}, 'missing_library:libatomic.so.1',
+        "Case 13 (79-57 #177): detail names the missing library, not version_unparsable");
+    is(Plugins::SpotOn::Soloist::_versionProbe(canonical_bin()), '1.3.8.68', "Case 13: canonical still reports 1.3.8.68");
+    is(scalar(@Plugins::SpotOn::Unified::SoloistDaemon::SMOKE_CALLS), 0, "Case 13: smokeTest never called");
+
+    reset_env();
+    seed_active_binary('1.3.8.68');
+    $Slim::Networking::SimpleAsyncHTTP::auto_mode       = 'success';
+    $Slim::Networking::SimpleAsyncHTTP::candidate_script = "#!/bin/sh\necho 'garbage'\nexit 0\n";
+    Plugins::SpotOn::Soloist::renewBinary(reason => 'manual');
+    is(Plugins::SpotOn::Soloist::renewalState()->{detail}, 'version_unparsable',
+        "Case 13 (79-57 #177): garbage stdout with exit 0 still reads version_unparsable");
+    $Slim::Networking::SimpleAsyncHTTP::candidate_script = undef;
 }
 
 done_testing();

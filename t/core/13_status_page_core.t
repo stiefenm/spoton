@@ -407,6 +407,10 @@ write_stub($stub_dir, 'Plugins::SpotOn::Plugin', <<'END');
 package Plugins::SpotOn::Plugin;
 use constant SPOTON_CACHE_VERSION => 4;   # M5: mirrors real Plugin.pm constant
 sub _pluginDataFor { 'test-version' }
+# 79-60 Task 3: Status.pm resolves the account of a Soloist helper's player through
+# _getAccountId($client); %ACCT maps the fake client's mac to its account.
+our %ACCT = ();
+sub _getAccountId { my ($c) = @_; return $ACCT{ ref $c ? ($c->{mac} // '') : '' } // ''; }
 1;
 END
 
@@ -467,6 +471,7 @@ sub new {
     my ($class, %args) = @_;
     return bless { %args }, $class;
 }
+sub backendName        { return 'soloist' }   # 79-63 R1 CR-01: Status asks the helper's own role
 sub mac                { return $_[0]->{mac} }
 sub alive               { return $_[0]->{alive} }
 sub pid                 { return $_[0]->{pid} }
@@ -493,6 +498,8 @@ sub new {
     my ($class, %args) = @_;
     return bless { %args }, $class;
 }
+sub backendName        { return 'librespot' } # 79-63 R1 CR-01: Status asks the helper's own role
+sub _accountId         { return $_[0]->{accountId} }   # 79-60: the librespot Auth Health match
 sub mac                { return $_[0]->{mac} }
 sub alive               { return $_[0]->{alive} }
 sub pid                 { return $_[0]->{pid} }
@@ -611,6 +618,9 @@ sub state {
     return { mode => undef, status => undef, paired => undef, wsConnected => undef,
              alive => $helper ? 1 : 0, observedTrack => undef, active => undef };
 }
+# 79-63 R1 (CR-01): the Auth Health role reads -- the shape of the real ones
+sub accountIdForHelper { my ($class, $h) = @_; return ($h && $h->can('_accountId')) ? ($h->_accountId || '') : '' }
+sub authHealthListsPlayers { return 0 }
 1;
 END
 
@@ -619,6 +629,13 @@ package Plugins::SpotOn::Backend::Soloist;
 sub new { my ($class, $mac) = @_; return bless { mac => (ref $mac ? $mac->id : $mac) }, $class }
 sub mac { return $_[0]->{mac} }
 sub state { return {} }
+# 79-63 R1 (CR-01): the Auth Health role reads -- the shape of the real ones
+sub accountIdForHelper {
+    my ($class, $h) = @_;
+    my $client = eval { Slim::Player::Client::getClient($h->mac) };
+    return (eval { Plugins::SpotOn::Plugin::_getAccountId($client) } // '');
+}
+sub authHealthListsPlayers { return 1 }
 1;
 END
 
@@ -644,7 +661,7 @@ require Plugins::SpotOn::Plugin;
 # Tests
 # ============================================================
 
-plan tests => 68;   # 74b WR-01: +3 hasError level cells; 84-09: 57 before the split; 21 Soloist cells moved to t/soloist/13_status_page_soloist.t
+plan tests => 76;   # 79-63 R1: +1 (Status.pm names no backend-side module); 79-60: +7 (Connect row render, English labels, librespot match); 74b WR-01: +3 hasError level cells; 84-09: 57 before the split; 21 Soloist cells moved to t/soloist/13_status_page_soloist.t
 
 # Test 1: Status.pm compiles
 require_ok('Plugins::SpotOn::Status');
@@ -935,10 +952,61 @@ SKIP: {
         },
     }) } || do { diag("renderAuthHealth: $@"); [ [] ] };
     my $rows = $a->[0];
-    my @login = grep { $_->[0] eq 'Konto-Login (login5)' } @$rows;
-    is(scalar(@login), 2, 'Test 39: one "Konto-Login (login5)" row per account');
+    my @login = grep { $_->[0] eq 'Account login (login5)' } @$rows;
+    is(scalar(@login), 2, 'Test 39 (79-60: English label): one "Account login (login5)" row per account');
     ok(@$rows > 0 && !(grep { $_->[0] =~ /sp_dc|Web API Token|Last API Call|Migration/ } @$rows),
         'Test 40: no sp_dc, Web API Token, Last API Call or Migration row in the auth card');
+}
+SKIP: {
+    skip 'node unavailable (Test 28 reported it)', 4 unless $NODE;
+    my $a = eval { run_page_render('renderAuthHealth', {
+        authHealth => {
+            acctC => { login => { state => 'ok', hasCredentials => 1, needsPairing => 1 },
+                       playback => { hasCredentials => 1, source => 'zeroconf' },
+                       connect => { alive => 1, pid => 42, uptime => 65, players => 2, connectActive => 'Player-02' }, audioKey => {} },
+        },
+    }, {
+        authHealth => {
+            acctD => { login => { state => 'ok', hasCredentials => 1 }, playback => {},
+                       connect => { alive => 1, pid => 43, uptime => 5, players => 1, connectActive => '' }, audioKey => {} },
+        },
+    }) } || do { diag("renderAuthHealth 79-60: $@"); [ [], [] ] };
+    my ($c, $d) = @$a;
+    like(row_of($c, 'Connect')->[1], qr/\ARunning \(PID 42, [^)]+\), Connect: Player-02\z/, '79-60: Connect row "Running (PID ..., uptime), Connect: <player>" during a Connect session');
+    like(row_of($c, 'Connect')->[2], qr/dot-alive/, '79-60: the Connect row is green while Soloist daemons run');
+    like(row_of($d, 'Connect')->[1], qr/\ARunning \(PID 43, [^)]+\)\z/, '79-60: no Connect session => "Running (...)" without a player');
+    is(row_of($c, 'Pairing')->[1], 'Pair the account once', '79-60: the pairing hint is English');
+}
+my ($card) = $page_js =~ /(function renderAuthHealth\b.*?\n    \})\n/s;
+ok(defined $card && $card !~ /Konto-Login|Bitte Konto einmal koppeln/, '79-60: no German literal left in the Auth Health card');
+
+# 79-60: librespot keeps the account-matched helper (keys unchanged)
+{
+    require Plugins::SpotOn::Unified::Daemon;
+    require Plugins::SpotOn::Unified::DaemonManager;
+    my $prefs = Slim::Utils::Prefs::preferences('plugin.spoton');
+    $prefs->set(accounts => { fixtureAcct1 => {}, fixtureAcct2 => {} });
+    local @Plugins::SpotOn::Unified::DaemonManager::HELPERS = (
+        Plugins::SpotOn::Unified::Daemon->new(mac => '02:00:00:00:60:09', alive => 1, pid => 77, uptime => 5, accountId => 'fixtureAcct1'),
+    );
+    is_deeply((eval { Plugins::SpotOn::Status::_collectAuthHealth('fixtureAcct1') } || {})->{connect}, { alive => 1, pid => 77, uptime => 5 },
+        '79-60: librespot helper matched by _accountId, connect keys unchanged');
+    is_deeply((eval { Plugins::SpotOn::Status::_collectAuthHealth('fixtureAcct2') } || {})->{connect}, { alive => 0, pid => 0, uptime => 0 },
+        '79-60: librespot helper of another account is not counted');
+}
+# 79-63 R1 (79-REVIEW-BETA3 CR-01): Status.pm is a core file and names no
+# module of either backend side (CI: refcheck.pl after amputate.sh). Same
+# package boundary as refcheck (Unified::Daemon must not hit DaemonManager).
+{
+    open(my $sfh, '<', "$project_dir/Plugins/SpotOn/Status.pm") or die "Status.pm: $!";
+    my @hits;
+    while (my $l = <$sfh>) {
+        next if $l =~ /^\s*#/;
+        push @hits, "$.: $1" while $l =~ /(Plugins::SpotOn::(?:Unified::(?:SoloistDaemon|SoloistWS|DeferBudget|Daemon)|Backend::(?:Soloist|Librespot)|Soloist|Vendor)(?![A-Za-z0-9_]))/g;
+    }
+    close $sfh;
+    is_deeply(\@hits, [], 'R1 CR-01: Status.pm names no backend-side module (core file)')
+        or diag(join("\n", @hits));
 }
 ok(!($page_js =~ /spDc|sp_dc/), 'Test 41: status.html has no sp_dc rendering left');
 ok(!($page_js =~ /hashConfigured/), 'Test 42: status.html has no hashConfigured left');

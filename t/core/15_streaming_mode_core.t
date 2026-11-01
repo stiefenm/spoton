@@ -662,4 +662,29 @@ subtest 'i18n: PLUGIN_SPOTON_STREAMING_MODE* keys have all 11 locales' => sub {
     }
 };
 
+# 79-60 Task 4: Settings::Player passes mp3Limit, the player's LMS "Bitrate limiting"
+# (server pref maxBitrate) as text: the MP3 rule takes its rate from it (custom-convert.conf smp mp3 IFB).
+{
+    require Plugins::SpotOn::Settings::Player;
+    # this file's Strings stub drops the token (string() joins the args after it); the cell
+    # needs token and argument, so Player.pm's imported string() is shown both here
+    no warnings 'redefine';
+    local *Plugins::SpotOn::Settings::Player::string = sub { join(' ', grep { defined } @_) };
+    my $sp = Slim::Utils::Prefs::preferences('server');
+    my $c1 = MockClient->new('mp360a');
+    $sp->client($c1)->set('maxBitrate', 192);
+    my %p1;
+    eval { Plugins::SpotOn::Settings::Player->handler($c1, \%p1, sub { }, undef, undef) };
+    like($p1{mp3Limit} // '', qr/\APLUGIN_SPOTON_MP3_LIMIT_KBPS 192\z/, '79-60: maxBitrate 192 => mp3Limit from PLUGIN_SPOTON_MP3_LIMIT_KBPS with 192');
+    my $c2 = MockClient->new('mp360b');
+    $sp->client($c2)->set('maxBitrate', 0);
+    my %p2;
+    eval { Plugins::SpotOn::Settings::Player->handler($c2, \%p2, sub { }, undef, undef) };
+    is($p2{mp3Limit} // '', 'PLUGIN_SPOTON_MP3_LIMIT_NONE', '79-60: maxBitrate 0 => "no limit" text');
+    my $c3 = MockClient->new('mp360c');
+    my %p3;
+    eval { Plugins::SpotOn::Settings::Player->handler($c3, \%p3, sub { }, undef, undef) };
+    is($p3{mp3Limit} // '', 'PLUGIN_SPOTON_MP3_LIMIT_NONE', '79-60: maxBitrate unset => "no limit" text');
+}
+
 done_testing();

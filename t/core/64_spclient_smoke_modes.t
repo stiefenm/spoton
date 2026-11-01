@@ -220,6 +220,7 @@ elsif ($url =~ m{^https://open\.spotifycdn\.com/cdn/build/web-player/(web-player
     }
     else {
         $payload = 'var b=2;' . qq{new l.l("libraryV3","query","} . $h->('libraryV3') . qq{",null),}
+            . ($ENV{FAKE_BUNDLE_HOMESECTION} ? qq{new l.l("homeSection","query","} . $h->('homeSection') . qq{",null),} : '')
             . ($ENV{FAKE_NO_APPCONFIG} ? qq{,clientID:"$ENV{FAKE_WP_CID}",clientId:"$ENV{FAKE_WP_CID}",} : '');
     }
     $code = 200;
@@ -234,8 +235,10 @@ elsif ($url eq 'https://clienttoken.spotify.com/v1/clienttoken') {
 }
 elsif ($url eq 'https://api-partner.spotify.com/pathfinder/v2/query') {
     my $auth = $H{authorization} // '';
-    my $authOk = $auth eq "Bearer $ENV{FAKE_S_WP_LOGIN5}"
-        && ($H{'client-token'} // '') eq $ENV{FAKE_S_CLIENT_TOKEN};
+    my $authOk = ($auth eq "Bearer $ENV{FAKE_S_WP_LOGIN5}"
+        && ($H{'client-token'} // '') eq $ENV{FAKE_S_CLIENT_TOKEN})
+        # 79-59 home-sections: SpotOn's production form (Pathfinder.pm) - the main login5 bearer, no client token
+        || ($auth eq "Bearer $ENV{FAKE_S_LOGIN5}" && !defined $H{'client-token'} && ($H{'app-platform'} // '') eq 'WebPlayer');
     if (!$authOk) { ($code, $payload) = (401, '{"errors":[{"message":"unauthorized"}]}'); }
     else {
         my $req  = eval { decode_json($body) } || {};
@@ -250,8 +253,24 @@ elsif ($url eq 'https://api-partner.spotify.com/pathfinder/v2/query') {
                 tracksV2 => { items => [ map { { item => { data => { name => "Song $_" } } } } qw(A B C D E F G) ] },
                 albumsV2 => { items => [ { data => { name => 'Album X' } } ] } } } });
         }
+        elsif ($op eq 'home' && $ENV{FAKE_HOME_NODATA}) {
+            $payload = '{"data":{}}';
+        }
+        elsif ($op eq 'home' && $ENV{FAKE_HOME_FILE}) {
+            open(my $hf, '<', $ENV{FAKE_HOME_FILE}) or die "fake curl: $ENV{FAKE_HOME_FILE}: $!";
+            $payload = do { local $/; <$hf> };
+            close $hf;
+        }
         elsif ($op eq 'home') {
             $payload = encode_json({ data => { home => { sectionContainer => { sections => { items => [ { name => 'S1' }, { name => 'S2' } ] } } } } });
+        }
+        elsif ($op eq 'homeSection' && $ENV{FAKE_HOME_FILE}) {
+            # the homeSection shape: data.homeSections.sections[0] = the home row whose uri was asked
+            open(my $hf, '<', $ENV{FAKE_HOME_FILE}) or die "fake curl: $ENV{FAKE_HOME_FILE}: $!";
+            my $hd = decode_json(do { local $/; <$hf> });
+            close $hf;
+            my ($row) = grep { ($_->{uri} // '') eq ($req->{variables}{uri} // '') } @{ $hd->{data}{home}{sectionContainer}{sections}{items} };
+            $payload = encode_json({ data => { homeSections => { sections => [ $row || { sectionItems => { items => [] } } ] } } });
         }
         else {
             $payload = encode_json({ data => { $op => { items => [ { name => 'Generic' } ] } } });
@@ -865,6 +884,61 @@ sub enc_pb { $PB->can('encode_field')->(@_) }
     }
     my ($exit, $out, $req) = run_tool({}, '-', 'extmeta-probe');
     ok($exit != 0 && $out =~ /usage/ && @$req == 0, '79-27 PROBE: a missing size list is a usage error before any network stage');
+}
+
+# ------------------------------------------------------------
+# 12. (79-59, GH #180) home-sections: the rows of the home feed, per row the items (uri, typename, name)
+# ------------------------------------------------------------
+{
+    my $fx = "$project_dir/t/fixtures/pathfinder/79-59-home-sections.json";
+    ok(-f $fx, '79-59 home-sections: the trimmed real home fixture exists');
+    my ($exit, $out, $req) = run_tool({ FAKE_HOME_FILE => $fx }, '-', 'home-sections');
+    is($exit, 0, '79-59 home-sections: exit 0');
+    like($out, qr/^home HTTP 200 errors=0$/m, '79-59 home-sections: status line');
+    like($out, qr/^HOME_SECTION i=1 uri=spotify:section:0JQ5DAIiKWzVFULQfUm85Y title=- items=20$/m,
+        '79-59 home-sections: the untitled shorts row with its section uri and item count (MUST-PASS)');
+    like($out, qr/^HOME_SECTION i=2 uri=spotify:section:0JQ5DAUnp4wcj0bCb3wh3S title=Made For Listener items=8$/m,
+        '79-59 home-sections: the Made For You row with its transformedLabel title');
+    like($out, qr/^HOME_ITEM i=1 j=8 type=Playlist uri=spotify:playlist:37i9dQZF1EP6YuccBxUcC1 name=daylist$/m,
+        '79-59 home-sections: the daylist item line (row, position, typename, uri, name)');
+    like($out, qr/^HOME_ITEM i=1 j=1 type=UnknownType uri=spotify:user:\@:collection name=-$/m,
+        '79-59 home-sections: an item without content.data keeps its uri and prints name=-');
+    is(scalar(() = $out =~ /^HOME_ITEM i=2 /mg), 8, '79-59 home-sections: every item of a row is printed');
+    like($out, qr/^HOME_SECTIONS=2$/m, '79-59 home-sections: the row count');
+    my ($pf) = with_url($req, qr{pathfinder/v2/query$});
+    my $pb = body_json($pf);
+    ok($pb->{operationName} eq 'home' && $pb->{extensions}{persistedQuery}{sha256Hash} eq fakehash('home')
+        && ($pb->{variables}{sectionItemsLimit} // 0) == 50, '79-59 home-sections: op home, the scraped hash, sectionItemsLimit 50');
+    is(hdr_of($pf, 'Authorization'), "Bearer $S{LOGIN5}", '79-59 home-sections: the bearer is the main login5 mint (SpotOn\'s Pathfinder form)');
+    ok(!defined hdr_of($pf, 'client-token'), '79-59 home-sections: no client token is sent');
+    ok(!(grep { $_->{url} =~ m{clienttoken} } @$req), '79-59 home-sections: no client-token request is made');
+}
+{
+    my ($exit, $out) = run_tool({ FAKE_HOME_NODATA => 1 }, '-', 'home-sections');
+    like($out, qr/^HOME_SECTIONS=none$/m, '79-59 home-sections: a reply without data.home prints HOME_SECTIONS=none (MUST-FAIL leg)');
+    unlike($out, qr/^HOME_SECTION i=/m, '79-59 home-sections: and no row line');
+}
+{
+    my $fx = "$project_dir/t/fixtures/pathfinder/79-59-home-sections.json";
+    my ($exit, $out, $req) = run_tool({ FAKE_HOME_FILE => $fx, FAKE_BUNDLE_HOMESECTION => 1 }, '-', 'home-sections',
+        'spotify:section:0JQ5DAIiKWzVFULQfUm85Y', 'spotify:section:0JQ5DAUnp4wcj0bCb3wh3S');
+    is($exit, 0, '79-59 home-sections <uri>...: exit 0');
+    like($out, qr/^HOME_QUERY op=homeSection uri=spotify:section:0JQ5DAIiKWzVFULQfUm85Y\nhome HTTP 200 errors=0\nHOME_SECTION i=1 uri=spotify:section:0JQ5DAIiKWzVFULQfUm85Y title=- items=20$/m,
+        '79-59 home-sections <uri>: homeSection answer headed by its query line');
+    like($out, qr/^HOME_ITEM i=1 j=8 type=Playlist uri=spotify:playlist:37i9dQZF1EP6YuccBxUcC1 name=daylist$/m,
+        '79-59 home-sections <uri>: the daylist from the homeSection shape');
+    my @pf = with_url($req, qr{pathfinder/v2/query$});
+    is(scalar(@pf), 2, '79-59 home-sections <uri>...: one homeSection query per uri');
+    my $pb = body_json($pf[1]);
+    ok($pb->{operationName} eq 'homeSection' && ($pb->{variables}{uri} // '') eq 'spotify:section:0JQ5DAUnp4wcj0bCb3wh3S'
+        && ($pb->{variables}{sectionItemsLimit} // 0) == 10, '79-59 home-sections <uri>: the variables of Pathfinder.pm homeSection (uri, limit 10)');
+    is(scalar(grep { $_->{url} =~ m{login5} } @$req), 1, '79-59 home-sections <uri>...: one login5 mint for all uris');
+}
+{
+    for my $bad (['spotify:playlist:37i9dQZF1EP6YuccBxUcC1'], ['nonsense'], ['spotify:section:']) {
+        my ($exit, $out, $req) = run_tool({}, '-', 'home-sections', @$bad);
+        ok($exit != 0 && $out =~ /usage/ && @$req == 0, "79-59 home-sections: argument '$bad->[0]' is a usage error before any request");
+    }
 }
 
 # ------------------------------------------------------------

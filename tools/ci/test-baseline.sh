@@ -13,6 +13,7 @@
 #   test-baseline.sh record <baseline-file> [test-root]
 #   test-baseline.sh check  <baseline-file> [test-root]
 #                           [--allow-skip a.t,b.t] [--moved-or-split <map-file>]
+#                           [--flaky-list <file>]
 #
 # test-root: Standard `t`. Jede *.t darunter wird rekursiv einzeln mit
 #   `prove -v <datei>` gefahren (nie ein Verzeichnislauf: genau der verschluckt
@@ -33,6 +34,14 @@
 # prove-Lauf rot ist oder NOTESTS ohne Skip-Zeile meldet, und gesunkenem
 # TOTAL_TESTS. Eine rote Datei wird einmal wiederholt (t/48 ist als Flake
 # bekannt), die Wiederholung steht in der Zeile.
+#
+# Flakes (79-64, FULL-5 WR-09): eine Datei, die erst in der Wiederholung gruen
+# wird, meldet `FLAKY <basename> (<pfad>)` und macht das Tor rot (check: FAIL,
+# record: REFUSED), ausser ihr basename steht in der Flake-Liste. Auch eine
+# erlaubte Flake druckt ihre FLAKY-Zeile. Standardliste:
+# test-baseline-flaky.txt neben diesem Skript; --flaky-list ersetzt sie.
+# Format: `<basename>\t<grund>` je Zeile, # und Leerzeilen sind Kommentare.
+# Ein Eintrag ohne Grund ist ein Aufruffehler (Exit 2).
 #
 # Letzte Ausgabezeile: BASELINE_CHECK=PASS|FAIL (Exit 0 / 1). record weigert
 # sich bei weniger als MIN_FILES Testdateien (leerer oder falscher Root).
@@ -55,10 +64,13 @@ case "$MODE" in record|check) ;; *) usage ;; esac
 ROOT=t
 ALLOW=""
 MAPFILE=""
+FLAKYLIST="$(cd "$(dirname "$0")" && pwd)/test-baseline-flaky.txt"
+FLAKYLIST_EXPLICIT=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --allow-skip)      [ $# -ge 2 ] || usage; ALLOW=$2; shift 2 ;;
         --moved-or-split)  [ $# -ge 2 ] || usage; MAPFILE=$2; shift 2 ;;
+        --flaky-list)      [ $# -ge 2 ] || usage; FLAKYLIST=$2; FLAKYLIST_EXPLICIT=1; shift 2 ;;
         --*)               echo "unbekannte Option: $1" >&2; usage ;;
         *)                 ROOT=$1; shift ;;
     esac
@@ -71,6 +83,23 @@ RNAME=$(basename "$ROOT_ABS")
 BASELINE_ABS=$(cd "$(dirname "$BASELINE")" 2>/dev/null && pwd)/$(basename "$BASELINE")
 [ "$MODE" = check ] && [ ! -f "$BASELINE" ] && { echo "Basis nicht gefunden: $BASELINE" >&2; exit 2; }
 if [ -n "$MAPFILE" ] && [ ! -f "$MAPFILE" ]; then echo "Map-Datei nicht gefunden: $MAPFILE" >&2; exit 2; fi
+
+# Flake-Liste lesen (fehlende Standardliste = leer; eine ausdruecklich
+# genannte, aber fehlende Liste ist ein Aufruffehler).
+declare -A FLAKY_OK
+if [ -f "$FLAKYLIST" ]; then
+    while IFS=$'\t' read -r fname freason _frest || [ -n "${fname:-}" ]; do
+        case "$fname" in ''|'#'*) continue ;; esac
+        if [ -z "${freason//[[:space:]]/}" ]; then
+            echo "Flake-Liste $FLAKYLIST: Eintrag ohne Grund: $fname (Format: <basename><TAB><grund>)" >&2
+            exit 2
+        fi
+        FLAKY_OK[$(basename "$fname")]=1
+    done <"$FLAKYLIST"
+elif [ "$FLAKYLIST_EXPLICIT" -eq 1 ]; then
+    echo "Flake-Liste nicht gefunden: $FLAKYLIST" >&2
+    exit 2
+fi
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
@@ -163,6 +192,12 @@ if [ "$MODE" = record ]; then
         if [ "${T_VERDICT[$b]}" != pass ]; then
             echo "RECORD_REFUSED: ${T_PATH[$b]} is ${T_VERDICT[$b]} -- a baseline from a red tree certifies nothing" >&2
             bad=1
+        elif [ -n "${T_RETRY[$b]}" ]; then
+            echo "FLAKY $b (${T_PATH[$b]}) needed a retry to pass${FLAKY_OK[$b]:+ (allow-listed)}"
+            if [ -z "${FLAKY_OK[$b]:-}" ]; then
+                echo "RECORD_REFUSED: ${T_PATH[$b]} is FLAKY and not on the flake list $FLAKYLIST" >&2
+                bad=1
+            fi
         fi
     done
     if [ "$bad" -ne 0 ]; then
@@ -260,7 +295,10 @@ for b in "${TREE_ORDER[@]}"; do
     if [ "${T_VERDICT[$b]}" != pass ]; then
         fail "$b prove run is ${T_VERDICT[$b]} (${T_PATH[$b]}) count=${T_COUNT[$b]} status=${T_STATUS[$b]}${T_RETRY[$b]:+ (retried once)}"
     elif [ -n "${T_RETRY[$b]}" ]; then
-        echo "NOTE $b needed a retry to pass (${T_PATH[$b]}) -- known flake risk"
+        echo "FLAKY $b (${T_PATH[$b]}) needed a retry to pass${FLAKY_OK[$b]:+ (allow-listed)}"
+        if [ -z "${FLAKY_OK[$b]:-}" ]; then
+            fail "$b is FLAKY (red on the first run, green on the retry) and not on the flake list $FLAKYLIST"
+        fi
     fi
 done
 

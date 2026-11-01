@@ -5,11 +5,14 @@
 # instead of `REFCHECK FAIL`. Whole-file entries for core files are forbidden
 # except the agreed ones below -- they would hollow out the seam (T-84-41).
 # The amputation runs never flag a Helper reference (Helper.pm is core); the
-# Credentials.pm and Status.pm entries document the agreed Helper call sites
-# (auth path, status page). No report consumes them today: --core-only (G2X)
-# scans the Soloist family only and prints allowed=0 (84-10, revision 14).
+# Credentials.pm entry documents the agreed Helper call site (auth path). No
+# report consumes it today: --core-only (G2X) scans the Soloist family only
+# and prints allowed=0 (84-10, revision 14).
+# 79-63 R2 (79-REVIEW-BETA3-R1 WR-01, user decision 2026-11-01, overriding the
+# 84-13 freeze for this one line): the ranged Status.pm entry is deleted. A
+# range allows ANY collected name on its lines, and after the code moved it
+# waved a SoloistDaemon reference through (Status.pm:402 at the review head).
 # Line ranges are re-read whenever the file changes (refcheck reports a
 # reference outside its range as a plain FAIL).
 Plugins/SpotOn/API/Credentials.pm: Helper get/getCapability is the auth path (token-login, discover-once, token-env), §6.4 -- core by user decision 2026-10-11
 Plugins/SpotOn/Backend.pm: the backend registry names both role classes as strings, required on demand (§6.2)
-Plugins/SpotOn/Status.pm:397-402: _systemInfo reads the Helper binary path/version for the status page (auth-path binary, core)

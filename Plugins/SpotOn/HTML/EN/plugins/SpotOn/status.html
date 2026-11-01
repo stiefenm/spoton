@@ -434,11 +434,11 @@ footer {
             else if (login.state === 'no_credentials')      { loginLabel = 'No credentials - pair the account'; loginClass = 'dot-dead'; }
             else if (login.state === 'transient')           { loginLabel = 'Temporary problem (network?)'; loginClass = 'dot-warn'; }
             else                                            { loginLabel = 'Not checked yet'; loginClass = 'dot-unknown'; }
-            body.appendChild(createMetricRow('Konto-Login (login5)', loginLabel, loginClass));
+            body.appendChild(createMetricRow('Account login (login5)', loginLabel, loginClass));
             body.appendChild(createMetricRow('Credentials stored', login.hasCredentials ? 'Yes' : 'No',
                 login.hasCredentials ? 'dot-alive' : 'dot-dead'));
             if (login.needsPairing) {
-                body.appendChild(createMetricRow('Pairing', 'Bitte Konto einmal koppeln', 'dot-warn'));
+                body.appendChild(createMetricRow('Pairing', 'Pair the account once', 'dot-warn'));
             }
 
             // Playback Credentials (D-08, GH #147 plan 66-02): the OTHER
@@ -465,8 +465,11 @@ footer {
 
             // Connect
             var connect = h.connect || {};
+            // 79-60 (forum #333 B): under Soloist the row reads the account's
+            // daemons and names the player of an active Connect session.
             var connectLabel = connect.alive
                 ? 'Running (PID ' + connect.pid + ', ' + formatUptime(connect.uptime) + ')'
+                  + (connect.connectActive ? ', Connect: ' + connect.connectActive : '')
                 : 'Stopped';
             body.appendChild(createMetricRow('Connect', connectLabel, connect.alive ? 'dot-alive' : 'dot-dead'));
 

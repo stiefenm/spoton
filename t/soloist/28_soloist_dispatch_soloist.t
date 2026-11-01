@@ -1880,4 +1880,134 @@ Plugins::SpotOn::Unified::DaemonManager->init();
     }
 }
 
+# ============================================================
+# 79-57 (GH #177): a missing system library is a standing condition. The
+# real probe runs against a fake binary that prints the real loader message
+# (fixture from the unchanged soloist in debian:trixie-slim) and exits 127;
+# assertStandingConditions puts one missing_library entry into the ring and
+# clears it after a successful probe.
+# ============================================================
+{
+    my $DM = 'Plugins::SpotOn::Unified::DaemonManager';
+    my @REAL_PROBES = @Plugins::SpotOn::Unified::DaemonManager::GLIBC_PROBES;
+    my $dir = tempdir(CLEANUP => 1);
+    my $glibc = sub {
+        my ($line) = @_;
+        my $p = "$dir/getconf-" . int(rand(1e9)) . ".sh";
+        open(my $fh, '>', $p) or die $!;
+        print $fh "#!/bin/sh\nprintf '%s\\n' '$line'\n";
+        close $fh;
+        chmod 0755, $p;
+        @Plugins::SpotOn::Unified::DaemonManager::GLIBC_PROBES = ([ $p ]);
+        $DM->_resetGlibcCache();
+    };
+    my $libEntries = sub {
+        return [ grep { ($_->[1] // '') eq 'Soloist' && ($_->[3] // '') eq 'missing_library' } @Plugins::SpotOn::Status::RECORDED ];
+    };
+    my $fixture = "$project_dir/t/fixtures/soloist-loader/libatomic-missing.stderr.txt";
+    my $bad = "$dir/soloist-bad";
+    open(my $fh, '>', $bad) or die $!;
+    print $fh "#!/bin/sh\ncat '$fixture' >&2\nexit 127\n";
+    close $fh;
+    chmod 0755, $bad;
+    my $good = "$dir/soloist-good";
+    open($fh, '>', $good) or die $!;
+    print $fh "#!/bin/sh\necho 'soloist 1.3.8.68 build 1 (20260101) (gabc) (linux/x86_64)'\nexit 0\n";
+    close $fh;
+    chmod 0755, $good;
+
+    local $Slim::Utils::Prefs::FAKE_VALUES{backend} = 'soloist';
+    $glibc->('glibc 2.43');
+    @Plugins::SpotOn::Status::RECORDED = ();
+    Plugins::SpotOn::Soloist::_versionProbe($bad);
+    $DM->assertStandingConditions();
+    my $e = $libEntries->();
+    is(scalar(@$e), 1, "79-57 #177: a missing library records exactly one missing_library entry");
+    is($e->[0] && $e->[0][0], 'error', "79-57 #177: the entry is level error (standing)");
+    like($e->[0] ? $e->[0][2] : '', qr/libatomic\.so\.1/, "79-57 #177: the entry names the soname");
+    like($e->[0] ? $e->[0][2] : '', qr/Debian: libatomic1/, "79-57 #177: the entry names the Debian package");
+    unlike($e->[0] ? $e->[0][2] : '', qr/\x{2014}|\x{2013}/, "79-57 #177: no em or en dash in the entry");
+    $DM->assertStandingConditions();
+    is(scalar(@{ $libEntries->() }), 1, "79-57 #177: a second call records no duplicate");
+
+    # glibc below the floor: the glibc entry is the actionable one; installing
+    # the library would not help, so no missing_library entry beside it.
+    $glibc->('glibc 2.36');
+    $DM->assertStandingConditions();
+    is(scalar(@{ $libEntries->() }), 0, "79-57 #177: under glibc 2.36 the glibc entry stands alone (no library hint)");
+
+    $glibc->('glibc 2.43');
+    $DM->assertStandingConditions();
+    is(scalar(@{ $libEntries->() }), 1, "79-57 #177: the entry comes back once glibc is fine");
+    Plugins::SpotOn::Soloist::_versionProbe($good);
+    $DM->assertStandingConditions();
+    is(scalar(@{ $libEntries->() }), 0, "79-57 #177: a successful probe clears the missing_library entry");
+
+    @Plugins::SpotOn::Unified::DaemonManager::GLIBC_PROBES = @REAL_PROBES;
+    $DM->_resetGlibcCache();
+}
+
+# ============================================================
+# 79-57 (GH #183): HostEnv::runsInContainer($root) over fixture roots, and
+# the Docker sentence in soloistGlibcProblem only inside a container.
+# ============================================================
+{
+    my $loaded = eval { require Plugins::SpotOn::Unified::HostEnv; 1 };
+    ok($loaded, "79-57 #183: Plugins::SpotOn::Unified::HostEnv loads") or diag($@);
+    my $ric = $loaded ? Plugins::SpotOn::Unified::HostEnv->can('runsInContainer') : undef;
+    my $root = sub {
+        my (%f) = @_;
+        my $r = tempdir(CLEANUP => 1);
+        for my $rel (keys %f) {
+            my $p = "$r/$rel";
+            (my $d = $p) =~ s{/[^/]+$}{};
+            make_path($d);
+            open(my $fh, '>', $p) or die $!;
+            print $fh $f{$rel};
+            close $fh;
+        }
+        return $r;
+    };
+    my %case = (
+        'dockerenv'            => [ { '.dockerenv' => '' }, 1 ],
+        'containerenv'         => [ { 'run/.containerenv' => '' }, 1 ],
+        'cgroup docker'        => [ { 'proc/1/cgroup' => "12:pids:/docker/0123abcd\n" }, 1 ],
+        'cgroup containerd'    => [ { 'proc/1/cgroup' => "0::/system.slice/containerd.service\n" }, 1 ],
+        'cgroup kubepods'      => [ { 'proc/1/cgroup' => "0::/kubepods/besteffort/pod1\n" }, 1 ],
+        'cgroup lxc'           => [ { 'proc/1/cgroup' => "0::/lxc.payload.c1\n" }, 1 ],
+        'cgroup v2 root'       => [ { 'proc/1/cgroup' => "0::/\n" }, 0 ],
+        'cgroup host init'     => [ { 'proc/1/cgroup' => "0::/init.scope\n" }, 0 ],
+        'empty root'           => [ {}, 0 ],
+    );
+    for my $name (sort keys %case) {
+        my ($files, $want) = @{ $case{$name} };
+        is($ric ? ($ric->($root->(%$files)) ? 1 : 0) : undef, $want, "79-57 #183: runsInContainer $name -> $want");
+    }
+
+    my $DM = 'Plugins::SpotOn::Unified::DaemonManager';
+    my @REAL_PROBES = @Plugins::SpotOn::Unified::DaemonManager::GLIBC_PROBES;
+    my $dir = tempdir(CLEANUP => 1);
+    my $getconf = "$dir/getconf.sh";
+    open(my $fh, '>', $getconf) or die $!;
+    print $fh "#!/bin/sh\nprintf '%s\\n' 'glibc 2.36'\n";
+    close $fh;
+    chmod 0755, $getconf;
+    @Plugins::SpotOn::Unified::DaemonManager::GLIBC_PROBES = ([ $getconf ]);
+    $DM->_resetGlibcCache();
+    local $Slim::Utils::Prefs::FAKE_VALUES{backend} = 'soloist';
+    {
+        no warnings 'once';
+        local $Plugins::SpotOn::Unified::DaemonManager::CONTAINER_ROOT = $root->('.dockerenv' => '');
+        like($DM->soloistGlibcProblem() // '', qr/This looks like a Docker container: the official Lyrion Docker image is based on Debian 12 \(glibc 2\.36\)\. Use librespot, or an image based on Debian 13\./,
+            "79-57 #183: inside a container the glibc message names Docker and the Debian 12 image");
+        unlike($DM->soloistGlibcProblem() // '', qr/\x{2014}|\x{2013}/, "79-57 #183: no em or en dash in the Docker sentence");
+        local $Plugins::SpotOn::Unified::DaemonManager::CONTAINER_ROOT = $root->();
+        my $plain = $DM->soloistGlibcProblem() // '';
+        like($plain, qr/glibc 2\.36 found/, "79-57 #183: on a host the glibc message stays");
+        unlike($plain, qr/Docker/, "79-57 #183: on a host the glibc message names no Docker");
+    }
+    @Plugins::SpotOn::Unified::DaemonManager::GLIBC_PROBES = @REAL_PROBES;
+    $DM->_resetGlibcCache();
+}
+
 done_testing();

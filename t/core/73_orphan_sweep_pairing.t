@@ -440,6 +440,17 @@ sub daemonClass { return 'Plugins::SpotOn::Unified::SoloistDaemon' }
 END
 
 
+# 79-57 (79-REVIEW-55-FIX IN-05): the soloist daemon class's smokePids(),
+# test-controlled. The core reaches it only through the role's daemonClass
+# (the seam), so a stub stands in on every CI leg, the soloist-removed one
+# included.
+write_stub($stub_dir, 'Plugins::SpotOn::Unified::SoloistDaemon', <<'END');
+package Plugins::SpotOn::Unified::SoloistDaemon;
+our @SMOKE;
+sub smokePids { return @SMOKE }
+1;
+END
+
 unshift @INC, $stub_dir, $project_dir;
 require Plugins::SpotOn::Helper;
 require Slim::Player::Sync;
@@ -550,6 +561,32 @@ no warnings 'redefine', 'once';
         Plugins::SpotOn::Plugin->_killOrphanedProcesses();
     }
     ok(!($after[0] && $after[0][1]{$pairing}), 'D-33 FULL-1 S2: after cancelPairing the PID is no longer protected');
+}
+
+# S3 (79-57, 79-REVIEW-55-FIX IN-05): a running smoke test of the same binary
+# is protected through DaemonManager->helperPids (the daemon class's
+# smokePids), the orphan beside it is not; once the smoke pid leaves
+# smokePids() the next sweep takes it.
+{
+    require Plugins::SpotOn::Unified::DaemonManager;
+    Slim::Utils::Prefs::preferences('plugin.spoton')->set('backend', 'soloist');
+    my $smoke  = start_orphan();
+    my $orphan = start_orphan();
+    ok(wait_visible($smoke) && wait_visible($orphan), '79-57 IN-05 S3: pgrep sees the smoke child and the orphan');
+    @Plugins::SpotOn::Unified::SoloistDaemon::SMOKE = ($smoke);
+    my @hp = Plugins::SpotOn::Unified::DaemonManager->helperPids();
+    ok(scalar(grep { $_ == $smoke } @hp), '79-57 IN-05 S3: helperPids() holds the smoke pid');
+
+    Plugins::SpotOn::Plugin->_killOrphanedProcesses();
+    ok(wait_gone($orphan), '79-57 IN-05 S3: the orphan is terminated by the sweep');
+    ok(child_alive($smoke), '79-57 IN-05 S3: the running smoke test survives the sweep');
+
+    @Plugins::SpotOn::Unified::SoloistDaemon::SMOKE = ();
+    ok(!scalar(grep { $_ == $smoke } Plugins::SpotOn::Unified::DaemonManager->helperPids()),
+        '79-57 IN-05 S3: after the verdict the pid is no longer in helperPids()');
+    Plugins::SpotOn::Plugin->_killOrphanedProcesses();
+    ok(wait_gone($smoke), '79-57 IN-05 S3: and the next sweep takes it');
+    Slim::Utils::Prefs::preferences('plugin.spoton')->set('backend', 'librespot');
 }
 
 done_testing();

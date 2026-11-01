@@ -310,6 +310,17 @@ sub _trackFromOnStream {
     my $url  = $args{url} // '';
     my $song = $args{song};
 
+    # 79-60: open the delivered-format read window for this track (once per
+    # track: a repeated onStream for the same title - seek, rewind - keeps it).
+    if ($url =~ m{^spoton://(track|episode):([A-Za-z0-9]+)$}) {
+        my $uri = "spotify:$1:$2";
+        eval {
+            require Plugins::SpotOn::Soloist::DeliveredFormat;
+            Plugins::SpotOn::Soloist::DeliveredFormat->noteSongStart($self->{mac}, $uri);
+            1;
+        } or $log->warn("DeliveredFormat noteSongStart failed: $@");
+    }
+
     my $ctl = $self->_ctl or return 'down';
 
     my ($pos, $seek);
@@ -371,7 +382,7 @@ sub _trackFromOnStream {
 # maps to a concrete, user-facing reason. Unknown states fall back to the
 # generic text. Moved from ProtocolHandler.pm with Case 3 (84-08).
 my %PREREQ_FAILURE_MESSAGES = (
-    soloist_unsupported_os => 'Soloist is not supported on this platform (Windows/macOS)',
+    soloist_unsupported_os => 'SpotOn supports Soloist on Linux only, not on this platform (Windows/macOS)',
     soloist_missing_binary => 'Soloist binary not installed',
     soloist_missing_key    => 'Soloist not authorized (missing key)',
     soloist_build_expired  => 'Soloist build has expired - please update the plugin',
@@ -620,6 +631,23 @@ sub pairedForMac {
     return Plugins::SpotOn::Soloist::isPairedForClient($mac) ? 1 : 0;
 }
 
+# accountIdForHelper($class, $helper) -> account id | ''
+# authHealthListsPlayers($class) -> 1
+# 79-63 R1 (79-REVIEW-BETA3 CR-01): Status.pm's Auth Health Connect row asks
+# the helper's own role instead of naming SoloistDaemon (core names no
+# backend module). A SoloistDaemon carries no account on purpose; the account
+# is the one its PLAYER resolves to (Plugin::_getAccountId), and the row lists
+# the account's live daemons and the player in a Connect session -- the 79-60
+# rule, moved here verbatim (both lookups eval-guarded as before).
+sub accountIdForHelper {
+    my ($class, $helper) = @_;
+    return '' unless $helper && $helper->can('mac');
+    require Plugins::SpotOn::Plugin;
+    my $client = eval { Slim::Player::Client::getClient($helper->mac) };
+    return (eval { Plugins::SpotOn::Plugin::_getAccountId($client) } // '');
+}
+sub authHealthListsPlayers { return 1; }
+
 # deferTrackRequestForClient($class, $clientId, $uri, $posMs, $opts)
 # Phase 82 Plan 44 (D-09/D-10/D-12, Runde 44): Case 2's entry -- registers
 # a requestTrack that arrived before ANY daemon object existed for
@@ -712,6 +740,30 @@ sub query {
     if ($what eq 'consumeRestartAllowance') {
         my $ctl = $self->_ctl or return undef;
         return $ctl->consumeRestartAllowance($args{url}) ? 1 : 0;
+    }
+    # 79-60 (forum #333): the Now Playing label's three backend reads.
+    #   playingMode      'connect' | 'browse' from Control's mode (undef without Control)
+    #   deliveredFormat  { codec, bitrate } of uri => spotify:<type>:<id> from the daemon log
+    #                    (Soloist::DeliveredFormat), undef without a measurement
+    #   qualityLevelKey  the i18n key of the configured level for client => $client
+    if ($what eq 'playingMode') {
+        my $ctl = $self->_ctl or return undef;
+        return (($ctl->mode // '') eq 'connect') ? 'connect' : 'browse';
+    }
+    if ($what eq 'deliveredFormat') {
+        return undef unless defined $args{uri} && length $args{uri};
+        return scalar eval {
+            require Plugins::SpotOn::Soloist::DeliveredFormat;
+            Plugins::SpotOn::Soloist::DeliveredFormat->deliveredFor($self->{mac}, $args{uri});
+        };
+    }
+    if ($what eq 'qualityLevelKey') {
+        my $key = eval {
+            require Plugins::SpotOn::Soloist::Quality;
+            my $q = 'Plugins::SpotOn::Soloist::Quality';
+            $q->labelFor($q->effectiveLevelForClient($args{client}));
+        };
+        return $key ? $key : undef;
     }
     return undef;
 }
@@ -1061,6 +1113,15 @@ sub binaryPath {
 #   keyState()      -> { supported => 1, present => 0|1 }
 #   storeKey($raw)  -> (1) | (0, $reason)    ($reason e.g. write_failed)
 #   clearKey()      -> 1
+# startCheck() -- 79-57 (GH #177): what the last Soloist version probe
+# reported, for the core's status ring (DaemonManager) and diag report
+# (Settings): { reason, soname, package_hint, glibc_needed, at } or undef
+# when the last probe succeeded (or none ran yet).
+sub startCheck {
+    require Plugins::SpotOn::Soloist;
+    return Plugins::SpotOn::Soloist::lastProbeFailure();
+}
+
 sub keyState {
     require Plugins::SpotOn::Soloist;
     return { supported => 1, present => (Plugins::SpotOn::Soloist::hasKey() ? 1 : 0) };

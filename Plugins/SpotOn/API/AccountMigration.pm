@@ -31,7 +31,7 @@ package Plugins::SpotOn::API::AccountMigration;
 use strict;
 use warnings;
 
-use File::Spec::Functions qw(catdir);
+use File::Spec::Functions qw(catdir catfile);
 use Digest::MD5 qw(md5_hex);
 use Encode ();
 
@@ -247,6 +247,21 @@ sub _renameDir {
 
     return 0 unless -d $from;    # already moved (resume after the rename)
     if (-e $to) {
+        # 79-61 (FULL-3 WR-04): the refusal gate in rekeyAccount only looks
+        # at <new>/credentials.json, so a leftover target directory WITHOUT
+        # that file passes it. Move the credentials into it -- otherwise the
+        # prefs say <new> while the only working credentials.json stays under
+        # <old> and the account needs re-pairing. A target that already holds
+        # a credentials.json is never overwritten.
+        my $fromFile = catfile($from, 'credentials.json');
+        my $toFile   = catfile($to, 'credentials.json');
+        if (-d $to && -f $fromFile && !-e $toFile) {
+            rename($fromFile, $toFile) or die "move of credentials.json failed: $!\n";
+            chmod(0600, $toFile);
+            $log->warn("Auth chain migration: " . _mask($newId) . " directory already existed -- credentials.json of "
+                . _mask($oldId) . " moved into it");
+            return 1;
+        }
         main::INFOLOG && $log->info("Auth chain migration: " . _mask($newId)
             . " directory already exists -- " . _mask($oldId) . " directory left in place");
         return 0;

@@ -5,6 +5,45 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.0.0-beta.3] - 2026-11-01
+
+**Installing this beta.** Same beta repository URL as before (`https://stiefenm.github.io/spoton/beta/repo.xml`); the Plugins page offers SpotOn 4.0.0beta3 as an update over 4.0.0beta2.2. Restart LMS after the update.
+
+### Fixed
+
+- Search: a row in a search result list now opens exactly the item it shows, also after an LMS restart, and long result lists open faster because pages that were already fetched are reused. ([#168](https://github.com/stiefenm/spoton/issues/168))
+- Soloist: when a system library is missing (for example libatomic), the server log, the status page and the settings page now name the library and the package to install. ([#177](https://github.com/stiefenm/spoton/issues/177))
+- Soloist: the server log and the status page now say why Soloist cannot run in the official Lyrion Docker image: it is based on Debian 12 (glibc 2.36), and Soloist needs glibc 2.38 or newer. Use librespot there, or an image based on Debian 13. ([#183](https://github.com/stiefenm/spoton/issues/183))
+- Soloist: a start from the SpotOn menus could stay silent while LMS showed the player as playing, most often on the first start after a stop. This had been there since 4.0.0-beta.1.
+- Soloist: music from the SpotOn menus now starts about 3 seconds sooner. Before, the first 3 seconds of every start were held back.
+- Now Playing shows Connect or Browse correctly. The bitrate is the one Spotify delivered for the playing track (none when SpotOn has no reading for it) instead of an estimated FLAC bitrate, and the bit depth is the real one of the source. In Material Skin the line reads like "Spotify • 1400k, 16bit, 44.1kHz, FLAC".
+- Track info: the first row shows Spotify's format and what the player gets, for example "FLAC 1400k · PCM, SpotOn Browse"; the "File format" and "Sample size" rows show the real format and the source bit depth for SpotOn tracks.
+- Status page: under Soloist the Auth Health "Connect" row shows the running daemon, and during a Connect session the player's name. The labels on the English page are English. (forum #333)
+- Player settings are split into a General section and a section for the playback backend you use; a setting that only one backend reads only appears with that backend. The MP3 option says where its bitrate is set: in LMS, Player Settings, Audio, Bitrate Limiting.
+- Fixes from the code reviews: a player that was never paired is recognised more reliably, the Soloist version check can no longer start a second copy of LMS or hang on a program file that keeps writing, and stopping or restarting a playing Soloist player no longer freezes LMS for several seconds.
+- Soloist, Connect mode: when you move playback from one LMS player to another in the Spotify app, the old player now pauses.
+- The diagnostic bundle contains only the last 2 MB of server.log.
+- The two documented Soloist status messages (command_result and options_changed) no longer write "classify unknown" warnings to server.log; command_result now writes a quiet INFO line instead.
+- SpotOn's Soloist backend runs on Linux only. Spotify also offers Soloist for Windows and macOS (Apple Silicon), which SpotOn does not use there because its audio capture is Linux-only (docs, settings text, the error message on Windows/macOS).
+- The key is called "Spotify Soloist API key" everywhere a user reads it, in all 11 languages (formerly spak key).
+
+### Added
+
+- The daylist in Made For You (#180): it is the first entry, followed by your Daily Mixes, Discover Weekly and Release Radar. ([#180](https://github.com/stiefenm/spoton/issues/180))
+- New lists in Made For You: every other list Spotify generates for your account appears in a folder named after its row on Spotify's home, for example Fun Workout Mix, Classic Rock Mix, Reggae Mix, TOTO-Mix, 2010s Mix, Rémi Panossian Trio-Mix and Soul Mix. Artist radios are left out for now; editorial playlists and your own playlists stay where they were.
+
+### Known issues
+
+- Made For You: some rows on Spotify's home hold one list that changes on every request, so a folder can show different lists each time it is opened (at most every five minutes).
+- Soloist, Connect mode: a transfer that the Spotify app announces without a device change is not started automatically; press play.
+- Soloist: in rare cases the playback service can crash right when a track ends or playback is stopped; SpotOn restarts it on its own, which causes a short gap and the Connect device can briefly disappear from the Spotify app.
+- Soloist: if several control requests reach the playback service at the same moment around a track change, one can be lost; this has not been observed in testing.
+- librespot: the pairing service on your local network does not limit the size of incoming requests; a misbehaving device on the same network can make pairing fail or stop the service until SpotOn restarts it.
+- Soloist, Connect mode: after a seek in the Spotify app, LMS shows the new position at once, but you hear it only after about 6 to 7 seconds, on some setups later. The music is not meant to stop.
+- Soloist, Connect mode: after restarting a quiet track from the Spotify app, the music starts again from the beginning while the LMS time display can stay at the old position.
+
+Everything else is as in 4.0.0-beta.2.2 below.
+
 ## [4.0.0-beta.2.2] - 2026-10-30
 
 **Installing this hotfix.** Same beta repository URL as before (`https://stiefenm.github.io/spoton/beta/repo.xml`); the Plugins page offers SpotOn 4.0.0beta2.2 as an update over 4.0.0beta2.1. Restart LMS after the update.

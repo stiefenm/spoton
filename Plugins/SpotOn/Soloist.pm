@@ -231,37 +231,164 @@ sub activeVersion {
     return _versionAcceptable($path, 1);
 }
 
-# Array-form open('-|', ...) -- never a shell string/backtick (RESEARCH.md
-# Anti-Patterns; contrast with Helper.pm::helperCheck()'s pre-existing debt).
-# Returns the parsed version string (e.g. "1.3.8.68") on success, or undef
-# when the binary fails to run or its output doesn't parse. Pure probe --
-# never touches the module-level $binary/$version or the cache, so plans 03
-# (staged renewal candidates) and 05 (placed binaries) can call it directly
-# without side-effecting activation state.
+# _versionProbe($candidate) -- the parsed version string (e.g. "1.3.8.68")
+# on success, or undef when the binary fails to run or its output doesn't
+# parse. Pure probe -- never touches the module-level $binary/$version or
+# the cache, so plans 03 (staged renewal candidates) and 05 (placed
+# binaries) can call it directly without side-effecting activation state.
+# 79-57 (GH #177): a thin wrapper over _versionProbeDetail(); every caller
+# keeps this contract.
 sub _versionProbe {
     my ($candidate) = @_;
+    return _versionProbeDetail($candidate)->{version};
+}
+
+# 79-57 (GH #177): the bounded read of the probe's merged stdout+stderr, and
+# the Debian package that ships the libraries minimal images lack (Soloist's
+# NEEDED list: libm, libpthread, libdl, libatomic, librt, libgcc_s, libc).
+use constant PROBE_READ_MAX => 4096;
+my %LIBRARY_PACKAGE = (
+    'libatomic.so.1' => 'libatomic1',
+    'libgcc_s.so.1'  => 'libgcc-s1',
+);
+
+my $_lastProbeFailure;
+
+# lastProbeFailure() -- { reason, soname, package_hint, glibc_needed, at }
+# of the last probe that did not yield a version, or undef. Cleared by the
+# next successful probe. Read by DaemonManager::assertStandingConditions
+# (status ring) and the Settings diag report.
+sub lastProbeFailure {
+    return $_lastProbeFailure ? { %$_lastProbeFailure } : undef;
+}
+
+# packageHintFor($soname) -- the Debian package name for a known soname,
+# else "the package that provides <soname>".
+sub packageHintFor {
+    my ($soname) = @_;
+    return $LIBRARY_PACKAGE{$soname} // "the package that provides $soname";
+}
+
+# _versionProbeDetail($candidate) -- runs the candidate with --version without a
+# shell: list-form fork (`open '-|'` with no command), the child dups STDERR
+# onto STDOUT and execs the binary directly. The binary is only run, never
+# changed. Reads at most PROBE_READ_MAX bytes. Returns
+#   { version, reason, soname, glibc_needed, exit, stderr_head }
+# version on success; else reason is missing_library:<soname> (the dynamic
+# loader could not find a library), glibc_too_old:GLIBC_<x.y> (a symbol
+# version is missing), or version_unparsable (anything else). Only the
+# soname, the GLIBC version and a package name ever reach a log line, never
+# the raw stderr (T-79-240).
+sub _versionProbeDetail {
+    my ($candidate) = @_;
+
+    my %d = (version => undef, reason => undef, soname => undef,
+             glibc_needed => undef, exit => undef, stderr_head => undef);
 
     my $output = '';
     my $ok = eval {
-        open(my $fh, '-|', $candidate, VERSION_FLAG) or die "open failed: $!\n";
-        local $/;
-        $output = <$fh> // '';
+        require POSIX;    # before the fork: the child must never load code
+        my $pid = open(my $fh, '-|');
+        die "fork failed: $!\n" unless defined $pid;
+        if (!$pid) {
+            # child: never returns into LMS code. In LMS STDERR is tied to
+            # Slim::Utils::Log::Trapper, which has no OPEN method (T-29-09):
+            # a reopen of the tied handle dies, and before the 79-57 fix that
+            # die was caught by the eval around this fork, so the child went
+            # on running as a second LMS and forked more of itself. Untie
+            # first; every step stays inside its own eval and the only way out
+            # is POSIX::_exit.
+            $SIG{__DIE__}  = 'DEFAULT';
+            $SIG{__WARN__} = sub {};
+            $SIG{PIPE}     = 'DEFAULT';   # 79-63 R2: LMS ignores SIGPIPE (bootstrap.pm:243) and SIG_IGN survives exec; a candidate that ignores write errors would outlive close()
+            eval {
+                untie *STDERR if tied *STDERR;
+                untie *STDOUT if tied *STDOUT;
+                open(STDERR, '>&', \*STDOUT);
+                { no warnings 'exec'; exec { $candidate } $candidate, VERSION_FLAG; }
+            };
+            eval { syswrite(STDOUT, "spoton-probe: exec failed\n") };    # unbuffered: _exit flushes nothing
+            POSIX::_exit(127);
+        }
+        my $n = read($fh, $output, PROBE_READ_MAX);
+        $output = '' unless defined $n;
         close($fh);
+        $d{exit} = ($? == -1) ? undef : ($? >> 8);
         1;
     };
 
     unless ($ok) {
         $log->warn("Soloist: version check failed to run: $@");
-        return undef;
+        $d{reason} = 'version_unparsable';
+        _noteProbeFailure(\%d);
+        return \%d;
     }
 
     # e.g. "soloist 1.3.8.68 build 1790143294 (20260923) (g5c3a2053ac) (linux/x86_64)"
-    if ($output =~ /^soloist\s+([\d.]+)/i) {
-        return $1;
+    if ($output =~ /^soloist\s+([\d.]+)/im) {
+        $d{version} = $1;
+        $_lastProbeFailure = undef;
+        return \%d;
     }
 
-    $log->warn("Soloist: unexpected --version output (" . length($output) . " bytes)");
-    return undef;
+    ($d{stderr_head}) = $output =~ /\A([^\n]{0,200})/;
+
+    if ($output =~ /error while loading shared libraries: ([A-Za-z0-9._+-]+):/) {
+        $d{soname} = $1;
+        $d{reason} = "missing_library:$1";
+    }
+    elsif (my @needed = $output =~ /version .GLIBC_(\d+\.\d+). not found/g) {
+        my ($max) = sort { _versionCompare($b, $a) } @needed;
+        $d{glibc_needed} = $max;
+        $d{reason} = "glibc_too_old:GLIBC_$max";
+    }
+    else {
+        $d{reason} = 'version_unparsable';
+    }
+
+    _noteProbeFailure(\%d);
+
+    # 79-57 (GH #183): on a glibc below the floor the glibc reason is the
+    # one that matters (a missing library or an empty probe is only its
+    # symptom): one warn line with DaemonManager's message, which also names
+    # Docker inside a container. DaemonManager is the core and always loaded
+    # in LMS; without it (or without a detected glibc) the lines below stay.
+    my $glibcProblem;
+    if (my $problem = Plugins::SpotOn::Unified::DaemonManager->can('soloistGlibcProblem')) {
+        $glibcProblem = eval { $problem->() };
+    }
+
+    if ($output =~ /^spoton-probe: exec failed$/m) {
+        $log->warn("Soloist: version check failed to run (exec failed)");
+    }
+    elsif (defined $glibcProblem && length $glibcProblem) {
+        $log->warn("Soloist: $glibcProblem (version check reason $d{reason})");
+    }
+    elsif (defined $d{glibc_needed}) {
+        $log->warn("Soloist: cannot start, the binary needs glibc $d{glibc_needed} or newer and this "
+            . "system's C library is older; version check reason $d{reason}");
+    }
+    elsif (defined $d{soname}) {
+        $log->warn("Soloist: cannot start, the system library $d{soname} is missing (install "
+            . packageHintFor($d{soname}) . "); version check reason $d{reason}");
+    }
+    else {
+        $log->warn("Soloist: unexpected --version output (" . length($output) . " bytes"
+            . (defined $d{exit} ? ", exit $d{exit}" : '') . "); version check reason $d{reason}");
+    }
+
+    return \%d;
+}
+
+sub _noteProbeFailure {
+    my ($d) = @_;
+    $_lastProbeFailure = {
+        reason       => $d->{reason},
+        soname       => $d->{soname},
+        package_hint => (defined $d->{soname} ? packageHintFor($d->{soname}) : undef),
+        glibc_needed => $d->{glibc_needed},
+        at           => time(),
+    };
 }
 
 # _versionAcceptable($candidate, $quiet) -- pure: D-05 (Phase 83.3) pin
@@ -463,7 +590,10 @@ sub _onSoloistDownloadDone {
         # patches struck): the helper's `check` subcommand remains available
         # for diagnostics, but `patch` is never invoked in production.
     } else {
-        $log->warn("Soloist: downloaded binary failed version check -- not activated (fail-closed)");
+        # 79-57 (GH #177): name the probe's reason when the probe itself failed.
+        my $failure = lastProbeFailure();
+        $log->warn("Soloist: downloaded binary failed version check -- not activated (fail-closed)"
+            . ($failure ? "; reason $failure->{reason}" : ''));
     }
 }
 
@@ -771,9 +901,12 @@ sub _onRenewalDownloadDone {
         return _finishRenewal('failed', $extractReason || 'extract_failed');
     }
 
-    my $parsed = _versionProbe($candidate);
+    my $probe  = _versionProbeDetail($candidate);
+    my $parsed = $probe->{version};
     unless (defined $parsed) {
-        return _finishRenewal('failed', 'version_unparsable');
+        # 79-57 (GH #177): the probe's own reason (missing_library:<soname>,
+        # glibc_too_old:GLIBC_<x.y>, version_unparsable).
+        return _finishRenewal('failed', $probe->{reason} || 'version_unparsable');
     }
 
     my $expected = expectedVersion();
@@ -1287,9 +1420,11 @@ sub checkPlacedBinary {
         chmod(0755, $staged);
     }
 
-    my $parsed = _versionProbe($staged);
+    my $probe  = _versionProbeDetail($staged);
+    my $parsed = $probe->{version};
     unless (defined $parsed) {
-        $finish->(status => 'rejected', reason => 'version_unparsable');
+        # 79-57 (GH #177): the probe's own reason, see _versionProbeDetail.
+        $finish->(status => 'rejected', reason => $probe->{reason} || 'version_unparsable');
         return 'started';
     }
 
@@ -1577,7 +1712,13 @@ sub isPairedForClient {
     my $users = catdir(dataDirForClient($mac), 'settings', 'Users');
     return 0 unless -d $users;
 
-    opendir(my $dh, $users) or return 0;
+    # 79-57 IN-03: an existing dir that cannot be opened is "unknown", never a
+    # defined "never paired" (which would refuse and stop the player).
+    my $dh;
+    unless (opendir($dh, $users)) {
+        $log->warn("Soloist: cannot read the pairing state of $mac: $!");
+        return undef;
+    }
     my @entries = grep { $_ ne '.' && $_ ne '..' } readdir($dh);
     closedir($dh);
 

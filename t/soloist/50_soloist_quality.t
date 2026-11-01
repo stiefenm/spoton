@@ -184,6 +184,30 @@ sub reset_calls { @getToken_calls = () }
 1;
 END
 
+# Stub: Plugins::SpotOn::API::SpClient -- 79-61 (FULL-3 WR-03): the central
+# spclient gate (shared concurrency cap and 429 key). Records every gated
+# request; 'blocked' answers as a cached rate limit would.
+write_stub($stub_dir, 'Plugins::SpotOn::API::SpClient', <<'END');
+package Plugins::SpotOn::API::SpClient;
+our @gate_calls;
+our $gate_mode = 'pass';   # pass | blocked
+our $inflight  = 0;
+our $max_inflight = 0;
+our @rate_notes;
+sub gate {
+    my ($class, $label, $run, $blocked) = @_;
+    push @gate_calls, $label;
+    if ($gate_mode eq 'blocked') { $blocked->('rate_limited_local'); return; }
+    $inflight++;
+    $max_inflight = $inflight if $inflight > $max_inflight;
+    my $released = 0;
+    $run->(sub { return if $released++; $inflight--; });
+}
+sub noteRateLimit { my ($class, $retryAfter) = @_; push @rate_notes, $retryAfter; }
+sub reset_gate { @gate_calls = (); $gate_mode = 'pass'; $inflight = 0; $max_inflight = 0; @rate_notes = (); }
+1;
+END
+
 # Stub: Plugins::SpotOn::Soloist -- dataDirForClient returns a per-mac
 # tempdir the test writes .device_id into.
 write_stub($stub_dir, 'Plugins::SpotOn::Soloist', <<'END');
@@ -252,6 +276,9 @@ use HTTP::Response;
 
 our @requests = ();
 our $last_callback_error;
+our $defer   = 0;
+our @pending = ();
+sub complete_next { my $p = shift @pending or return 0; $p->[0]->_answer($p->[1], $p->[2]); return 1; }
 
 our $write_mode         = 'success';   # success | error
 our $write_grpc_status  = 0;
@@ -283,6 +310,17 @@ sub post {
     # 79-43 Q3: a transport-layer die (HTTP::Message "content must be bytes") escapes post() like the real one
     die "HTTP::Message content must be bytes at /stub/HTTP/Message.pm line 1\n" if $mode eq 'die';
 
+    # 79-61 (FULL-3 WR-03): deferred mode keeps the request open until
+    # complete_next() answers it, so a test can count requests in flight.
+    if ($defer) { push @pending, [ $self, $url, $isWrite ]; return; }
+    $self->_answer($url, $isWrite);
+    return;
+}
+
+sub _answer {
+    my ($self, $url, $isWrite) = @_;
+    my $mode    = $isWrite ? $write_mode : $read_mode;
+
     $last_callback_error = undef;
 
     if ($mode eq 'success') {
@@ -312,6 +350,7 @@ sub headers    { $_[0]->{_headers} }
 
 sub reset_stub {
     @requests = ();
+    $defer = 0; @pending = ();
     $last_callback_error = undef;
     $write_mode = 'success'; $write_grpc_status = 0; $write_grpc_message = ''; $write_content = ''; $write_error = '';
     $read_mode  = 'success'; $read_grpc_status  = 0; $read_grpc_message  = ''; $read_content  = ''; $read_error  = '';
@@ -359,6 +398,7 @@ unshift @INC, $stub_dir, $project_dir;
 # Force-load the controllable stubs up front (Quality.pm runtime-requires
 # them only when a code path is actually hit).
 require_ok('Plugins::SpotOn::API::Login5')                   or BAIL_OUT('Failed to load Login5 stub');
+require_ok('Plugins::SpotOn::API::SpClient')                 or BAIL_OUT('Failed to load SpClient gate stub');
 require_ok('Plugins::SpotOn::Soloist')                        or BAIL_OUT('Failed to load Soloist stub');
 require_ok('Plugins::SpotOn::Unified::DaemonManager')         or BAIL_OUT('Failed to load DaemonManager stub');
 require_ok('Slim::Player::Client')                            or BAIL_OUT('Failed to load Slim::Player::Client stub');
@@ -407,6 +447,7 @@ sub assert_cb_ok {
 
 sub reset_all {
     Slim::Networking::SimpleAsyncHTTP::reset_stub();
+    Plugins::SpotOn::API::SpClient::reset_gate();
     Slim::Utils::Prefs::reset_store();      # no per-client namespace survives a case boundary
     Slim::Utils::Cache->new()->clear();
     Plugins::SpotOn::API::Login5::reset_calls();
@@ -1252,6 +1293,79 @@ subtest '79-43 Q1-Q3: device name as UTF-8, POST guarded' => sub {
     is($escaped // 'none', 'none', '79-43 Q3: a die inside the POST does not escape to the caller');
     is(($err && $err->{class}) // 'none', 'unreachable', '79-43 Q3: the callback gets class unreachable');
     like(($err && $err->{error}) // '', qr/content must be bytes/, '79-43 Q3: ... with the error text');
+};
+
+# ============================================================
+# 79-61 (79-REVIEW-FULL-3 WR-03): the "one central throttle" invariant did
+# not hold for playback-settings. Quality.pm posted straight through its own
+# SimpleAsyncHTTP: no shared concurrency cap, a spclient 429 key did not stop
+# it, its own 429 was forgotten, and applyChange(global) fired one write per
+# player at once. Every Quality request now passes SpClient's gate, a 429 is
+# recorded in the shared key, and a global change writes one player at a time.
+# ============================================================
+subtest '79-61 WR-03: playback-settings requests pass the central spclient gate' => sub {
+    reset_all();
+    my $mac = '00:AA:61:00:00:01';
+    write_device_id($mac);
+    MockClient->new($mac, 'player-61');
+
+    my ($ok, $err);
+    $Q->write($mac, 5, sub { ($ok, $err) = @_; });
+    is(scalar(@Plugins::SpotOn::API::SpClient::gate_calls), 1, 'a write passes the gate exactly once');
+    like($Plugins::SpotOn::API::SpClient::gate_calls[0] // '', qr/WriteDeviceValue/, 'the gate label names the method');
+    is($Plugins::SpotOn::API::SpClient::inflight, 0, 'the gate slot is released after the answer');
+
+    my ($lvl, $rerr);
+    $Slim::Networking::SimpleAsyncHTTP::read_content = build_content(3);
+    $Q->read($mac, sub { ($lvl, $rerr) = @_; });
+    is(scalar(@Plugins::SpotOn::API::SpClient::gate_calls), 2, 'a read passes the gate as well');
+};
+
+subtest '79-61 WR-03: a cached spclient rate limit stops the request before any HTTP' => sub {
+    reset_all();
+    my $mac = '00:AA:61:00:00:02';
+    write_device_id($mac);
+    MockClient->new($mac, 'player-61b');
+    $Plugins::SpotOn::API::SpClient::gate_mode = 'blocked';
+    my ($ok, $err);
+    $Q->write($mac, 5, sub { ($ok, $err) = @_; });
+    is(scalar(@Slim::Networking::SimpleAsyncHTTP::requests), 0, 'no HTTP request while the shared rate limit holds');
+    is(($err && $err->{class}) // 'none', 'unreachable', 'the blocked request is classified unreachable (pref kept, retried later)');
+};
+
+subtest '79-61 WR-03: a playback-settings 429 is recorded in the shared rate key' => sub {
+    reset_all();
+    my $mac = '00:AA:61:00:00:03';
+    write_device_id($mac);
+    MockClient->new($mac, 'player-61c');
+    $Slim::Networking::SimpleAsyncHTTP::write_mode  = 'error';
+    $Slim::Networking::SimpleAsyncHTTP::write_error = '429 Too Many Requests';
+    my ($ok, $err);
+    $Q->write($mac, 5, sub { ($ok, $err) = @_; });
+    is(scalar(@Plugins::SpotOn::API::SpClient::rate_notes), 1, 'the 429 is handed to SpClient->noteRateLimit');
+    is(($err && $err->{class}) // 'none', 'unreachable', 'the 429 itself stays unreachable');
+};
+
+subtest '79-61 WR-03: applyChange(global) writes one player at a time' => sub {
+    reset_all();
+    my @macs = ('00:AA:61:00:01:01', '00:AA:61:00:01:02', '00:AA:61:00:01:03');
+    for my $m (@macs) { write_device_id($m); MockClient->new($m, "p-$m"); }
+    $prefs->set('soloistQuality', 0);
+    $Slim::Networking::SimpleAsyncHTTP::read_content = build_content(5);
+    $Slim::Networking::SimpleAsyncHTTP::defer = 1;
+
+    $Q->applyChange(scope => 'global', level => 5);
+    is(scalar(@Slim::Networking::SimpleAsyncHTTP::pending), 1, 'only one request is in flight right after a global change (not one per player)');
+
+    my $answered = 0;
+    while (Slim::Networking::SimpleAsyncHTTP::complete_next()) {
+        $answered++;
+        last if $answered > 20;
+        ok(scalar(@Slim::Networking::SimpleAsyncHTTP::pending) <= 1, "after answer $answered at most one request is in flight");
+    }
+    my @writes = grep { $_->{url} =~ m{/WriteDeviceValue$} } @Slim::Networking::SimpleAsyncHTTP::requests;
+    is(scalar(@writes), 3, 'every player still gets its write');
+    is($Plugins::SpotOn::API::SpClient::max_inflight, 1, 'the gate never held two Quality requests at once');
 };
 
 done_testing();

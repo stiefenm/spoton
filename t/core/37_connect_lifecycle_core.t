@@ -95,7 +95,7 @@ like($connect,
     qr/eq 'inactive'\).*?_restorePowerAfterConnect\(\$client\)/s,
     "GH #151: restore is wired to the 'inactive' session-end stop branch");
 my ($newtrack_stop_block) = $connect =~
-    /(if \(\$cmd eq 'stop' && \$client->pluginData\('newTrack'\)\) \{.*?\n    \})/s;
+    /(if \(\$cmd eq 'stop' && \$client->pluginData\('newTrack'\)[^{]*\) \{.*?\n    \})/s;    # 79-61 WR-04: the gate carries the 'inactive' exception
 ok($newtrack_stop_block, 'GH #151: newTrack transitional-stop branch parseable');
 if ($newtrack_stop_block) {
     unlike($newtrack_stop_block, qr/_restorePowerAfterConnect/,

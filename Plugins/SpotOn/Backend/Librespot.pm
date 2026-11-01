@@ -229,7 +229,18 @@ sub control {
 
 sub notify { return 'unsupported'; }
 
-sub query { return undef; }
+# query($what, %args) -> scalar | undef. 79-60: 'playingMode' (client => $client) ->
+# 'connect' | 'browse' from the librespot Connect claim, for the Now Playing label
+# (Plugin::_playingMode); every other question: no opinion.
+sub query {
+    my ($self, $what, %args) = @_;
+    if (($what // '') eq 'playingMode') {
+        return undef unless $args{client};
+        my $isConnect = eval { require Plugins::SpotOn::Connect; Plugins::SpotOn::Connect->isSpotifyConnect($args{client}) };
+        return $isConnect ? 'connect' : 'browse';
+    }
+    return undef;
+}
 
 # streamUrl($client, $songOrUrl, $kind) -> url | undef
 # The librespot halves of ProtocolHandler's URL choices, moved here
@@ -479,6 +490,19 @@ sub onDaemonExit   { return 'restart'; }
 sub onInitHelpers  { return 'ok'; }
 sub rollbackBinary { return (0, 'unsupported'); }
 sub pairedForMac   { return undef; }
+
+# accountIdForHelper($class, $helper) -> account id | ''
+# authHealthListsPlayers($class) -> 0
+# 79-63 R1 (79-REVIEW-BETA3 CR-01): Status.pm's Auth Health Connect row asks
+# the helper's own role instead of naming a daemon class (core names no
+# backend module). A librespot daemon carries its account (_accountId); the
+# row lists no players (the 79-60 rule, unchanged).
+sub accountIdForHelper {
+    my ($class, $helper) = @_;
+    return '' unless $helper && $helper->can('_accountId');
+    return $helper->_accountId || '';
+}
+sub authHealthListsPlayers { return 0; }
 
 # quality / qualityInfo -- the Spotify streaming-quality control (D-17) is a
 # Soloist feature; librespot has none.

@@ -1584,6 +1584,18 @@ sub _fire_last_timer {
     my $idsDiffer = 0;
     local *Plugins::SpotOn::Unified::SoloistDaemon::_idsDiffer = sub { return $idsDiffer; };
 
+    # 79-57 IN-01 R3: S10's loader assertion runs only on glibc. The detection
+    # is DaemonManager's glibcVersion() when it loads here, else its own first
+    # probe (getconf GNU_LIBC_VERSION), the same rule.
+    my $glibcForS10 = eval {
+        require Plugins::SpotOn::Unified::DaemonManager;
+        Plugins::SpotOn::Unified::DaemonManager->glibcVersion();
+    };
+    unless (defined $glibcForS10) {
+        my $l = `getconf GNU_LIBC_VERSION 2>/dev/null` // '';
+        $glibcForS10 = "$1.$2" if $l =~ /^glibc\s+(\d+)\.(\d+)/;
+    }
+
     my $portFile = "$shimDir/port";
     my @input    = ('/fake/bin/soloist', '-x');
 
@@ -1628,7 +1640,11 @@ sub _fire_last_timer {
         is_deeply([ @a[4 .. ($#a < 9 ? $#a : 9)] ], \@pairs, '79-55 S2: exactly the six NAME=VALUE items, sorted, with the S1 values');
         is($a[10], '--', '79-55 S2: a literal -- follows the pairs');
         is_deeply([ @a[11 .. $#a] ], \@input, '79-55 S2: the input args follow unchanged');
-        is_deeply($call ? $call->{env} : undef, $s1env, '79-55 S2: the recorded env equals S1');
+        # 79-57 N3: the wrapper spawn drops PERL5LIB, PERLLIB and PERL5OPT
+        # (set e.g. by a PERL5OPT=-M... harness around this suite); else S1's env.
+        my %s2want = %$s1env;
+        delete @s2want{qw(PERL5LIB PERLLIB PERL5OPT)};
+        is_deeply($call ? $call->{env} : undef, \%s2want, '79-55 S2: the recorded env equals S1 (79-57: without PERL5LIB, PERLLIB, PERL5OPT)');
         is_deeply(\@idsAfter, \@idsBefore, '79-55 S8: the test process ids are unchanged by the spawn');
     }
 
@@ -1780,7 +1796,13 @@ sub _fire_last_timer {
         my $err = do { local $/; open(my $r, '<', $errFile) or die $!; <$r> };
         is($out, join('|', $pid, map { "v-$_" } @names) . "\n", '79-55 R1 S10: the real wrapper exports all six names');
         is($status, 0, '79-55 R1 S10: wrapper exit status 0 with all six names');
-        like($err // '', qr/\Q'v-LD_PRELOAD'\E/, '79-55 R2 S10: the target loader saw LD_PRELOAD (its stderr complaint is kept, not lost)');
+        # 79-57 (79-REVIEW-55-FIX-R3 IN-01): the complaint is glibc ld.so wording;
+        # a musl or macOS perl ignores a failed preload silently.
+        SKIP: {
+            skip '79-57 IN-01 R3: perl is not on glibc (the loader complaint is glibc ld.so wording)', 1
+                unless defined $glibcForS10;
+            like($err // '', qr/\Q'v-LD_PRELOAD'\E/, '79-55 R2 S10: the target loader saw LD_PRELOAD (its stderr complaint is kept, not lost)');
+        }
     }
     else {
         fail('79-55 R1 S10: all six names (no _secureExecArgv builder in SoloistDaemon)');
@@ -1818,7 +1840,354 @@ sub _fire_last_timer {
         is(scalar(@w), 1, '79-55 S7: one warn line naming the missing perl');
     }
 
+    # ---- 79-57 N3: the wrapper perl starts without PERL5LIB/PERLLIB/PERL5OPT
+    # and loads no module. A marker warnings.pm on PERL5LIB and a marker
+    # module in PERL5OPT would print on the wrapper's stderr if loaded. ----
+    {
+        my $mdir = tempdir(CLEANUP => 1);
+        open(my $wfh, '>', "$mdir/warnings.pm") or die $!;
+        print $wfh "package warnings; BEGIN { print STDERR \"N3-MARKER-warnings\\n\" } sub import {} sub unimport {} 1;\n";
+        close $wfh;
+        open(my $mfh, '>', "$mdir/N3Marker.pm") or die $!;
+        print $mfh "package N3Marker; BEGIN { print STDERR \"N3-MARKER-perl5opt\\n\" } 1;\n";
+        close $mfh;
+        my @target = ($^X, '-e', 'print "N3-TARGET\n"');
+
+        local $ENV{PERL5LIB} = $mdir;
+        local $ENV{PERLLIB}  = $mdir;
+        local $ENV{PERL5OPT} = '-MN3Marker';
+
+        # ids differ: the recorded spawn env has none of the three, the
+        # parent keeps them
+        $idsDiffer = 1;
+        Proc::Background::reset_calls();
+        (bless [], $SD)->_spawnProcess([@target], undef, $portFile);
+        my $call = $Proc::Background::NEW_CALLS[-1];
+        my $env = $call ? $call->{env} : {};
+        ok(!exists $env->{PERL5LIB} && !exists $env->{PERLLIB} && !exists $env->{PERL5OPT},
+            '79-57 N3: ids differ -- the wrapper spawn env has no PERL5LIB, PERLLIB, PERL5OPT');
+        is(join('|', map { $ENV{$_} // 'UNDEF' } qw(PERL5LIB PERLLIB PERL5OPT)), "$mdir|$mdir|-MN3Marker",
+            '79-57 N3: the parent env keeps all three after the spawn');
+
+        # the wrapper exactly as Proc::Background would exec it: the
+        # recorded argv under the recorded env
+        my @argv = $call ? @{ $call->{args} } : ();
+        my $out = '';
+        if (@argv) {
+            local %ENV = %$env;
+            delete $ENV{LD_PRELOAD};    # the stub shim is an empty file
+            my $pid = open(my $fh, '-|');
+            die "79-57 N3 fork: $!" unless defined $pid;
+            if (!$pid) {
+                open(STDERR, '>&', \*STDOUT);
+                exec { $argv[0] } @argv or do { print "N3-EXEC-FAILED\n"; require POSIX; POSIX::_exit(127); };
+            }
+            $out = do { local $/; <$fh> } // '';
+            close($fh);
+        }
+        like($out, qr/N3-TARGET/, '79-57 N3: the wrapper ran the target');
+        unlike($out, qr/N3-MARKER/, '79-57 N3: the wrapper run loads no module from PERL5LIB or PERL5OPT');
+
+        # the wrapper code itself loads no module, even with PERL5LIB set
+        my $code = $SD->can('_secureExecWrapperCode') ? $SD->_secureExecWrapperCode() : '';
+        my $pid2 = open(my $fh2, '-|');
+        die "79-57 N3 fork: $!" unless defined $pid2;
+        if (!$pid2) {
+            delete $ENV{PERL5OPT};
+            open(STDERR, '>&', \*STDOUT);
+            exec { $^X } $^X, '-e', $code, '--', '--', @target or do { print "N3-EXEC-FAILED\n"; require POSIX; POSIX::_exit(127); };
+        }
+        my $out2 = do { local $/; <$fh2> } // '';
+        close($fh2);
+        unlike($out2, qr/N3-MARKER-warnings/, '79-57 N3: the wrapper code loads no warnings.pm through PERL5LIB (no `no warnings` block)');
+
+        # ids equal: argv and env byte-identical, the three stay in the env
+        $idsDiffer = 0;
+        Proc::Background::reset_calls();
+        (bless [], $SD)->_spawnProcess([@target], undef, $portFile);
+        my $eq = $Proc::Background::NEW_CALLS[-1];
+        is_deeply($eq ? $eq->{args} : undef, \@target, '79-57 N3: ids equal -- argv identical to the input');
+        is(join('|', map { $eq->{env}{$_} // 'UNDEF' } qw(PERL5LIB PERLLIB PERL5OPT)), "$mdir|$mdir|-MN3Marker",
+            '79-57 N3: ids equal -- the spawn env keeps PERL5LIB, PERLLIB, PERL5OPT (byte-identical spawn)');
+    }
+
+    # ---- 79-57 (79-REVIEW-55-FIX IN-01): a target that cannot be exec'd ----
+    if ($canBuild) {
+        my $noexec = "$wdir/not-executable";
+        open(my $nf, '>', $noexec) or die $!;
+        print $nf "#!/bin/sh\necho NOEXEC-RAN\n";
+        close $nf;
+        chmod 0644, $noexec;
+        for my $case ([ 'nonexistent target', "$wdir/no-such-target" ], [ 'non-executable file', $noexec ]) {
+            my ($name, $t) = @$case;
+            my @argv = $canBuild->({}, $t);
+            my $pid = open(my $fh, '-|');
+            die "79-57 IN-01 fork: $!" unless defined $pid;
+            if (!$pid) {
+                open(STDERR, '>&', \*STDOUT);
+                exec { $argv[0] } @argv or do { print "IN01-EXEC-FAILED\n"; require POSIX; POSIX::_exit(126); };
+            }
+            my $out = do { local $/; <$fh> } // '';
+            close($fh);
+            my $st = $?;
+            is($st >> 8, 127, "79-57 IN-01: $name -- wrapper exit status 127");
+            my @lines = grep { /^\[spoton-exec\] exec failed:/ } split /\n/, $out;
+            is(scalar(@lines), 1, "79-57 IN-01: $name -- exactly one [spoton-exec] exec failed: line");
+        }
+    }
+    else {
+        fail('79-57 IN-01: exec-failure path (no _secureExecArgv builder in SoloistDaemon)');
+    }
+
+    # ---- 79-57 (79-REVIEW-55-FIX IN-07): under -T with a world-writable PATH
+    # element the wrapper still runs the absolute target ----
+    if ($canBuild) {
+        my $ww = tempdir(CLEANUP => 1);
+        chmod 0777, $ww;
+        local $ENV{PATH} = "$ww:/usr/bin:/bin";
+        my @argv = $canBuild->(\%wpairs, $^X, '-e', $target);
+        splice(@argv, 1, 0, '-T');
+        my ($pid, $st, $out) = $runList->(@argv);
+        is($st, 0, '79-57 IN-07: under -T with a world-writable PATH directory the wrapper exits 0');
+        is($out, "$pid|$wdir|$wdir/p|1\n", '79-57 IN-07: and the absolute target ran in place');
+    }
+    else {
+        fail('79-57 IN-07: taint PATH (no _secureExecArgv builder in SoloistDaemon)');
+    }
+
     %ENV = %envSave;
+}
+
+# ---- 79-57 I-4: the wrapper is never used when the effective uid is 0 ----
+{
+    my $SD = 'Plugins::SpotOn::Unified::SoloistDaemon';
+    my $use = $SD->can('_useSecureExec');
+    ok($use, '79-57 I-4: _useSecureExec exists');
+    my @table = (
+        [ [0, 0, 0, 0],             0, 'all ids 0' ],
+        [ [1000, 1000, 1000, 1000], 0, 'all ids equal' ],
+        [ [1000, 0, 1000, 0],       0, 'effective uid 0 (the wrapper would raise the real uid to 0)' ],
+        [ [1000, 0, 1000, 1000],    0, 'effective uid 0, gids equal' ],
+        [ [0, 1001, 0, 1001],       1, 'real 0, effective 1001 (piCorePlayer)' ],
+        [ [1001, 1001, 1001, 1002], 1, 'uids equal, gids differ, effective uid not 0' ],
+    );
+    for my $row (@table) {
+        my ($ids, $want, $name) = @$row;
+        is($use ? ($use->(@$ids) ? 1 : 0) : undef, $want, "79-57 I-4: _useSecureExec(@$ids) -> $want ($name)");
+    }
+}
+
+# ---- 79-57 (79-REVIEW-55-FIX IN-05): smokeTest registers its pid in
+# smokePids() until the verdict, so the orphan sweep (through
+# DaemonManager->helperPids) spares a running smoke test ----
+{
+    my $SD = 'Plugins::SpotOn::Unified::SoloistDaemon';
+    my $sp = $SD->can('smokePids');
+    ok($sp, '79-57 IN-05: smokePids exists');
+    for my $branch (qw(found timeout)) {
+        my $tmpRoot = tempdir(CLEANUP => 1);
+        no warnings 'redefine';
+        local *Plugins::SpotOn::Soloist::readKey  = sub { return 'fake-spak-key-79-57'; };
+        local *Plugins::SpotOn::Soloist::_rootDir = sub { return $tmpRoot; };
+        Proc::Background::reset_calls();
+        Slim::Networking::Select::reset_calls();
+        @Slim::Utils::Timers::TIMERS = ();
+        my $calls = 0;
+        $SD->smokeTest('/fake/candidate/soloist', sub { $calls++ });
+        my $proc = $Proc::Background::NEW_CALLS[-1]{proc};
+        is_deeply([ $sp ? $sp->($SD) : () ], [ 99999 ], "79-57 IN-05 ($branch): the running smoke pid is in smokePids()");
+        if ($branch eq 'found') {
+            syswrite($proc->write_handle, "soloist 1.3.8.70 build 1 (20260101) (gabc123) (linux/x86_64)\nclient expires in 80 days\n");
+            $Slim::Networking::Select::ADD_READ_CALLS[-1][1]->();
+        }
+        else {
+            no warnings 'once';
+            local *Plugins::SpotOn::Unified::SoloistDaemon::_smokeVerdict = sub { return ('timeout') };
+            _fire_last_timer();
+        }
+        is($calls, 1, "79-57 IN-05 ($branch): the verdict fired");
+        is_deeply([ $sp ? $sp->($SD) : () ], [], "79-57 IN-05 ($branch): the pid left smokePids() at the verdict");
+    }
+}
+
+# ============================================================
+# 79-61 (79-REVIEW-FULL-2 WR-01): every daemon stop blocked the LMS event
+# loop until the child exited. SoloistDaemon::stop called Proc::Background's
+# die() with its default sequence (TERM 2 TERM 8 KILL 3 KILL 7) and a
+# blocking waitpid after each signal: a daemon that ignores SIGTERM held the
+# server for up to 10 s. Test::RealTermProc wraps a REAL forked child and
+# implements die() exactly like the bundled Proc::Background::Unix
+# (_terminate + _waitpid with alarm), so the HEAD code blocks here for real.
+# The child traps TERM and sleeps 3 s; stop() must return within 200 ms while
+# the child is still alive, and the TERM-then-KILL bound must still end it.
+# ============================================================
+{
+    package Test::RealTermProc;
+    use POSIX ();
+    sub spawn {
+        my ($class, $ignoreTermSeconds) = @_;
+        my $pid = fork();
+        die "fork: $!" unless defined $pid;
+        if (!$pid) {
+            $SIG{TERM} = 'IGNORE';
+            my $end = time() + $ignoreTermSeconds;
+            sleep 1 while time() < $end;
+            POSIX::_exit(0);
+        }
+        return bless { pid => $pid, autoterminate => 1 }, $class;
+    }
+    sub pid   { $_[0]{pid} }
+    sub autoterminate { my $s = shift; $s->{autoterminate} = $_[0] ? 1 : 0 if @_; $s->{autoterminate} }
+    sub _waitpid {
+        my ($self, $blocking, $wait) = @_;
+        return 1 if $self->{reaped};
+        my $r;
+        if ($blocking && $wait) {
+            local $SIG{ALRM} = sub { die "alarm\n" };
+            alarm($wait);
+            eval { $r = waitpid($self->{pid}, 0); };
+            alarm(0);
+        } else {
+            $r = waitpid($self->{pid}, $blocking ? 0 : POSIX::WNOHANG());
+        }
+        if (defined $r && ($r == $self->{pid} || $r == -1)) { $self->{reaped} = 1; return 1; }
+        return 0;
+    }
+    sub alive { my $self = shift; return $self->_waitpid(0) ? 0 : 1; }
+    sub die {
+        my $self = shift;
+        return 1 unless $self->alive;
+        my @seq = @_ ? @_ : qw(TERM 2 TERM 8 KILL 3 KILL 7);
+        while (@seq && $self->alive) {
+            my $sig = shift @seq;
+            my $delay = shift @seq;
+            kill($sig, $self->{pid});
+            next unless defined $delay;
+            last if $self->_waitpid(1, $delay);
+        }
+        return !$self->alive;
+    }
+    sub DESTROY { my $s = shift; kill('KILL', $s->{pid}) unless $s->{reaped}; waitpid($s->{pid}, 0) unless $s->{reaped}; }
+}
+{
+    require Time::HiRes;
+    my $SD = 'Plugins::SpotOn::Unified::SoloistDaemon';
+    @Slim::Utils::Timers::TIMERS = ();
+
+    # (a) a child that ignores TERM for 3 s, then exits by itself
+    my $proc = Test::RealTermProc->spawn(3);
+    my $daemon = bless [], $SD;
+    $daemon->mac('aa:bb:cc:dd:61:01');
+    $daemon->_proc($proc);
+    select(undef, undef, undef, 0.2);    # the child has installed its TERM trap
+    my $t0 = Time::HiRes::time();
+    $daemon->stop;
+    my $ms = int((Time::HiRes::time() - $t0) * 1000);
+    diag("79-61 WR-01: stop() of a TERM-ignoring child returned after $ms ms");
+    cmp_ok($ms, '<', 200, "79-61 WR-01: stop() returns within 200 ms although the child ignores SIGTERM (blocked_ms=$ms)");
+    ok($proc->alive, '79-61 WR-01: the child is still alive when stop() returns (no blocking wait)');
+    ok(scalar(@Slim::Utils::Timers::TIMERS) >= 1, '79-61 WR-01: the TERM-then-KILL escalation is left to a timer');
+
+    # the child exits on its own after ~3 s; the next escalation step finds it gone
+    my $deadline = Time::HiRes::time() + 6;
+    while ($proc->alive && Time::HiRes::time() < $deadline) { select(undef, undef, undef, 0.1); }
+    ok(!$proc->alive, '79-61 WR-01: the child that ends by itself is reaped without blocking the caller');
+    Slim::Utils::Timers::fire_due(Time::HiRes::time() + 60) for 1 .. 5;
+    is(scalar(@Slim::Utils::Timers::TIMERS), 0, '79-61 WR-01: no escalation timer is left once the child is gone');
+
+    # (b) a child that ignores TERM for 60 s: the KILL step of the bound ends it
+    @Slim::Utils::Timers::TIMERS = ();
+    my $hard = Test::RealTermProc->spawn(60);
+    my $d2 = bless [], $SD;
+    $d2->mac('aa:bb:cc:dd:61:02');
+    $d2->_proc($hard);
+    select(undef, undef, undef, 0.2);
+    $t0 = Time::HiRes::time();
+    $d2->stop;
+    my $ms2 = int((Time::HiRes::time() - $t0) * 1000);
+    cmp_ok($ms2, '<', 200, "79-61 WR-01: stop() of a child that never reacts to TERM also returns at once ($ms2 ms)");
+    ok(Plugins::SpotOn::Unified::ProcStop->can('terminatingFor')
+        && Plugins::SpotOn::Unified::ProcStop->terminatingFor('aa:bb:cc:dd:61:02'),
+        '79-61 WR-01: the player is registered as still terminating (no new daemon on top of it)');
+    # walk the escalation: +2 s TERM again, +8 s KILL
+    my $now = Time::HiRes::time();
+    for my $step (2, 10, 13, 20) {
+        Slim::Utils::Timers::fire_due($now + $step + 0.01);
+        select(undef, undef, undef, 0.2);
+    }
+    ok(!$hard->alive, '79-61 WR-01: the child is gone after the TERM-then-KILL bound (KILL at +10 s)');
+    ok(!Plugins::SpotOn::Unified::ProcStop->terminatingFor('aa:bb:cc:dd:61:02'),
+        '79-61 WR-01: the terminating registration is cleared once the child is gone');
+    is($hard->autoterminate, 0, '79-61 WR-01: autoterminate is off for a process under async stop (DESTROY never blocks)');
+    @Slim::Utils::Timers::TIMERS = ();
+}
+
+# ---- 79-61 (FULL-2 WR-01) callers that relied on the synchronous stop ----
+# (c) stopForSync: the sync subscription's initHelpers runs 0.1 s later; a
+#     daemon still exiting then would miss its restart -- initHelpers is
+#     re-armed once the process is gone.
+# (d) smokeTest: the throwaway dir and the smokePids() entry (spared by the
+#     orphan sweep) stay until the smoke process is gone.
+{
+    package Test::SlowProc;
+    sub new   { bless { alive => 1, sig => [] }, shift }
+    sub alive { $_[0]{alive} }
+    sub pid   { 99999 }
+    sub die   { my $s = shift; push @{ $s->{sig} }, @_ ? @_ : 'DEFAULT'; return 0; }
+    sub autoterminate { 0 }
+    sub write_handle { undef }
+}
+{
+    my $SD = 'Plugins::SpotOn::Unified::SoloistDaemon';
+    @Slim::Utils::Timers::TIMERS = ();
+    my $p = Test::SlowProc->new;
+    my $d = bless [], $SD;
+    $d->mac('aa:bb:cc:dd:61:03');
+    $d->_proc($p);
+    $d->stopForSync;
+    is_deeply($p->{sig}, ['TERM'], '79-61 WR-01 (c): stopForSync sends one non-blocking TERM');
+    ok(!(grep { ($_->[0] // '') eq 'Plugins::SpotOn::Unified::DaemonManager' } @Slim::Utils::Timers::TIMERS),
+        '79-61 WR-01 (c): no initHelpers re-run while the process still exits');
+    # The real DaemonManager does not load in this harness; a minimal one
+    # (initHelpers only) stands in so the re-arm is observable.
+    unless (defined &Plugins::SpotOn::Unified::DaemonManager::initHelpers) {
+        no strict 'refs';
+        *{'Plugins::SpotOn::Unified::DaemonManager::initHelpers'} = sub { };
+    }
+    unless ($INC{'Plugins/SpotOn/Unified/DaemonManager.pm'}) { delete $INC{'Plugins/SpotOn/Unified/DaemonManager.pm'}; $INC{'Plugins/SpotOn/Unified/DaemonManager.pm'} = __FILE__; }
+    $p->{alive} = 0;
+    Slim::Utils::Timers::fire_due(Time::HiRes::time() + 3);
+    my @reArmed = grep { ($_->[0] // '') eq 'Plugins::SpotOn::Unified::DaemonManager'
+        && $_->[2] == \&Plugins::SpotOn::Unified::DaemonManager::initHelpers } @Slim::Utils::Timers::TIMERS;
+    is(scalar(@reArmed), 1, '79-61 WR-01 (c): initHelpers is re-armed once the process is gone');
+    @Slim::Utils::Timers::TIMERS = ();
+}
+{
+    my $SD = 'Plugins::SpotOn::Unified::SoloistDaemon';
+    my $tmpRoot = tempdir(CLEANUP => 1);
+    no warnings 'redefine';
+    local *Plugins::SpotOn::Soloist::readKey  = sub { return 'fake-spak-key-79-61'; };
+    local *Plugins::SpotOn::Soloist::_rootDir = sub { return $tmpRoot; };
+    Proc::Background::reset_calls();
+    Slim::Networking::Select::reset_calls();
+    @Slim::Utils::Timers::TIMERS = ();
+    my $calls = 0;
+    $SD->smokeTest('/fake/candidate/soloist', sub { $calls++ });
+    my $proc = $Proc::Background::NEW_CALLS[-1]{proc};
+    # this smoke process ignores TERM: die() leaves it alive
+    local *Test::FakeSmokeProc::die = sub { $_[0]->{die_count}++; return 0; };
+    syswrite($proc->write_handle, "soloist 1.3.8.70 build 1 (20260101) (gabc123) (linux/x86_64)\nclient expires in 80 days\n");
+    $Slim::Networking::Select::ADD_READ_CALLS[-1][1]->();
+    is($calls, 1, '79-61 WR-01 (d): the verdict fires without waiting for the smoke process');
+    is_deeply([ $SD->smokePids ], [ 99999 ], '79-61 WR-01 (d): a smoke process that is still exiting stays spared by the orphan sweep');
+    my @dirs = grep { -d $_ } glob("$tmpRoot/smoke/*");
+    ok(scalar(@dirs) >= 1, '79-61 WR-01 (d): its throwaway data dir is kept while it still runs');
+    $proc->set_alive(0);
+    Slim::Utils::Timers::fire_due(Time::HiRes::time() + 60) for 1 .. 5;
+    is_deeply([ $SD->smokePids ], [], '79-61 WR-01 (d): once it is gone the pid leaves smokePids()');
+    @dirs = grep { -d $_ } glob("$tmpRoot/smoke/*");
+    is(scalar(@dirs), 0, '79-61 WR-01 (d): ... and the throwaway data dir is removed');
+    @Slim::Utils::Timers::TIMERS = ();
 }
 
 done_testing();

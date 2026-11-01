@@ -211,6 +211,13 @@ use constant SPLIT_BRAIN_MAX_ATTEMPTS => 2;
 # angeforderten 0 (82-REVIEW.md CR-01).
 use constant HIT_POSITION_TOLERANCE_MS => 1500;
 
+# S1 (debug silent-browse-start-headers-closed, user decision 2026-11-01): a
+# postSeek within HIT_POSITION_TOLERANCE_MS of 0 after our own Browse play is
+# decided by the new title's first position frame instead of being sent at
+# the echo. Without any frame in this window it goes out as before S1, so the
+# CR-01 resume correction is never lost.
+use constant POST_SEEK_CHECK_MS => 1000;
+
 # 82-16 F1 (H-v bestaetigt, 82-G1-MESSUNG.md): deckt das Fenster zwischen
 # zwei requestTrack-Aufrufen DESSELBEN synchronen LMS-Kommandos (gemessen
 # 2,4 ms, server.log 18:50:17.3977 -> .4022) und die Zeit bis zum naechsten
@@ -399,6 +406,23 @@ sub _lmsSongIsOurs {
     my $song = $client->streamingSong || $client->playingSong or return 0;
     my $url = $song->track ? ($song->track->url // '') : '';
     return $url =~ m{^spoton://(?:track|episode):[A-Za-z0-9]+$} ? 1 : 0;
+}
+
+# _lmsSongIs($self, $uri) -- 79-57 IN-05 (79-REVIEW-53-FIX-R2.md): is LMS'
+# CURRENT song exactly the title $uri names? spotify:track:<id> matches
+# spoton://track:<id>, spotify:episode:<id> matches spoton://episode:<id>.
+# The TTL refusal guard asks this (not _lmsSongIsOurs, which answers "any
+# spoton:// title") so a refusal 20 s late never stops a different title,
+# e.g. one a sync master started inside the window. _lmsSongIsOurs stays the
+# guard for pause, resume and volume.
+sub _lmsSongIs {
+    my ($self, $uri) = @_;
+
+    my ($kind, $id) = ($uri // '') =~ m{^spotify:(track|episode):([A-Za-z0-9]+)$} or return 0;
+    my $client = Slim::Player::Client::getClient($self->mac) or return 0;
+    my $song = $client->streamingSong || $client->playingSong or return 0;
+    my $url = $song->track ? ($song->track->url // '') : '';
+    return $url eq "spoton://$kind:$id" ? 1 : 0;
 }
 
 # _resumeTargetsOurTitle($self, $wanted, $observed) -- 84-26 R1 (F-24-1).
@@ -645,6 +669,7 @@ sub shutdown {
     delete $self->observed->{seekIssued};
 
     $self->_releaseAwaitMeta('Soloist control shut down');
+    Slim::Utils::Timers::killTimers($self, \&_postSeekCheckFire);    # S1
 }
 
 # _releaseDeferredTrackRequest($self, $reason) -- WR-03 (82-REVIEW.md):
@@ -1857,7 +1882,11 @@ sub _reconcilePlan {
             # 20 s, silent. Refuse once instead: stop the player, show the
             # pairing hint (op refuse_unpaired). Only a defined "no stored
             # session" refuses; an unknown state keeps the deferral.
-            unless ($self->_hasStoredSession) {
+            # 79-57 IN-04: the answer comes in through $opts (read once in
+            # _reconcile), so this D-01 body performs no filesystem read.
+            # undef (not computed) keeps the old meaning: defer.
+            my $hasStoredSession = $opts->{hasStoredSession};
+            if (defined $hasStoredSession && !$hasStoredSession) {
                 # A still-pending EARLIER deferral loses its one shot, same
                 # Fall-5 convention as below, and must not fire a second
                 # refusal at its old TTL.
@@ -2220,6 +2249,30 @@ sub _reconcilePlan {
             ? abs($haveMs - $wantMs) > HIT_POSITION_TOLERANCE_MS
             : ($self->mode ne 'connect' && !($pending && $pending->{cmd} eq 'play'));
 
+        # S1 (debug silent-browse-start-headers-closed): the onStream twin of our
+        # own Browse play arrives inside its echo (successCb -> Song::open ->
+        # onStream), before this title's first position frame -- the anchor is
+        # still the PREVIOUS title's (track_changed never writes it), so haveMs
+        # measured the old title and the twin sent an armed seek 0 the daemon
+        # never flushed. While the echo's check for this title is open and no
+        # frame of it has arrived, plan no seek: _resolvePostSeekCheck decides
+        # on that frame (and _postSeekCheckFire without one).
+        # 79-REVIEW-BETA3-R3 WR-01 (sibling): "a frame of this title" is a frame
+        # that NAMES it (check.itemSeen, set by _resolvePostSeekCheck) -- not
+        # anchor.uri, which an item-less frame of the previous title writes
+        # with observed.track, i.e. with the new title.
+        my $s1Check = $observed->{postSeekCheck};
+        if ($needsSeek && $s1Check && defined $s1Check->{uri} && $s1Check->{uri} eq $wanted->{uri}
+            && !$s1Check->{itemSeen}
+            && $wantMs <= HIT_POSITION_TOLERANCE_MS)
+        {
+            $needsSeek = 0;
+            push @intents, { op => 'log', level => 'debug', text =>
+                "Control: Treffer seek deferred to the first position frame of " . $wanted->{uri}
+                . " (own play echo, source=" . ($opts->{source} // '-') . ", " . ($self->mac // '?') . ")"
+            };
+        }
+
         if ($needsSeek) {
             # 82-16 F1 (H-v bestaetigt, 82-G1-MESSUNG.md): getNextTrack and
             # onStream can both land in this branch for the SAME
@@ -2337,6 +2390,7 @@ sub _reconcilePlan {
         push @intents, @{ $self->_planCommand('play', uri => $uri, position_ms => $posMs,
             armed => $armed, awaitMeta => ($metaKnown ? 0 : 1),
             postSeek => ($posMs > 0 ? $posMs : undef),
+            fromTrack => $observed->{track},    # S1
             wireCmd => 'skip_next',
             cb => { successCb => [ $successCb ? ($successCb) : () ], errorCb => $errorCb }) };
         return \@intents;
@@ -2345,6 +2399,7 @@ sub _reconcilePlan {
     push @intents, @{ $self->_planCommand('play', uri => $uri, position_ms => $posMs,
         armed => $armed, awaitMeta => ($metaKnown ? 0 : 1),
         postSeek => (defined $wanted->{position_ms} ? $posMs : undef),
+        fromTrack => $observed->{track},    # S1: a KNOWN other title makes the echoed one a new title
         cb => { successCb => [ $successCb ? ($successCb) : () ], errorCb => $errorCb }) };
     return \@intents;
 }
@@ -2354,6 +2409,15 @@ sub _reconcilePlan {
 # and passes it into the pure planner.
 sub _reconcile {
     my ($self, $trigger, $opts) = @_;
+    $opts ||= {};
+
+    # 79-57 IN-04: the one filesystem read the planner's unpaired branch
+    # needs, done here (I/O stays out of _reconcilePlan, D-01) and only when
+    # that branch can run. `local` keeps the key off the caller's hash once
+    # this call returns (the same $opts may be deferred and replayed).
+    local $opts->{hasStoredSession} = $self->_hasStoredSession
+        if $trigger eq 'requestTrack'
+            && defined $self->observed->{paired} && !$self->observed->{paired};
 
     my $intents = $self->_reconcilePlan($trigger, $opts, Time::HiRes::time());
     $intents = $self->_enforceConnectOwnershipInvariant($intents, $opts // {})
@@ -2742,6 +2806,7 @@ sub _planCommand {
             armed       => $p{armed} ? 1 : 0,
             awaitMeta   => $p{awaitMeta} ? 1 : 0,
             postSeek    => $p{postSeek},
+            fromTrack   => $p{fromTrack},    # S1: the daemon's known title when this play went out
         },
         # Pitfall 2 (82-19 F2): onStream has no callback and $player->play
         # follows in the SAME loop (StreamingController.pm:1311-1327) -- an
@@ -3222,20 +3287,26 @@ sub _wsRetryTimeout {
     # StreamingController log carried a NextTrackError line for it. Make
     # the TTL expiry itself visible here, on the same ring the rest of this
     # module already reports through (82-23 convention).
-    $self->_recordErrorOnce('ws-retry:' . ($deferred->{uri} // '?'), 'warn',
-        ($self->mac // '?') . ": deferred requestTrack for " . ($deferred->{uri} // '?')
-        . " timed out after " . WS_RETRY_TTL_S . "s (Soloist daemon never became ready)");
-
     # 79-53: the websocket is up and the daemon reports itself unpaired, so
     # the login never came (an expired-but-present session, or one that
     # showed up between the step 2 check and now). A plain errorCb would make
     # LMS advance to the next title, one 20 s wait per title -- stop once with
     # the pairing hint instead, exactly as step 2 does for a never-paired
     # daemon. wsConnected=0, or an unknown paired state, keeps the old text.
+    # 79-57 IN-01: this check comes BEFORE the ring write, so errors[] names
+    # the pairing cause (key unpaired-ttl) instead of "never became ready".
+    # IN-05: the deferred title goes to the guard, which compares it with
+    # LMS' current title.
     if ($self->observed->{wsConnected} && defined $self->observed->{paired} && !$self->observed->{paired}) {
-        $self->_refuseUnpaired($deferred->{opts}, 'login did not arrive within ' . WS_RETRY_TTL_S . 's', 1);
+        $self->_recordErrorOnce('unpaired-ttl', 'error',
+            ($self->mac // '?') . ": daemon not paired (login did not arrive within " . WS_RETRY_TTL_S . "s)");
+        $self->_refuseUnpaired($deferred->{opts}, 'login did not arrive within ' . WS_RETRY_TTL_S . 's', $deferred->{uri} // '');
         return;
     }
+
+    $self->_recordErrorOnce('ws-retry:' . ($deferred->{uri} // '?'), 'warn',
+        ($self->mac // '?') . ": deferred requestTrack for " . ($deferred->{uri} // '?')
+        . " timed out after " . WS_RETRY_TTL_S . "s (Soloist daemon never became ready)");
 
     $self->_fireCbs($deferred->{opts}, 'errorCb', 'PROBLEM_OPENING', 'Soloist daemon not ready');
 }
@@ -3258,7 +3329,7 @@ sub _hasStoredSession {
     return defined $fs ? ($fs ? 1 : 0) : 1;
 }
 
-# _refuseUnpaired($self, $opts, $reason, $onlyIfOurs) -- 79-53: end a
+# _refuseUnpaired($self, $opts, $reason, $onlyIfUri) -- 79-53: end a
 # requestTrack that cannot succeed because the daemon is not paired. Order
 # matters:
 #
@@ -3272,13 +3343,14 @@ sub _hasStoredSession {
 #   4. The errorCb ALWAYS fires, even without a client or when the hint
 #      died, so getNextTrack never wedges (T-77-10).
 #
-# $onlyIfOurs (79-53 repair round 2, 79-REVIEW-53-FIX.md WR-01): the TTL
-# path (_wsRetryTimeout) runs up to 20 s after the request, and the deferral
-# is not released by an LMS stop or by a switch to other material. By then
-# the user may be on a radio station or a local file, and a stop would hit
-# that. With $onlyIfOurs the stop and the hint happen only while LMS is
-# still on one of OUR spoton:// titles (_lmsSongIsOurs); otherwise neither
-# is sent. The errorCb stays unconditional either way. The synchronous path
+# $onlyIfUri (79-53 repair round 2, 79-REVIEW-53-FIX.md WR-01; since 79-57
+# IN-05 the deferred title instead of a flag): the TTL path
+# (_wsRetryTimeout) runs up to 20 s after the request, and the deferral is
+# not released by an LMS stop or by a switch to other material. By then the
+# user may be on a radio station, a local file or another Spotify title,
+# and a stop would hit that. With $onlyIfUri the stop and the hint happen
+# only while LMS is still on exactly that title (_lmsSongIs); otherwise
+# neither is sent. The errorCb stays unconditional either way. The synchronous path
 # inside getNextTrack passes no flag: the TRACKWAIT song is ours by
 # construction there, so its stop stays unconditional.
 #
@@ -3289,13 +3361,21 @@ sub _hasStoredSession {
 # No caller frame writes the streaming state after the nested Stop bumped
 # nextTrackCallbackId, and the later errorCb returns at the stale-id check.
 sub _refuseUnpaired {
-    my ($self, $opts, $reason, $onlyIfOurs) = @_;
+    my ($self, $opts, $reason, $onlyIfUri) = @_;
 
     my $mac     = $self->mac // '?';
     my $outcome = 'no client';
 
+    # 79-57 IN-02: the synchronous refusal gets its own ring entry, outside
+    # the 'unpaired' grace gate (a refusal inside the first 15 s of a fresh
+    # daemon used to leave errors[] empty). The TTL path has written its own
+    # unpaired-ttl entry already, so it passes a uri and skips this one.
+    $self->_recordErrorOnce('unpaired-refused', 'error',
+        "$mac: playback refused, this player is not paired with Soloist yet")
+        unless defined $onlyIfUri;
+
     if (my $client = Slim::Player::Client::getClient($self->mac)) {
-        if ($onlyIfOurs && !$self->_lmsSongIsOurs) {
+        if (defined $onlyIfUri && !$self->_lmsSongIs($onlyIfUri)) {
             $outcome = 'LMS no longer on our title, no stop, no hint';
         }
         else {
@@ -3343,6 +3423,116 @@ sub _tMetaFire {
     $self->_awaitMeta(undef);
 
     $self->_fireCbs($await->{cb}, 'successCb');
+}
+
+# _resolvePostSeekCheck($self, $frameUri, $posMs) -- S1 (debug
+# silent-browse-start-headers-closed): the first position frame of the title
+# our own Browse play started decides the postSeek the echo held back
+# (observed.postSeekCheck, set in _onFrameTrackChanged). A frame of another
+# title (a late playback_state of the previous one, $frameUri) decides
+# nothing; a position_sync carries no item and counts while observed.track is
+# the checked title. Within HIT_POSITION_TOLERANCE_MS of the target the seek
+# is dropped -- the daemon is already there and would not flush, the arm
+# would only hold the audio for the shim's TTL. Further off (the CR-01 resume
+# at an old position) the seek goes out, armed exactly as the echo used to.
+sub _resolvePostSeekCheck {
+    my ($self, $frameUri, $posMs) = @_;
+
+    my $check = $self->observed->{postSeekCheck} or return;
+    return unless defined $posMs;
+    my $uri = $check->{uri};
+    if (!defined $uri || $self->mode ne 'browse') {
+        delete $self->observed->{postSeekCheck};
+        Slim::Utils::Timers::killTimers($self, \&_postSeekCheckFire);
+        return;
+    }
+    return if defined $frameUri && $frameUri ne $uri;
+    if (defined $frameUri) {
+        $check->{itemSeen} = 1;    # a frame that names the checked title
+    }
+    else {
+        # 79-REVIEW-BETA3-R3 WR-01: an item-less frame -- every position_sync,
+        # and a playback_state whose item.uri is "" (recorded:
+        # t/fixtures/soloist/s01-lms-driven.jsonl, at the OLD title's position
+        # just before a track_changed) -- may still be the previous title's;
+        # observed.track already names the new one. It decides only after a
+        # frame naming this title was seen, and it never sends (below).
+        return unless $check->{itemSeen} && ($self->observed->{track} // q{}) eq $uri;
+    }
+    if ($self->_postSeekCheckSettled($check)) {
+        delete $self->observed->{postSeekCheck};
+        Slim::Utils::Timers::killTimers($self, \&_postSeekCheckFire);
+        return;
+    }
+
+    my $target = $check->{position_ms};
+    my $needs  = defined $target && abs($posMs - $target) > HIT_POSITION_TOLERANCE_MS;
+    # R3 WR-01: a far-off item-less reading waits -- the next playback_state of
+    # this title or the window's end still sends the CR-01 correction.
+    return if $needs && !defined $frameUri;
+    # A seek takes the command slot. While another command's slot is open (the
+    # echo's own volume replay, set_volume, or a newer play) it would displace
+    # that slot and misclassify its echo (the WR-02 class) or hit the wrong
+    # title -- keep the check open, the next frame of this title (or the
+    # window's end) decides again.
+    return if $needs && $self->pending;
+
+    delete $self->observed->{postSeekCheck};
+    Slim::Utils::Timers::killTimers($self, \&_postSeekCheckFire);
+
+    return unless defined $target;
+    if ($needs) {
+        main::INFOLOG && $log->is_info && $log->info(
+            "Control: postSeek $target after own play -- first frame reads $posMs ms, seek sent ("
+            . ($self->mac // '?') . ")"
+        );
+        $self->_dispatch('seek', position_ms => $target, armed => (defined $self->observed->{track} ? 1 : 0));
+    }
+    else {
+        main::DEBUGLOG && $log->is_debug && $log->debug(
+            "Control: postSeek $target after own play dropped -- first frame reads $posMs ms ("
+            . ($self->mac // '?') . ")"
+        );
+    }
+    return;
+}
+
+# _postSeekCheckSettled($self, $check) -- S1: a seek for the checked title went
+# out after the echo armed the check (an LMS seek, or this check's own seek):
+# that seek decided the position, the held-back postSeek must not answer a frame
+# at the new position with a seek back to 0.
+sub _postSeekCheckSettled {
+    my ($self, $check) = @_;
+    my $si = $self->observed->{seekIssued} or return 0;
+    return 0 unless defined $si->{uri} && defined $check->{uri} && $si->{uri} eq $check->{uri};
+    return (($si->{at} // 0) >= ($check->{at} // 0)) ? 1 : 0;
+}
+
+# _postSeekCheckFire($self) -- S1: no position frame of the checked title
+# within POST_SEEK_CHECK_MS -- send the held-back postSeek exactly as the echo
+# did before S1 (the position is unknown, the CR-01 correction must not be
+# lost). A title change or a mode change in the meantime drops it.
+sub _postSeekCheckFire {
+    my $self = shift;
+
+    my $check = delete $self->observed->{postSeekCheck} or return;
+    return unless defined $check->{position_ms} && defined $check->{uri};
+    return unless $self->mode eq 'browse' && ($self->observed->{track} // q{}) eq $check->{uri};
+    return if $self->_postSeekCheckSettled($check);
+    if (my $busy = $self->pending) {
+        main::INFOLOG && $log->is_info && $log->info(
+            "Control: postSeek " . $check->{position_ms} . " after own play dropped -- " . ($busy->{cmd} // '?')
+            . " still in flight at the end of the check window (" . ($self->mac // '?') . ")"
+        );
+        return;
+    }
+
+    main::INFOLOG && $log->is_info && $log->info(
+        "Control: postSeek " . $check->{position_ms} . " after own play -- no position frame within "
+        . POST_SEEK_CHECK_MS . " ms, seek sent (" . ($self->mac // '?') . ")"
+    );
+    $self->_dispatch('seek', position_ms => $check->{position_ms}, armed => (defined $self->observed->{track} ? 1 : 0));
+    return;
 }
 
 # _releaseAwaitMeta($self, $reason) -- 82-09 (WR-03): `shutdown` and
@@ -3477,7 +3667,11 @@ sub _lmsPlaysOurs {
 # ten handlers below keep deciding by their own pre-existing conditions).
 # An `unknown` type writes exactly one warn line naming type/mode/wanted/
 # observed/pending so no frame falls through silently, and returns without
-# dispatching (there is no handler to dispatch to).
+# dispatching (there is no handler to dispatch to). 79-66: command_result and
+# options_changed have no handler either, but they are documented frames:
+# `%RECORD_ONLY_FRAMES` records them in `observed` (command_result with one
+# quiet INFO ack line) and returns before any playback step, without the warn.
+# Their class stays `unknown`.
 # _trackIdOf($uri) -- D-01 duplicate fold: the bare track/episode ID
 # extraction repeated across track_changed/playback_state/device_changed
 # (prevId/newId/tid/trackId locals) -- returns undef on no match, same as
@@ -4318,7 +4512,9 @@ sub _debugStatusTransition {
 # %FRAME_HANDLERS -- file-scoped dispatch table, one entry per known frame
 # type (RESEARCH 1.2's ten-row table). `onEvent` looks up `$type` here
 # instead of an if/elsif chain (D-01: "onEvent zerfaellt entlang der zehn
-# Frame-Typen").
+# Frame-Typen"). The two documented frames that are recorded only
+# (command_result, options_changed) are NOT here: they live in
+# %RECORD_ONLY_FRAMES below (79-66).
 my %FRAME_HANDLERS = (
     track_changed    => \&_onFrameTrackChanged,
     playback_changed => \&_onFramePlaybackChanged,
@@ -4331,6 +4527,23 @@ my %FRAME_HANDLERS = (
     error            => \&_onFrameError,
     queue_changed    => \&_onFrameQueueChanged,
     context_changed  => \&_onFrameContextChanged,    # D-34 (79-48)
+);
+
+# %RECORD_ONLY_FRAMES -- 79-66 (user decision 2026-10-31, analysis finding 1):
+# the daemon's acknowledgement of a command (command_result) and its options
+# report (options_changed) are documented frames, recorded in `observed` only.
+# A separate table on purpose: for every frame in %FRAME_HANDLERS, onEvent runs
+# its steps around the handler -- the held-resume step (with its mode drop and
+# its stale drop after RESUME_DUE_MAX_S), the prefetch wish, the context-end
+# carrier and the browse-pause settle. None of them may run for an
+# acknowledgement or an options report, which change no playback state; the
+# 79-51 comment in onEvent states the rule ("a held resume is stepped by every
+# frame that has a handler (a handler-less frame, returned above, never steps
+# it)"). onEvent consults this table inside its handler-less branch, before the
+# classify-unknown warn, and returns right after the record.
+my %RECORD_ONLY_FRAMES = (
+    command_result  => \&_onFrameCommandResult,
+    options_changed => \&_onFrameOptionsChanged,
 );
 
 sub onEvent {
@@ -4350,12 +4563,18 @@ sub onEvent {
 
     my $handler = $FRAME_HANDLERS{$type};
     unless ($handler) {
-        # D-03: `unknown` is a warn line, not a silent debug -- this is the
-        # SAME "command_result/context_changed/options_changed" catch-all
-        # that used to log at debug only; the type is now legitimately
-        # visible per-frame instead of only in aggregate (Repudiation,
-        # T-83.1-03). No behavior beyond logging: the frame is otherwise a
-        # no-op either way (nothing ever consumed this catch-all's effects).
+        # 79-66: the two documented record-only frames are recorded and
+        # returned here, before the warn and before any playback step (the
+        # same early return as every other handler-less frame).
+        if (my $record = $RECORD_ONLY_FRAMES{$type}) {
+            $self->$record($msg);
+            return;
+        }
+        # D-03: `unknown` is a warn line, not a silent debug -- every frame
+        # type outside %FRAME_HANDLERS and %RECORD_ONLY_FRAMES is visible
+        # per-frame (Repudiation, T-83.1-03); unknown future types stay
+        # tolerated. No behavior beyond logging: the frame is otherwise a
+        # no-op.
         $log->warn("Control: classify unknown -- type=$type mode=" . ($self->mode // '?')
             . " wanted.uri=" . ($self->wanted->{uri} // '-')
             . " observed.track=" . ($self->observed->{track} // '-')
@@ -4389,6 +4608,71 @@ sub onEvent {
     # D-34 (79-48): an app-pause candidate is decided on the burst's position frame,
     # after the context-end carrier above has had its look at the same frame.
     $self->_settleBrowsePause($msg);
+    return;
+}
+
+# _commandResultLogLine($command, $mac) -- 79-66: the quiet ack line, a pure
+# function. Its text is the contract with tools/uat/extract-run.pl (category
+# "79-66 Control command_result ack") and runners/d34-scenarios.sh
+# (sc_pause_play counts it): keep it byte-exact.
+sub _commandResultLogLine {
+    my ($command, $mac) = @_;
+    return 'Control: command_result -- command=' . ($command // '-') . ' (' . ($mac // '?') . ')';
+}
+
+# _onFrameCommandResult($self, $msg) -- 79-66 (analysis finding 1): the daemon
+# acknowledges a command Control sent. Recorded only:
+# observed->{lastCommandResult} = { command, at } plus one INFO line. The
+# command name counts only as a plain string of 1-32 lowercase letters and
+# underscores starting with a letter, else undef. An acknowledgement completes
+# no command, fires no callback, steps no held resume and is no state change
+# (D-B Gegenargument, Note 2.2); this sub reads nothing but the frame.
+sub _onFrameCommandResult {
+    my ($self, $msg) = @_;
+    my $c = $msg->{command};
+    my $command = (defined $c && !ref($c) && $c =~ /\A[a-z][a-z_]{0,31}\z/) ? $c : undef;
+    $self->observed->{lastCommandResult} = { command => $command, at => Time::HiRes::time() };
+    main::INFOLOG && $log->is_info && $log->info(_commandResultLogLine($command, $self->mac));
+    return;
+}
+
+# _onFrameOptionsChanged($self, $msg) -- 79-66 (analysis finding 1): the
+# daemon's options report, recorded only as observed->{options} = { shuffle,
+# repeat, playback_speed, modes, at } with validated values (anything else
+# undef). Nothing is written to LMS, no pref, no command: who owns these options
+# on the LMS side is not decided (post-4.0 todo).
+sub _onFrameOptionsChanged {
+    my ($self, $msg) = @_;
+    my $o = $msg->{options};
+    return unless ref($o) eq 'HASH';
+
+    my $sh = $o->{shuffle};
+    my $isBool = blessed($sh) && ($sh->isa('JSON::PP::Boolean') || $sh->isa('JSON::XS::Boolean') || $sh->isa('Types::Serialiser::Boolean'));
+    my $shuffle = (defined $sh && (!ref($sh) || $isBool)) ? ($sh ? 1 : 0) : undef;
+    my $rp = $o->{repeat};
+    my $repeat = (defined $rp && !ref($rp) && $rp =~ /\A[a-z_]{1,16}\z/) ? $rp : undef;
+    my $sp = $o->{playback_speed};
+    my $speed = (defined $sp && !ref($sp) && $sp =~ /\A-?[0-9]+(?:\.[0-9]+)?\z/) ? 0 + $sp : undef;
+    my $modes;
+    if (ref($o->{modes}) eq 'HASH') {
+        $modes = {};
+        for my $k (keys %{ $o->{modes} }) {
+            my $v = $o->{modes}{$k};
+            next unless $k =~ /\A[a-z_]{1,32}\z/ && defined $v && !ref($v) && $v =~ /\A[A-Za-z0-9_]{1,32}\z/;
+            $modes->{$k} = $v;
+        }
+    }
+    $self->observed->{options} = {
+        shuffle        => $shuffle,
+        repeat         => $repeat,
+        playback_speed => $speed,
+        modes          => $modes,
+        at             => Time::HiRes::time(),
+    };
+    main::DEBUGLOG && $log->is_debug && $log->debug("Control: options_changed -- shuffle=" . ($shuffle // '-')
+        . " repeat=" . ($repeat // '-') . " playback_speed=" . ($speed // '-')
+        . " modes=" . ($modes ? join(',', map { "$_:$modes->{$_}" } sort keys %$modes) : '-')
+        . " (" . ($self->mac // '?') . ")");
     return;
 }
 
@@ -4618,7 +4902,39 @@ sub _onFrameTrackChanged {
             my $postPauseIsStop = $pending->{postPauseIsStop};
             my $awaitMeta       = $pending->{awaitMeta};
             my $cb              = $pending->{cb};
+            my $fromTrack       = $pending->{fromTrack};
             $self->pending(undef);
+
+            # S1 (debug silent-browse-start-headers-closed): every Browse start
+            # sent seek 0 twice to a daemon that starts a fresh title at 0 -- the
+            # postSeek below and the onStream twin that _fireCbs re-enters right
+            # here (requestTrack -> Treffer, still holding the OLD title's
+            # anchor). Soloist does not flush for a seek to where it is, both
+            # were armed, and the shim withheld the audio for its 3 s arm TTL
+            # (live: first audio byte exactly at seek_arm_expired). Only a seek
+            # that can flush is sent: in browse a postSeek near 0 (or none, the
+            # queue-head path) waits for this title's first position frame
+            # (_resolvePostSeekCheck), and the twin plans no seek until then.
+            # CR-01 stays covered: a frame that reads an old position (the daemon
+            # resumed the title of the account session) still gets the seek, and
+            # without any frame the window's end sends it (_postSeekCheckFire).
+            # "New title" means: when the play went out the daemon was KNOWN to be
+            # on another title (fromTrack). Without that knowledge (observed.track
+            # undef -- the case CR-01 Fall D was written for) the postSeek goes
+            # out at the echo exactly as before.
+            # Set BEFORE the callbacks below, so the twin already sees it.
+            my $deferPostSeek = 0;
+            Slim::Utils::Timers::killTimers($self, \&_postSeekCheckFire);
+            if ($self->mode eq 'browse' && defined $fromTrack && $fromTrack ne $uri
+                && (!defined $postSeek || $postSeek <= HIT_POSITION_TOLERANCE_MS))
+            {
+                $self->observed->{postSeekCheck} = { uri => $uri, position_ms => $postSeek, at => Time::HiRes::time() };
+                Slim::Utils::Timers::setTimer($self, Time::HiRes::time() + (POST_SEEK_CHECK_MS / 1000), \&_postSeekCheckFire);
+                $deferPostSeek = 1;
+            }
+            else {
+                delete $self->observed->{postSeekCheck};
+            }
 
             if ($awaitMeta) {
                 # Befund 2 / Pitfall 5: play already went out; only
@@ -4639,7 +4955,9 @@ sub _onFrameTrackChanged {
                 $self->_fireCbs($cb, 'successCb');
             }
 
-            if (defined $postSeek) {
+            if (defined $postSeek && !$deferPostSeek) {
+                # S1: a postSeek above the tolerance moves a fresh title, so the
+                # daemon flushes -- it still goes out here, unchanged.
                 # RESEARCH Kante 3: the echo IS the confirmation that the
                 # daemon is now on this uri -- exactly one seek follows,
                 # async (we are already inside the event callback).
@@ -5108,6 +5426,7 @@ sub _onFramePositionSync {
             seen_hr      => Time::HiRes::time(),
             uri          => $self->observed->{track},    # 84.2-02: the title this anchor belongs to
         };
+        $self->_resolvePostSeekCheck(undef, $p->{position_ms});    # S1: no item -- observed.track decides
 
         # S-02 caveat: speed is a paused/not-paused SIGNAL, never a position
         # correction against LMS. Skip while a play is pending -- the
@@ -5260,6 +5579,9 @@ sub _onFramePlaybackState {
                     seen_hr      => Time::HiRes::time(),
                     uri          => $self->observed->{track},    # 84.2-02: the title this anchor belongs to
                 };
+                # S1: the frame's own item decides which title this position is of
+                $self->_resolvePostSeekCheck(
+                    (defined $uri && $uri =~ /^spotify:(?:track|episode):[A-Za-z0-9]+$/) ? $uri : undef, $posMs);
             }
         }
 
@@ -5329,7 +5651,7 @@ sub _onFramePlaybackState {
             $self->_enterConnectSession('reconnect-to-connect');
             if (defined $self->observed->{track}) {
                 my $tid = _trackIdOf($self->observed->{track});
-                $self->_emitStart($tid) if defined $tid;
+                $self->_emitStart($tid, undef, 'restored') if defined $tid;    # 79-61 (FULL-2 WR-06)
             }
         }
 
@@ -5376,6 +5698,9 @@ sub _onFrameAuthState {
             # 'daemon not paired' is indistinguishable from a real
             # (g)-finding (Todo errors-startup-falschmeldung-nicht-paired).
             $self->_clearErrorOnce('unpaired');
+            # 79-57 IN-01/IN-02: the TTL and refusal entries end with the login too.
+            $self->_clearErrorOnce('unpaired-ttl');
+            $self->_clearErrorOnce('unpaired-refused');
 
             # 82-42 Task C (82-42-PLAN.md Task B checkpoint answer
             # "q4-trigger-paired"): resolve a deferred requestTrack HERE --
@@ -5965,9 +6290,9 @@ sub _onFrameError {
 sub _onFrameQueueChanged {
     my ($self, $msg, $class, $detail) = @_;
         # D-C confirmation (82-06 Task 1, S-01 A): the ONLY field Control
-        # reads from this frame is upcoming[0].item.uri -- context_changed/
-        # options_changed remain verworfen (RESEARCH Open Question 6,
-        # COVERAGE.md OPT-OUT, Phase 83).
+        # reads from this frame is upcoming[0].item.uri -- options_changed is
+        # recorded only (79-66, observed->{options}) and never read for a
+        # decision (RESEARCH Open Question 6, COVERAGE.md OPT-OUT, Phase 83).
         my $up = $msg->{upcoming};
         if (ref($up) eq 'ARRAY' && ref($up->[0]) eq 'HASH' && ref($up->[0]{item}) eq 'HASH') {
             my $u = $up->[0]{item}{uri};
@@ -6325,7 +6650,7 @@ sub _classify {
 # a transport loss (_transportClosed does NOT clear it) so a WS reconnect
 # mid-session never re-announces 'start' (T-1 flagged assumption).
 sub _emitStart {
-    my ($self, $id, $posSec) = @_;
+    my ($self, $id, $posSec, $provenance) = @_;
 
     return if defined $self->observed->{startEmittedFor};
     $self->observed->{startEmittedFor} = $self->observed->{track};
@@ -6337,7 +6662,11 @@ sub _emitStart {
     $self->_armConnectWatchdog($self->observed->{track})
         if $self->mode eq 'connect' && defined $self->observed->{track};
 
-    $self->_emit('start', $id, $posSec // '');
+    # 79-61 (FULL-2 WR-06): $provenance 'restored' (the reconnect adoption of
+    # a session the daemon found already active) travels as _p4, so Connect's
+    # restart gate can suppress the self-start by provenance -- the uptime
+    # window alone missed adoptions after the 5 s mark (login tail 8.4 s).
+    $self->_emit('start', $id, $posSec // '', undef, $provenance);
 }
 
 # _checkSplitBrain($self) -- D-D3/D-04 (83.1-02 Task 2): detects "LMS und
@@ -6657,6 +6986,8 @@ sub _transportClosed {
     delete $self->observed->{track};
     delete $self->observed->{status};
     delete $self->observed->{anchor};
+    delete $self->observed->{postSeekCheck};    # S1: the check belonged to the closed connection
+    Slim::Utils::Timers::killTimers($self, \&_postSeekCheckFire);
     $self->_reloadForget;    # 79-52
     # 85-07 D-09: the Up Next cache describes the queue of a connection that
     # is gone; the next queue_changed / get_queue reply rebuilds it.
@@ -6931,10 +7262,17 @@ sub _postBoundaryRead {
     my $state = { buf => '', done => 0 };
     my ($capCb, $readCb);
 
+    # 79-61 (FULL-2 WR-02): $release -> $capCb -> $finish -> $release (and
+    # $readCb -> $finish) is a closure cycle reference counting never frees;
+    # it kept this Control, the socket and the caller's $cb alive after every
+    # boundary POST. Dropping $capCb and $readCb here breaks it on every way
+    # out (reply, cap, abort).
     my $release = sub {
         eval { Slim::Networking::Select::removeRead($sock) };
         eval { close($sock) };
-        Slim::Utils::Timers::killTimers($self, $capCb);
+        Slim::Utils::Timers::killTimers($self, $capCb) if $capCb;
+        undef $capCb;
+        undef $readCb;
     };
     my $finish = sub {
         my ($reply) = @_;

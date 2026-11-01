@@ -11,6 +11,7 @@ Plugins/SpotOn/API/SpClient.pm
 Plugins/SpotOn/API/TokenManager.pm
 Plugins/SpotOn/Backend.pm
 Plugins/SpotOn/Connect.pm
+Plugins/SpotOn/DisplayFormat.pm
 Plugins/SpotOn/DontStopTheMusic.pm
 Plugins/SpotOn/Helper.pm
 Plugins/SpotOn/HomeExtras.pm
@@ -20,3 +21,5 @@ Plugins/SpotOn/Settings.pm
 Plugins/SpotOn/Settings/Player.pm
 Plugins/SpotOn/Status.pm
 Plugins/SpotOn/Unified/DaemonManager.pm
+Plugins/SpotOn/Unified/HostEnv.pm
+Plugins/SpotOn/Unified/ProcStop.pm

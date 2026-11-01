@@ -1012,4 +1012,30 @@ is($L->new($MAC)->state->{alive}, 0, 'librespot state: alive 0 without a helper'
 # ------------------------------------------------------------
 sub slurp { my $f = shift; open(my $fh, '<', $f) or die "$f: $!"; local $/; return <$fh>; }
 
+# 79-60 (forum #333): query('playingMode', client => $client) -> the librespot Connect claim
+{
+    no warnings 'redefine', 'once';
+    local $INC{'Plugins/SpotOn/Connect.pm'} = $INC{'Plugins/SpotOn/Connect.pm'} // __FILE__;
+    my $claim = 1;
+    local *Plugins::SpotOn::Connect::isSpotifyConnect = sub { $claim };
+    is($L->new($MAC)->query('playingMode', client => bless({}, 'Test::Client60')), 'connect', "79-60: librespot query('playingMode') -> 'connect' with the Connect claim");
+    $claim = 0;
+    is($L->new($MAC)->query('playingMode', client => bless({}, 'Test::Client60')), 'browse', "79-60: librespot query('playingMode') -> 'browse' without it");
+    is($L->new($MAC)->query('playingMode'), undef, "79-60: librespot query('playingMode') without client -> undef");
+    is($L->new($MAC)->query('deliveredFormat', uri => 'spotify:track:a'), undef, "79-60: librespot query('deliveredFormat') -> undef (no measurement source)");
+}
+
+# 79-63 R1 (79-REVIEW-BETA3 CR-01): the Auth Health Connect row asks the
+# helper's own role. A librespot daemon carries its account (_accountId); the
+# row lists no players.
+{
+    ok($L->can('accountIdForHelper'), 'R1 CR-01: librespot accountIdForHelper exists');
+    ok($L->can('authHealthListsPlayers'), 'R1 CR-01: librespot authHealthListsPlayers exists');
+    { package Test::Helper63L; sub _accountId { $_[0]{acct} } }
+    is(eval { $L->accountIdForHelper(bless { acct => 'acctB' }, 'Test::Helper63L') }, 'acctB', "R1 CR-01: librespot accountIdForHelper -> the helper's _accountId");
+    is(eval { $L->accountIdForHelper(bless { acct => undef }, 'Test::Helper63L') }, '', "R1 CR-01: librespot accountIdForHelper without account -> ''");
+    is(eval { $L->accountIdForHelper(bless {}, 'Test::NoAccount63') }, '', "R1 CR-01: a helper without _accountId -> ''");
+    is(eval { $L->authHealthListsPlayers }, 0, 'R1 CR-01: librespot authHealthListsPlayers -> 0');
+}
+
 done_testing();

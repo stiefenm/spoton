@@ -73,6 +73,19 @@ use constant TRACK_META_RENEW_AFTER  => 30 * 86400;
 use constant TRACK_META_FORMAT       => 2;
 use constant RENEW_BATCH             => 50;
 use constant APRESOLVE_URL           => 'https://apresolve.spotify.com/?type=spclient';
+# 79-61 (FULL-3 WR-05): after a confirmed 'unauthorized' (401 after the D-07a
+# remint) the account's next 401s within this window are reported without a
+# remint; a 2xx for the account lifts it. Kept in memory (no cache write per
+# request); a restart forgets it, which only costs one D-07a remint.
+use constant UNAUTH_MEMORY_TTL       => 60;
+my %_unauthUntil;
+sub _unauthMemory {
+    my ($accountId) = @_;
+    return 0 unless $accountId && $_unauthUntil{$accountId};
+    return 1 if time() < $_unauthUntil{$accountId};
+    delete $_unauthUntil{$accountId};
+    return 0;
+}
 use constant SPCLIENT_FALLBACK_HOST  => 'gew4-spclient.spotify.com:443';
 use constant HOST_CACHE_KEY          => 'spoton_spclient_host';
 use constant HOST_CACHE_TTL          => 3600;
@@ -479,6 +492,61 @@ sub _request {
     };
 }
 
+# gate($class, $label, $run, $blocked) -- 79-61 (FULL-3 WR-03): the central
+# spclient gate for requests that do not go through _request (Soloist's
+# playback-settings calls): the same rate-limit key short-circuit and the
+# same MAX_CONCURRENT_REQUESTS slot count as _request, shared with it.
+# $run->($release) dispatches the request and MUST call $release once when it
+# has answered; a slot that is never released is freed after GATE_MAX_HOLD
+# seconds so a lost callback cannot deadlock all spclient traffic.
+# $blocked->($why) runs instead of $run while a 429 backoff is active.
+use constant GATE_MAX_HOLD => 60;
+sub gate {
+    my ($class, $label, $run, $blocked) = @_;
+
+    if (my $retryUntil = $cache->get(SPCLIENT_RATE_LIMIT_KEY)) {
+        if ($retryUntil - Time::HiRes::time() > 0) {
+            main::INFOLOG && $log->info("SpClient: gated request $label short-circuited (cached rate limit)");
+            $blocked->('rate_limited_local');
+            return;
+        }
+    }
+
+    if ($inflightCount >= MAX_CONCURRENT_REQUESTS) {
+        Slim::Utils::Timers::setTimer(undef, Time::HiRes::time() + 0.1,
+            sub { $class->gate($label, $run, $blocked) });
+        return;
+    }
+
+    $inflightCount++;
+    $requestCount++;
+    my $released = 0;
+    my $release = sub { return if $released++; $inflightCount--; };
+    Slim::Utils::Timers::setTimer(undef, Time::HiRes::time() + GATE_MAX_HOLD, sub {
+        return if $released;
+        $log->warn("SpClient: gated request $label never answered -- slot freed after " . GATE_MAX_HOLD . " s");
+        $release->();
+    });
+
+    eval { $run->($release); 1 } or do {
+        $log->error("SpClient: gated dispatch failed for $label: $@");
+        $release->();
+        $blocked->('internal_error');
+    };
+}
+
+# noteRateLimit($class, $retryAfter) -- 79-61 (FULL-3 WR-03): a 429 seen by a
+# gated caller sets the same rate key and counter as _doRequest's 429 path.
+sub noteRateLimit {
+    my ($class, $retryAfter) = @_;
+    $retryAfter = RATE_LIMIT_DEFAULT_BACKOFF unless defined $retryAfter && $retryAfter =~ /^\d+$/;
+    $retryAfter = 1   if $retryAfter < 1;
+    $retryAfter = 300 if $retryAfter > 300;
+    $count429++;
+    $cache->set(SPCLIENT_RATE_LIMIT_KEY, Time::HiRes::time() + $retryAfter, $retryAfter);
+    $log->warn("SpClient: 429 rate limited for ${retryAfter}s (gated caller)");
+}
+
 # _logPath($path) -- 79-43 (D-33 FULL-3 WR-01): the request path as it may appear in a log line. The username
 # (profile/<u>, spotify:user:<u>, /user/<u>, raw or URI-escaped) and everything after spotify:search: are masked;
 # the request path, the cache key and the request itself are never changed - only what is logged.
@@ -530,6 +598,10 @@ sub _doRequest {
                 sub {
                     my $httpResp = shift;
                     my $content  = $httpResp->content // '';
+
+                    # 79-61 (FULL-3 WR-05): a 2xx proves the account's token
+                    # works again -- lift the unauthorized memory.
+                    delete $_unauthUntil{$accountId} if $accountId;
 
                     my $result;
                     if ($params->{_raw}) {
@@ -587,6 +659,19 @@ sub _doRequest {
                     }
 
                     if ($code == 401) {
+                        # 79-61 (FULL-3 WR-05): an account confirmed
+                        # unauthorized within UNAUTH_MEMORY_TTL gets no
+                        # remint and keeps its cached token -- otherwise every
+                        # request costs one login5 mint while spclient keeps
+                        # rejecting the bearer. D-07a's one remint per request
+                        # still applies once the memory has lapsed or a 2xx
+                        # lifted it.
+                        if (_unauthMemory($accountId)) {
+                            $log->warn("SpClient: 401 for " . _logPath($cleanPath) . " -- account confirmed unauthorized less than " . UNAUTH_MEMORY_TTL . " s ago, no remint");
+                            $userCb->(undef, { error => 'unauthorized', code => 401 });
+                            return;
+                        }
+
                         $cache->remove("spoton_login5_token_${accountId}") if $accountId;
 
                         # D-07a: exactly one remint retry on the FIRST 401 --
@@ -608,6 +693,7 @@ sub _doRequest {
                         }
 
                         $log->warn("SpClient: 401 for " . _logPath($cleanPath) . " after remint retry -- reporting unauthorized");
+                        $_unauthUntil{$accountId} = time() + UNAUTH_MEMORY_TTL if $accountId;
                         $userCb->(undef, { error => 'unauthorized', code => 401 });
                         return;
                     }
@@ -2990,19 +3076,51 @@ sub _addToPlaylistAttempt {
 }
 
 # ============================================================
-# Made for You on Pathfinder (85-08, decision-D17 pathfinder-login5-plus-rootlist)
+# Made for You on Pathfinder (85-08, decision-D17 pathfinder-login5-plus-rootlist;
+# 79-59, GH #180: the whole home)
 # ============================================================
-# Two homeSection queries (SECTION_MFY, then SECTION_TOPMIX) with SpotOn's own
-# login5 bearer, cookie-free (API/Pathfinder.pm). When both sections fail or
-# yield nothing, the Spotify-made spotify:playlist:37i9dQZ mixes of the user's
-# rootlist are shown instead. DJ never appears on either path (not a playlist,
-# spclient answers 404). No backend is consulted (D-20) and no browse/categories
-# request is sent (D-08).
+# Three Pathfinder queries in parallel with SpotOn's own login5 bearer,
+# cookie-free (API/Pathfinder.pm): op home (every row of the Spotify home) and
+# the two homeSection queries SpotOn read before (SECTION_MFY, SECTION_TOPMIX;
+# they answer more mixes of their row than home does). When every source
+# fails or yields nothing, the Spotify-made spotify:playlist:37i9dQZ mixes of
+# the user's rootlist are shown instead. DJ never appears (not a playlist,
+# spclient answers 404). No backend is consulted (D-20) and no
+# browse/categories request is sent (D-08).
+#
+# Which home lists are kept (79-59, user decision 2026-10-31 "Regel ja, aber
+# ohne Radios"): a Playlist whose id starts with 37i9dQZF1E or 37i9dQZEVX,
+# whose attributes carry madeFor.username, and whose format is not
+# inspiredby-mix (the artist radios). No title list and no format allow-list,
+# so a new kind of personal list appears without a code change. The id prefix
+# is an observed, undocumented Spotify convention: if Spotify changes it,
+# lists go missing, but wrong ones are never added. The two homeSection rows
+# keep their old rule (Playlist, not DJ) and lose only inspiredby-mix.
+#
+# Layout (user decision "Feste oben, Rest in Ordnern"): daylist, Daily Mixes,
+# Discover Weekly, Release Radar on top (by format); the lists of untitled
+# rows below them; then one folder per Spotify row title, in Spotify's order
+# (rows that share a title share a folder). Each list appears once, at its
+# first place. Without a home answer the list stays flat, as before.
+
+use constant MFY_TOP_FORMATS  => [ 'daylist', 'daily-mix', 'discover-weekly', 'release-radar' ];
+use constant MFY_RADIO_FORMAT => 'inspiredby-mix';
+# 79-59: the menu is fetched again on every descent (LMS keeps no browse
+# session for coderef menus), and the Spotify home answers differently on
+# every request (rows come and go, one-item rows rotate) -- without a cache a
+# folder or list opened from the menu could be a different one than the one
+# shown. A complete answer is kept for the browse tier (CLAUDE.md: 300 s);
+# an answer with a failed source is not kept, the next open asks again.
+use constant MFY_LIST_TTL     => 300;
+use constant MFY_LIST_KEY     => 'spoton_mfy_list_';
 
 # getMadeForYou($class, $accountId, $cb)
 # cb->({ items => [{ id, uri, name, images }, ...], source => 'pathfinder' |
-# 'rootlist-fallback' }) or cb->(undef, $err). No login5 credentials answer
-# (undef, { error => 'no_credentials' }) without a request.
+# 'rootlist-fallback', layout => { top => [...], loose => [...],
+# folders => [{ title, items => [...] }] } }) or cb->(undef, $err). items is
+# the flat menu order; layout is present only when op home answered with rows.
+# No login5 credentials answer (undef, { error => 'no_credentials' }) without
+# a request.
 sub getMadeForYou {
     my ($class, $accountId, $cb) = @_;
 
@@ -3011,52 +3129,136 @@ sub getMadeForYou {
         return;
     }
 
+    my $listKey = MFY_LIST_KEY . $accountId;
+    if (my $kept = $cache->get($listKey)) {
+        if (ref($kept) eq 'HASH' && ref($kept->{items}) eq 'ARRAY' && @{ $kept->{items} }) {
+            %_mfy = (source => 'pathfinder', mixCount => scalar(@{ $kept->{items} }), lastError => undef);
+            $cb->($kept);
+            return;
+        }
+    }
+
     require Plugins::SpotOn::API::Pathfinder;
     my $djUri    = Plugins::SpotOn::API::Pathfinder::DJ_URI();
     my @sections = (
         Plugins::SpotOn::API::Pathfinder::SECTION_MFY(),
         Plugins::SpotOn::API::Pathfinder::SECTION_TOPMIX(),
     );
+    my @sectionNames = ('mfy', 'topmix');
 
     # Initialised BEFORE the first request: a callback may fire synchronously.
-    my $remaining = scalar @sections;
-    my (@got, @errs);
+    my $remaining = scalar(@sections) + 1;
+    my (@got, @errs, $homeRows, $homeErr);
 
     my $finish = sub {
-        my (@merged, %seen);
-        for my $items (@got) {
-            for my $it (@{ $items || [] }) {
-                next unless ref($it) eq 'HASH';
-                my $uri = $it->{uri};
-                next if $uri eq $djUri;
-                next unless ($it->{typename} // '') eq 'Playlist';
-                next unless $uri =~ /\Aspotify:playlist:([A-Za-z0-9]{1,40})\z/;
-                my $id = $1;
-                next if $seen{$uri}++;
-                push @merged, {
-                    id     => $id,
-                    uri    => $uri,
-                    name   => (defined $it->{name} && length $it->{name}) ? $it->{name} : $id,
-                    images => $it->{images} || [],
-                };
+        my $usable = sub {
+            my ($it, $personal) = @_;
+            return undef unless ref($it) eq 'HASH';
+            my $uri = $it->{uri};
+            return undef unless defined $uri && !ref($uri);
+            return undef if $uri eq $djUri;
+            return undef unless ($it->{typename} // '') eq 'Playlist';
+            return undef unless $uri =~ /\Aspotify:playlist:([A-Za-z0-9]{1,40})\z/;
+            my $id = $1;
+            return undef if ($it->{format} // '') eq MFY_RADIO_FORMAT;
+            if ($personal) {
+                return undef unless $id =~ /\A37i9dQZ(?:F1E|EVX)/;
+                return undef unless $it->{madeFor};
+            }
+            return {
+                id     => $id,
+                uri    => $uri,
+                name   => (defined $it->{name} && length $it->{name}) ? $it->{name} : $id,
+                images => $it->{images} || [],
+                format => $it->{format} // '',
+            };
+        };
+
+        # rows: home's rows in Spotify order; the homeSection items join the
+        # row with the same uri (after home's items), else a row of their own
+        my @rows;
+        my %rowOf;
+        my $haveHome = (ref($homeRows) eq 'ARRAY' && @$homeRows) ? 1 : 0;
+        if ($haveHome) {
+            for my $r (@$homeRows) {
+                next unless ref($r) eq 'HASH';
+                my $row = { uri => $r->{uri}, title => $r->{title} // '', entries => [] };
+                push @{ $row->{entries} }, [ $_, 1 ] for @{ $r->{items} || [] };
+                $rowOf{ $r->{uri} } //= $row;
+                push @rows, $row;
+            }
+        }
+        for my $i (0 .. $#sections) {
+            my $row = $rowOf{ $sections[$i] };
+            unless ($row) {
+                $row = { uri => $sections[$i], title => '', entries => [] };
+                $rowOf{ $sections[$i] } = $row;
+                push @rows, $row;
+            }
+            push @{ $row->{entries} }, [ $_, 0 ] for @{ $got[$i] || [] };
+        }
+
+        my (@merged, %seen, @placed);
+        for my $row (@rows) {
+            for my $e (@{ $row->{entries} }) {
+                my $m = $usable->($e->[0], $e->[1]) or next;
+                next if $seen{ $m->{uri} }++;
+                push @placed, [ $m, $row ];
             }
         }
 
-        # WR-13: keep the reason a section failed. A Pathfinder answer that
-        # merely carries no Playlist items is NOT a transport failure; the
-        # status page and the menu must not blame the transport for it.
-        my ($firstErr) = grep { $_ } @errs;
-        my $pfFailed   = $firstErr ? 1 : 0;
-        my $lastError  = $firstErr ? _plainError($firstErr) : undef;
+        my $layout;
+        if ($haveHome) {
+            my @tops = @{ MFY_TOP_FORMATS() };
+            my %tier = map { $tops[$_] => $_ } 0 .. $#tops;
+            my (@top, @loose, @folders, %folderOf);
+            for my $p (@placed) {
+                my ($m, $row) = @$p;
+                if (exists $tier{ $m->{format} }) {
+                    push @top, $m;
+                }
+                elsif (!length $row->{title}) {
+                    push @loose, $m;
+                }
+                else {
+                    my $f = $folderOf{ $row->{title} };
+                    unless ($f) {
+                        $f = $folderOf{ $row->{title} } = { title => $row->{title}, items => [] };
+                        push @folders, $f;
+                    }
+                    push @{ $f->{items} }, $m;
+                }
+            }
+            # stable by tier: Spotify's order inside a tier (Daily Mix 1..n)
+            my %pos; @pos{ map { $_->{uri} } @top } = 0 .. $#top;
+            @top = sort { $tier{ $a->{format} } <=> $tier{ $b->{format} } || $pos{ $a->{uri} } <=> $pos{ $b->{uri} } } @top;
+            @merged = (@top, @loose, map { @{ $_->{items} } } @folders);
+            $layout = { top => \@top, loose => \@loose, folders => \@folders };
+        }
+        else {
+            @merged = map { $_->[0] } @placed;
+        }
+        delete $_->{format} for @merged;
+
+        # WR-13: keep the reason a source failed, and (79-59) name the source.
+        # A Pathfinder answer that merely carries no Playlist items is NOT a
+        # transport failure; the status page and the menu must not blame the
+        # transport for it.
+        my @failed = (($homeErr ? [ 'home', $homeErr ] : ()),
+                      map { $errs[$_] ? [ $sectionNames[$_], $errs[$_] ] : () } 0 .. $#sections);
+        my $pfFailed  = @failed ? 1 : 0;
+        my $lastError = @failed ? $failed[0][0] . ' ' . _plainError($failed[0][1]) : undef;
 
         if (@merged) {
             %_mfy = (source => 'pathfinder', mixCount => scalar(@merged), lastError => $lastError);
-            $cb->({ items => \@merged, source => 'pathfinder' });
+            my $result = { items => \@merged, source => 'pathfinder', ($layout ? (layout => $layout) : ()) };
+            $cache->set($listKey, $result, MFY_LIST_TTL) unless $pfFailed;
+            $cb->($result);
             return;
         }
 
         # Pathfinder yielded nothing (D-17: the rootlist 37i9 mixes take over,
-        # whether the sections failed or merely listed no playlists).
+        # whether the sources failed or merely listed no playlists).
         %_mfy = (source => 'rootlist-fallback', mixCount => 0,
                  fallbackReason => ($pfFailed ? 'error' : 'empty'), lastError => $lastError);
 
@@ -3087,6 +3289,12 @@ sub getMadeForYou {
         });
     };
 
+    Plugins::SpotOn::API::Pathfinder->home($accountId, sub {
+        my ($rows, $err) = @_;
+        $homeRows = $rows;
+        $homeErr  = $err;
+        $finish->() if --$remaining == 0;
+    });
     for my $i (0 .. $#sections) {
         Plugins::SpotOn::API::Pathfinder->homeSection($accountId, $sections[$i], sub {
             my ($items, $err) = @_;

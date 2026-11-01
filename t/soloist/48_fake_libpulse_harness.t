@@ -115,6 +115,21 @@
 # (FAKE_LIBPULSE_TEST_RUNAWAY_ONLY=1): beide geschnittenen D2_DEPART-Bloecke MUESSEN C1 (die Plant-Antwort) UND C6 (der Vermerk
 # selbst) verfehlen, der geschnittene D2_ORPHAN-Block C2. Die Untergrenze der ok:-Zeilen steigt von 91 auf 98.
 #
+# Debug-Sitzung `silent-browse-start-headers-closed` (2026-11-01, 79-63 Task 2: 2 von 5 Browse-Starts stumm, squeezelite
+# `error reading headers: closed`): der Shim schloss den GET /stream des Players, bevor dessen Anfragekopf da war. Die
+# Lese-Stelle der Hauptschleife nahm die poll-Bereitschaft des Sockets, den _pending_accept im selben Durchlauf aus dem
+# Pending-Slot verdraengt hatte, und schloss bei read() == -1/EAGAIN. Ausgeloest live durch Controls onStream-/seek-arm, der
+# ungelesen im Slot lag, waehrend der Thread wegen eines toten Clients (nach LMS-`stop`) 50 ms in _ring_pop_timed schlief, und
+# durch squeezelites 0-100 ms spaeten Anfragekopf. Vier Namen `pending: P...`: ohne toten Client wird ein spaeter Kopf bedient
+# (P0, Kontrolle, auch vor der Reparatur gruen), mit totem Client ueberlebt der GET den ungelesenen Arm (P1, die Live-Form), den
+# Abbruch des verdraengten Sockets (P2) und einen Steuer-POST, der seine halben Kopfbytes im selben Durchlauf liest (P3). Die Faelle
+# setzen ihre Verbindungen auf die steigende Flanke von g_test_pop_waiting (nur im Harness), damit die Verschraenkung jedes Mal
+# dieselbe ist. Die Reparatur sind zwei markierte Bloecke in der Lese-Stelle: `SILENT-START POLLED_FD` (die Bereitschaft zaehlt
+# nur fuer den Socket, den poll() gesehen hat) und `SILENT-START EAGAIN_KEEP` (EAGAIN laesst die Anfrage warten, die Regel von
+# _pending_try_read). Drei Mutanten laufen im Nur-Pending-Modus (FAKE_LIBPULSE_TEST_PENDING_ONLY=1): ohne POLLED_FD MUSS P2
+# fallen, ohne EAGAIN_KEEP P3, ohne beide (die alte Lese-Stelle) P1, P2 und P3, waehrend P0 gruen bleibt. Die Untergrenze der
+# ok:-Zeilen steigt von 98 auf 102.
+#
 # Der Test uebersetzt fake-libpulse.c mit -DFAKE_LIBPULSE_TEST in ein
 # Temp-Verzeichnis (kein Build-Artefakt im Quellbaum), fuehrt den Harness
 # aus und macht aus jeder `ok:`-/`FAIL:`-Zeile einen TAP-Punkt. Ohne
@@ -167,7 +182,7 @@ fail("harness: $_") for @fail;
 
 is($run_rc, 0, 'harness exits 0') or diag($out);
 like($out, qr/^All fake-libpulse HTTP mode tests passed$/m, 'harness reports all tests passed');
-cmp_ok(scalar(@ok), '>=', 98, 'harness ran at least the 98 known checks') or diag($out);
+cmp_ok(scalar(@ok), '>=', 102, 'harness ran at least the 102 known checks') or diag($out);
 
 # The regression tests of this session must stay in the harness -- a
 # silently deleted test would otherwise still leave "All ... passed".
@@ -266,6 +281,11 @@ for my $want (
     qr/^ok: runaway: D2-C5 a live attach clears the departed record: a plant while the new client is attached reads via=live with its generation/m,
     qr/^ok: runaway: D2-C6 after a bounded EOF and a skip flush the next plant reads via=departed and its marker is discarded at the attach/m,
     qr/^ok: runaway: D2-C7 after a bounded EOF without a flush the next plant is discarded at the attach/m,
+    # debug silent-browse-start-headers-closed (2026-11-01): a GET whose head is not there yet is never closed by the pending read
+    qr/^ok: pending: P0 without a dead client a GET whose head comes 150 ms after its connect is answered \(control\)/m,
+    qr/^ok: pending: P1 a GET whose head comes 150 ms after its connect survives an unread \/seek-arm in the slot while a dead client is attached/m,
+    qr/^ok: pending: P2 a GET without its head yet is not closed by the hangup of the connection it replaced in the slot/m,
+    qr/^ok: pending: P3 a GET with half its head survives a control POST that drains its bytes in the same tick/m,
 ) {
     like($out, $want, "regression check present: $want");
 }
@@ -463,6 +483,71 @@ for my $want (
     ok(($rrc == 0 && $rok == 7 && $rout !~ /^FAIL: /m) ? 1 : 0,
        '79-51 runaway D2: the unmutated harness passes all seven runaway cells in runaway-only mode')
         or diag("runaway-only exit=$rrc ok=$rok output:\n$rout");
+}
+
+# debug silent-browse-start-headers-closed: the pending-read mutants, in pending-only mode
+# (FAKE_LIBPULSE_TEST_PENDING_ONLY=1). MUT_POLLED_FD cuts the one `SILENT-START POLLED_FD` block (the replaced
+# occupant's readiness is used again): it MUST fail P2. MUT_EAGAIN_KEEP cuts the one `SILENT-START EAGAIN_KEEP` block
+# (EAGAIN closes again): it MUST fail P3. MUT_BOTH cuts both, the pre-fix read: it MUST fail P1, P2 and P3 and keep P0
+# (the control is not a defect detector). The unmutated binary MUST pass all four pending cells in that mode.
+{
+    open(my $sfh, '<', $src) or die "cannot read $src: $!";
+    my $code = do { local $/; <$sfh> };
+    close $sfh;
+    my $pn = 0;
+    for my $m (
+        [ 'MUT_POLLED_FD',   [ 'POLLED_FD' ],                [ qr/^FAIL: pending: P2 /m ], [],
+          'the readiness of the replaced occupant (the GET is closed by its hangup)' ],
+        [ 'MUT_EAGAIN_KEEP', [ 'EAGAIN_KEEP' ],              [ qr/^FAIL: pending: P3 /m ], [],
+          'the EAGAIN keep (the GET is closed when its bytes were read in the same tick)' ],
+        [ 'MUT_BOTH',        [ 'POLLED_FD', 'EAGAIN_KEEP' ], [ qr/^FAIL: pending: P1 /m, qr/^FAIL: pending: P2 /m, qr/^FAIL: pending: P3 /m ],
+          [ qr/^ok: pending: P0 /m ],
+          'the pre-fix pending read (the live silent start; the control P0 stays green)' ],
+    ) {
+        my ($label, $tags, $wants, $keeps, $what) = @$m;
+        my $cut  = $code;
+        my $nrep = 0;
+        my $one  = 1;
+        for my $tag (@$tags) {
+            my $begins = () = $code =~ /SILENT-START ${tag}_BEGIN/g;
+            my $ends   = () = $code =~ /SILENT-START ${tag}_END/g;
+            my $n      = ($cut =~ s{/\* SILENT-START ${tag}_BEGIN \*/.*?/\* SILENT-START ${tag}_END \*/}{}s) || 0;
+            $nrep += $n;
+            $one = 0 unless $begins == 1 && $ends == 1 && $n == 1;
+        }
+        $one = 0 if $cut eq $code;
+        my $want_n = scalar(@$tags);
+        ok($one, "silent start: the $label mutant source differs from the real source at exactly $want_n marked block(s)")
+            or diag("replaced=$nrep (want $want_n, one BEGIN/END pair each)");
+
+        my ($mcompiled, $mout, $mrc) = (0, '', 0);
+        if ($one) {
+            $pn++;
+            my $msrc = "$tmp/fake-libpulse-pending-mutant-$pn.c";
+            my $mbin = "$tmp/fake-libpulse-pending-mutant-$pn";
+            open(my $mfh, '>', $msrc) or die "cannot write $msrc: $!";
+            print $mfh $cut;
+            close $mfh;
+            my $mbuild = `"$cc" -O2 -Wall -Wextra -DFAKE_LIBPULSE_TEST -o "$mbin" "$msrc" -lpthread -lm 2>&1`;
+            $mcompiled = (($? >> 8) == 0 && -x $mbin) ? 1 : 0;
+            diag($mbuild) unless $mcompiled;
+            if ($mcompiled) {
+                $mout = `FAKE_LIBPULSE_TEST_PENDING_ONLY=1 $timeout"$mbin" 2>&1`;
+                $mrc  = $? >> 8;
+            }
+        }
+        ok($mcompiled, "silent start: the $label mutant compiles");
+        my $all = ($mcompiled && $mrc != 0 && !(grep { $mout !~ $_ } @$wants) && !(grep { $mout !~ $_ } @$keeps)) ? 1 : 0;
+        ok($all, "silent start: the $label mutant fails its cell(s): $what")
+            or diag("mutant exit=$mrc output:\n$mout");
+    }
+
+    my $pout = `FAKE_LIBPULSE_TEST_PENDING_ONLY=1 $timeout"$bin" 2>&1`;
+    my $prc  = $? >> 8;
+    my $pok  = () = $pout =~ /^ok: pending: P\d /mg;
+    ok(($prc == 0 && $pok == 4 && $pout !~ /^FAIL: /m) ? 1 : 0,
+       'silent start: the unmutated harness passes all four pending cells in pending-only mode')
+        or diag("pending-only exit=$prc ok=$pok output:\n$pout");
 }
 
 done_testing();

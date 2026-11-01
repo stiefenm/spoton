@@ -644,7 +644,11 @@ subtest 'Connect URL returns Browse mode label not Connect' => sub {
     # type field should contain Browse (not Connect) — D-07 invisible translation
     if (defined $result->{type}) {
         unlike($result->{type}, qr/Connect/, 'D-07: type field does NOT contain "Connect"');
-        like($result->{type},   qr/Browse/,  'D-07: type field contains "Browse"');
+        # 79-67 (user decision 2026-10-31 "An Material anpassen"): type is the short
+        # LMS-side codec; the Browse/Connect mode moved into the track info item
+        like($result->{type}, qr/\A(?:FLAC|PCM|MP3|OGG)\z/, 'D-07 (79-67): type field is the short codec');
+        my $line = eval { Plugins::SpotOn::Plugin->_formatLineFor($client, $connect_url) } // '';
+        like($line, qr/, SpotOn Browse\z/, 'D-07 (79-67): the track info label of a history entry that is not playing says "SpotOn Browse"');
     } else {
         pass('D-07: type field not set (no client-resolved type in test env)');
     }

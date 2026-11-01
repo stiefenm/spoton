@@ -1355,6 +1355,16 @@ static void _ring_release_writers_and_wait(ring_buffer_t *r) {
  * an unbounded block) so the HTTP server thread's single loop can
  * still service new accept()s / connection takeover promptly even
  * while a client is attached and the ring is momentarily empty. */
+#ifdef FAKE_LIBPULSE_TEST
+/* debug silent-browse-start-headers-closed (2026-11-01), harness only: 1 while
+ * a caller sits in the timed wait below. With a dead client attached and an
+ * empty ring the HTTP thread spends half of every tick there, watching no
+ * socket; the pending cells start their connections on the rising edge so the
+ * interleaving they test is the same every run. Never compiled into
+ * libpulse.so.0. */
+static atomic_int g_test_pop_waiting = 0;
+#endif
+
 static size_t _ring_pop_timed(ring_buffer_t *r, unsigned char *out, size_t maxlen, int timeout_ms) {
     pthread_mutex_lock(&r->lock);
 
@@ -1365,7 +1375,13 @@ static size_t _ring_pop_timed(ring_buffer_t *r, unsigned char *out, size_t maxle
         struct timespec ts;
         ts.tv_sec  = now.tv_sec + timeout_ms / 1000 + usec / 1000000;
         ts.tv_nsec = (usec % 1000000) * 1000;
+#ifdef FAKE_LIBPULSE_TEST
+        atomic_store(&g_test_pop_waiting, 1);
+#endif
         pthread_cond_timedwait(&r->data_avail, &r->lock, &ts);
+#ifdef FAKE_LIBPULSE_TEST
+        atomic_store(&g_test_pop_waiting, 0);
+#endif
     }
 
     size_t chunk = 0;
@@ -2604,21 +2620,51 @@ static void *_http_thread_fn(void *arg) {
          * complete (read by _pending_settle/_flush_backlog_pass) needs no
          * further read -- and must not get one: after a loopback control
          * POST the next read returns the peer's EOF, which would close
-         * the request before it is dispatched below. */
+         * the request before it is dispatched below.
+         *
+         * debug silent-browse-start-headers-closed (2026-11-01): the
+         * readiness poll() reported is only that of the fd it was given.
+         * _pending_accept above may have replaced the slot's occupant in this
+         * very iteration (a newcomer settles an unread occupant and takes the
+         * slot with no head yet: squeezelite sends its request 0-100 ms after
+         * the connect). The old occupant's POLLIN/POLLHUP then belongs to a
+         * socket that is gone, and a read of the newcomer returns EAGAIN --
+         * which this block took for a dead peer: the player's GET /stream got
+         * a FIN and no answer, LMS sat at play 0:00 (79-63 Task 2, 2 of 5
+         * Browse starts). Two rules, each its own marked block:
+         *   POLLED_FD   the revents count only while the slot still holds the
+         *               fd that was polled; a replaced slot waits for the next
+         *               tick's poll() of its own fd;
+         *   EAGAIN_KEEP read() == -1 with EAGAIN/EWOULDBLOCK/EINTR means
+         *               "nothing yet", the request stays pending -- the rule
+         *               _pending_try_read applies everywhere else. EOF and
+         *               every other error still close. */
+        short pending_revents = (pending_idx >= 0) ? fds[pending_idx].revents : 0;
+        /* SILENT-START POLLED_FD_BEGIN */
+        if (pending_idx >= 0 && fds[pending_idx].fd != pending.fd) {
+            pending_revents = 0;
+        }
+        /* SILENT-START POLLED_FD_END */
         if (pending.fd >= 0 && pending_idx >= 0 && rc > 0
             && !_pending_head_complete(&pending)
-            && (fds[pending_idx].revents & (POLLIN | POLLERR | POLLHUP | POLLNVAL)))
+            && (pending_revents & (POLLIN | POLLERR | POLLHUP | POLLNVAL)))
         {
-            if (fds[pending_idx].revents & (POLLERR | POLLHUP | POLLNVAL)) {
+            if (pending_revents & (POLLERR | POLLHUP | POLLNVAL)) {
                 close(pending.fd);
                 pending.fd = -1;
             } else if (pending.len < sizeof(pending.buf) - 1) {
                 ssize_t n = read(pending.fd, pending.buf + pending.len,
                                   sizeof(pending.buf) - 1 - pending.len);
-                if (n <= 0) {
+                int gone = (n <= 0);
+                /* SILENT-START EAGAIN_KEEP_BEGIN */
+                if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
+                    gone = 0;
+                }
+                /* SILENT-START EAGAIN_KEEP_END */
+                if (gone) {
                     close(pending.fd);
                     pending.fd = -1;
-                } else {
+                } else if (n > 0) {
                     pending.len += (size_t)n;
                     pending.buf[pending.len] = '\0';
                 }
@@ -7247,6 +7293,197 @@ static void _test_runaway_cases(pa_stream *s, int port, int *failures) {
     _test_runaway_c7(s, port, failures);
 }
 
+/* ==================================================================== */
+/* debug silent-browse-start-headers-closed (2026-11-01): a GET /stream  */
+/* whose request head is not there yet is never closed by the HTTP      */
+/* thread's pending read.                                               */
+/* ==================================================================== */
+/*
+ * Live (lavender-UAT, 79-63 Task 2 and series s1): squeezelite connects, then
+ * sends its request 0-100 ms later (its idle stream thread sleeps in 100 ms
+ * steps). Control's onStream /seek-arm reaches the shim ~2 ms BEFORE that
+ * connect. With LMS' `stop` the player closed the previous stream, but the
+ * shim notices a dead client only when it writes; with an empty ring its HTTP
+ * thread accepts the arm, sleeps 50 ms in _ring_pop_timed, then accepts the
+ * GET next to the still unread arm. The main-loop read then used the poll
+ * revents of the arm's fd for the GET that replaced it in the slot and closed
+ * on read() == -1/EAGAIN: FIN, no answer, LMS at play 0:00.
+ */
+
+static const char _test_pend_get_line[] = "GET /stream HTTP/1.0\r\n";
+
+/* Waits for the rising edge of the HTTP thread's timed pop wait: on return
+ * the thread watches no socket for about 50 ms. 1 = edge seen. */
+static int _test_pend_await_pop_wait(int max_ms) {
+    struct timeval t0;
+    gettimeofday(&t0, NULL);
+    while (atomic_load(&g_test_pop_waiting) != 0) {
+        if (_elapsed_ms(&t0) >= max_ms) return 0;
+        usleep(200);
+    }
+    while (atomic_load(&g_test_pop_waiting) == 0) {
+        if (_elapsed_ms(&t0) >= max_ms) return 0;
+        usleep(200);
+    }
+    return 1;
+}
+
+/* A dead client in client_fd and an empty ring: attach, then close our end.
+ * Returns 1 when the attach worked and the shim still counts the client. */
+static int _test_pend_stale(int port) {
+    _test_ring_reset();
+    g_flush_disconnect = 0;
+    _flush_decide_clear();
+    int fd = _test_hold_attach(port);
+    if (fd < 0) {
+        return 0;
+    }
+    close(fd);
+    usleep(150000);
+    return _test_wr_connected();
+}
+
+/* Holds g silent for hold_ms. 0 = still open and nothing arrived, 1 = the
+ * shim closed or reset it, 2 = bytes arrived before any request. */
+static int _test_pend_hold(int g, int hold_ms) {
+    struct timeval t0;
+    gettimeofday(&t0, NULL);
+    while (_elapsed_ms(&t0) < hold_ms) {
+        struct pollfd pfd;
+        pfd.fd = g;
+        pfd.events = POLLIN;
+        pfd.revents = 0;
+        if (poll(&pfd, 1, 5) > 0) {
+            char c;
+            ssize_t n = recv(g, &c, 1, MSG_PEEK);
+            if (n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)) {
+                return 1;
+            }
+            if (n > 0) {
+                return 2;
+            }
+        }
+    }
+    return 0;
+}
+
+/* Sends `rest` on g and reads the response header: 1 = `HTTP/1.0 200 OK` audio/x-pcm. */
+static int _test_pend_answer(int g, const char *rest) {
+    size_t n = strlen(rest);
+    if (write(g, rest, n) != (ssize_t)n) {
+        return 0;
+    }
+    return _test_read_header(g, 3000) == 0;
+}
+
+static void _test_pend_verdict(int *failures, int ok, const char *name, int pre, int early, int hdr, int arm, const char *extra) {
+    char facts[400];
+    snprintf(facts, sizeof(facts), "precondition=%d closed_before_head=%d (want 0) answered_200=%d (want 1) arm_answered=%d%s%s",
+             pre, early, hdr, arm, extra ? " " : "", extra ? extra : "");
+    _test_hold_verdict(failures, ok, name, facts);
+}
+
+/* P0 (control, both ways): no client attached -- the thread never sleeps in the
+ * pop, reads the arm at once, and the held GET waits in an empty slot. */
+static void _test_pending_p0(pa_stream *s, int port, int *failures) {
+    (void)s;
+    const char *name = "pending: P0 without a dead client a GET whose head comes 150 ms after its connect is answered (control)";
+    _test_hold_cleanup(port);
+    char body[256];
+    body[0] = '\0';
+    int via_ok = _test_post_control_body(port, "/boundary", body, sizeof(body));
+    char via[16];
+    via[0] = '\0';
+    (void)_test_body_str(body, "via=", via, sizeof(via));
+    int pre = via_ok && strcmp(via, "live") != 0;
+    usleep(100000);
+    int a = _test_post_raw(port, "/seek-arm");
+    usleep(2000);
+    int g = (a >= 0) ? _test_connect_loopback(port) : -1;
+    int early = (g >= 0) ? _test_pend_hold(g, 150) : -1;
+    int hdr = (g >= 0 && early == 0) ? _test_pend_answer(g, "GET /stream HTTP/1.0\r\n\r\n") : 0;
+    int arm = (a >= 0) ? _test_read_control_ok(a, 1000) : 0;
+    char extra[64];
+    snprintf(extra, sizeof(extra), "boundary_via=%s (want not live)", via);
+    _test_pend_verdict(failures, pre && early == 0 && hdr && arm, name, pre, early, hdr, arm, extra);
+    if (a >= 0) close(a);
+    if (g >= 0) close(g);
+    _test_hold_cleanup(port);
+}
+
+/* P1 (the live failure): a dead client attached, the arm accepted and left
+ * unread across the pop wait, the GET accepted next to it with no head yet. */
+static void _test_pending_p1(pa_stream *s, int port, int *failures) {
+    (void)s;
+    const char *name = "pending: P1 a GET whose head comes 150 ms after its connect survives an unread /seek-arm in the slot while a dead client is attached";
+    int pre = _test_pend_stale(port) && _test_pend_await_pop_wait(1000);
+    int a = pre ? _test_post_raw(port, "/seek-arm") : -1;
+    usleep(2000);
+    int g = (a >= 0) ? _test_connect_loopback(port) : -1;
+    int early = (g >= 0) ? _test_pend_hold(g, 150) : -1;
+    int hdr = (g >= 0 && early == 0) ? _test_pend_answer(g, "GET /stream HTTP/1.0\r\n\r\n") : 0;
+    int arm = (a >= 0) ? _test_read_control_ok(a, 1000) : 0;
+    _test_pend_verdict(failures, pre && early == 0 && hdr && arm, name, pre, early, hdr, arm, NULL);
+    if (a >= 0) close(a);
+    if (g >= 0) close(g);
+    _test_hold_cleanup(port);
+}
+
+/* P2 (readiness of the replaced fd): the slot holds a connection that sent a
+ * partial head and then resets; the GET is accepted in the same tick that
+ * sees the reset. The hangup belongs to the old fd, not to the GET. */
+static void _test_pending_p2(pa_stream *s, int port, int *failures) {
+    (void)s;
+    const char *name = "pending: P2 a GET without its head yet is not closed by the hangup of the connection it replaced in the slot";
+    int pre = _test_pend_stale(port);
+    int o = pre ? _test_connect_loopback(port) : -1;
+    if (o >= 0) {
+        usleep(150000);                       /* o sits in the pending slot */
+        pre = (write(o, "G", 1) == 1);        /* read on the next tick: o stays incomplete */
+        usleep(150000);
+    }
+    pre = pre && o >= 0 && _test_pend_await_pop_wait(1000);
+    int g = pre ? _test_connect_loopback(port) : -1;
+    if (o >= 0) {
+        struct linger lg;
+        lg.l_onoff = 1;
+        lg.l_linger = 0;
+        (void)setsockopt(o, SOL_SOCKET, SO_LINGER, &lg, sizeof(lg));
+        close(o);                             /* RST inside the same pop wait */
+    }
+    int early = (g >= 0) ? _test_pend_hold(g, 150) : -1;
+    int hdr = (g >= 0 && early == 0) ? _test_pend_answer(g, "GET /stream HTTP/1.0\r\n\r\n") : 0;
+    _test_pend_verdict(failures, pre && g >= 0 && early == 0 && hdr, name, pre, early, hdr, -1, NULL);
+    if (g >= 0) close(g);
+    _test_hold_cleanup(port);
+}
+
+/* P3 (EAGAIN on the polled fd itself): the GET sits in the slot with half its
+ * head; a control newcomer in the same tick reads those bytes first, so the
+ * main-loop read of the very fd poll reported finds nothing. */
+static void _test_pending_p3(pa_stream *s, int port, int *failures) {
+    (void)s;
+    const char *name = "pending: P3 a GET with half its head survives a control POST that drains its bytes in the same tick";
+    int pre = _test_pend_stale(port) && _test_pend_await_pop_wait(1000);
+    int g = pre ? _test_connect_loopback(port) : -1;
+    int part = (g >= 0) && write(g, _test_pend_get_line, sizeof(_test_pend_get_line) - 1) == (ssize_t)(sizeof(_test_pend_get_line) - 1);
+    int a = part ? _test_post_raw(port, "/seek-arm") : -1;
+    int early = (g >= 0) ? _test_pend_hold(g, 150) : -1;
+    int hdr = (g >= 0 && early == 0) ? _test_pend_answer(g, "\r\n") : 0;
+    int arm = (a >= 0) ? _test_read_control_ok(a, 1000) : 0;
+    _test_pend_verdict(failures, pre && part && early == 0 && hdr && arm, name, pre && part, early, hdr, arm, NULL);
+    if (a >= 0) close(a);
+    if (g >= 0) close(g);
+    _test_hold_cleanup(port);
+}
+
+static void _test_pending_cases(pa_stream *s, int port, int *failures) {
+    _test_pending_p0(s, port, failures);
+    _test_pending_p1(s, port, failures);
+    _test_pending_p2(s, port, failures);
+    _test_pending_p3(s, port, failures);
+}
+
 int main(void) {
     int failures = 0;
     const int hold_only = (getenv("FAKE_LIBPULSE_TEST_HOLD_ONLY") != NULL);
@@ -7259,6 +7496,9 @@ int main(void) {
     /* 79-51 (runaway D2): the departed-record / orphan-discard cells alone, used by t/soloist/48
      * for the D2 mutants (the 79-51 D2_DEPART and D2_ORPHAN blocks). */
     const int runaway_only = (getenv("FAKE_LIBPULSE_TEST_RUNAWAY_ONLY") != NULL);
+    /* debug silent-browse-start-headers-closed: the pending cells alone, used by t/soloist/48 for the
+     * pending-read mutants (the SILENT-START POLLED_FD and EAGAIN_KEEP blocks). */
+    const int pending_only = (getenv("FAKE_LIBPULSE_TEST_PENDING_ONLY") != NULL);
 
     /* 84-20: stdout and stderr go to one pipe under prove; a block-buffered
      * stdout let a FAIL line land inside a half-written `ok:` line, which the
@@ -7278,7 +7518,7 @@ int main(void) {
 
     /* quick-261022-ca3: the read helpers must measure a sub-second budget in
      * elapsed milliseconds across a wall-clock second boundary. */
-    if (!hold_only && !browse_only && !connect_only && !runaway_only) {
+    if (!hold_only && !browse_only && !connect_only && !runaway_only && !pending_only) {
         long ms_b = 0, ms_h = 0, ms_r = 0;
         int rc_b = _test_boundary_probe(0, &ms_b);
         int rc_h = _test_boundary_probe(1, &ms_h);
@@ -7341,6 +7581,12 @@ int main(void) {
      * hold-only mode (FAKE_LIBPULSE_TEST_HOLD_ONLY, used by t/soloist/48 for
      * the hold-cap mutant) executes exactly the code path and order of the
      * full run. */
+    if (pending_only) {
+        _test_pending_cases(s, port, &failures);
+        printf("Pending-only run: failures=%d\n", failures);
+        unlink(portFilePath);
+        return failures > 0 ? 1 : 0;
+    }
     if (runaway_only) {
         _test_runaway_cases(s, port, &failures);
         printf("Runaway-only run: failures=%d\n", failures);
@@ -7371,6 +7617,8 @@ int main(void) {
     _test_connect_cases(s, port, &failures);
     /* 79-51 (runaway D2): the departed-record / orphan-discard cells, right after the connect cells. */
     _test_runaway_cases(s, port, &failures);
+    /* debug silent-browse-start-headers-closed: the pending-read cells, right after the runaway cells. */
+    _test_pending_cases(s, port, &failures);
 
     int client = _test_connect_loopback(port);
     if (client < 0) {

@@ -1,0 +1,1900 @@
+{
+ "_comment": "79-59 Task 2 (t/core/66, Made For You rule and layout): trimmed real Pathfinder replies (2026-10-31, account 7716df85). home: op home, sectionItemsLimit 50, T0 13:34:58 CET, rows 1, 2, 3 (first 3 of 10), 9 (first 4 of 10), 10, 13, 15, 24 of 31. homeSection_topmix: op homeSection on SECTION_TOPMIX at 14:33 CET. homeSection_mfy: row 2 of the same home reply in the homeSection shape (the T0 homeSection answer was not dumped). Spotify-generated playlists (37i9dQ*) keep uri, name, format and the madeFor attributes (username value replaced by \"listener\"); every other item is neutralised (fake uri, generic name); no greeting, no display name, no images, no avatar urls. The two-row file 79-59-home-sections.json stays the tool fixture of t/core/64.",
+ "home": {
+  "data": {
+   "home": {
+    "__typename": "Home",
+    "sectionContainer": {
+     "sections": {
+      "items": [
+       {
+        "data": {
+         "__typename": "HomeShortsSectionData"
+        },
+        "sectionItems": {
+         "items": [
+          {
+           "content": {
+            "__typename": "UnknownResponseWrapper",
+            "data": {
+             "__typename": "UnknownType",
+             "name": "Other 1 (neutralised)",
+             "uri": "spotify:playlist:79x59FIXTUREOT01xxxxxx"
+            }
+           },
+           "uri": "spotify:playlist:79x59FIXTUREOT01xxxxxx"
+          },
+          {
+           "content": {
+            "__typename": "AlbumResponseWrapper",
+            "data": {
+             "__typename": "Album",
+             "name": "Album 1 (neutralised)",
+             "uri": "spotify:album:79x59FIXTUREAL01xxxxxx"
+            }
+           },
+           "uri": "spotify:album:79x59FIXTUREAL01xxxxxx"
+          },
+          {
+           "content": {
+            "__typename": "PlaylistResponseWrapper",
+            "data": {
+             "__typename": "Playlist",
+             "name": "Playlist 1 (neutralised)",
+             "ownerV2": {
+              "data": {
+               "__typename": "User",
+               "name": "Listener",
+               "uri": "spotify:user:listener"
+              }
+             },
+             "uri": "spotify:playlist:79x59FIXTUREPL01xxxxxx"
+            }
+           },
+           "uri": "spotify:playlist:79x59FIXTUREPL01xxxxxx"
+          },
+          {
+           "content": {
+            "__typename": "PlaylistResponseWrapper",
+            "data": {
+             "__typename": "Playlist",
+             "name": "Playlist 2 (neutralised)",
+             "ownerV2": {
+              "data": {
+               "__typename": "User",
+               "name": "Listener",
+               "uri": "spotify:user:listener"
+              }
+             },
+             "uri": "spotify:playlist:79x59FIXTUREPL02xxxxxx"
+            }
+           },
+           "uri": "spotify:playlist:79x59FIXTUREPL02xxxxxx"
+          },
+          {
+           "content": {
+            "__typename": "AlbumResponseWrapper",
+            "data": {
+             "__typename": "Album",
+             "name": "Album 2 (neutralised)",
+             "uri": "spotify:album:79x59FIXTUREAL02xxxxxx"
+            }
+           },
+           "uri": "spotify:album:79x59FIXTUREAL02xxxxxx"
+          },
+          {
+           "content": {
+            "__typename": "PlaylistResponseWrapper",
+            "data": {
+             "__typename": "Playlist",
+             "attributes": [
+              {
+               "key": "madeFor.username",
+               "value": "listener"
+              },
+              {
+               "key": "madeFor.displayed",
+               "value": "1"
+              }
+             ],
+             "format": "release-radar",
+             "name": "Release Radar",
+             "ownerV2": {
+              "data": {
+               "__typename": "User",
+               "name": "Spotify",
+               "uri": "spotify:user:spotify"
+              }
+             },
+             "uri": "spotify:playlist:37i9dQZEVXbkoDWHZvXaFe"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZEVXbkoDWHZvXaFe"
+          },
+          {
+           "content": {
+            "__typename": "PlaylistResponseWrapper",
+            "data": {
+             "__typename": "Playlist",
+             "attributes": [
+              {
+               "key": "madeFor.username",
+               "value": "listener"
+              },
+              {
+               "key": "madeFor.displayed",
+               "value": "1"
+              }
+             ],
+             "format": "descripto",
+             "name": "Fun Workout Mix",
+             "ownerV2": {
+              "data": {
+               "__typename": "User",
+               "name": "Spotify",
+               "uri": "spotify:user:spotify"
+              }
+             },
+             "uri": "spotify:playlist:37i9dQZF1EIdBKZUQJyqDm"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZF1EIdBKZUQJyqDm"
+          },
+          {
+           "content": {
+            "__typename": "PlaylistResponseWrapper",
+            "data": {
+             "__typename": "Playlist",
+             "attributes": [
+              {
+               "key": "madeFor.username",
+               "value": "listener"
+              },
+              {
+               "key": "madeFor.displayed",
+               "value": "1"
+              }
+             ],
+             "format": "daylist",
+             "name": "daylist",
+             "ownerV2": {
+              "data": {
+               "__typename": "User",
+               "name": "Spotify",
+               "uri": "spotify:user:spotify"
+              }
+             },
+             "uri": "spotify:playlist:37i9dQZF1EP6YuccBxUcC1"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZF1EP6YuccBxUcC1"
+          },
+          {
+           "content": {
+            "__typename": "PlaylistResponseWrapper",
+            "data": {
+             "__typename": "Playlist",
+             "attributes": [
+              {
+               "key": "madeFor.username",
+               "value": "listener"
+              },
+              {
+               "key": "madeFor.displayed",
+               "value": "1"
+              }
+             ],
+             "format": "discover-weekly",
+             "name": "Discover Weekly",
+             "ownerV2": {
+              "data": {
+               "__typename": "User",
+               "name": "Spotify",
+               "uri": "spotify:user:spotify"
+              }
+             },
+             "uri": "spotify:playlist:37i9dQZEVXcLuBdTdkGtju"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZEVXcLuBdTdkGtju"
+          },
+          {
+           "content": {
+            "__typename": "AlbumResponseWrapper",
+            "data": {
+             "__typename": "Album",
+             "name": "Album 3 (neutralised)",
+             "uri": "spotify:album:79x59FIXTUREAL03xxxxxx"
+            }
+           },
+           "uri": "spotify:album:79x59FIXTUREAL03xxxxxx"
+          },
+          {
+           "content": {
+            "__typename": "PlaylistResponseWrapper",
+            "data": {
+             "__typename": "Playlist",
+             "name": "Playlist 3 (neutralised)",
+             "ownerV2": {
+              "data": {
+               "__typename": "User",
+               "name": "Listener",
+               "uri": "spotify:user:listener"
+              }
+             },
+             "uri": "spotify:playlist:79x59FIXTUREPL03xxxxxx"
+            }
+           },
+           "uri": "spotify:playlist:79x59FIXTUREPL03xxxxxx"
+          },
+          {
+           "content": {
+            "__typename": "PlaylistResponseWrapper",
+            "data": {
+             "__typename": "Playlist",
+             "name": "Playlist 4 (neutralised)",
+             "ownerV2": {
+              "data": {
+               "__typename": "User",
+               "name": "Listener",
+               "uri": "spotify:user:listener"
+              }
+             },
+             "uri": "spotify:playlist:79x59FIXTUREPL04xxxxxx"
+            }
+           },
+           "uri": "spotify:playlist:79x59FIXTUREPL04xxxxxx"
+          },
+          {
+           "content": {
+            "__typename": "EpisodeResponseWrapper",
+            "data": {
+             "__typename": "Episode",
+             "name": "Episode 1 (neutralised)",
+             "uri": "spotify:episode:79x59FIXTUREEP01xxxxxx"
+            }
+           },
+           "uri": "spotify:episode:79x59FIXTUREEP01xxxxxx"
+          },
+          {
+           "content": {
+            "__typename": "AlbumResponseWrapper",
+            "data": {
+             "__typename": "Album",
+             "name": "Album 4 (neutralised)",
+             "uri": "spotify:album:79x59FIXTUREAL04xxxxxx"
+            }
+           },
+           "uri": "spotify:album:79x59FIXTUREAL04xxxxxx"
+          },
+          {
+           "content": {
+            "__typename": "PlaylistResponseWrapper",
+            "data": {
+             "__typename": "Playlist",
+             "name": "Playlist 5 (neutralised)",
+             "ownerV2": {
+              "data": {
+               "__typename": "User",
+               "name": "Listener",
+               "uri": "spotify:user:listener"
+              }
+             },
+             "uri": "spotify:playlist:79x59FIXTUREPL05xxxxxx"
+            }
+           },
+           "uri": "spotify:playlist:79x59FIXTUREPL05xxxxxx"
+          },
+          {
+           "content": {
+            "__typename": "EpisodeResponseWrapper",
+            "data": {
+             "__typename": "Episode",
+             "name": "Episode 2 (neutralised)",
+             "uri": "spotify:episode:79x59FIXTUREEP02xxxxxx"
+            }
+           },
+           "uri": "spotify:episode:79x59FIXTUREEP02xxxxxx"
+          },
+          {
+           "content": {
+            "__typename": "AlbumResponseWrapper",
+            "data": {
+             "__typename": "Album",
+             "name": "Album 5 (neutralised)",
+             "uri": "spotify:album:79x59FIXTUREAL05xxxxxx"
+            }
+           },
+           "uri": "spotify:album:79x59FIXTUREAL05xxxxxx"
+          },
+          {
+           "content": {
+            "__typename": "EpisodeResponseWrapper",
+            "data": {
+             "__typename": "Episode",
+             "name": "Episode 3 (neutralised)",
+             "uri": "spotify:episode:79x59FIXTUREEP03xxxxxx"
+            }
+           },
+           "uri": "spotify:episode:79x59FIXTUREEP03xxxxxx"
+          },
+          {
+           "content": {
+            "__typename": "PlaylistResponseWrapper",
+            "data": {
+             "__typename": "Playlist",
+             "name": "Playlist 6 (neutralised)",
+             "ownerV2": {
+              "data": {
+               "__typename": "User",
+               "name": "Listener",
+               "uri": "spotify:user:listener"
+              }
+             },
+             "uri": "spotify:playlist:79x59FIXTUREPL06xxxxxx"
+            }
+           },
+           "uri": "spotify:playlist:79x59FIXTUREPL06xxxxxx"
+          },
+          {
+           "content": {
+            "__typename": "EpisodeResponseWrapper",
+            "data": {
+             "__typename": "Episode",
+             "name": "Episode 4 (neutralised)",
+             "uri": "spotify:episode:79x59FIXTUREEP04xxxxxx"
+            }
+           },
+           "uri": "spotify:episode:79x59FIXTUREEP04xxxxxx"
+          }
+         ]
+        },
+        "uri": "spotify:section:0JQ5DAIiKWzVFULQfUm85Y"
+       },
+       {
+        "data": {
+         "__typename": "HomeGenericSectionData",
+         "title": {
+          "transformedLabel": "Made For Listener",
+          "translatedBaseText": "Made For Listener"
+         }
+        },
+        "sectionItems": {
+         "items": [
+          {
+           "content": {
+            "__typename": "PlaylistResponseWrapper",
+            "data": {
+             "__typename": "Playlist",
+             "attributes": [
+              {
+               "key": "madeFor.username",
+               "value": "listener"
+              },
+              {
+               "key": "madeFor.displayed",
+               "value": "1"
+              }
+             ],
+             "format": "daily-mix",
+             "name": "Daily Mix 1",
+             "ownerV2": {
+              "data": {
+               "__typename": "User",
+               "name": "Spotify",
+               "uri": "spotify:user:spotify"
+              }
+             },
+             "uri": "spotify:playlist:37i9dQZF1E3a6pKpVe40mF"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZF1E3a6pKpVe40mF"
+          },
+          {
+           "content": {
+            "__typename": "PlaylistResponseWrapper",
+            "data": {
+             "__typename": "Playlist",
+             "attributes": [
+              {
+               "key": "madeFor.username",
+               "value": "listener"
+              },
+              {
+               "key": "madeFor.displayed",
+               "value": "1"
+              }
+             ],
+             "format": "daily-mix",
+             "name": "Daily Mix 2",
+             "ownerV2": {
+              "data": {
+               "__typename": "User",
+               "name": "Spotify",
+               "uri": "spotify:user:spotify"
+              }
+             },
+             "uri": "spotify:playlist:37i9dQZF1E3agjx7jh6NAH"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZF1E3agjx7jh6NAH"
+          },
+          {
+           "content": {
+            "__typename": "PlaylistResponseWrapper",
+            "data": {
+             "__typename": "Playlist",
+             "attributes": [
+              {
+               "key": "madeFor.username",
+               "value": "listener"
+              },
+              {
+               "key": "madeFor.displayed",
+               "value": "1"
+              }
+             ],
+             "format": "daily-mix",
+             "name": "Daily Mix 3",
+             "ownerV2": {
+              "data": {
+               "__typename": "User",
+               "name": "Spotify",
+               "uri": "spotify:user:spotify"
+              }
+             },
+             "uri": "spotify:playlist:37i9dQZF1E36NB7mrxWwbJ"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZF1E36NB7mrxWwbJ"
+          },
+          {
+           "content": {
+            "__typename": "PlaylistResponseWrapper",
+            "data": {
+             "__typename": "Playlist",
+             "attributes": [
+              {
+               "key": "madeFor.username",
+               "value": "listener"
+              },
+              {
+               "key": "madeFor.displayed",
+               "value": "1"
+              }
+             ],
+             "format": "daily-mix",
+             "name": "Daily Mix 4",
+             "ownerV2": {
+              "data": {
+               "__typename": "User",
+               "name": "Spotify",
+               "uri": "spotify:user:spotify"
+              }
+             },
+             "uri": "spotify:playlist:37i9dQZF1E36AMXEwzycvH"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZF1E36AMXEwzycvH"
+          },
+          {
+           "content": {
+            "__typename": "PlaylistResponseWrapper",
+            "data": {
+             "__typename": "Playlist",
+             "attributes": [
+              {
+               "key": "madeFor.username",
+               "value": "listener"
+              },
+              {
+               "key": "madeFor.displayed",
+               "value": "1"
+              }
+             ],
+             "format": "daily-mix",
+             "name": "Daily Mix 5",
+             "ownerV2": {
+              "data": {
+               "__typename": "User",
+               "name": "Spotify",
+               "uri": "spotify:user:spotify"
+              }
+             },
+             "uri": "spotify:playlist:37i9dQZF1E35inxxG3M2aK"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZF1E35inxxG3M2aK"
+          },
+          {
+           "content": {
+            "__typename": "PlaylistResponseWrapper",
+            "data": {
+             "__typename": "Playlist",
+             "attributes": [
+              {
+               "key": "madeFor.username",
+               "value": "listener"
+              },
+              {
+               "key": "madeFor.displayed",
+               "value": "1"
+              }
+             ],
+             "format": "daily-mix",
+             "name": "Daily Mix 6",
+             "ownerV2": {
+              "data": {
+               "__typename": "User",
+               "name": "Spotify",
+               "uri": "spotify:user:spotify"
+              }
+             },
+             "uri": "spotify:playlist:37i9dQZF1E37VP7CF6t3aw"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZF1E37VP7CF6t3aw"
+          },
+          {
+           "content": {
+            "__typename": "PlaylistResponseWrapper",
+            "data": {
+             "__typename": "Playlist",
+             "attributes": [],
+             "format": "",
+             "name": "DJ",
+             "ownerV2": {
+              "data": {
+               "__typename": "User",
+               "name": "Spotify",
+               "uri": "spotify:user:spotify"
+              }
+             },
+             "uri": "spotify:playlist:37i9dQZF1EYkqdzj48dyYq"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZF1EYkqdzj48dyYq"
+          },
+          {
+           "content": {
+            "__typename": "PlaylistResponseWrapper",
+            "data": {
+             "__typename": "Playlist",
+             "attributes": [
+              {
+               "key": "madeFor.username",
+               "value": "listener"
+              },
+              {
+               "key": "madeFor.displayed",
+               "value": "1"
+              }
+             ],
+             "format": "discover-weekly",
+             "name": "Discover Weekly",
+             "ownerV2": {
+              "data": {
+               "__typename": "User",
+               "name": "Spotify",
+               "uri": "spotify:user:spotify"
+              }
+             },
+             "uri": "spotify:playlist:37i9dQZEVXcLuBdTdkGtju"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZEVXcLuBdTdkGtju"
+          }
+         ]
+        },
+        "uri": "spotify:section:0JQ5DAUnp4wcj0bCb3wh3S"
+       },
+       {
+        "data": {
+         "__typename": "HomeGenericSectionData",
+         "title": {
+          "transformedLabel": "Recommended Stations",
+          "translatedBaseText": "Recommended Stations"
+         }
+        },
+        "sectionItems": {
+         "items": [
+          {
+           "content": {
+            "__typename": "PlaylistResponseWrapper",
+            "data": {
+             "__typename": "Playlist",
+             "attributes": [
+              {
+               "key": "madeFor.username",
+               "value": "listener"
+              },
+              {
+               "key": "madeFor.displayed",
+               "value": "1"
+              }
+             ],
+             "format": "inspiredby-mix",
+             "name": "The Mexican Radio",
+             "ownerV2": {
+              "data": {
+               "__typename": "User",
+               "name": "Spotify",
+               "uri": "spotify:user:spotify"
+              }
+             },
+             "uri": "spotify:playlist:37i9dQZF1E8DUTIQfgQm96"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZF1E8DUTIQfgQm96"
+          },
+          {
+           "content": {
+            "__typename": "PlaylistResponseWrapper",
+            "data": {
+             "__typename": "Playlist",
+             "attributes": [
+              {
+               "key": "madeFor.username",
+               "value": "listener"
+              },
+              {
+               "key": "madeFor.displayed",
+               "value": "1"
+              }
+             ],
+             "format": "inspiredby-mix",
+             "name": "Kendra Morris Radio",
+             "ownerV2": {
+              "data": {
+               "__typename": "User",
+               "name": "Spotify",
+               "uri": "spotify:user:spotify"
+              }
+             },
+             "uri": "spotify:playlist:37i9dQZF1E4v0SAvOhHHjk"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZF1E4v0SAvOhHHjk"
+          },
+          {
+           "content": {
+            "__typename": "PlaylistResponseWrapper",
+            "data": {
+             "__typename": "Playlist",
+             "attributes": [
+              {
+               "key": "madeFor.username",
+               "value": "listener"
+              },
+              {
+               "key": "madeFor.displayed",
+               "value": "1"
+              }
+             ],
+             "format": "inspiredby-mix",
+             "name": "Play Radio",
+             "ownerV2": {
+              "data": {
+               "__typename": "User",
+               "name": "Spotify",
+               "uri": "spotify:user:spotify"
+              }
+             },
+             "uri": "spotify:playlist:37i9dQZF1E8NgAZxItmYBE"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZF1E8NgAZxItmYBE"
+          }
+         ]
+        },
+        "uri": "spotify:section:0JQ5DAnM3wGh0gz1MXnu3R"
+       },
+       {
+        "data": {
+         "__typename": "HomeGenericSectionData",
+         "title": {
+          "transformedLabel": "More of what you like",
+          "translatedBaseText": "More of what you like"
+         }
+        },
+        "sectionItems": {
+         "items": [
+          {
+           "content": {
+            "__typename": "PlaylistResponseWrapper",
+            "data": {
+             "__typename": "Playlist",
+             "attributes": [],
+             "format": "editorial",
+             "name": "Morning Rhythm",
+             "ownerV2": {
+              "data": {
+               "__typename": "User",
+               "name": "Spotify",
+               "uri": "spotify:user:spotify"
+              }
+             },
+             "uri": "spotify:playlist:37i9dQZF1DX3ohNxI5tB79"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZF1DX3ohNxI5tB79"
+          },
+          {
+           "content": {
+            "__typename": "PlaylistResponseWrapper",
+            "data": {
+             "__typename": "Playlist",
+             "attributes": [
+              {
+               "key": "madeFor.username",
+               "value": "listener"
+              },
+              {
+               "key": "madeFor.displayed",
+               "value": "1"
+              }
+             ],
+             "format": "editorial",
+             "name": "Soulful Day",
+             "ownerV2": {
+              "data": {
+               "__typename": "User",
+               "name": "Spotify",
+               "uri": "spotify:user:spotify"
+              }
+             },
+             "uri": "spotify:playlist:37i9dQZF1DWYgsiQBNyGuA"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZF1DWYgsiQBNyGuA"
+          },
+          {
+           "content": {
+            "__typename": "PlaylistResponseWrapper",
+            "data": {
+             "__typename": "Playlist",
+             "attributes": [
+              {
+               "key": "madeFor.username",
+               "value": "listener"
+              },
+              {
+               "key": "madeFor.displayed",
+               "value": "1"
+              }
+             ],
+             "format": "format-shows-shuffle",
+             "name": "French Jazz Café",
+             "ownerV2": {
+              "data": {
+               "__typename": "User",
+               "name": "Spotify",
+               "uri": "spotify:user:spotify"
+              }
+             },
+             "uri": "spotify:playlist:37i9dQZF1DXbehaqJzJXqw"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZF1DXbehaqJzJXqw"
+          },
+          {
+           "content": {
+            "__typename": "PlaylistResponseWrapper",
+            "data": {
+             "__typename": "Playlist",
+             "attributes": [
+              {
+               "key": "madeFor.username",
+               "value": "listener"
+              },
+              {
+               "key": "madeFor.displayed",
+               "value": "1"
+              }
+             ],
+             "format": "editorial",
+             "name": "Blues Roots",
+             "ownerV2": {
+              "data": {
+               "__typename": "User",
+               "name": "Spotify",
+               "uri": "spotify:user:spotify"
+              }
+             },
+             "uri": "spotify:playlist:37i9dQZF1DXcFk5r8uS3l2"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZF1DXcFk5r8uS3l2"
+          }
+         ]
+        },
+        "uri": "spotify:section:0JQ5DAnM3wGh0gz1MXnu3J"
+       },
+       {
+        "data": {
+         "__typename": "HomeGenericSectionData",
+         "title": {
+          "transformedLabel": "Your top mixes",
+          "translatedBaseText": "Your top mixes"
+         }
+        },
+        "sectionItems": {
+         "items": [
+          {
+           "content": {
+            "__typename": "PlaylistResponseWrapper",
+            "data": {
+             "__typename": "Playlist",
+             "attributes": [
+              {
+               "key": "madeFor.username",
+               "value": "listener"
+              },
+              {
+               "key": "madeFor.displayed",
+               "value": "1"
+              }
+             ],
+             "format": "topic-mix",
+             "name": "Classic Rock Mix",
+             "ownerV2": {
+              "data": {
+               "__typename": "User",
+               "name": "Spotify",
+               "uri": "spotify:user:spotify"
+              }
+             },
+             "uri": "spotify:playlist:37i9dQZF1EQjzt0uNuyJFR"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZF1EQjzt0uNuyJFR"
+          },
+          {
+           "content": {
+            "__typename": "PlaylistResponseWrapper",
+            "data": {
+             "__typename": "Playlist",
+             "attributes": [
+              {
+               "key": "madeFor.username",
+               "value": "listener"
+              },
+              {
+               "key": "madeFor.displayed",
+               "value": "1"
+              }
+             ],
+             "format": "topic-mix",
+             "name": "Jazz Mix",
+             "ownerV2": {
+              "data": {
+               "__typename": "User",
+               "name": "Spotify",
+               "uri": "spotify:user:spotify"
+              }
+             },
+             "uri": "spotify:playlist:37i9dQZF1EQqA6klNdJvwx"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZF1EQqA6klNdJvwx"
+          },
+          {
+           "content": {
+            "__typename": "PlaylistResponseWrapper",
+            "data": {
+             "__typename": "Playlist",
+             "attributes": [
+              {
+               "key": "madeFor.username",
+               "value": "listener"
+              },
+              {
+               "key": "madeFor.displayed",
+               "value": "1"
+              }
+             ],
+             "format": "topic-mix",
+             "name": "Happy Mix",
+             "ownerV2": {
+              "data": {
+               "__typename": "User",
+               "name": "Spotify",
+               "uri": "spotify:user:spotify"
+              }
+             },
+             "uri": "spotify:playlist:37i9dQZF1EVJSvZp5AOML2"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZF1EVJSvZp5AOML2"
+          },
+          {
+           "content": {
+            "__typename": "PlaylistResponseWrapper",
+            "data": {
+             "__typename": "Playlist",
+             "attributes": [
+              {
+               "key": "madeFor.username",
+               "value": "listener"
+              },
+              {
+               "key": "madeFor.displayed",
+               "value": "1"
+              }
+             ],
+             "format": "topic-mix",
+             "name": "Reggae Mix",
+             "ownerV2": {
+              "data": {
+               "__typename": "User",
+               "name": "Spotify",
+               "uri": "spotify:user:spotify"
+              }
+             },
+             "uri": "spotify:playlist:37i9dQZF1EQpjs4F0vUZ1x"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZF1EQpjs4F0vUZ1x"
+          },
+          {
+           "content": {
+            "__typename": "PlaylistResponseWrapper",
+            "data": {
+             "__typename": "Playlist",
+             "attributes": [
+              {
+               "key": "madeFor.username",
+               "value": "listener"
+              },
+              {
+               "key": "madeFor.displayed",
+               "value": "1"
+              }
+             ],
+             "format": "artist-mix-reader",
+             "name": "TOTO-Mix",
+             "ownerV2": {
+              "data": {
+               "__typename": "User",
+               "name": "Spotify",
+               "uri": "spotify:user:spotify"
+              }
+             },
+             "uri": "spotify:playlist:37i9dQZF1EIYURZtQul4Yu"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZF1EIYURZtQul4Yu"
+          },
+          {
+           "content": {
+            "__typename": "PlaylistResponseWrapper",
+            "data": {
+             "__typename": "Playlist",
+             "attributes": [
+              {
+               "key": "madeFor.username",
+               "value": "listener"
+              },
+              {
+               "key": "madeFor.displayed",
+               "value": "1"
+              }
+             ],
+             "format": "topic-mix",
+             "name": "Chill Mix",
+             "ownerV2": {
+              "data": {
+               "__typename": "User",
+               "name": "Spotify",
+               "uri": "spotify:user:spotify"
+              }
+             },
+             "uri": "spotify:playlist:37i9dQZF1EVHGWrwldPRtj"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZF1EVHGWrwldPRtj"
+          },
+          {
+           "content": {
+            "__typename": "PlaylistResponseWrapper",
+            "data": {
+             "__typename": "Playlist",
+             "attributes": [
+              {
+               "key": "madeFor.username",
+               "value": "listener"
+              },
+              {
+               "key": "madeFor.displayed",
+               "value": "1"
+              }
+             ],
+             "format": "topic-mix",
+             "name": "80s Mix",
+             "ownerV2": {
+              "data": {
+               "__typename": "User",
+               "name": "Spotify",
+               "uri": "spotify:user:spotify"
+              }
+             },
+             "uri": "spotify:playlist:37i9dQZF1EQqZlCxLOykhS"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZF1EQqZlCxLOykhS"
+          },
+          {
+           "content": {
+            "__typename": "PlaylistResponseWrapper",
+            "data": {
+             "__typename": "Playlist",
+             "attributes": [
+              {
+               "key": "madeFor.username",
+               "value": "listener"
+              },
+              {
+               "key": "madeFor.displayed",
+               "value": "1"
+              }
+             ],
+             "format": "topic-mix",
+             "name": "2020s Mix",
+             "ownerV2": {
+              "data": {
+               "__typename": "User",
+               "name": "Spotify",
+               "uri": "spotify:user:spotify"
+              }
+             },
+             "uri": "spotify:playlist:37i9dQZF1EQnsJ0xmvpihE"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZF1EQnsJ0xmvpihE"
+          },
+          {
+           "content": {
+            "__typename": "PlaylistResponseWrapper",
+            "data": {
+             "__typename": "Playlist",
+             "attributes": [
+              {
+               "key": "madeFor.username",
+               "value": "listener"
+              },
+              {
+               "key": "madeFor.displayed",
+               "value": "1"
+              }
+             ],
+             "format": "topic-mix",
+             "name": "2010s Mix",
+             "ownerV2": {
+              "data": {
+               "__typename": "User",
+               "name": "Spotify",
+               "uri": "spotify:user:spotify"
+              }
+             },
+             "uri": "spotify:playlist:37i9dQZF1EQqedj0y9Uwvu"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZF1EQqedj0y9Uwvu"
+          },
+          {
+           "content": {
+            "__typename": "PlaylistResponseWrapper",
+            "data": {
+             "__typename": "Playlist",
+             "attributes": [
+              {
+               "key": "madeFor.username",
+               "value": "listener"
+              },
+              {
+               "key": "madeFor.displayed",
+               "value": "1"
+              }
+             ],
+             "format": "topic-mix",
+             "name": "Funk Mix",
+             "ownerV2": {
+              "data": {
+               "__typename": "User",
+               "name": "Spotify",
+               "uri": "spotify:user:spotify"
+              }
+             },
+             "uri": "spotify:playlist:37i9dQZF1EQnJyHBkXpASl"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZF1EQnJyHBkXpASl"
+          }
+         ]
+        },
+        "uri": "spotify:section:0JQ5DAnM3wGh0gz1MXnu89"
+       },
+       {
+        "data": {
+         "__typename": "HomeFeedBaselineSectionData",
+         "title": {
+          "transformedLabel": "Made for you",
+          "translatedBaseText": "Made for you"
+         }
+        },
+        "sectionItems": {
+         "items": [
+          {
+           "content": {
+            "__typename": "PlaylistResponseWrapper",
+            "data": {
+             "__typename": "Playlist",
+             "attributes": [
+              {
+               "key": "madeFor.username",
+               "value": "listener"
+              },
+              {
+               "key": "madeFor.displayed",
+               "value": "1"
+              }
+             ],
+             "format": "topic-mix",
+             "name": "Soul Mix",
+             "ownerV2": {
+              "data": {
+               "__typename": "User",
+               "name": "Spotify",
+               "uri": "spotify:user:spotify"
+              }
+             },
+             "uri": "spotify:playlist:37i9dQZF1EQntZpEGgfBif"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZF1EQntZpEGgfBif"
+          }
+         ]
+        },
+        "uri": "spotify:section:0JQ5KskvsLe3uTeisPkjK1"
+       },
+       {
+        "data": {
+         "__typename": "HomeFeedBaselineSectionData",
+         "title": {
+          "transformedLabel": "Made for you",
+          "translatedBaseText": "Made for you"
+         }
+        },
+        "sectionItems": {
+         "items": [
+          {
+           "content": {
+            "__typename": "PlaylistResponseWrapper",
+            "data": {
+             "__typename": "Playlist",
+             "attributes": [
+              {
+               "key": "madeFor.username",
+               "value": "listener"
+              },
+              {
+               "key": "madeFor.displayed",
+               "value": "1"
+              }
+             ],
+             "format": "inspiredby-mix",
+             "name": "Na (de Casteldoza) Radio",
+             "ownerV2": {
+              "data": {
+               "__typename": "User",
+               "name": "Spotify",
+               "uri": "spotify:user:spotify"
+              }
+             },
+             "uri": "spotify:playlist:37i9dQZF1E8NjHwaVa0XVb"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZF1E8NjHwaVa0XVb"
+          }
+         ]
+        },
+        "uri": "spotify:section:0JQ5KskvsLe3uTeisPkjK2"
+       },
+       {
+        "data": {
+         "__typename": "HomeFeedBaselineSectionData",
+         "title": {
+          "transformedLabel": "Made for you",
+          "translatedBaseText": "Made for you"
+         }
+        },
+        "sectionItems": {
+         "items": [
+          {
+           "content": {
+            "__typename": "PlaylistResponseWrapper",
+            "data": {
+             "__typename": "Playlist",
+             "attributes": [
+              {
+               "key": "madeFor.username",
+               "value": "listener"
+              },
+              {
+               "key": "madeFor.displayed",
+               "value": "1"
+              }
+             ],
+             "format": "topic-mix",
+             "name": "Focus Mix",
+             "ownerV2": {
+              "data": {
+               "__typename": "User",
+               "name": "Spotify",
+               "uri": "spotify:user:spotify"
+              }
+             },
+             "uri": "spotify:playlist:37i9dQZF1EVHSXhJvOIrqV"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZF1EVHSXhJvOIrqV"
+          }
+         ]
+        },
+        "uri": "spotify:section:0JQ5KskvsLe3uTeisPkjK9"
+       }
+      ],
+      "totalCount": 8
+     },
+     "uri": "spotify:home"
+    }
+   }
+  }
+ },
+ "homeSection_mfy": {
+  "data": {
+   "homeSections": {
+    "sections": [
+     {
+      "__typename": "HomeSection",
+      "data": {
+       "__typename": "HomeGenericSectionData",
+       "title": {
+        "transformedLabel": "Made For Listener",
+        "translatedBaseText": "Made For Listener"
+       }
+      },
+      "sectionItems": {
+       "items": [
+        {
+         "content": {
+          "__typename": "PlaylistResponseWrapper",
+          "data": {
+           "__typename": "Playlist",
+           "attributes": [
+            {
+             "key": "madeFor.username",
+             "value": "listener"
+            },
+            {
+             "key": "madeFor.displayed",
+             "value": "1"
+            }
+           ],
+           "format": "daily-mix",
+           "name": "Daily Mix 1",
+           "ownerV2": {
+            "data": {
+             "__typename": "User",
+             "name": "Spotify",
+             "uri": "spotify:user:spotify"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZF1E3a6pKpVe40mF"
+          }
+         },
+         "uri": "spotify:playlist:37i9dQZF1E3a6pKpVe40mF"
+        },
+        {
+         "content": {
+          "__typename": "PlaylistResponseWrapper",
+          "data": {
+           "__typename": "Playlist",
+           "attributes": [
+            {
+             "key": "madeFor.username",
+             "value": "listener"
+            },
+            {
+             "key": "madeFor.displayed",
+             "value": "1"
+            }
+           ],
+           "format": "daily-mix",
+           "name": "Daily Mix 2",
+           "ownerV2": {
+            "data": {
+             "__typename": "User",
+             "name": "Spotify",
+             "uri": "spotify:user:spotify"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZF1E3agjx7jh6NAH"
+          }
+         },
+         "uri": "spotify:playlist:37i9dQZF1E3agjx7jh6NAH"
+        },
+        {
+         "content": {
+          "__typename": "PlaylistResponseWrapper",
+          "data": {
+           "__typename": "Playlist",
+           "attributes": [
+            {
+             "key": "madeFor.username",
+             "value": "listener"
+            },
+            {
+             "key": "madeFor.displayed",
+             "value": "1"
+            }
+           ],
+           "format": "daily-mix",
+           "name": "Daily Mix 3",
+           "ownerV2": {
+            "data": {
+             "__typename": "User",
+             "name": "Spotify",
+             "uri": "spotify:user:spotify"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZF1E36NB7mrxWwbJ"
+          }
+         },
+         "uri": "spotify:playlist:37i9dQZF1E36NB7mrxWwbJ"
+        },
+        {
+         "content": {
+          "__typename": "PlaylistResponseWrapper",
+          "data": {
+           "__typename": "Playlist",
+           "attributes": [
+            {
+             "key": "madeFor.username",
+             "value": "listener"
+            },
+            {
+             "key": "madeFor.displayed",
+             "value": "1"
+            }
+           ],
+           "format": "daily-mix",
+           "name": "Daily Mix 4",
+           "ownerV2": {
+            "data": {
+             "__typename": "User",
+             "name": "Spotify",
+             "uri": "spotify:user:spotify"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZF1E36AMXEwzycvH"
+          }
+         },
+         "uri": "spotify:playlist:37i9dQZF1E36AMXEwzycvH"
+        },
+        {
+         "content": {
+          "__typename": "PlaylistResponseWrapper",
+          "data": {
+           "__typename": "Playlist",
+           "attributes": [
+            {
+             "key": "madeFor.username",
+             "value": "listener"
+            },
+            {
+             "key": "madeFor.displayed",
+             "value": "1"
+            }
+           ],
+           "format": "daily-mix",
+           "name": "Daily Mix 5",
+           "ownerV2": {
+            "data": {
+             "__typename": "User",
+             "name": "Spotify",
+             "uri": "spotify:user:spotify"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZF1E35inxxG3M2aK"
+          }
+         },
+         "uri": "spotify:playlist:37i9dQZF1E35inxxG3M2aK"
+        },
+        {
+         "content": {
+          "__typename": "PlaylistResponseWrapper",
+          "data": {
+           "__typename": "Playlist",
+           "attributes": [
+            {
+             "key": "madeFor.username",
+             "value": "listener"
+            },
+            {
+             "key": "madeFor.displayed",
+             "value": "1"
+            }
+           ],
+           "format": "daily-mix",
+           "name": "Daily Mix 6",
+           "ownerV2": {
+            "data": {
+             "__typename": "User",
+             "name": "Spotify",
+             "uri": "spotify:user:spotify"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZF1E37VP7CF6t3aw"
+          }
+         },
+         "uri": "spotify:playlist:37i9dQZF1E37VP7CF6t3aw"
+        },
+        {
+         "content": {
+          "__typename": "PlaylistResponseWrapper",
+          "data": {
+           "__typename": "Playlist",
+           "attributes": [],
+           "format": "",
+           "name": "DJ",
+           "ownerV2": {
+            "data": {
+             "__typename": "User",
+             "name": "Spotify",
+             "uri": "spotify:user:spotify"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZF1EYkqdzj48dyYq"
+          }
+         },
+         "uri": "spotify:playlist:37i9dQZF1EYkqdzj48dyYq"
+        },
+        {
+         "content": {
+          "__typename": "PlaylistResponseWrapper",
+          "data": {
+           "__typename": "Playlist",
+           "attributes": [
+            {
+             "key": "madeFor.username",
+             "value": "listener"
+            },
+            {
+             "key": "madeFor.displayed",
+             "value": "1"
+            }
+           ],
+           "format": "discover-weekly",
+           "name": "Discover Weekly",
+           "ownerV2": {
+            "data": {
+             "__typename": "User",
+             "name": "Spotify",
+             "uri": "spotify:user:spotify"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZEVXcLuBdTdkGtju"
+          }
+         },
+         "uri": "spotify:playlist:37i9dQZEVXcLuBdTdkGtju"
+        }
+       ]
+      },
+      "uri": "spotify:section:0JQ5DAUnp4wcj0bCb3wh3S"
+     }
+    ]
+   }
+  }
+ },
+ "homeSection_topmix": {
+  "data": {
+   "homeSections": {
+    "sections": [
+     {
+      "__typename": "HomeSection",
+      "data": {
+       "__typename": "HomeGenericSectionData",
+       "title": {
+        "transformedLabel": "Your top mixes",
+        "translatedBaseText": "Your top mixes"
+       }
+      },
+      "sectionItems": {
+       "items": [
+        {
+         "content": {
+          "__typename": "PlaylistResponseWrapper",
+          "data": {
+           "__typename": "Playlist",
+           "attributes": [
+            {
+             "key": "madeFor.username",
+             "value": "listener"
+            },
+            {
+             "key": "madeFor.displayed",
+             "value": "1"
+            }
+           ],
+           "format": "topic-mix",
+           "name": "Hip Hop Mix",
+           "ownerV2": {
+            "data": {
+             "__typename": "User",
+             "name": "Spotify",
+             "uri": "spotify:user:spotify"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZF1EQnqst5TRi17F"
+          }
+         },
+         "uri": "spotify:playlist:37i9dQZF1EQnqst5TRi17F"
+        },
+        {
+         "content": {
+          "__typename": "PlaylistResponseWrapper",
+          "data": {
+           "__typename": "Playlist",
+           "attributes": [
+            {
+             "key": "madeFor.username",
+             "value": "listener"
+            },
+            {
+             "key": "madeFor.displayed",
+             "value": "1"
+            }
+           ],
+           "format": "topic-mix",
+           "name": "Jazz Mix",
+           "ownerV2": {
+            "data": {
+             "__typename": "User",
+             "name": "Spotify",
+             "uri": "spotify:user:spotify"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZF1EQqA6klNdJvwx"
+          }
+         },
+         "uri": "spotify:playlist:37i9dQZF1EQqA6klNdJvwx"
+        },
+        {
+         "content": {
+          "__typename": "PlaylistResponseWrapper",
+          "data": {
+           "__typename": "Playlist",
+           "attributes": [
+            {
+             "key": "madeFor.username",
+             "value": "listener"
+            },
+            {
+             "key": "madeFor.displayed",
+             "value": "1"
+            }
+           ],
+           "format": "artist-mix-reader",
+           "name": "Doechii-Mix",
+           "ownerV2": {
+            "data": {
+             "__typename": "User",
+             "name": "Spotify",
+             "uri": "spotify:user:spotify"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZF1EIUMqRP5Q5wUo"
+          }
+         },
+         "uri": "spotify:playlist:37i9dQZF1EIUMqRP5Q5wUo"
+        },
+        {
+         "content": {
+          "__typename": "PlaylistResponseWrapper",
+          "data": {
+           "__typename": "Playlist",
+           "attributes": [
+            {
+             "key": "madeFor.username",
+             "value": "listener"
+            },
+            {
+             "key": "madeFor.displayed",
+             "value": "1"
+            }
+           ],
+           "format": "topic-mix",
+           "name": "2020s Mix",
+           "ownerV2": {
+            "data": {
+             "__typename": "User",
+             "name": "Spotify",
+             "uri": "spotify:user:spotify"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZF1EQnsJ0xmvpihE"
+          }
+         },
+         "uri": "spotify:playlist:37i9dQZF1EQnsJ0xmvpihE"
+        },
+        {
+         "content": {
+          "__typename": "PlaylistResponseWrapper",
+          "data": {
+           "__typename": "Playlist",
+           "attributes": [
+            {
+             "key": "madeFor.username",
+             "value": "listener"
+            },
+            {
+             "key": "madeFor.displayed",
+             "value": "1"
+            }
+           ],
+           "format": "topic-mix",
+           "name": "Chill Mix",
+           "ownerV2": {
+            "data": {
+             "__typename": "User",
+             "name": "Spotify",
+             "uri": "spotify:user:spotify"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZF1EVHGWrwldPRtj"
+          }
+         },
+         "uri": "spotify:playlist:37i9dQZF1EVHGWrwldPRtj"
+        },
+        {
+         "content": {
+          "__typename": "PlaylistResponseWrapper",
+          "data": {
+           "__typename": "Playlist",
+           "attributes": [
+            {
+             "key": "madeFor.username",
+             "value": "listener"
+            },
+            {
+             "key": "madeFor.displayed",
+             "value": "1"
+            }
+           ],
+           "format": "topic-mix",
+           "name": "Funk Mix",
+           "ownerV2": {
+            "data": {
+             "__typename": "User",
+             "name": "Spotify",
+             "uri": "spotify:user:spotify"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZF1EQnJyHBkXpASl"
+          }
+         },
+         "uri": "spotify:playlist:37i9dQZF1EQnJyHBkXpASl"
+        },
+        {
+         "content": {
+          "__typename": "PlaylistResponseWrapper",
+          "data": {
+           "__typename": "Playlist",
+           "attributes": [
+            {
+             "key": "madeFor.username",
+             "value": "listener"
+            },
+            {
+             "key": "madeFor.displayed",
+             "value": "1"
+            }
+           ],
+           "format": "artist-mix-reader",
+           "name": "Redbone-Mix",
+           "ownerV2": {
+            "data": {
+             "__typename": "User",
+             "name": "Spotify",
+             "uri": "spotify:user:spotify"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZF1EIZsTLLvbWjq6"
+          }
+         },
+         "uri": "spotify:playlist:37i9dQZF1EIZsTLLvbWjq6"
+        },
+        {
+         "content": {
+          "__typename": "PlaylistResponseWrapper",
+          "data": {
+           "__typename": "Playlist",
+           "attributes": [
+            {
+             "key": "madeFor.username",
+             "value": "listener"
+            },
+            {
+             "key": "madeFor.displayed",
+             "value": "1"
+            }
+           ],
+           "format": "topic-mix",
+           "name": "80s Mix",
+           "ownerV2": {
+            "data": {
+             "__typename": "User",
+             "name": "Spotify",
+             "uri": "spotify:user:spotify"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZF1EQqZlCxLOykhS"
+          }
+         },
+         "uri": "spotify:playlist:37i9dQZF1EQqZlCxLOykhS"
+        },
+        {
+         "content": {
+          "__typename": "PlaylistResponseWrapper",
+          "data": {
+           "__typename": "Playlist",
+           "attributes": [
+            {
+             "key": "madeFor.username",
+             "value": "listener"
+            },
+            {
+             "key": "madeFor.displayed",
+             "value": "1"
+            }
+           ],
+           "format": "topic-mix",
+           "name": "Happy Mix",
+           "ownerV2": {
+            "data": {
+             "__typename": "User",
+             "name": "Spotify",
+             "uri": "spotify:user:spotify"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZF1EVJSvZp5AOML2"
+          }
+         },
+         "uri": "spotify:playlist:37i9dQZF1EVJSvZp5AOML2"
+        },
+        {
+         "content": {
+          "__typename": "PlaylistResponseWrapper",
+          "data": {
+           "__typename": "Playlist",
+           "attributes": [
+            {
+             "key": "madeFor.username",
+             "value": "listener"
+            },
+            {
+             "key": "madeFor.displayed",
+             "value": "1"
+            }
+           ],
+           "format": "topic-mix",
+           "name": "Ambient Mix",
+           "ownerV2": {
+            "data": {
+             "__typename": "User",
+             "name": "Spotify",
+             "uri": "spotify:user:spotify"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZF1EQfPh9gDMrERq"
+          }
+         },
+         "uri": "spotify:playlist:37i9dQZF1EQfPh9gDMrERq"
+        },
+        {
+         "content": {
+          "__typename": "PlaylistResponseWrapper",
+          "data": {
+           "__typename": "Playlist",
+           "attributes": [
+            {
+             "key": "madeFor.username",
+             "value": "listener"
+            },
+            {
+             "key": "madeFor.displayed",
+             "value": "1"
+            }
+           ],
+           "format": "artist-mix-reader",
+           "name": "Babe Ruth-Mix",
+           "ownerV2": {
+            "data": {
+             "__typename": "User",
+             "name": "Spotify",
+             "uri": "spotify:user:spotify"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZF1EIUPiBGFhLyqZ"
+          }
+         },
+         "uri": "spotify:playlist:37i9dQZF1EIUPiBGFhLyqZ"
+        },
+        {
+         "content": {
+          "__typename": "PlaylistResponseWrapper",
+          "data": {
+           "__typename": "Playlist",
+           "attributes": [
+            {
+             "key": "madeFor.username",
+             "value": "listener"
+            },
+            {
+             "key": "madeFor.displayed",
+             "value": "1"
+            }
+           ],
+           "format": "topic-mix",
+           "name": "70s Mix",
+           "ownerV2": {
+            "data": {
+             "__typename": "User",
+             "name": "Spotify",
+             "uri": "spotify:user:spotify"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZF1EQpVaHRDcozEz"
+          }
+         },
+         "uri": "spotify:playlist:37i9dQZF1EQpVaHRDcozEz"
+        },
+        {
+         "content": {
+          "__typename": "PlaylistResponseWrapper",
+          "data": {
+           "__typename": "Playlist",
+           "attributes": [
+            {
+             "key": "madeFor.username",
+             "value": "listener"
+            },
+            {
+             "key": "madeFor.displayed",
+             "value": "1"
+            }
+           ],
+           "format": "topic-mix",
+           "name": "Focus Mix",
+           "ownerV2": {
+            "data": {
+             "__typename": "User",
+             "name": "Spotify",
+             "uri": "spotify:user:spotify"
+            }
+           },
+           "uri": "spotify:playlist:37i9dQZF1EVHSXhJvOIrqV"
+          }
+         },
+         "uri": "spotify:playlist:37i9dQZF1EVHSXhJvOIrqV"
+        }
+       ]
+      },
+      "uri": "spotify:section:0JQ5DAnM3wGh0gz1MXnu89"
+     }
+    ]
+   }
+  }
+ }
+}

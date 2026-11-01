@@ -358,10 +358,27 @@ sub _collectAuthHealth {
     # 2. Connect Status -- a single account may drive multiple daemons
     # (multi-player setups). Report the first alive helper for this account,
     # falling back to the first helper found at all if none are alive.
-    my @matching = grep { ($_->_accountId || '') eq $accountId }
-        Plugins::SpotOn::Unified::DaemonManager->helperInstances();
-    my ($chosen) = grep { $_->alive } @matching;
-    $chosen ||= $matching[0];
+    # 79-60 (forum #333 B) / 79-63 R1 (79-REVIEW-BETA3 CR-01): the helper's
+    # OWN role (Backend::classFor($h->backendName), as DaemonManager::_roleOf;
+    # this core file names no backend module) says which account a helper
+    # serves (accountIdForHelper: librespot from the daemon, Soloist from its
+    # player) and whether the row lists players (authHealthListsPlayers:
+    # Soloist counts the account's live daemons and names the player whose
+    # backend reports a Connect session -- player name only, never a mac).
+    require Slim::Player::Client;
+    require Plugins::SpotOn::Backend;
+    my (@matching, %clientOf, %listed, $listsPlayers);
+    for my $h (Plugins::SpotOn::Unified::DaemonManager->helperInstances()) {
+        my $role = eval { Plugins::SpotOn::Backend::classFor($h->backendName) } or next;
+        next unless (eval { $role->accountIdForHelper($h) } // '') eq $accountId;
+        push @matching, $h;
+        next unless eval { $role->authHealthListsPlayers };
+        $listsPlayers = 1;
+        $listed{"$h"} = 1;
+        $clientOf{"$h"} = eval { Slim::Player::Client::getClient($h->mac) };
+    }
+    my @alive = grep { $_->alive } @matching;
+    my $chosen = $alive[0] || $matching[0];
 
     my %connect = (alive => 0, pid => 0, uptime => 0);
     if ($chosen) {
@@ -370,6 +387,19 @@ sub _collectAuthHealth {
             pid    => $chosen->pid || 0,
             uptime => int($chosen->uptime || 0),
         );
+    }
+    if ($listsPlayers) {
+        my $active = '';
+        my @aliveListed = grep { $listed{"$_"} } @alive;
+        for my $h (@aliveListed) {
+            my $mode = eval { Plugins::SpotOn::Unified::DaemonManager->backendFor($h->mac)->query('playingMode') } // '';
+            next unless $mode eq 'connect';
+            my $client = $clientOf{"$h"};
+            $active = ($client && $client->can('name')) ? ($client->name // '') : '';
+            last;
+        }
+        $connect{players}       = scalar(@aliveListed);
+        $connect{connectActive} = $active;
     }
     $health{connect} = \%connect;
 

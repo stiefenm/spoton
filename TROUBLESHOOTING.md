@@ -32,21 +32,42 @@ The version after "glibc" is the one found on your system. On such a system Spot
 
 **Fix:** update the operating system to a release with glibc 2.38 or newer (for example Debian 13 or Raspberry Pi OS Trixie), or select **librespot** in SpotOn Settings. librespot has no glibc floor of this kind. Docker images based on Debian 12 (bookworm, glibc 2.36) are too old for Soloist.
 
-Soloist runs on Linux only. On Windows and macOS SpotOn always uses librespot, whatever is selected.
+SpotOn supports Soloist on Linux only. Spotify also offers Soloist for Windows and macOS (Apple Silicon), but SpotOn captures Soloist's audio through a PulseAudio stand-in that exists for Linux only, so on Windows and macOS SpotOn always uses librespot, whatever is selected.
 
-## Key refused: spak key not saved, or Spotify refuses audio keys
+## Soloist does not start, the status says version_unparsable or a missing library
 
-**The spak key was not saved.** SpotOn checks the key before it stores it. If it contains characters a spak key cannot have, or is too short, the settings page says:
+**Symptoms:** with the Soloist backend selected, Soloist does not start. The SpotOn status page (and the diagnostic report) shows:
 
-> The spak-key contains invalid characters or is too short - it was not saved.
+> Soloist cannot start: the system library libatomic.so.1 is missing. Install the package that provides it (Debian: libatomic1), then restart LMS.
 
-Copy the key again from Spotify (without spaces or line breaks) and save once more. As long as no key is stored, the Soloist fields say "No spak-key configured - Soloist cannot start without one.". Get the key with your Spotify Premium account as described in [Spotify's Soloist documentation](https://developer.spotify.com/documentation/soloist/concepts/authentication).
+The diagnostic report has the line `Soloist start check: missing library libatomic.so.1 (install the package that provides it; Debian: libatomic1)`, and a renewal or a placed build on the settings page reads `missing_library:libatomic.so.1` as its reason. Older SpotOn versions showed only `version_unparsable` here, and server.log read `Soloist: unexpected --version output (0 bytes)`.
+
+**Cause:** Soloist needs a few system libraries that minimal Debian, LXC and Docker images leave out. The two that are usually missing are `libatomic.so.1` and `libgcc_s.so.1`.
+
+**Fix:** install the package named in the message, then restart LMS:
+
+```
+apt install libatomic1
+apt install libgcc-s1
+```
+
+On other distributions, install the package that provides the library named in the message. If the status page also shows "glibc too old" (see above), installing the library is not enough: that system cannot run Soloist, use librespot.
+
+`version_unparsable` on its own (without a library name) means the Soloist binary started but printed something SpotOn does not recognise as a version. Delete the Soloist folder in the LMS cache (`<cachedir>/spoton/soloist/`) and restart LMS so SpotOn downloads it again.
+
+## Key refused: Spotify Soloist API key not saved, or Spotify refuses audio keys
+
+**The Spotify Soloist API key was not saved.** SpotOn checks the key before it stores it. If it contains characters such a key cannot have, or is too short, the settings page says:
+
+> The Spotify Soloist API key contains invalid characters or is too short - it was not saved.
+
+Copy the key again from Spotify (without spaces or line breaks) and save once more. As long as no key is stored, the Soloist fields say "No Spotify Soloist API key configured - Soloist cannot start without one.". Get the key with your Spotify Premium account as described in [Spotify's Soloist documentation](https://developer.spotify.com/documentation/soloist/concepts/authentication).
 
 **Spotify refuses audio keys (librespot).** For some accounts Spotify refuses the audio keys librespot asks for. Playback then cannot work with librespot for that account, and the SpotOn status page shows:
 
 > Spotify refuses audio keys for account abcd**** with the librespot backend (AesKeyError 0x0001) - playback cannot work for this account. Select the Soloist backend in the SpotOn settings.
 
-The way out is the Soloist backend (Linux with glibc 2.38 or newer, own spak key). Rapid skipping can also cause a short throttling warning ("Spotify is throttling audio keys ..."); that one recovers within a few minutes by itself.
+The way out is the Soloist backend (Linux with glibc 2.38 or newer, own Spotify Soloist API key). Rapid skipping can also cause a short throttling warning ("Spotify is throttling audio keys ..."); that one recovers within a few minutes by itself.
 
 ## Soloist: pairing a player (tap in the Spotify app)
 

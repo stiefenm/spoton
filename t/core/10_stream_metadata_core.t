@@ -415,6 +415,16 @@ require Slim::Player::Sync;
 # ============================================================
 require_ok('Plugins::SpotOn::Plugin') or BAIL_OUT("Failed to load Plugin.pm");
 
+# 79-60 Task 2: _typeString became _formatLabel ("<Spotify side> \x{00B7} <LMS side>, SpotOn <mode>").
+# The LMS-side cells below keep their intent through lmsPart(), the label without its Spotify side.
+sub lmsPart {
+    my $l = Plugins::SpotOn::Plugin->can('_formatLabel')
+        ? scalar(eval { Plugins::SpotOn::Plugin->_formatLabel(@_) }) // ''
+        : '';
+    $l =~ s/\A.*? \x{00B7} //s;
+    return $l;
+}
+
 # ============================================================
 # Mock client object
 # ============================================================
@@ -427,16 +437,39 @@ require_ok('Plugins::SpotOn::Plugin') or BAIL_OUT("Failed to load Plugin.pm");
     our %_synced;   # id => boolean
     our %_master;   # id => MockClient instance or undef
     sub new { my $id = $_[1] // 'player1'; bless \$id, $_[0] }
+    our %_playing;  # id => MockSong (79-60: the playing song for getMetadataFor/_displayMeta)
     sub can {
         my ($self, $method) = @_;
         return 1 if $method eq 'master' && $_master{${$self}};
+        return 1 if $method eq 'currentSongForUrl' && $_playing{${$self}};
         return 0;
+    }
+    sub currentSongForUrl {
+        my ($self, $url) = @_;
+        my $s = $_playing{${$self}} or return undef;
+        return $s->track->url eq $url ? $s : undef;
     }
     sub model   { return $_model{${$_[0]}}   // 'squeezelite' }
     sub formats { return @{ $_formats{${$_[0]}} // ['ogg','pcm','flc','mp3'] } }
     sub isSynced { return $_synced{${$_[0]}} // 0 }
     sub master  { return $_master{${$_[0]}} }
-    sub playingSong { undef }
+    sub playingSong { return $_playing{${$_[0]}} }
+    sub id          { return ${$_[0]} }   # 79-60: DaemonManager->backendFor(\$client) keys the role by id
+}
+{
+    package MockTrack;
+    sub new { my ($class, %a) = @_; return bless { %a }, $class }
+    sub url        { $_[0]->{url} }
+    sub samplesize { $_[0]->{samplesize} = $_[1] if @_ > 1; $_[0]->{samplesize} }
+    sub can        { my ($self, $m) = @_; return $m =~ /\A(?:url|samplesize)\z/ ? 1 : 0 }
+}
+{
+    package MockSong;
+    sub new { my ($class, %a) = @_; return bless { track => MockTrack->new(url => $a{url}, samplesize => $a{samplesize}), sb => $a{streambitrate} }, $class }
+    sub track         { $_[0]->{track} }
+    sub streambitrate { $_[0]->{sb} }
+    sub duration      { $_[0]->{duration} = $_[1] if @_ > 1; $_[0]->{duration} }
+    sub can           { my ($self, $m) = @_; return $m =~ /\A(?:track|streambitrate|duration)\z/ ? 1 : 0 }
 }
 
 # ============================================================
@@ -517,8 +550,8 @@ sub setup_prefs {
         client       => $client,
         streamFormat => 'flac',
     );
-    my $result = Plugins::SpotOn::Plugin->_typeString($client, 'Connect');
-    is($result, 'FLAC, SpotOn Connect',
+    my $result = lmsPart($client, 'Connect');
+    is($result, 'FLAC 16, SpotOn Connect',
         'META-02: streamFormat=flac => "FLAC, SpotOn Connect"');
 }
 
@@ -531,7 +564,7 @@ sub setup_prefs {
         client       => $client,
         streamFormat => 'mp3',
     );
-    my $result = Plugins::SpotOn::Plugin->_typeString($client, 'Browse');
+    my $result = lmsPart($client, 'Browse');
     is($result, 'MP3, SpotOn Browse',
         'META-02: streamFormat=mp3 => "MP3, SpotOn Browse"');
 }
@@ -545,7 +578,7 @@ sub setup_prefs {
         client       => $client,
         streamFormat => 'pcm',
     );
-    my $result = Plugins::SpotOn::Plugin->_typeString($client, 'Browse');
+    my $result = lmsPart($client, 'Browse');
     is($result, 'PCM, SpotOn Browse',
         'META-02: streamFormat=pcm => "PCM, SpotOn Browse"');
 }
@@ -568,17 +601,17 @@ sub setup_prefs {
     # D-15, librespot: explicit FLAC on a client without flc is PCM
     my $noflc = MockClient->new('lbl_noflc');
     setup_prefs(client => $noflc, streamFormat => 'flac', formats => ['ogg', 'pcm', 'mp3']);
-    is(Plugins::SpotOn::Plugin->_typeString($noflc, 'Connect'), 'PCM, SpotOn Connect',
+    is(lmsPart($noflc, 'Connect'), 'PCM, SpotOn Connect',
         '74b-02 D-15: streamFormat=flac on a client without flc => "PCM, SpotOn Connect" (librespot)');
 
     # D-15, soloist
     $prefs_l->set('backend', 'soloist');
-    is(Plugins::SpotOn::Plugin->_typeString($noflc, 'Connect'), 'PCM, SpotOn Connect',
+    is(lmsPart($noflc, 'Connect'), 'PCM, SpotOn Connect',
         '74b-02 D-15: streamFormat=flac on a client without flc => "PCM, SpotOn Connect" (soloist)');
 
     my $flc = MockClient->new('lbl_flc');
     setup_prefs(client => $flc, streamFormat => 'flac', formats => ['pcm', 'flc']);
-    is(Plugins::SpotOn::Plugin->_typeString($flc, 'Connect'), 'FLAC, SpotOn Connect',
+    is(lmsPart($flc, 'Connect'), 'FLAC 16, SpotOn Connect',
         '74b-02 D-15: streamFormat=flac on a client with flc => "FLAC, SpotOn Connect" (soloist)');
 
     # D-22: Auto on a Soloist client with flc follows the staging seam (local
@@ -588,39 +621,39 @@ sub setup_prefs {
     {
         no warnings 'redefine';
         local *Plugins::SpotOn::Unified::DaemonManager::autoFlacEnabled = sub { 0 };
-        is(Plugins::SpotOn::Plugin->_typeString($auto, 'Browse'), 'PCM, SpotOn Browse',
+        is(lmsPart($auto, 'Browse'), 'PCM, SpotOn Browse',
             '74b-02 D-22: Auto on a Soloist client with flc while autoFlacEnabled is 0 => "PCM, SpotOn Browse"');
     }
     {
         no warnings 'redefine';
         local *Plugins::SpotOn::Unified::DaemonManager::autoFlacEnabled = sub { 1 };
-        is(Plugins::SpotOn::Plugin->_typeString($auto, 'Browse'), 'FLAC, SpotOn Browse',
+        is(lmsPart($auto, 'Browse'), 'FLAC 16, SpotOn Browse',
             '74b-02 D-22: Auto on a Soloist client with flc while autoFlacEnabled is 1 => "FLAC, SpotOn Browse"');
     }
 
     # explicit mp3 and pcm under soloist
     my $mp3 = MockClient->new('lbl_mp3');
     setup_prefs(client => $mp3, streamFormat => 'mp3', formats => ['pcm', 'flc', 'mp3']);
-    is(Plugins::SpotOn::Plugin->_typeString($mp3, 'Browse'), 'MP3, SpotOn Browse', '74b-02: soloist mp3 => "MP3, SpotOn Browse"');
+    is(lmsPart($mp3, 'Browse'), 'MP3, SpotOn Browse', '74b-02: soloist mp3 => "MP3, SpotOn Browse"');
     my $pcm = MockClient->new('lbl_pcm');
     setup_prefs(client => $pcm, streamFormat => 'pcm', formats => ['pcm', 'flc', 'mp3']);
-    is(Plugins::SpotOn::Plugin->_typeString($pcm, 'Browse'), 'PCM, SpotOn Browse', '74b-02: soloist pcm on an flc player => "PCM, SpotOn Browse"');
+    is(lmsPart($pcm, 'Browse'), 'PCM, SpotOn Browse', '74b-02: soloist pcm on an flc player => "PCM, SpotOn Browse"');
 
     # librespot ogg with passthrough is unchanged
     $prefs_l->set('backend', 'librespot');
     my $ogg = MockClient->new('lbl_ogg');
     setup_prefs(client => $ogg, streamFormat => 'ogg', passthrough => 1);
-    is(Plugins::SpotOn::Plugin->_typeString($ogg, 'Browse'), 'OGG, SpotOn Browse',
+    is(lmsPart($ogg, 'Browse'), 'OGG, SpotOn Browse',
         '74b-02: librespot ogg with passthrough => "OGG, SpotOn Browse" (unchanged)');
 
     # undef client
-    is(Plugins::SpotOn::Plugin->_typeString(undef, 'Browse'), 'PCM, SpotOn Browse', '74b-02: undef client => "PCM, SpotOn Browse"');
+    is(lmsPart(undef, 'Browse'), 'PCM, SpotOn Browse', '74b-02: undef client => "PCM, SpotOn Browse"');
 
     # a dying effectiveFormat falls back to PCM
     {
         no warnings 'redefine', 'once';
         local *Plugins::SpotOn::Unified::DaemonManager::effectiveFormat = sub { die "boom\n" };
-        is(Plugins::SpotOn::Plugin->_typeString($flc, 'Browse'), 'PCM, SpotOn Browse',
+        is(lmsPart($flc, 'Browse'), 'PCM, SpotOn Browse',
             '74b-02: a dying effectiveFormat => "PCM, SpotOn Browse" (eval fallback)');
     }
 
@@ -642,7 +675,7 @@ sub setup_prefs {
         streamFormat => 'auto',
         passthrough  => 0,
     );
-    my $result = Plugins::SpotOn::Plugin->_typeString($client, 'Browse');
+    my $result = lmsPart($client, 'Browse');
     is($result, 'PCM, SpotOn Browse',
         'D-05: streamFormat=auto + passthrough=0 => "PCM, SpotOn Browse"');
 }
@@ -660,7 +693,7 @@ sub setup_prefs {
         model        => 'squeezebox2',
         formats      => ['pcm', 'flac', 'mp3'],
     );
-    my $result = Plugins::SpotOn::Plugin->_typeString($client, 'Browse');
+    my $result = lmsPart($client, 'Browse');
     is($result, 'PCM, SpotOn Browse',
         'D-04/OGG-02: player without ogg format + auto + passthrough=1 => "PCM, SpotOn Browse"');
 }
@@ -676,7 +709,7 @@ sub setup_prefs {
         passthrough  => 0,
         model        => 'squeezelite',
     );
-    my $result = Plugins::SpotOn::Plugin->_typeString($client, 'Browse');
+    my $result = lmsPart($client, 'Browse');
     is($result, 'PCM, SpotOn Browse',
         'D-04: squeezelite + auto + passthrough=0 => "PCM, SpotOn Browse"');
 }
@@ -694,7 +727,7 @@ sub setup_prefs {
         model        => 'squeezelite',
         formats      => ['pcm', 'flac', 'mp3'],
     );
-    my $result = Plugins::SpotOn::Plugin->_typeString($client, 'Browse');
+    my $result = lmsPart($client, 'Browse');
     is($result, 'PCM, SpotOn Browse',
         'D-04: squeezelite without ogg in formats + auto + passthrough=1 => "PCM, SpotOn Browse"');
 }
@@ -726,7 +759,7 @@ sub setup_prefs {
         synced       => 1,
         master_client => $master_client,
     );
-    my $result = Plugins::SpotOn::Plugin->_typeString($master_client, 'Browse');
+    my $result = lmsPart($master_client, 'Browse');
     is($result, 'PCM, SpotOn Browse',
         'D-08: sync-group with mixed formats (squeezelite+ogg master + no-ogg slave) => "PCM, SpotOn Browse"');
 }
@@ -739,13 +772,13 @@ sub setup_prefs {
     setup_prefs(
         passthrough => 1,
     );
-    my $result = Plugins::SpotOn::Plugin->_typeString(undef, 'Browse');
+    my $result = lmsPart(undef, 'Browse');
     is($result, 'PCM, SpotOn Browse',
         'D-04: undef client => PCM (unknown player, conservative default)');
 }
 
 # ============================================================
-# Test 8: _bitrateForClient — bitrateOverride 160 overrides global 320
+# Test 8: _bitrateConfigForClient (79-60, was _bitrateForClient) — bitrateOverride 160 overrides global 320
 # D-07: per-player bitrateOverride takes precedence
 # ============================================================
 {
@@ -755,13 +788,13 @@ sub setup_prefs {
         client          => $client,
         bitrateOverride => 160,
     );
-    my $result = Plugins::SpotOn::Plugin->_bitrateForClient($client);
+    my $result = Plugins::SpotOn::Plugin->_bitrateConfigForClient($client);
     is($result, 160,
         'D-07: bitrateOverride=160 overrides global 320');
 }
 
 # ============================================================
-# Test 9: _bitrateForClient — defaults to global bitrate
+# Test 9: _bitrateConfigForClient — defaults to global bitrate
 # ============================================================
 {
     my $client = MockClient->new('player_global');
@@ -770,19 +803,19 @@ sub setup_prefs {
         client          => $client,
         bitrateOverride => undef,
     );
-    my $result = Plugins::SpotOn::Plugin->_bitrateForClient($client);
+    my $result = Plugins::SpotOn::Plugin->_bitrateConfigForClient($client);
     is($result, 320,
         'D-07: no override => global bitrate 320');
 }
 
 # ============================================================
-# Test 10: _bitrateForClient — undef client uses global
+# Test 10: _bitrateConfigForClient — undef client uses global
 # ============================================================
 {
     setup_prefs(
         bitrate => 96,
     );
-    my $result = Plugins::SpotOn::Plugin->_bitrateForClient(undef);
+    my $result = Plugins::SpotOn::Plugin->_bitrateConfigForClient(undef);
     is($result, 96,
         'D-07: undef client => global bitrate 96');
 }
@@ -797,7 +830,7 @@ sub setup_prefs {
         client       => $client,
         streamFormat => 'ogg',
     );
-    my $result = Plugins::SpotOn::Plugin->_typeString($client, 'Browse');
+    my $result = lmsPart($client, 'Browse');
     like($result, qr/SpotOn Browse$/,
         'D-02: mode label "SpotOn Browse" always present at end');
 }
@@ -812,7 +845,7 @@ sub setup_prefs {
         client       => $client,
         streamFormat => 'ogg',
     );
-    my $result = Plugins::SpotOn::Plugin->_typeString($client, 'Connect');
+    my $result = lmsPart($client, 'Connect');
     like($result, qr/SpotOn Connect$/,
         'D-02: mode label "SpotOn Connect" always present at end');
 }
@@ -962,6 +995,495 @@ sub setup_prefs {
     my ($fetch) = $cn =~ /(^sub _fetchTrackMetadata\b.*?^\})/ms;
     ok(defined $fetch && $fetch !~ /noteMetadataMissing/, "85-07 D-11: Connect::_fetchTrackMetadata is not a sender of noteMetadataMissing");
     unlike($cn, qr/falling back to Client\.pm's own-token path/, "85-07 D-11: Connect.pm's metadata comment no longer promises a Web API fallback");
+}
+
+# ============================================================
+# 79-60 Task 1 (forum #333 A): the PLAYING song's format line. The mode follows
+# the real source (Soloist Control mode / librespot Connect claim), the bitrate is
+# never LMS's FLAC guess (guessBitrateFromFormat: 705600 -> "706k"), and the bit
+# depth shown is the source's, while the track keeps the 32-bit transport width.
+# The backend-side reads go through the role (query playingMode / deliveredFormat /
+# qualityLevelKey); the last two are mocked at their Plugin seams so this
+# core half runs on both CI legs; the real DeliveredFormat lives in t/soloist/71.
+# ============================================================
+{
+    no warnings 'redefine', 'once';
+    my $P = 'Plugins::SpotOn::Plugin';
+    my $prefs_l = Slim::Utils::Prefs::preferences('plugin.spoton');
+    $prefs_l->set('backend', 'soloist');
+    require Plugins::SpotOn::ProtocolHandler;
+    # the real SpClient does not load under this file's URI::Escape stub; ProtocolHandler's
+    # _metaCurrent only needs its record-format constant (t/core/11 stubs it the same way)
+    $INC{'Plugins/SpotOn/API/SpClient.pm'} //= __FILE__;
+    *Plugins::SpotOn::API::SpClient::TRACK_META_FORMAT = sub () { 2 }
+        unless defined &Plugins::SpotOn::API::SpClient::TRACK_META_FORMAT;
+    require Digest::MD5;
+    my $fmtMark = Plugins::SpotOn::API::SpClient::TRACK_META_FORMAT();
+    my $cache = Slim::Utils::Cache->new;
+
+    my $url  = 'spoton://track:37BTh5g05cxBIRYMbw8g2T';
+    my $flc  = MockClient->new('fmt60_flc');
+    setup_prefs(client => $flc, streamFormat => 'flac', formats => ['pcm', 'flc']);
+    my $song = MockSong->new(url => $url, samplesize => 32, streambitrate => 705600);
+    $MockClient::_playing{'fmt60_flc'} = $song;
+    $cache->set('spoton_meta_' . Digest::MD5::md5_hex($url), {
+        _spoton_fmt => $fmtMark, title => 'Rosanna', artist => 'TOTO', album => 'Toto IV', duration => 331,
+        bitrate => '706k', type => 'FLAC 16, SpotOn Browse',
+    }, 604800);
+
+    my $ctlMode = 'connect';
+    # the mode comes from the backend role (the Backend::Soloist mock of this file answers
+    # Control's mode); Plugin.pm names no Soloist module (amputation seam, t/core/14 CTX-20)
+    local *Plugins::SpotOn::Backend::Soloist::query = sub { my ($self, $what) = @_; return $what eq 'playingMode' ? $ctlMode : undef };
+    my $rec;   # the measured record the seam answers
+    local *Plugins::SpotOn::Plugin::_deliveredFor = sub { return $rec };
+    local *Plugins::SpotOn::Plugin::_settingLevelLabel = sub { return 'Lossless' };
+
+    # Connect session, measured FLAC source
+    $rec = { codec => 'flac', bitrate => 1400000 };
+    my $m = eval { Plugins::SpotOn::ProtocolHandler->getMetadataFor($flc, $url) } || {};
+    # 79-67 (user decision 2026-10-31 "An Material anpassen"): type is the short LMS-side
+    # codec, bitrate the measured Spotify side; the two-part label moved to the track info
+    is($m->{type}, 'FLAC', '79-67: playing song, LMS FLAC => type "FLAC" (was the two-part label, now in the track info)');
+    is($m->{bitrate}, '1400k', '79-67: measured flac 1400000 => bitrate "1400k" (the Spotify side)');
+    isnt($m->{bitrate} // '', '706k', '79-67: streambitrate 705600 never reaches bitrate (no 706k guess)');
+    is($m->{samplesize}, 16, '79-60: measured FLAC source => samplesize 16');
+    is($song->track->samplesize, 32, '79-60: the track keeps the 32-bit transport width (transcoder unchanged)');
+
+    # Browse session, measured vorbis source
+    $ctlMode = 'browse';
+    $rec = { codec => 'vorbis', bitrate => 160000 };
+    $m = eval { Plugins::SpotOn::ProtocolHandler->getMetadataFor($flc, $url) } || {};
+    is($m->{type} . ' ' . ($m->{bitrate} // 'undef'), 'FLAC 160k', '79-67: Browse session, measured vorbis 160000 => type "FLAC", bitrate "160k"');
+    ok(exists $m->{samplesize} && defined $m->{samplesize} && $m->{samplesize} eq '',
+        '79-60: lossy source => samplesize "" (defined: wins over the track value in LMS status, not shown)');
+
+    # no measurement (cached track): the setting, visibly marked
+    $rec = undef;
+    $m = eval { Plugins::SpotOn::ProtocolHandler->getMetadataFor($flc, $url) } || {};
+    is($m->{type} . ' [' . ($m->{bitrate} // 'undef') . ']', 'FLAC []', '79-67: no measurement => type "FLAC", bitrate "" (no number without a measurement)');
+    is($m->{samplesize}, '', '79-60: no measurement => no bit depth claimed');
+
+    # PCM: the exact rate of the transport width; MP3: the player's LMS limit
+    my $pcm = MockClient->new('fmt60_pcm');
+    setup_prefs(client => $pcm, streamFormat => 'pcm', formats => ['pcm', 'flc']);
+    is(scalar eval { $P->_bitrateLabelForClient($pcm) }, '', '79-67: PCM under Soloist without a song => "" (the transport rate is not the Spotify side)');
+    my $mp3 = MockClient->new('fmt60_mp3');
+    setup_prefs(client => $mp3, streamFormat => 'mp3', formats => ['pcm', 'flc', 'mp3']);
+    Slim::Utils::Prefs::preferences('server')->client($mp3)->set('maxBitrate', 192);
+    is(scalar eval { $P->_bitrateLabelForClient($mp3) }, '', '79-67: MP3 with an LMS limit of 192 => "" in bitrate (the limit moved into the two-part label, C-1)');
+    Slim::Utils::Prefs::preferences('server')->client($mp3)->set('maxBitrate', 0);
+    is(scalar eval { $P->_bitrateLabelForClient($mp3) }, '', '79-60: MP3 without an LMS limit => "" (no number)');
+
+    # a url that is NOT the playing song keeps the setting-based Browse label
+    my $other = 'spoton://track:1k1Bqnv2R0uJXQN4u6LKYt';
+    $cache->set('spoton_meta_' . Digest::MD5::md5_hex($other), {
+        _spoton_fmt => $fmtMark, title => 'Other', artist => 'A', album => 'B', duration => 126,
+    }, 604800);
+    $ctlMode = 'connect';
+    $m = eval { Plugins::SpotOn::ProtocolHandler->getMetadataFor($flc, $other) } || {};
+    is($m->{type}, 'FLAC', '79-67: a history/queue url that is not playing => type "FLAC" (sharpened from 79-60\'s "not labelled Connect")');
+    ok(!exists $m->{samplesize}, '79-60: a url that is not playing gets no samplesize override');
+
+    delete $MockClient::_playing{'fmt60_flc'};
+    $prefs_l->set('backend', 'librespot');
+}
+
+# ============================================================
+# 79-60 Task 2: the two-part label everywhere. Menu items are labelled without a
+# song (setting-based, no log read); librespot shows its configured OGG rate; a
+# Soloist label is either backed by a measured record or carries the setting
+# marker (invariant over generated combinations); no caller appends 'k' to a
+# bare number any more.
+# ============================================================
+{
+    no warnings 'redefine', 'once';
+    my $P = 'Plugins::SpotOn::Plugin';
+    my $prefs_l = Slim::Utils::Prefs::preferences('plugin.spoton');
+    my $reads = 0;
+    my $rec;
+    local *Plugins::SpotOn::Plugin::_deliveredFor = sub { $reads++; return $rec };
+    local *Plugins::SpotOn::Plugin::_settingLevelLabel = sub { return 'Lossless' };
+
+    # menu item (no song), Soloist
+    $prefs_l->set('backend', 'soloist');
+    my $flc = MockClient->new('fmt60b_flc');
+    setup_prefs(client => $flc, streamFormat => 'flac', formats => ['pcm', 'flc']);
+    $rec = { codec => 'flac', bitrate => 1400000 };
+    is(scalar eval { $P->_formatLabel($flc, 'Browse') }, "Lossless (PLUGIN_SPOTON_FORMAT_SETTING) \x{00B7} FLAC 16, SpotOn Browse",
+        '79-60: menu item under Soloist => "<level> (<setting marker>) · FLAC 16, SpotOn Browse"');
+    is($reads, 0, '79-60: a menu-item label (no song) reads no daemon log');
+
+    # librespot: configured OGG rate, passthrough or PCM on the LMS side
+    $prefs_l->set('backend', 'librespot');
+    my $ogg = MockClient->new('fmt60b_ogg');
+    setup_prefs(client => $ogg, bitrate => 320, streamFormat => 'ogg', passthrough => 1);
+    is(scalar eval { $P->_formatLabel($ogg, 'Browse') }, "OGG 320k \x{00B7} OGG, SpotOn Browse", '79-60: librespot passthrough => "OGG 320k · OGG"');
+    my $lpcm = MockClient->new('fmt60b_lpcm');
+    setup_prefs(client => $lpcm, bitrate => 320, streamFormat => 'pcm', passthrough => 0);
+    is(scalar eval { $P->_formatLabel($lpcm, 'Connect') }, "OGG 320k \x{00B7} PCM, SpotOn Connect", '79-60: librespot PCM => "OGG 320k · PCM, SpotOn Connect"');
+    is(scalar eval { $P->_bitrateLabelForClient($ogg) }, '320k', '79-60: librespot OGG passthrough bitrate => "320k"');
+
+    # invariant over generated combinations (Soloist song): measured => "<CODEC> <n>k ·", else the marker
+    $prefs_l->set('backend', 'soloist');
+    my $song = MockSong->new(url => 'spoton://track:1k1Bqnv2R0uJXQN4u6LKYt', samplesize => 32);
+    my @recs = (undef, {}, { codec => 'flac' }, { codec => 'vorbis', bitrate => 0 }, { codec => 'aac', bitrate => 256000 },
+                { codec => 'vorbis', bitrate => 160000 }, { codec => 'flac', bitrate => 1400000 }, { codec => 'flac', bitrate => 700000 },
+                { codec => 'vorbis', bitrate => 96000 }, { codec => 'vorbis', bitrate => 320000 });
+    my %C = (flac => 'FLAC', vorbis => 'OGG', mp3 => 'MP3');
+    my @bad;
+    for my $r (@recs) {
+        for my $fmt (qw(flac pcm mp3)) {
+            for my $mode (qw(Browse Connect)) {
+                for my $withSong (0, 1) {
+                    $rec = $r;
+                    my $c = MockClient->new("fmt60b_inv_$fmt");
+                    setup_prefs(client => $c, streamFormat => $fmt, formats => ['pcm', 'flc', 'mp3']);
+                    my $l = scalar(eval { $P->_formatLabel($c, $mode, $withSong ? $song : undef) }) // '';
+                    my $valid = $withSong && $r && $r->{codec} && $C{ $r->{codec} } && ($r->{bitrate} // 0) >= 1000;
+                    my $ok = $valid
+                        ? index($l, sprintf('%s %dk %s ', $C{ $r->{codec} }, int($r->{bitrate} / 1000 + 0.5), "\x{00B7}")) == 0
+                        : index($l, '(PLUGIN_SPOTON_FORMAT_SETTING)') >= 0;
+                    push @bad, "$fmt/$mode/song=$withSong/" . ($r ? join(',', map { "$_=$r->{$_}" } sort keys %$r) : 'undef') . " => '$l'" unless $ok;
+                }
+            }
+        }
+    }
+    is(scalar(@bad), 0, '79-60 invariant: every Soloist label is measured or carries the setting marker') or diag(join("\n", @bad[0 .. ($#bad < 5 ? $#bad : 5)]));
+
+    # no caller appends 'k' to a bare number, no _typeString caller remains
+    my @hits;
+    for my $f (glob("$project_dir/Plugins/SpotOn/*.pm"), glob("$project_dir/Plugins/SpotOn/*/*.pm")) {
+        open(my $fh, '<', $f) or next;
+        while (my $line = <$fh>) {
+            next if $line =~ /^\s*#/;
+            push @hits, "$f:$.: $line" if $line =~ /_bitrateForClient\([^)]*\)\s*\.\s*'k'/ || $line =~ /->_typeString\(/;
+        }
+        close $fh;
+    }
+    is(scalar(@hits), 0, "79-60: no caller appends 'k' to _bitrateForClient and none calls _typeString (the label functions own the 'k')") or diag(join('', @hits));
+    # defined &, not can(): the OPMLBased stub answers every can()
+    ok(!defined &Plugins::SpotOn::Plugin::_bitrateForClient, '79-60: _bitrateForClient (streambitrate, the 706k source) is gone');
+    ok(!defined &Plugins::SpotOn::Plugin::_typeString, '79-60: _typeString is gone (replaced by _formatLabel)');
+
+    $prefs_l->set('backend', 'librespot');
+}
+
+# ============================================================
+# 79-67 (user decision 2026-10-31 "An Material anpassen", todo
+# formatzeile-material-skin-79-60-nachbesserung): Material's formatTechInfo shows
+# `type` only up to 4 characters and `bitrate` only when longer than 1 character.
+# type = the short LMS-side codec, bitrate = the measured Spotify-side rate of the
+# playing track (no number without a measurement), samplesize as in 79-60; the
+# two-part label with the real mode moves into the track info (first item).
+# ============================================================
+{
+    no warnings 'redefine', 'once';
+    my $P = 'Plugins::SpotOn::Plugin';
+    my $prefs_l = Slim::Utils::Prefs::preferences('plugin.spoton');
+    my $prevBackend = $prefs_l->get('backend');
+    my $prevAccount = $prefs_l->get('activeAccount');
+    require Plugins::SpotOn::ProtocolHandler;
+    require Digest::MD5;
+    my $fmtMark = Plugins::SpotOn::API::SpClient::TRACK_META_FORMAT();
+    my $cache   = Slim::Utils::Cache->new;
+    my $url     = 'spoton://track:37BTh5g05cxBIRYMbw8g2T';
+    my $other   = 'spoton://track:1k1Bqnv2R0uJXQN4u6LKYt';
+    for my $u ($url, $other) {
+        $cache->set('spoton_meta_' . Digest::MD5::md5_hex($u), {
+            _spoton_fmt => $fmtMark, title => 'T', artist => 'A', album => 'B', duration => 300,
+        }, 604800);
+    }
+
+    # backend-neutral formatting module: no Slim::*, no backend module
+    my $dfp = "$project_dir/Plugins/SpotOn/DisplayFormat.pm";
+    my $dsrc = -f $dfp ? do { local $/; open(my $fh, '<', $dfp) or die $!; <$fh> } : undef;
+    ok(defined $dsrc, '79-67: Plugins/SpotOn/DisplayFormat.pm exists');
+    my @dcode = grep { !/^\s*#/ } split /\n/, ($dsrc // '');
+    ok(defined $dsrc && !(grep { /\bSlim::/ || /\b(?:Soloist|Librespot)\b/ || /\b(?:use|require)\s+Plugins::/ } @dcode),
+        '79-67: DisplayFormat.pm names no Slim::* and no backend module');
+
+    my $mode = 'browse';
+    local *Plugins::SpotOn::Backend::Soloist::query   = sub { my ($s, $w) = @_; return $w eq 'playingMode' ? $mode : undef };
+    local *Plugins::SpotOn::Backend::Librespot::query = sub { my ($s, $w) = @_; return $w eq 'playingMode' ? $mode : undef };
+    # Soloist hands LMS a 32-bit transport: at HEAD the PCM bitrate read 2822k from it
+    local *Plugins::SpotOn::Backend::Soloist::capabilitiesDefault = sub {
+        return { formats => 'resolveSoloistFormat', contentType => 'soc', samplesize => 32 };
+    };
+    my $rec;
+    local *Plugins::SpotOn::Plugin::_deliveredFor = sub {
+        my (undef, undef, $s) = @_;
+        return $s && ($prefs_l->get('backend') // '') eq 'soloist' ? $rec : undef;
+    };
+    local *Plugins::SpotOn::Plugin::_settingLevelLabel = sub { return 'Lossless' };
+
+    # one row: set the player up, read getMetadataFor and the two-part label of the same song
+    my $row = sub {
+        my (%o) = @_;
+        $prefs_l->set('backend', $o{backend});
+        my $id = "fmt67_$o{name}";
+        my $c  = MockClient->new($id);
+        setup_prefs(client => $c, streamFormat => $o{fmt}, formats => $o{formats} // ['ogg', 'pcm', 'flc', 'mp3'],
+            bitrate => $o{cfg} // 320, passthrough => $o{pt} // 0);
+        Slim::Utils::Prefs::preferences('server')->client($c)->set('maxBitrate', $o{max} // 0);
+        $rec  = $o{rec};
+        $mode = $o{mode} // 'browse';
+        my $song = MockSong->new(url => $url, samplesize => 32, streambitrate => 705600);
+        if ($o{playing}) { $MockClient::_playing{$id} = $song } else { delete $MockClient::_playing{$id} }
+        my $m = eval { Plugins::SpotOn::ProtocolHandler->getMetadataFor($c, $url) } || {};
+        my $label = scalar(eval { $P->_formatLabel($c, ($mode eq 'connect' ? 'Connect' : 'Browse'), $o{playing} ? $song : undef) }) // '';
+        delete $MockClient::_playing{$id};
+        return ($m, $label, $song);
+    };
+    my $show = sub { my ($m) = @_; return join(' | ', map { "$_=" . (exists $m->{$_} ? ($m->{$_} // 'undef') : 'ABSENT') } qw(type bitrate samplesize)) };
+
+    # the target table of 79-67-PLAN.md, one row per line
+    my @T = (
+        [ 'sol_flac_700',  { backend => 'soloist', fmt => 'flac', rec => { codec => 'flac', bitrate => 700000 }, playing => 1 },
+          'type=FLAC | bitrate=700k | samplesize=16', "FLAC 700k \x{00B7} FLAC 16, SpotOn Browse" ],
+        [ 'sol_flac_160',  { backend => 'soloist', fmt => 'flac', rec => { codec => 'vorbis', bitrate => 160000 }, playing => 1 },
+          'type=FLAC | bitrate=160k | samplesize=', "OGG 160k \x{00B7} FLAC 16, SpotOn Browse" ],
+        [ 'sol_flac_none', { backend => 'soloist', fmt => 'flac', rec => undef, playing => 1 },
+          'type=FLAC | bitrate= | samplesize=', "Lossless (PLUGIN_SPOTON_FORMAT_SETTING) \x{00B7} FLAC 16, SpotOn Browse" ],
+        [ 'sol_pcm_160',   { backend => 'soloist', fmt => 'pcm', rec => { codec => 'vorbis', bitrate => 160000 }, playing => 1 },
+          'type=PCM | bitrate=160k | samplesize=', "OGG 160k \x{00B7} PCM, SpotOn Browse" ],
+        [ 'sol_pcm_1400',  { backend => 'soloist', fmt => 'pcm', rec => { codec => 'flac', bitrate => 1400000 }, playing => 1, mode => 'connect' },
+          'type=PCM | bitrate=1400k | samplesize=16', "FLAC 1400k \x{00B7} PCM, SpotOn Connect" ],
+        [ 'sol_pcm_none',  { backend => 'soloist', fmt => 'pcm', rec => undef, playing => 1 },
+          'type=PCM | bitrate= | samplesize=', "Lossless (PLUGIN_SPOTON_FORMAT_SETTING) \x{00B7} PCM, SpotOn Browse" ],
+        [ 'sol_mp3_160',   { backend => 'soloist', fmt => 'mp3', rec => { codec => 'vorbis', bitrate => 160000 }, playing => 1, max => 192 },
+          'type=MP3 | bitrate=160k | samplesize=', "OGG 160k \x{00B7} MP3 192k, SpotOn Browse" ],
+        [ 'lib_ogg_320',   { backend => 'librespot', fmt => 'ogg', pt => 1, cfg => 320, rec => undef, playing => 1 },
+          'type=OGG | bitrate=320k | samplesize=', "OGG 320k \x{00B7} OGG, SpotOn Browse" ],
+        [ 'lib_pcm_320',   { backend => 'librespot', fmt => 'pcm', pt => 0, cfg => 320, rec => undef, playing => 1, mode => 'connect' },
+          'type=PCM | bitrate=320k | samplesize=', "OGG 320k \x{00B7} PCM, SpotOn Connect" ],
+        [ 'sol_flac_notplaying', { backend => 'soloist', fmt => 'flac', rec => { codec => 'flac', bitrate => 1400000 }, playing => 0 },
+          'type=FLAC | bitrate= | samplesize=ABSENT', "Lossless (PLUGIN_SPOTON_FORMAT_SETTING) \x{00B7} FLAC 16, SpotOn Browse" ],
+        [ 'lib_ogg_notplaying',  { backend => 'librespot', fmt => 'ogg', pt => 1, cfg => 320, rec => undef, playing => 0 },
+          'type=OGG | bitrate=320k | samplesize=ABSENT', "OGG 320k \x{00B7} OGG, SpotOn Browse" ],
+    );
+    for my $t (@T) {
+        my ($name, $o, $want, $wantLabel) = @$t;
+        my ($m, $label, $song) = $row->(name => $name, %$o);
+        is($show->($m), $want, "79-67 target row $name: getMetadataFor => $want");
+        is($label, $wantLabel, "79-67 target row $name: the two-part label is unchanged in content (C-1 for MP3)");
+        is($song->track->samplesize, 32, "79-67 target row $name: the track keeps its transport samplesize") if $o->{playing};
+    }
+
+    # C-1: the MP3 limit is on the LMS side of the two-part label
+    $prefs_l->set('backend', 'soloist');
+    my $mp3 = MockClient->new('fmt67_mp3lim');
+    setup_prefs(client => $mp3, streamFormat => 'mp3', formats => ['pcm', 'flc', 'mp3']);
+    Slim::Utils::Prefs::preferences('server')->client($mp3)->set('maxBitrate', 192);
+    is(lmsPart($mp3, 'Browse'), 'MP3 192k, SpotOn Browse', '79-67 C-1: MP3 with an LMS limit of 192 => LMS side "MP3 192k"');
+    Slim::Utils::Prefs::preferences('server')->client($mp3)->set('maxBitrate', 0);
+    is(lmsPart($mp3, 'Browse'), 'MP3, SpotOn Browse', '79-67 C-1: MP3 without an LMS limit => LMS side "MP3"');
+
+    # invariant over backend x LMS format x record x playing
+    my @bad;
+    for my $be (qw(soloist librespot)) {
+        for my $fmt (qw(flac pcm mp3 ogg)) {
+            for my $r (undef, { codec => 'flac', bitrate => 1400000 }, { codec => 'flac', bitrate => 700000 }, { codec => 'vorbis', bitrate => 160000 }) {
+                for my $pl (0, 1) {
+                    my ($m, $label) = $row->(name => "inv_${be}_$fmt", backend => $be, fmt => $fmt, rec => $r, playing => $pl,
+                        cfg => 320, pt => ($fmt eq 'ogg' ? 1 : 0), max => 192);
+                    my $t = $m->{type} // 'undef';
+                    my $b = $m->{bitrate} // '';
+                    my @why;
+                    push @why, "type=$t" unless $t =~ /\A(?:FLAC|PCM|MP3|OGG)\z/;
+                    push @why, "bitrate=$b" unless $b eq '' || $b =~ /\A\d+k\z/;
+                    push @why, "transport or guess bitrate=$b" if $b =~ /\A(?:2822k|1411k|706k)\z/;
+                    if ($be eq 'soloist') {
+                        my $backed = ($pl && $r) ? 1 : 0;
+                        push @why, "backed=$backed but bitrate='$b'" if (($b ne '') ? 1 : 0) != $backed;
+                        if ($b ne '') {
+                            my ($n) = $label =~ /\A\S+ (\d+k) \x{00B7} /;
+                            push @why, "label '$label' disagrees with bitrate $b" unless defined $n && $n eq $b;
+                        }
+                    }
+                    push @bad, "$be/$fmt/rec=" . ($r ? "$r->{codec}:$r->{bitrate}" : 'none') . "/playing=$pl: @why" if @why;
+                }
+            }
+        }
+    }
+    is(scalar(@bad), 0, '79-67 invariant: type is FLAC/PCM/MP3/OGG, bitrate is "" or "<n>k" and never 2822k/1411k/706k, under Soloist a number exactly when a measured record backs it and equal to the label\'s')
+        or diag(join("\n", @bad[0 .. ($#bad < 7 ? $#bad : 7)]));
+
+    # C-3: a spoton_meta record written before the restart (old two-part type, 2822k)
+    $prefs_l->set('backend', 'soloist');
+    my $stale = 'spoton://track:5h5BrNPFvc4IXfCgnZJ2lT';
+    $cache->set('spoton_meta_' . Digest::MD5::md5_hex($stale), {
+        _spoton_fmt => $fmtMark, title => 'S', artist => 'A', album => 'B', duration => 200,
+        type => "Lossless (PLUGIN_SPOTON_FORMAT_SETTING) \x{00B7} PCM, SpotOn Browse", bitrate => '2822k',
+    }, 604800);
+    my $pc = MockClient->new('fmt67_stale');
+    setup_prefs(client => $pc, streamFormat => 'pcm', formats => ['pcm', 'flc']);
+    $rec = undef;
+    my $sm = eval { Plugins::SpotOn::ProtocolHandler->getMetadataFor($pc, $stale) } || {};
+    is($show->($sm), 'type=PCM | bitrate= | samplesize=ABSENT', '79-67 C-3: a stale record (two-part type, 2822k), not playing => short type, no number');
+    $MockClient::_playing{'fmt67_stale'} = MockSong->new(url => $stale, samplesize => 32);
+    $rec = { codec => 'flac', bitrate => 700000 };
+    $sm = eval { Plugins::SpotOn::ProtocolHandler->getMetadataFor($pc, $stale) } || {};
+    is($show->($sm), 'type=PCM | bitrate=700k | samplesize=16', '79-67 C-3: a stale record of the playing song => short type, the measured rate');
+    delete $MockClient::_playing{'fmt67_stale'};
+
+    # the two-part label in the track info (PLACE67=trackinfo): first item, real mode
+    $prefs_l->set('activeAccount', 'fmt67-account');
+    my $ti = MockClient->new('fmt67_ti');
+    setup_prefs(client => $ti, streamFormat => 'flac', formats => ['pcm', 'flc']);
+    my $tsong = MockSong->new(url => $url, samplesize => 32);
+    $MockClient::_playing{'fmt67_ti'} = $tsong;
+    $mode = 'connect';
+    $rec  = { codec => 'flac', bitrate => 1400000 };
+    my $items = eval { Plugins::SpotOn::Plugin::trackInfoMenu($ti, $url, undef, {}) };
+    is_deeply(ref $items eq 'ARRAY' ? $items->[0] : $items, { type => 'text', name => "FLAC 1400k \x{00B7} FLAC 16, SpotOn Connect" },
+        '79-67: track info of the playing song (Soloist Connect, measured flac 1400000) => first item the two-part label');
+    ok(ref $items eq 'ARRAY' && (grep { ($_->{name} // '') eq 'PLUGIN_SPOTON_MANAGE_LIKE' } @$items), '79-67: the existing SpotOn track info items stay');
+    (my $bare = $url) =~ s{^spoton://}{spoton:};
+    $items = eval { Plugins::SpotOn::Plugin::trackInfoMenu($ti, $bare, undef, {}) };
+    is(ref $items eq 'ARRAY' ? $items->[0]{name} : undef, "FLAC 1400k \x{00B7} FLAC 16, SpotOn Connect", '79-67: the spoton:track:<id> form finds the same playing song');
+    $items = eval { Plugins::SpotOn::Plugin::trackInfoMenu($ti, $other, undef, {}) };
+    is_deeply(ref $items eq 'ARRAY' ? $items->[0] : $items, { type => 'text', name => "Lossless (PLUGIN_SPOTON_FORMAT_SETTING) \x{00B7} FLAC 16, SpotOn Browse" },
+        '79-67: track info of a url that is not playing => the setting-based label, SpotOn Browse');
+
+    $prefs_l->set('backend', 'librespot');
+    my $lc = MockClient->new('fmt67_lconn');
+    setup_prefs(client => $lc, bitrate => 320, streamFormat => 'pcm', passthrough => 0);
+    my $curl = 'spoton://connect-fmt67';
+    $MockClient::_playing{'fmt67_lconn'} = MockSong->new(url => $curl, samplesize => 16);
+    $mode = 'connect';
+    $items = eval { Plugins::SpotOn::Plugin::trackInfoMenu($lc, $curl, undef, {}) };
+    is_deeply($items, [ { type => 'text', name => "OGG 320k \x{00B7} PCM, SpotOn Connect" } ],
+        '79-67: librespot spoton://connect- url of the playing song => the format item alone, SpotOn Connect');
+
+    $prefs_l->set('activeAccount', undef);
+    $items = eval { Plugins::SpotOn::Plugin::trackInfoMenu($lc, $curl, undef, {}) };
+    is($items, undef, '79-67: connect url without an account => undef');
+    delete $MockClient::_playing{'fmt67_lconn'};
+    $prefs_l->set('backend', 'soloist');
+    $items = eval { Plugins::SpotOn::Plugin::trackInfoMenu($ti, $url, undef, {}) };
+    is($items, undef, '79-67: no account => undef as before (CTX-03)');
+    delete $MockClient::_playing{'fmt67_ti'};
+
+    # exactly one _formatLabel call site remains, inside _formatLineFor
+    my @fl;
+    for my $f (glob("$project_dir/Plugins/SpotOn/*.pm"), glob("$project_dir/Plugins/SpotOn/*/*.pm")) {
+        open(my $fh, '<', $f) or next;
+        my $sub = '';
+        while (my $line = <$fh>) {
+            $sub = $1 if $line =~ /^sub (\w+)/;
+            next if $line =~ /^\s*#/;
+            push @fl, "$f:$.:$sub" if $line =~ /->_formatLabel\(/;
+        }
+        close $fh;
+    }
+    is(scalar(@fl), 1, '79-67: exactly one non-comment ->_formatLabel( call site remains (planner baseline 10)') or diag(join("\n", @fl));
+    like($fl[0] // '', qr/:_formatLineFor\z/, '79-67: that call site is inside _formatLineFor');
+
+    $prefs_l->set('activeAccount', $prevAccount);
+    $prefs_l->set('backend', $prevBackend);
+}
+
+# ============================================================
+# 79-67 repair round (user decisions 2026-11-01 B1 "Nur Anzeige korrigieren" and C1
+# "Echtes Format zeigen"): the LMS song info page read "Samplegröße: 32Bit" (the
+# transport width, Slim/Menu/TrackInfo.pm infoSampleSize reads $track->samplesize)
+# and "Dateiformat: soc" (infoContentType, the internal content type). SpotOn
+# replaces the two core rows by name (as it does for `url`, GH-93): SpotOn urls get
+# the real LMS-side format and the source bit depth; every other url gets the LMS
+# core row unchanged. $track->samplesize and the soc content type stay.
+# ============================================================
+{
+    no warnings 'redefine', 'once';
+    my $P = 'Plugins::SpotOn::Plugin';
+    my $prefs_l = Slim::Utils::Prefs::preferences('plugin.spoton');
+    my $prevBackend = $prefs_l->get('backend');
+
+    # the LMS core rows, as sentinels that record their arguments
+    my @coreCalls;
+    $INC{'Slim/Menu/TrackInfo.pm'} //= __FILE__;
+    local *Slim::Menu::TrackInfo::infoContentType = sub { push @coreCalls, [ 'type', @_ ]; return { type => 'text', label => 'TYPE', name => 'CORE-TYPE' } };
+    local *Slim::Menu::TrackInfo::infoSampleSize  = sub { push @coreCalls, [ 'samplesize', @_ ]; return { type => 'text', label => 'SAMPLESIZE', name => 'CORE-SAMPLESIZE' } };
+
+    my $rec;
+    local *Plugins::SpotOn::Plugin::_deliveredFor = sub {
+        my (undef, undef, $s) = @_;
+        return $s && ($prefs_l->get('backend') // '') eq 'soloist' ? $rec : undef;
+    };
+    local *Plugins::SpotOn::Backend::Soloist::query = sub { return undef };
+
+    # defined &, not can(): the OPMLBased stub answers every can() (a missing sub would read undef = "no row")
+    my $ct = sub { my @a = @_; return defined &Plugins::SpotOn::Plugin::_infoContentType ? scalar(eval { Plugins::SpotOn::Plugin::_infoContentType(@a) }) : 'NO-_infoContentType' };
+    my $ss = sub { my @a = @_; return defined &Plugins::SpotOn::Plugin::_infoSampleSize ? scalar(eval { Plugins::SpotOn::Plugin::_infoSampleSize(@a) })  : 'NO-_infoSampleSize' };
+
+    my $nm = sub { my ($r) = @_; return ref $r eq 'HASH' ? $r->{name} : $r };
+
+    $prefs_l->set('backend', 'soloist');
+    my $url  = 'spoton://track:2jvuMDqBK04WvCYYz5qjvG';
+    my $flc  = MockClient->new('fmt67r_flc');
+    setup_prefs(client => $flc, streamFormat => 'flac', formats => ['pcm', 'flc']);
+    my $song = MockSong->new(url => $url, samplesize => 32);
+    my $track = $song->track;
+    $MockClient::_playing{'fmt67r_flc'} = $song;
+
+    # C1: the real LMS-side format for SpotOn urls
+    is_deeply($ct->($flc, $url, $track, {}), { type => 'text', label => 'TYPE', name => 'FLAC' }, '79-67 C1: SpotOn track, LMS FLAC => "Dateiformat: FLAC" (not soc)');
+    (my $bare = $url) =~ s{^spoton://}{spoton:};
+    is_deeply($ct->($flc, $bare, $track, {}), { type => 'text', label => 'TYPE', name => 'FLAC' }, '79-67 C1: the spoton:track:<id> form too');
+    my $pcm = MockClient->new('fmt67r_pcm');
+    setup_prefs(client => $pcm, streamFormat => 'pcm', formats => ['pcm', 'flc']);
+    is($nm->($ct->($pcm, 'spoton://track:1k1Bqnv2R0uJXQN4u6LKYt', $track, {})), 'PCM', '79-67 C1: SpotOn track, LMS PCM => "PCM"');
+    my $mp3 = MockClient->new('fmt67r_mp3');
+    setup_prefs(client => $mp3, streamFormat => 'mp3', formats => ['pcm', 'flc', 'mp3']);
+    is($nm->($ct->($mp3, 'spoton://episode:XYZ789', $track, {})), 'MP3', '79-67 C1: SpotOn episode, LMS MP3 => "MP3"');
+
+    # B1: the source bit depth of the playing SpotOn song, else no row
+    $rec = { codec => 'flac', bitrate => 1400000 };
+    is_deeply($ss->($flc, $url, $track, {}), { type => 'text', label => 'SAMPLESIZE', name => '16BITS' }, '79-67 B1: playing SpotOn song, measured flac 1400000 => "16" + BITS (not 32)');
+    $rec = { codec => 'flac', bitrate => 2500000 };
+    is($nm->($ss->($flc, $url, $track, {})), '24BITS', '79-67 B1: measured flac above 2 Mbit/s => 24');
+    $rec = { codec => 'vorbis', bitrate => 160000 };
+    is($ss->($flc, $url, $track, {}), undef, '79-67 B1: lossy source => no Samplegröße row');
+    $rec = undef;
+    is($ss->($flc, $url, $track, {}), undef, '79-67 B1: no measurement => no Samplegröße row');
+    $rec = { codec => 'flac', bitrate => 1400000 };
+    is($ss->($flc, 'spoton://track:1k1Bqnv2R0uJXQN4u6LKYt', $track, {}), undef, '79-67 B1: a SpotOn url that is not playing => no row (no measurement claimed)');
+    is($track->samplesize, 32, '79-67 B1: $track->samplesize stays the 32-bit transport width');
+
+    # every other url: the LMS core row, called with the same arguments, returned unchanged
+    for my $other ('file:///music/local/track.flac', 'http://radio.example/stream.mp3', 'tidal://12345.flc') {
+        @coreCalls = ();
+        my $lt = MockTrack->new(url => $other, samplesize => 24);
+        my $rt = $ct->($flc, $other, $lt, { x => 1 }, { tag => 1 });
+        my $rs = $ss->($flc, $other, $lt, { x => 1 }, { tag => 1 });
+        is_deeply([ $rt, $rs ], [ { type => 'text', label => 'TYPE', name => 'CORE-TYPE' }, { type => 'text', label => 'SAMPLESIZE', name => 'CORE-SAMPLESIZE' } ],
+            "79-67 B1/C1: $other gets the LMS core rows unchanged");
+        is_deeply(\@coreCalls, [ [ 'type', $flc, $other, $lt, { x => 1 }, { tag => 1 } ], [ 'samplesize', $flc, $other, $lt, { x => 1 }, { tag => 1 } ] ],
+            "79-67 B1/C1: $other - the core rows get the same arguments");
+        is($lt->samplesize, 24, "79-67 B1: $other - the track samplesize is not touched");
+    }
+    # no player: no LMS side to show, the core row
+    @coreCalls = ();
+    is_deeply($ct->(undef, $url, $track, {}), { type => 'text', label => 'TYPE', name => 'CORE-TYPE' }, '79-67 C1: without a player the core row stays');
+
+    # librespot: a lossy source, no bit depth claimed; the format row is the LMS side
+    $prefs_l->set('backend', 'librespot');
+    my $lo = MockClient->new('fmt67r_lib');
+    setup_prefs(client => $lo, bitrate => 320, streamFormat => 'ogg', passthrough => 1, formats => ['ogg', 'pcm', 'flc', 'mp3']);
+    $MockClient::_playing{'fmt67r_lib'} = $song;
+    is($nm->($ct->($lo, $url, $track, {})), 'OGG', '79-67 C1: librespot OGG passthrough => "OGG"');
+    is($ss->($lo, $url, $track, {}), undef, '79-67 B1: librespot (lossy source) => no Samplegröße row');
+    delete $MockClient::_playing{'fmt67r_lib'};
+    delete $MockClient::_playing{'fmt67r_flc'};
+
+    # registration: the two core rows are replaced by name at the core positions
+    my $src = do { local $/; open(my $fh, '<', "$project_dir/Plugins/SpotOn/Plugin.pm") or die $!; <$fh> };
+    like($src, qr/registerInfoProvider\(\s*type\s*=>\s*\(\s*parent\s*=>\s*'moreinfo',\s*after\s*=>\s*'tracknum',\s*func\s*=>\s*\\&_infoContentType,/,
+        '79-67 C1: initPlugin replaces the core `type` row (parent moreinfo, after tracknum, as TrackInfo.pm registers it)');
+    like($src, qr/registerInfoProvider\(\s*samplesize\s*=>\s*\(\s*parent\s*=>\s*'moreinfo',\s*after\s*=>\s*'samplerate',\s*func\s*=>\s*\\&_infoSampleSize,/,
+        '79-67 B1: initPlugin replaces the core `samplesize` row (parent moreinfo, after samplerate, as TrackInfo.pm registers it)');
+
+    $prefs_l->set('backend', $prevBackend);
 }
 
 done_testing();

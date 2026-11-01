@@ -377,7 +377,26 @@ sub canDirectStream {
 sub requestString {
     my ($self, $client, $url, $post, $seekdata) = @_;
 
-    if ($url && $url =~ m{:\d+/(?:stream\b|(?:track|episode)/)}) {
+    my $plain = _daemonRequestString($url);
+    return $plain if defined $plain;
+
+    return $self->SUPER::requestString($client, $url, $post, $seekdata);
+}
+
+# 79-61 (FULL-1 WR-01): true for the daemon's endless /stream and the Browse
+# /track/ and /episode/ endpoints. Shared by the class-method overrides above
+# and below (direct streaming) and by the proxied stream object class
+# Plugins::SpotOn::ProtocolHandler::Stream at the end of this file.
+sub _isDaemonStreamUrl {
+    my ($url) = @_;
+    return ($url && $url =~ m{:\d+/(?:stream\b|(?:track|episode)/)}) ? 1 : 0;
+}
+
+# The plain GET (no Range) for a daemon stream URL, undef for any other URL.
+sub _daemonRequestString {
+    my ($url) = @_;
+    if (_isDaemonStreamUrl($url)) {
+        require Slim::Utils::Misc;
         # Phase 28: also suppress Range for Browse daemon /track/ URLs (same reason as /stream).
         my ($server, $port, $path) = Slim::Utils::Misc::crackURL($url);
         my $host = ($port == 80) ? $server : "$server:$port";
@@ -393,8 +412,7 @@ sub requestString {
             "", "",
         );
     }
-
-    return $self->SUPER::requestString($client, $url, $post, $seekdata);
+    return undef;
 }
 
 # handleDirectError($class, $client, $url, $response, $status_line)
@@ -498,7 +516,7 @@ sub _skipUnavailable {
 sub canEnhanceHTTP {
     my ($self, $client, $url) = @_;
 
-    if ($url && $url =~ m{:\d+/(?:stream\b|(?:track|episode)/)}) {
+    if (_isDaemonStreamUrl($url)) {
         # Phase 28: also return 0 for Browse daemon /track/ URLs (same reason as /stream).
         $log->warn("[DIAG] canEnhanceHTTP: url=$url result=0 reason=daemon_proxy_infinite_stream") if $prefs->get('diagnosticMode');
         main::INFOLOG && $log->is_info && $log->info(
@@ -586,7 +604,14 @@ sub new {
         }
     }
 
-    return Slim::Player::Protocols::HTTP->new($args);
+    # 79-61 (FULL-1 WR-01): the stream object is blessed into
+    # Plugins::SpotOn::ProtocolHandler::Stream (an HTTP subclass, see the end
+    # of this file). Slim::Formats::RemoteStream::new creates the socket with
+    # the invocant's class and then calls $self->requestString and
+    # $self->canEnhanceHTTP on it; as a plain HTTP object those calls never
+    # reached the overrides above, so Range was always sent and Enhanced HTTP
+    # followed the LMS pref against the endless daemon stream.
+    return Plugins::SpotOn::ProtocolHandler::Stream->new($args);
 }
 
 # getNextTrack($class, $song, $successCb, $errorCb)
@@ -1175,7 +1200,7 @@ sub getMetadataFor {
         }
     }
 
-    # D-06, D-07: Connect history URL translation — cache hit with spotifyUri
+    # D-06, D-07 (rule since 79-60): Connect history URL translation - cache hit with spotifyUri
     # History items don't have an active playingSong, so we reach here for connect- URLs
     # that were cached by _fetchTrackMetadata in Connect.pm.
     if ($url && $url =~ m{spoton://connect-}) {
@@ -1185,12 +1210,16 @@ sub getMetadataFor {
             && $connect_meta->{spotifyUri} =~ m/^spotify:track:([A-Za-z0-9]+)$/) {
             my $trackId    = $1;
             my $browseUrl  = "spoton://track:$trackId";
-            # D-07: return Browse mode label — Connect origin is invisible to the user
+            # D-07 (rule since 79-60): a history entry that is NOT playing keeps the Browse
+            # label - playing it again IS Browse. The playing song's label follows its real
+            # source (Plugin::_displayMeta / _playingMode), not this branch. 79-67: type is
+            # the short codec here; the two-part label with the mode is the track info item
+            # (Plugin::_formatLineFor), which labels a url that is not playing Browse.
             require Plugins::SpotOn::Plugin;
             if ($client) {
                 return { %$connect_meta,
-                    type    => Plugins::SpotOn::Plugin->_typeString($client, 'Browse'),
-                    bitrate => Plugins::SpotOn::Plugin->_bitrateForClient($client) . 'k',
+                    type    => Plugins::SpotOn::Plugin->_typeShortForClient($client),
+                    bitrate => Plugins::SpotOn::Plugin->_bitrateLabelForClient($client),
                     play    => $browseUrl,
                 };
             }
@@ -1265,10 +1294,10 @@ sub getMetadataFor {
 
     if ($client) {
         require Plugins::SpotOn::Plugin;
-        return { %$meta,
-            type    => Plugins::SpotOn::Plugin->_typeString($client, 'Browse'),
-            bitrate => Plugins::SpotOn::Plugin->_bitrateForClient($client) . 'k',
-        };
+        # 79-60 (forum #333): the playing/streaming song gets its real mode, the measured
+        # Spotify side, no FLAC bitrate guess and the source bit depth (display only:
+        # the track's samplesize stays the transport width the transcoder needs).
+        return { %$meta, Plugins::SpotOn::Plugin->_displayMeta($client, $song) };
     }
 
     return $meta;
@@ -1591,6 +1620,31 @@ sub _metaCurrent {
     my $fmt = $meta->{_spoton_fmt};
     require Plugins::SpotOn::API::SpClient;
     return (defined $fmt && $fmt =~ /\A\d+\z/ && $fmt >= Plugins::SpotOn::API::SpClient::TRACK_META_FORMAT()) ? 1 : 0;
+}
+
+# ============================================================
+# 79-61 (FULL-1 WR-01): the class of the proxied stream object new() returns.
+# It IS a Slim::Player::Protocols::HTTP (every other method of the stream
+# object is unchanged); only requestString and canEnhanceHTTP route daemon
+# stream URLs through the same rules as the class-method overrides above.
+# @ISA is set without loading HTTP.pm here: LMS has loaded it before any
+# stream opens (new() above always relied on it).
+# ============================================================
+package Plugins::SpotOn::ProtocolHandler::Stream;
+
+our @ISA = ('Slim::Player::Protocols::HTTP');
+
+sub requestString {
+    my ($self, $client, $url, $post, $seekdata) = @_;
+    my $plain = Plugins::SpotOn::ProtocolHandler::_daemonRequestString($url);
+    return $plain if defined $plain;
+    return $self->SUPER::requestString($client, $url, $post, $seekdata);
+}
+
+sub canEnhanceHTTP {
+    my ($self, $client, $url) = @_;
+    return 0 if Plugins::SpotOn::ProtocolHandler::_isDaemonStreamUrl($url);
+    return $self->SUPER::canEnhanceHTTP($client, $url);
 }
 
 1;

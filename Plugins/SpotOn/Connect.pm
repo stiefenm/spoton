@@ -2163,8 +2163,12 @@ sub _connectEvent {
     # -----------------------------------------------------------------
     # Ignore stop events during initial new-track window (newTrack flag prevents
     # race between start event processing and LMS stop-before-play sequence)
+    # 79-61 (FULL-2 WR-04): a session end (stop 'inactive') is never a
+    # transitional stop -- it reaches its handler below inside this window too
+    # (a transfer away 1-2 s after the start used to be swallowed here).
     # -----------------------------------------------------------------
-    if ($cmd eq 'stop' && $client->pluginData('newTrack')) {
+    if ($cmd eq 'stop' && $client->pluginData('newTrack')
+        && ($request->getParam('_p2') || '') ne 'inactive') {
         main::INFOLOG && $log->is_info && $log->info(
             "Ignoring stop event while starting new track"
         );
@@ -2221,7 +2225,13 @@ sub _connectEvent {
         # (Unrelated to pref_enableAutoplay — that is DSTM autoplay.)
         require Plugins::SpotOn::Unified::DaemonManager;
         my $daemonUptime = Plugins::SpotOn::Unified::DaemonManager->uptime($client->id) || 0;
-        if (!$client->isPlaying && $daemonUptime > 0 && $daemonUptime < RESTART_START_GRACE) {
+        # 79-61 (FULL-2 WR-06): a backend that knows the start re-announces a
+        # restored session marks it 'restored' (_p4); that start is suppressed
+        # whatever the uptime -- a Soloist daemon adopts its restored session
+        # up to 8.4 s after spawn, past this 5 s window (DaemonManager.pm:84-89).
+        my $restoredStart = (($request->getParam('_p4') // '') eq 'restored') ? 1 : 0;
+        if (!$client->isPlaying
+            && ($restoredStart || ($daemonUptime > 0 && $daemonUptime < RESTART_START_GRACE))) {
             main::INFOLOG && $log->is_info && $log->info(sprintf(
                 "Suppressing Connect autoplay for %s: start event %.2fs after daemon spawn "
                 . "with idle player - restored session, not a user transfer (Phase 76 restart gate)",
@@ -2568,7 +2578,15 @@ sub _connectEvent {
         if (($request->getParam('_p2') || '') eq 'inactive') {
             _holdCancel($client, 'session_end');    # 84-17 (H-c)
             _settleCancel($client, 'session_end');  # 84.3-01
-            if ($client->isPlaying && __PACKAGE__->isSpotifyConnect($client)) {
+            # 79-61 (FULL-2 WR-03): in a two-player transfer the NEW player's
+            # claim can arrive first; bindConnectClaim then moved the claim
+            # away (D-D2: no stop for the loser), and this player's own
+            # session end failed the claim test and was never paused. Its
+            # Control emits this stop BEFORE leaving connect mode, so a
+            # connect-mode emitter is paused as well.
+            my $endsOwnSession = __PACKAGE__->isSpotifyConnect($client)
+                || (($ctlMode->() // '') eq 'connect');
+            if ($client->isPlaying && $endsOwnSession) {
                 main::INFOLOG && $log->is_info && $log->info(
                     "Connect session ended (device inactive) - pausing " . $client->id
                 );
@@ -2873,8 +2891,8 @@ sub _fetchTrackMetadata {
 
         # Full metadata for Now Playing display
         require Plugins::SpotOn::Plugin;
-        my $type_str = Plugins::SpotOn::Plugin->_typeString($client, 'Connect');
-        my $bitrate = Plugins::SpotOn::Plugin->_bitrateForClient($client);
+        my $type_str = Plugins::SpotOn::Plugin->_typeShortForClient($client);   # 79-67: the mode is in the track info item
+        my $bitrate  = Plugins::SpotOn::Plugin->_bitrateLabelForClient($client);
         $song->pluginData(info => {
             title        => $title,
             artist       => $artist,
@@ -2884,7 +2902,7 @@ sub _fetchTrackMetadata {
             icon         => $cover,
             year         => $year,
             url          => $logicalUrl,
-            bitrate      => $bitrate . 'k',
+            bitrate      => $bitrate,
             originalType => $type_str,
             type         => $type_str,
         });

@@ -1,0 +1,230 @@
+11:59:53.621 I [f:421                           ]         ad: no
+11:59:53.621 I [f:422                           ]         speed: 1.000000
+11:59:53.621 I [f:423                           ]         normalization: track
+11:59:53.621 I [f:424                           ]         stream_type: default
+11:59:53.621 I [f:425                           ]         urgency: paused
+11:59:53.621 I [f:429                           ]         user_action_at: <not set>
+11:59:53.621 I [f:431                           ]         track_select_flag: 0
+11:59:53.621 I [f:433                           ]         start_position: 0 ms
+11:59:53.621 I [f:30                            ] Create GainCalculator with loudness: -10.197682dB, true peak: -10.197682dB, is_speech: false
+11:59:53.621 I [f:135                           ] FileStreamer file average bitrate: 160000
+11:59:53.621 I [f:136                           ] FileStreamer downgrade bandwidth factor: 2.000000
+11:59:53.622 I [f:491                           ]     Open track player (playback_id a06e68634f17d7a2db47cbae4e7c0a47)
+11:59:53.622 I [f:492                           ]         position: 0 ms
+11:59:53.622 I [f:493                           ]         paused: true
+11:59:53.622 I [f:494                           ]         transition: none
+11:59:53.622 I [f:1530                          ] getStreamReportingHolderToResumeWith - nothing to resume
+11:59:53.622 I [f:627                           ] openTrackPlayer - did receive StreamReportingHolder to resume with: FALSE
+11:59:53.622 I [f:215                           ] Timeline attacher (0x75ccb867a730) adding placeholder to MediaPlayer
+11:59:53.622 I [f:216                           ]     prev transition_out: 
+11:59:53.622 I [f:217                           ]     curr transition_in: none
+11:59:53.622 I [f:218                           ]     audio_start: 0
+11:59:53.622 I [f:2178                          ] current track is not ad, resetting last_start_reason
+11:59:53.629 I [f:1212                          ] Play track (playback_id a06e68634f17d7a2db47cbae4e7c0a47)
+11:59:53.630 I [f:365                           ] Playing music set to 'true'
+11:59:53.630 I [f:173                           ] Scheduling emission of signal.
+11:59:53.630 I [f:359                           ] vorbis_info.bitrate_nominal: 160000
+11:59:53.632 I [f:348                           ] Opening sink for playback.
+11:59:53.632 I [f:349                           ]     codec: vorbis
+11:59:53.632 I [f:350                           ]     bitrate: 160000 bits/s
+11:59:53.632 I [f:351                           ]     sample rate: 44100 Hz
+11:59:53.632 I [f:352                           ]     sample format: 32-bit-float-pcm
+11:59:53.632 I [f:358                           ]     duration: 205933 ms
+11:59:53.635 I [f:724                           ] Starting playback.
+11:59:53.635 I [f:726                           ]     min limit 4000 ms.
+11:59:53.635 I [f:727                           ]     compressed buffer: 70658 bytes
+12:00:47.451 I [f:1693                          ] AudioTrackPlayer: playing current track. Start Reason: "playbtn", Track URI: spotify:track:37BTh5g05cxBIRYMbw8g2T
+12:00:47.451 I [f:996                           ] Open playback of track (playback_id 395e6e53884dbe8cc24109363ae35de1, parent_playback_id 00000000000000000000000000000000)
+12:00:47.451 I [f:997                           ]     start_reason: playbtn
+12:00:47.451 I [f:998                           ]     renderer_source: start-> play next track -> play pending track (no errors) -> play current track
+12:00:47.451 I [f:419                           ]     Creating track player for track (playback_id 395e6e53884dbe8cc24109363ae35de1)
+12:00:47.451 I [f:420                           ]         track_uri: spotify:track:37BTh5g05cxBIRYMbw8g2T
+12:00:47.451 I [f:421                           ]         ad: no
+12:00:47.451 I [f:422                           ]         speed: 1.000000
+12:00:47.451 I [f:423                           ]         normalization: album
+12:00:47.451 I [f:424                           ]         stream_type: default
+12:00:47.451 I [f:425                           ]         urgency: now
+12:00:47.451 I [f:427                           ]         user_action_at: 1793188847300000
+12:00:47.451 I [f:431                           ]         track_select_flag: 0
+12:00:47.451 I [f:433                           ]         start_position: 0 ms
+12:00:47.451 I [f:491                           ]     Open track player (playback_id 395e6e53884dbe8cc24109363ae35de1)
+12:00:47.451 I [f:492                           ]         position: 0 ms
+12:00:47.451 I [f:493                           ]         paused: false
+12:00:47.451 I [f:494                           ]         transition: none
+12:00:47.451 I [f:1530                          ] getStreamReportingHolderToResumeWith - nothing to resume
+12:00:47.451 I [f:627                           ] openTrackPlayer - did receive StreamReportingHolder to resume with: FALSE
+12:00:47.451 I [f:365                           ] Playing music set to 'true'
+12:00:47.451 I [f:173                           ] Scheduling emission of signal.
+12:00:47.451 I [f:2178                          ] current track is not ad, resetting last_start_reason
+12:00:47.454 I [f:77                            ] playing spotify:track:37BTh5g05cxBIRYMbw8g2T "Rosanna" by "TOTO" [0:00 / 5:31]
+[fakepulse BOUNDARY ts=13:00:47.455] boundary_planted: total_pushed=12386304 ring_fill=0 gen=1 via=departed anchor=pushed seek_arm_reset hold=none hold_at=-1
+[fakepulse BOUNDARY ts=13:00:47.455] boundary_reply: via=departed anchor=pushed bytes=221
+[fakepulse 13:00:47.455] flush-decide: closed reason=boundary after_ms=91
+[fakepulse BOUNDARY ts=13:00:47.455] flush_decide: closed reason=boundary after_ms=91
+[fakepulse 13:00:47.455] flush-disconnect: closed active HTTP client
+12:00:47.455 I [f:165                           ] Emitting signal.
+12:00:47.455 I [f:168                           ] Device coordinator was set online
+12:00:47.455 I [f:601                           ] Updated connection type from 6 to 6
+[fakepulse 13:00:47.463] client-attach: new /stream client fd=31
+12:00:47.488 I [f:30                            ] Create GainCalculator with loudness: -8.876577dB, true peak: -8.876577dB, is_speech: false
+12:00:47.488 I [f:135                           ] FileStreamer file average bitrate: 160000
+12:00:47.488 I [f:136                           ] FileStreamer downgrade bandwidth factor: 2.000000
+12:00:47.489 I [f:175                           ] Close reason endplay (new context) => resetting timeline
+12:00:47.489 I [f:215                           ] Timeline attacher (0x75ccb84329a0) adding placeholder to MediaPlayer
+12:00:47.489 I [f:216                           ]     prev transition_out: 
+12:00:47.489 I [f:217                           ]     curr transition_in: none
+12:00:47.489 I [f:218                           ]     audio_start: 0
+12:00:47.490 I [f:359                           ] vorbis_info.bitrate_nominal: 160000
+12:00:47.490 I [f:348                           ] Opening sink for playback.
+12:00:47.490 I [f:349                           ]     codec: vorbis
+12:00:47.490 I [f:350                           ]     bitrate: 160000 bits/s
+12:00:47.490 I [f:351                           ]     sample rate: 44100 Hz
+12:00:47.490 I [f:352                           ]     sample format: 32-bit-float-pcm
+12:00:47.490 I [f:358                           ]     duration: 330943 ms
+12:00:47.492 I [f:724                           ] Starting playback.
+12:00:47.492 I [f:726                           ]     min limit 4000 ms.
+20:40:05.798 I [f:808                           ] Prepare playback of track (playback_id 5c4262c1da74c4333828230ad6bdc43d, parent_playback_id 00000000000000000000000000000000) start_position 0
+20:40:05.798 I [f:419                           ]     Creating track player for track (playback_id 5c4262c1da74c4333828230ad6bdc43d)
+20:40:05.798 I [f:420                           ]         track_uri: spotify:track:5oiTnaEHK3OFDZIL8AIYwu
+20:40:05.798 I [f:421                           ]         ad: no
+20:40:05.798 I [f:422                           ]         speed: 1.000000
+20:40:05.798 I [f:423                           ]         normalization: track
+20:40:05.798 I [f:424                           ]         stream_type: default
+20:40:05.798 I [f:425                           ]         urgency: soon
+20:40:05.798 I [f:429                           ]         user_action_at: <not set>
+20:40:05.798 I [f:431                           ]         track_select_flag: 0
+20:40:05.798 I [f:433                           ]         start_position: 0 ms
+20:40:05.798 I [f:30                            ] Create GainCalculator with loudness: -8.782602dB, true peak: -8.782602dB, is_speech: false
+20:40:05.798 I [f:135                           ] FileStreamer file average bitrate: 160000
+20:40:05.798 I [f:136                           ] FileStreamer downgrade bandwidth factor: 2.000000
+20:40:05.799 I [f:964                           ] Timeline attacher (0x7d05e4119120) onPrepareTransition(none) accepted at 203500ms (frame 8974350)
+20:40:05.799 I [f:119                           ] AudioRendererImpl 0x7d05e47492f0 format [32-bit-float-pcm, 44100 Hz] driver [stream type default content type music]
+[fakepulse] pa_stream_cork(stream=0x7d05e473a4f0, b=0)
+20:40:05.800 I [f:359                           ] vorbis_info.bitrate_nominal: 160000
+20:40:05.801 I [f:348                           ] Opening sink for playback.
+20:40:05.801 I [f:349                           ]     codec: vorbis
+20:40:05.801 I [f:350                           ]     bitrate: 160000 bits/s
+20:40:05.801 I [f:351                           ]     sample rate: 44100 Hz
+20:40:05.801 I [f:352                           ]     sample format: 32-bit-float-pcm
+20:40:05.801 I [f:358                           ]     duration: 201142 ms
+20:40:05.802 I [f:724                           ] Starting playback.
+20:40:05.802 I [f:726                           ]     min limit 4000 ms.
+20:40:05.802 I [f:727                           ]     compressed buffer: 74612 bytes
+20:40:05.802 I [f:729                           ]     decompressed buffer: 0 ms
+20:40:05.802 I [f:731                           ]     sink buffer: 1021 ms
+20:40:05.802 I [f:732                           ]     final source buffer: false
+20:40:05.802 I [f:733                           ]     trystartplayback count: 5
+20:40:05.802 I [f:888                           ] AudioBufferedSinkImpl::markStartPlayback(0x7d05e46d4f00): want now 1
+20:40:05.808 I [f:77                            ] playing spotify:track:7CRPXJt3IVC7V0VcM0PSQi "Diddy Bop" by "Noname" [3:20 / 3:28]
+11:01:54.337 I [f:1693                          ] AudioTrackPlayer: playing current track. Start Reason: "fwdbtn", Track URI: spotify:track:1k1Bqnv2R0uJXQN4u6LKYt
+11:01:54.337 I [f:996                           ] Open playback of track (playback_id 66af8edbaab02ab34d34768baac93e41, parent_playback_id 00000000000000000000000000000000)
+11:01:54.337 I [f:997                           ]     start_reason: fwdbtn
+11:01:54.337 I [f:998                           ]     renderer_source: advance-> play next track -> play pending track (no errors) -> play current track
+11:01:54.337 I [f:419                           ]     Creating track player for track (playback_id 66af8edbaab02ab34d34768baac93e41)
+11:01:54.337 I [f:420                           ]         track_uri: spotify:track:1k1Bqnv2R0uJXQN4u6LKYt
+11:01:54.337 I [f:421                           ]         ad: no
+11:01:54.337 I [f:422                           ]         speed: 1.000000
+11:01:54.337 I [f:423                           ]         normalization: track
+11:01:54.337 I [f:424                           ]         stream_type: default
+11:01:54.337 I [f:425                           ]         urgency: now
+11:01:54.337 I [f:427                           ]         user_action_at: 1790334114251000
+11:01:54.337 I [f:431                           ]         track_select_flag: 0
+11:01:54.337 I [f:433                           ]         start_position: 0 ms
+11:01:54.337 I [f:30                            ] Create GainCalculator with loudness: -16.246819dB, true peak: -16.246819dB, is_speech: false
+11:01:54.337 I [f:135                           ] FileStreamer file average bitrate: 1487066
+11:01:54.337 I [f:136                           ] FileStreamer downgrade bandwidth factor: 2.000000
+11:01:54.337 I [f:491                           ]     Open track player (playback_id 66af8edbaab02ab34d34768baac93e41)
+11:01:54.337 I [f:492                           ]         position: 0 ms
+11:01:54.337 I [f:493                           ]         paused: false
+11:01:54.337 I [f:494                           ]         transition: none
+11:01:54.337 I [f:1530                          ] getStreamReportingHolderToResumeWith - nothing to resume
+11:01:54.337 I [f:627                           ] openTrackPlayer - did receive StreamReportingHolder to resume with: FALSE
+11:01:54.337 I [f:175                           ] Close reason fwdbtn => resetting timeline
+11:01:54.337 I [f:207                           ] Requesting head file from CDN url: https://heads-fa-tls13.spotifycdn.com/head/9a1907142791ae5c16e05383d27095ec538ef4fe 
+11:01:54.337 I [f:215                           ] Timeline attacher (0x7d37208b7360) adding placeholder to MediaPlayer
+11:01:54.337 I [f:216                           ]     prev transition_out: 
+11:01:54.337 I [f:217                           ]     curr transition_in: none
+11:01:54.337 I [f:218                           ]     audio_start: 0
+11:01:54.337 I [f:365                           ] Playing music set to 'true'
+11:01:54.337 I [f:173                           ] Scheduling emission of signal.
+11:01:54.337 I [f:2178                          ] current track is not ad, resetting last_start_reason
+11:01:54.339 I [f:77                            ] playing spotify:track:1k1Bqnv2R0uJXQN4u6LKYt "Ain't No Sunshine" by "Bill Withers" [0:00 / 2:06]
+11:01:54.340 I [f:294                           ] Prefetch: looks like a skip or partial context change - halving window size to 1
+11:01:54.340 I [f:165                           ] Emitting signal.
+11:01:54.340 I [f:168                           ] Device coordinator was set online
+11:01:54.340 I [f:601                           ] Updated connection type from 6 to 6
+11:01:54.340 I [f:165                           ] Emitting signal.
+11:01:54.340 I [f:168                           ] Device coordinator was set online
+11:01:54.340 I [f:601                           ] Updated connection type from 6 to 6
+11:01:54.377 I [f:697                           ] tryStartPlayback failed, sink not open (10 tries)
+11:01:54.377 I [f:697                           ] tryStartPlayback failed, sink not open (20 tries)
+11:01:54.380 I [f:697                           ] tryStartPlayback failed, sink not open (30 tries)
+11:01:54.380 I [f:697                           ] tryStartPlayback failed, sink not open (40 tries)
+11:01:54.389 I [f:348                           ] Opening sink for playback.
+11:01:54.389 I [f:349                           ]     codec: flac
+11:01:54.389 I [f:350                           ]     bitrate: 1400000 bits/s
+11:01:54.389 I [f:351                           ]     sample rate: 44100 Hz
+11:01:54.389 I [f:352                           ]     sample format: 32-bit-float-pcm
+11:01:54.389 I [f:358                           ]     duration: 126458 ms
+11:01:54.389 I [f:714                           ] tryStartPlayback failed, not final + not enough buffered (50 tries)
+11:01:54.389 I [f:567                           ] Timeline attacher (0x7d37208b7360) adding audio to MediaPlayer
+11:01:54.389 I [f:568                           ]     stream type: default
+11:04:42.913 I [f:419                           ]     Creating track player for track (playback_id a833c5b490658cc57e2eb28389197788)
+11:04:42.913 I [f:420                           ]         track_uri: spotify:track:5h5BrNPFvc4IXfCgnZJ2lT
+11:04:42.913 I [f:421                           ]         ad: no
+11:04:42.913 I [f:422                           ]         speed: 1.000000
+11:04:42.913 I [f:423                           ]         normalization: track
+11:04:42.913 I [f:424                           ]         stream_type: default
+11:04:42.913 I [f:425                           ]         urgency: now
+11:04:42.913 I [f:429                           ]         user_action_at: <not set>
+11:04:42.913 I [f:431                           ]         track_select_flag: 0
+11:04:42.913 I [f:433                           ]         start_position: 0 ms
+11:04:42.913 I [f:30                            ] Create GainCalculator with loudness: -12.923142dB, true peak: -12.923142dB, is_speech: false
+11:04:42.913 I [f:135                           ] FileStreamer file average bitrate: 809268
+11:04:42.913 I [f:136                           ] FileStreamer downgrade bandwidth factor: 2.000000
+11:04:42.913 I [f:491                           ]     Open track player (playback_id a833c5b490658cc57e2eb28389197788)
+11:04:42.913 I [f:492                           ]         position: 0 ms
+11:04:42.913 I [f:493                           ]         paused: false
+11:04:42.913 I [f:494                           ]         transition: none
+11:04:42.913 I [f:1530                          ] getStreamReportingHolderToResumeWith - nothing to resume
+11:04:42.913 I [f:627                           ] openTrackPlayer - did receive StreamReportingHolder to resume with: FALSE
+11:04:42.913 I [f:175                           ] Close reason endplay (new context) => resetting timeline
+11:04:42.913 I [f:207                           ] Requesting head file from CDN url: https://heads-fa-tls13.spotifycdn.com/head/609b9ecca11a12dcb446d1e4eb98afb260fbe458 
+11:04:42.913 I [f:215                           ] Timeline attacher (0x7d3720453120) adding placeholder to MediaPlayer
+11:04:42.913 I [f:216                           ]     prev transition_out: 
+11:04:42.913 I [f:217                           ]     curr transition_in: none
+11:04:42.913 I [f:218                           ]     audio_start: 0
+11:04:42.913 I [f:365                           ] Playing music set to 'true'
+11:04:42.913 I [f:173                           ] Scheduling emission of signal.
+11:04:42.913 I [f:2178                          ] current track is not ad, resetting last_start_reason
+11:04:42.915 I [f:77                            ] playing spotify:track:5h5BrNPFvc4IXfCgnZJ2lT "Tyrone - Extended Version" by "Erykah Badu" [0:00 / 5:45]
+11:04:42.915 I [f:294                           ] Prefetch: looks like a skip or partial context change - halving window size to 1
+11:04:42.915 I [f:165                           ] Emitting signal.
+11:04:42.915 I [f:168                           ] Device coordinator was set online
+11:04:42.915 I [f:601                           ] Updated connection type from 6 to 6
+11:04:42.956 I [f:275                           ] Requesting data (0 -> 3145728)
+11:04:42.969 I [f:697                           ] tryStartPlayback failed, sink not open (10 tries)
+11:04:42.969 I [f:697                           ] tryStartPlayback failed, sink not open (20 tries)
+[fakepulse 13:04:43.005] client-close: superseded by new connection (takeover)
+[fakepulse 13:04:43.005] client-attach: new /stream client fd=37
+11:04:43.012 I [f:1565                          ] Seeking to position: 0 ms - creator position: 0 ms
+11:04:43.012 I [f:310                           ] ContextPlayer RoutingTrackPlayer: Seeking to 0 ms creator_timestamp_position -1
+11:04:43.012 I [f:1269                          ] Seeking track to 0 ms (playback_id a833c5b490658cc57e2eb28389197788)
+11:04:43.012 I [f:250                           ] Timeline attacher (0x7d3720453120) flush (no audio)
+11:04:43.012 I [f:251                           ]     position: 0 ms
+11:04:43.016 I [f:1565                          ] Seeking to position: 0 ms - creator position: 0 ms
+11:04:43.016 I [f:310                           ] ContextPlayer RoutingTrackPlayer: Seeking to 0 ms creator_timestamp_position -1
+11:04:43.016 I [f:1269                          ] Seeking track to 0 ms (playback_id a833c5b490658cc57e2eb28389197788)
+11:04:43.016 I [f:250                           ] Timeline attacher (0x7d3720453120) flush (no audio)
+11:04:43.016 I [f:251                           ]     position: 0 ms
+11:04:43.017 I [f:230                           ] volume changed to 0%
+11:04:43.045 I [f:697                           ] tryStartPlayback failed, sink not open (30 tries)
+11:04:43.045 I [f:609                           ] Set content length: 34936125 -> new duration: unknown ms, sink opened: 0
+11:04:43.048 I [f:348                           ] Opening sink for playback.
+11:04:43.048 I [f:349                           ]     codec: flac
+11:04:43.048 I [f:350                           ]     bitrate: 700000 bits/s
+11:04:43.048 I [f:351                           ]     sample rate: 44100 Hz
+11:04:43.048 I [f:352                           ]     sample format: 32-bit-float-pcm
+11:04:43.048 I [f:358                           ]     duration: 345360 ms
+11:04:43.048 I [f:567                           ] Timeline attacher (0x7d3720453120) adding audio to MediaPlayer
+11:04:43.048 I [f:568                           ]     stream type: default

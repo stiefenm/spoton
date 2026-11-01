@@ -20,10 +20,12 @@ use Time::Local qw(timelocal);
 use File::Basename;
 use File::Spec;
 use File::Spec::Functions qw(catdir catfile);
+use Plugins::SpotOn::DisplayFormat ();   # 79-67: codecShort / rateLabel (backend-neutral)
 use constant KILL_PROCESS_INTERVAL => 3600;    # Hourly orphaned-process cleanup (STR-10)
 use constant SPOTON_CACHE_VERSION  => 4;       # Bump to flush all SpotOn cache entries (D-01/D-02)
 use constant FLUSH_BATCH           => 50;      # Items per event-loop tick in _flushDeferredMeta (FIX-01)
 use constant MAX_RECENT_SEARCHES   => 50;      # Maximum stored search history entries
+use constant SEARCH_LIST_TTL       => 300;     # 79-58: search list / overview cache, the browse data TTL
 
 my $prefs = preferences('plugin.spoton');
 my $cache = Slim::Utils::Cache->new('spoton', SPOTON_CACHE_VERSION);
@@ -47,7 +49,7 @@ sub _evictPlayAllCache {
 # Each entry in @$pending is a hashref:
 #   { url, title, artist, album, duration, cover, icon, track, client }
 # where 'track' is the raw Spotify track hashref (for _extractTrackIds / encode_json)
-# and 'client' is the LMS player object (for _bitrateForClient / _typeString).
+# and 'client' is the LMS player object (for _bitrateLabelForClient / _formatLabel).
 #
 # Design (FIX-01): separates the O(N) string-building path (fast, in done callback)
 # from the O(N) SQLite INSERT path (deferred here), preventing event-loop starvation
@@ -65,11 +67,11 @@ sub _flushDeferredMeta {
         # Guard: client may have disconnected before flush completes
         my ($bitrate, $type);
         if ($p->{client} && $p->{client}->can('id')) {
-            $bitrate = __PACKAGE__->_bitrateForClient($p->{client}) . 'k';
-            $type    = __PACKAGE__->_typeString($p->{client}, 'Browse');
+            $bitrate = __PACKAGE__->_bitrateLabelForClient($p->{client});
+            $type    = __PACKAGE__->_typeShortForClient($p->{client});
         } else {
-            $bitrate = '320k';
-            $type    = 'Spotify';
+            $bitrate = __PACKAGE__->_bitrateLabelForClient(undef);
+            $type    = __PACKAGE__->_typeShortForClient(undef);
         }
         require Plugins::SpotOn::API::SpClient;   # 79-43 (D-33 FULL-3 CR-01): the format marker of spoton_meta records
         $cache->set(
@@ -215,7 +217,13 @@ sub initPlugin {
 
         require Plugins::SpotOn::Status;
         Plugins::SpotOn::Status->new();
+    }
 
+    # 79-61 (FULL-1 WR-02): outside the main::WEBUI guard. With LMS started
+    # --noweb the daemons, Connect and DSTM-queued tracks must still work;
+    # only the Settings and Status pages need the web UI. The scanner
+    # process (main::WEBUI was false there too) never starts daemons.
+    if ( !main::SCANNER ) {
         # Start Unified daemon manager for all players.
         # 4s delay: allows player list to populate after LMS start.
         Slim::Utils::Timers::killTimers($class, \&_startUnifiedDaemons);
@@ -272,6 +280,22 @@ sub initPlugin {
         parent => 'moreinfo',
         after  => 'lastplayed',
         func   => \&_infoUrl,
+    ) );
+
+    # 79-67 repair round (user decisions B1 "Nur Anzeige korrigieren", C1 "Echtes Format
+    # zeigen"): the song info rows "Dateiformat" and "Samplegroesse" are replaced by name at
+    # the positions Slim::Menu::TrackInfo registers them. SpotOn urls show the real LMS-side
+    # format and the source bit depth; every other url gets the core row unchanged. The soc
+    # content type and $track->samplesize (the transcoder's 32-bit width) stay.
+    Slim::Menu::TrackInfo->registerInfoProvider( type => (
+        parent => 'moreinfo',
+        after  => 'tracknum',
+        func   => \&_infoContentType,
+    ) );
+    Slim::Menu::TrackInfo->registerInfoProvider( samplesize => (
+        parent => 'moreinfo',
+        after  => 'samplerate',
+        func   => \&_infoSampleSize,
     ) );
 
     # Search history CLI — used by itemActions context menu on recent search entries
@@ -883,6 +907,33 @@ sub _infoUrl {
     return Slim::Menu::TrackInfo::infoUrl($client, $url, $track);
 }
 
+# _infoContentType(@coreArgs) -> the song info "Dateiformat" row (79-67 C1): for a SpotOn
+# url with a player, the LMS-side format the player gets (FLAC/PCM/MP3/OGG) instead of the
+# internal content type (soc/son); otherwise the core row, same arguments.
+sub _infoContentType {
+    my ($client, $url) = @_;
+    if ($client && $url && $url =~ m{^spoton:}) {
+        my $fmt = __PACKAGE__->_typeShortForClient($client);
+        return { type => 'text', label => 'TYPE', name => $fmt } if defined $fmt && $fmt ne '';
+    }
+    return Slim::Menu::TrackInfo::infoContentType(@_);
+}
+
+# _infoSampleSize(@coreArgs) -> the song info "Samplegroesse" row (79-67 B1): for a SpotOn
+# url, the source bit depth of the playing/streaming song (16/24 for a measured FLAC
+# source) and no row otherwise - never the 32-bit transport width the track keeps for the
+# transcoder. Any other url: the core row, same arguments.
+sub _infoSampleSize {
+    my ($client, $url) = @_;
+    if ($url && $url =~ m{^spoton:}) {
+        my $song = __PACKAGE__->_liveSongForUrl($client, $url) or return undef;
+        my $ss = __PACKAGE__->_sourceSampleSize($client, $song);
+        return undef unless $ss;
+        return { type => 'text', label => 'SAMPLESIZE', name => $ss . cstring($client, 'BITS') };
+    }
+    return Slim::Menu::TrackInfo::infoSampleSize(@_);
+}
+
 sub trackInfoMenu {
     my ($client, $url, $track, $remoteMeta, $tags) = @_;
 
@@ -894,10 +945,20 @@ sub trackInfoMenu {
         $type = 'episode';
         $id   = $1;
     }
-    return unless $type;
+    my $isConnect = ($url && $url =~ m{^spoton:(?://)?connect-}) ? 1 : 0;
+    return unless $type || $isConnect;
 
     my $accountId = _getAccountId($client);
     return unless $accountId;
+
+    # 79-67: the two-part format label ("<Spotify side> · <LMS side>, SpotOn <mode>") is
+    # the first item; Material's Now Playing line only shows the short fields. A label
+    # that cannot be built costs only this item, never the other SpotOn items.
+    my $line = eval { __PACKAGE__->_formatLineFor($client, $url) };
+    my @formatItem = (defined $line && length $line) ? ({ type => 'text', name => $line }) : ();
+    if ($isConnect) {
+        return @formatItem ? \@formatItem : undef;
+    }
 
     # CR-01: Normalize URL for cache lookup — cache is keyed on spoton:// (with //)
     # but LMS may pass spoton:track:ID (without //).
@@ -963,6 +1024,7 @@ sub trackInfoMenu {
         };
     }
 
+    unshift @items, @formatItem;
     return @items ? \@items : undef;
 }
 
@@ -1353,8 +1415,8 @@ sub _trackItem {
             cover     => $image,
             icon      => $image,
             year      => $year,
-            bitrate   => __PACKAGE__->_bitrateForClient($client) . 'k',
-            type      => __PACKAGE__->_typeString($client, 'Browse'),
+            bitrate   => __PACKAGE__->_bitrateLabelForClient($client),
+            type      => __PACKAGE__->_typeShortForClient($client),
             %trackIds,
         }, 604800);
     }
@@ -1645,9 +1707,10 @@ sub _madeForYouPriority {
 }
 
 # _madeForYouFeed($client, $callback, $args)
-# Made for You (85-08, decision-D17 pathfinder-login5-plus-rootlist): the
-# user's Made-for-You hub from Pathfinder homeSection with SpotOn's own login5
-# bearer (SpClient->getMadeForYou), in the order Pathfinder lists it; when
+# Made for You (85-08, decision-D17 pathfinder-login5-plus-rootlist; 79-59
+# GH #180): the account's personal lists from the Spotify home with SpotOn's
+# own login5 bearer (SpClient->getMadeForYou), fixed lists on top and one
+# folder per Spotify row, or flat in Pathfinder's order without home; when
 # Pathfinder fails, the Spotify-made mixes of the rootlist, sorted by
 # @MFY_PRIORITY. The feed never consults the playback backend (D-20) and
 # sends no browse/categories request (D-08).
@@ -1688,7 +1751,25 @@ sub _madeForYouFeed {
             };
         }
 
-        push @items, map { _playlistItem($client, $_) } @sorted;
+        # 79-59 (GH #180): with the whole home, the fixed lists on top, the
+        # lists of untitled rows below them, then one folder per Spotify row
+        # (Spotify's title, Spotify's order; the folder holds its lists inline).
+        my $layout = (ref $result->{layout} eq 'HASH') ? $result->{layout} : undef;
+        if ($layout) {
+            push @items, map { _playlistItem($client, $_) } @{ $layout->{top} || [] }, @{ $layout->{loose} || [] };
+            for my $f (@{ $layout->{folders} || [] }) {
+                next unless ref $f eq 'HASH' && ref $f->{items} eq 'ARRAY' && @{ $f->{items} };
+                push @items, {
+                    name  => $f->{title},
+                    type  => 'link',
+                    image => 'html/images/playlists.png',
+                    items => [ map { _playlistItem($client, $_) } @{ $f->{items} } ],
+                };
+            }
+        }
+        else {
+            push @items, map { _playlistItem($client, $_) } @sorted;
+        }
 
         $callback->({ items => \@items });
     });
@@ -2493,8 +2574,8 @@ sub _episodeItem {
         duration => $duration,
         cover    => $image,
         icon     => $image,
-        bitrate  => __PACKAGE__->_bitrateForClient($client) . 'k',
-        type     => __PACKAGE__->_typeString($client, 'Browse'),
+        bitrate  => __PACKAGE__->_bitrateLabelForClient($client),
+        type     => __PACKAGE__->_typeShortForClient($client),
         showId   => $showId || undef,
         showName => $showName || undef,
     }, 604800);
@@ -2770,32 +2851,25 @@ sub _podcastSearchTypeFeed {
     my %typeToKey = (show => 'shows', episode => 'episodes');
     my $key       = $typeToKey{$type} // "${type}s";
 
-    _fetchPages({
-        accountId    => $accountId,
-        apiFn        => sub {
-            my ($acct, $params, $cb) = @_;
-            Plugins::SpotOn::API::SpClient->search($acct, {
-                q      => $query,
-                type   => $type,
-                limit  => $params->{limit},
-                offset => $params->{offset},
-            }, $cb);
-        },
-        pageLimit    => Plugins::SpotOn::API::SpClient->pageLimit('search'),
-        startOffset  => $offset,
-        maxItems     => $qty,
-        extractItems => sub { ($_[0]->{$key} || {})->{items} || [] },
-        extractTotal => sub { ($_[0]->{$key} || {})->{total} },
-        done         => sub {
-            my ($allItems, $err, $total) = @_;
+    # 79-58 (GH #168): the same cached list and aligned miss as _searchTypeFeed
+    _searchListSlice({
+        accountId => $accountId,
+        query     => $query,
+        type      => $type,
+        sect      => $key,
+        # R-5: Spotify rejects offset >= 50 for shows/episodes in Dev Mode
+        cap       => 50,
+        index     => $offset,
+        quantity  => $qty,
+        done      => sub {
+            my ($allItems, $total, $err) = @_;
             if (!@$allItems && $err) {
                 $callback->({ items => [ _authRequiredItem($client, $accountId, $err) ], offset => $offset, total => 0 });
                 return;
             }
 
             # R-4: map nameless entries to { ignore => 1 } placeholders instead of
-            # filtering them out — XMLBrowser skips ignore-items and decrements
-            # totalCount, so offset/total stay aligned with the API's paging.
+            # filtering them out -- XMLBrowser skips ignore-items but keeps their position.
             my @items = map {
                 if (defined $_->{name} && $_->{name} =~ /\S/) {
                     ($type eq 'show') ? _showItem($client, $_) : _episodeItem($client, $_, undef);
@@ -2809,10 +2883,7 @@ sub _podcastSearchTypeFeed {
                 push @items, { name => cstring($client, 'PLUGIN_SPOTON_NO_RESULTS'), type => 'textarea' };
             }
 
-            # R-5: Spotify rejects offset >= 1000 for tracks/albums/artists/playlists,
-            # but only >= 50 for shows/episodes in Dev Mode.
-            my $maxOffset = ($type eq 'show' || $type eq 'episode') ? 50 : 1000;
-            $total = $maxOffset if $total > $maxOffset;
+            $total = 50 if $total > 50;
 
             $callback->({ items => \@items, offset => $offset, total => $total });
         },
@@ -2838,6 +2909,19 @@ sub _podcastSearchTypeFeed {
 sub _multiTypeSearch {
     my ($accountId, $query, $types, $doneCb) = @_;
 
+    # 79-58 (GH #168): XMLBrowser replays the overview on every deeper click; within
+    # SEARCH_LIST_TTL the replay is answered from the cache (per account + types + query), so a
+    # click into a category or a row sends no new overview search. Errors and the degraded
+    # (limited) answer are not cached.
+    my $q = lc($query // '');
+    utf8::encode($q);
+    my $ovKey = 'spoton_search_overview:' . ($accountId // '') . ':' . join(',', @$types) . ':' . md5_hex($q);
+    my $hit = $cache->get($ovKey);
+    if (ref $hit eq 'HASH' && ref $hit->{results} eq 'HASH') {
+        $doneCb->($hit->{results}, undef, 0);
+        return;
+    }
+
     # 85-08 (decision-SEARCH pathfinder-search): ONE call with the type list --
     # one searchDesktop request instead of one request per type (P-01 burst
     # prevention). The result is keyed by singular type name as before; the
@@ -2846,7 +2930,9 @@ sub _multiTypeSearch {
     Plugins::SpotOn::API::SpClient->search($accountId, {
         q      => $query,
         type   => join(',', @$types),
-        limit  => Plugins::SpotOn::API::SpClient->pageLimit('search'),
+        # the overview shows one Top Result and the section totals (GH #130): 10 per type is
+        # enough, the category lists fetch their own pages
+        limit  => 10,
         offset => 0,
     }, sub {
         my ($data, $err) = @_;
@@ -2854,7 +2940,9 @@ sub _multiTypeSearch {
         if ($data) {
             $results{$_} = $data->{"${_}s"} || {} for @$types;
         }
-        $doneCb->(\%results, $data ? undef : $err, ($data && $data->{limited}) ? 1 : 0);
+        my $limited = ($data && $data->{limited}) ? 1 : 0;
+        $cache->set($ovKey, { results => \%results }, SEARCH_LIST_TTL) if $data && !$limited;
+        $doneCb->(\%results, $data ? undef : $err, $limited);
     });
 }
 
@@ -3115,9 +3203,9 @@ sub _searchFeed {
         }
 
         # D-10: Top Result — first track from search results, shown inline (not as sub-menu).
-        my $trackItems = $results->{track}{items} || [];
-        if (@{$trackItems}) {
-            my $topTrack = $trackItems->[0];
+        # 79-58: the first track WITH a name; Pathfinder keeps nameless slots {} in the list
+        my ($topTrack) = grep { ref $_ eq 'HASH' && defined $_->{name} && $_->{name} =~ /\S/ } @{ $results->{track}{items} || [] };
+        if ($topTrack) {
             push @items, {
                 name  => cstring($client, 'PLUGIN_SPOTON_TOP_RESULT'),
                 items => [ _trackItem($client, $topTrack) ],
@@ -3189,14 +3277,184 @@ sub _searchFeed {
     });
 }
 
+# ------------------------------------------------------------------------------------------------
+# Search list cache (79-58, GH #168)
+#
+# LMS XMLBrowser replays every intermediate level from the root with index=<row>, quantity=1
+# (Slim/Control/XMLBrowser.pm:515-517) and opens items->[row - offset] (:384); the row's own data
+# cannot steer which row is picked. So a search result row opens the listed item only if the replay
+# sees the list the user saw. The list is cached per account + type + query (SEARCH_LIST_TTL) as the
+# mapped items WITH their nameless slots, and every request is answered from it. A miss (expired,
+# LMS restarted) fetches only the page-aligned pages of the listing's own page size L that cover the
+# requested range: offset = floor(i / L) * L, limit = L. Never a limit=1 or a differently sized page.
+# ------------------------------------------------------------------------------------------------
+
+# _searchListKey($accountId, $type, $query) -> cache key; the account id is part of it (T-79-244)
+sub _searchListKey {
+    my ($accountId, $type, $query) = @_;
+    my $q = lc($query // '');
+    utf8::encode($q);
+    return 'spoton_search_list:' . ($accountId // '') . ':' . ($type // '') . ':' . md5_hex($q);
+}
+
+# _searchListGet($key) -> entry { items, pages, total, pageLimit, fetchedAt } or undef
+sub _searchListGet {
+    my ($key) = @_;
+    my $e = $cache->get($key);
+    return undef unless ref $e eq 'HASH' && ref $e->{items} eq 'ARRAY' && ref $e->{pages} eq 'HASH';
+    # T-79-245/246: an entry never outlives SEARCH_LIST_TTL from its first page, even when later
+    # pages were added to it
+    return undef if !$e->{fetchedAt} || time() - $e->{fetchedAt} >= SEARCH_LIST_TTL;
+    return $e;
+}
+
+# _searchListSet($key, $entry) -- stores with the TTL left since the entry's first page
+sub _searchListSet {
+    my ($key, $e) = @_;
+    $e->{fetchedAt} ||= time();
+    my $ttl = SEARCH_LIST_TTL - (time() - $e->{fetchedAt});
+    return if $ttl <= 0;
+    $cache->set($key, $e, $ttl);
+}
+
+# _alignedPage($i, $L) -> ($offset, $limit) = (floor(i / L) * L, L)
+sub _alignedPage {
+    my ($i, $L) = @_;
+    $L = 50 unless $L && $L > 0;
+    $i = 0 unless $i && $i > 0;
+    return (int($i / $L) * $L, $L);
+}
+
+# _searchListSlice($args) -- the rows [index, index + quantity) of a search list, from the cache or
+# from the aligned pages fetched on a miss.
+#   accountId, query, type, sect (result key, e.g. 'artists'), cap (R-5 offset ceiling), index,
+#   quantity, done->(\@rows, $total, $err, $limited); rows are the mapped items, slots are {}
+sub _searchListSlice {
+    my ($args) = @_;
+    my ($accountId, $query, $type, $sect, $cap) = @{$args}{qw(accountId query type sect cap)};
+    my $index = $args->{index} // 0;
+    my $qty   = $args->{quantity} || 200;
+    my $done  = $args->{done};
+
+    my $L   = Plugins::SpotOn::API::SpClient->pageLimit('search') || 50;
+    my $key = _searchListKey($accountId, $type, $query);
+    my $e   = _searchListGet($key);
+    # a cached list of another page size is never mixed with new pages
+    $e = undef if $e && ($e->{pageLimit} // 0) != $L;
+    my $fromCache = $e ? 1 : 0;
+    $e ||= { items => [], pages => {}, total => undef, pageLimit => $L, fetchedAt => time() };
+
+    my $answer = sub {
+        my ($err, $limited) = @_;
+        my $total = $e->{total} // 0;
+        my $end   = $index + $qty;
+        $end = $total if $end > $total;
+        my @rows;
+        for my $p ($index .. $end - 1) {
+            last unless defined $e->{items}[$p];
+            push @rows, $e->{items}[$p];
+        }
+        $done->(\@rows, $total, $err, $limited);
+    };
+
+    # the aligned pages still missing for [index, end), end bounded by the cap and a PROVEN end of
+    # the list only: Spotify's totalCount is an estimate (see below), a listed row past an earlier
+    # estimate must still be fetched on a miss
+    my $wanted = sub {
+        my $end = $index + $qty;
+        $end = $cap if $end > $cap;
+        $end = $e->{ended} if defined $e->{ended} && $end > $e->{ended};
+        return () if $end <= $index;
+        my ($first) = _alignedPage($index, $L);
+        my ($last)  = _alignedPage($end - 1, $L);
+        my @pages;
+        for (my $o = $first; $o <= $last; $o += $L) {
+            push @pages, $o unless $e->{pages}{$o};
+        }
+        return @pages;
+    };
+
+    my @queue = $wanted->();
+    unless (@queue) {
+        # cache hit: no request
+        $answer->(undef, 0);
+        return;
+    }
+
+    my $limited = 0;
+    my $next;
+    $next = sub {
+        my $start = shift @queue;
+        Plugins::SpotOn::API::SpClient->search($accountId, {
+            q      => $query,
+            type   => $type,
+            limit  => $L,
+            offset => $start,
+        }, sub {
+            my ($data, $err) = @_;
+            unless ($data && ref $data eq 'HASH') {
+                undef $next;
+                _searchListSet($key, $e) if !$limited && %{ $e->{pages} };
+                $answer->($err || { error => 'search_failed' }, $limited);
+                return;
+            }
+            $limited = 1 if $data->{limited};
+            my $section = ref $data->{$sect} eq 'HASH' ? $data->{$sect} : {};
+            my $items   = ref $section->{items} eq 'ARRAY' ? $section->{items} : [];
+            for my $j (0 .. $#$items) {
+                $e->{items}[ $start + $j ] = ref $items->[$j] eq 'HASH' ? $items->[$j] : {};
+            }
+            $e->{pages}{$start} = 1;
+
+            my $count = scalar @$items;
+            # Spotify's totalCount is an estimate that grows with the offset (measured live
+            # 2026-10-31 on the "Bach" artist list: 101 at offset 0, 203 at 150, 303 at 200, 403 at
+            # 300), so it never ends a fetch after a full page: the advertised total is the largest
+            # value seen, at least the end of every page's items.
+            # A page can also come back SHORT in the middle of a list (live, "Bach" albums: 47 items
+            # at offset 0 while offset 50 answered 40 more), so a short page ends the list only when
+            # its own totalCount does not reach past the page; otherwise its missing tail stays as
+            # nameless slots and positions stay equal to Spotify's offsets. An empty page always
+            # ends the list (JVL-06).
+            my $raw  = $section->{total};
+            $raw = 0 unless defined $raw && $raw =~ /\A\d+\z/;
+            my $seen = $raw < $start + $count ? $start + $count : $raw;
+            $e->{maxTotal} = $seen if $seen > ($e->{maxTotal} // 0);
+            my $endsHere;
+            if ($count == 0) {
+                $endsHere = $start;
+            } elsif ($count < $L) {
+                if ($raw > $start + $L) {
+                    $e->{items}[$_] //= {} for ($start + $count) .. ($start + $L - 1);
+                } else {
+                    $endsHere = $start + $count;
+                }
+            }
+            $e->{ended} = $endsHere if defined $endsHere && (!defined $e->{ended} || $endsHere < $e->{ended});
+            my $total = defined $e->{ended} ? $e->{ended} : $e->{maxTotal};
+            $total = $cap if $total > $cap;
+            $e->{total} = $total;
+
+            @queue = grep { $_ < $e->{ended} } @queue if defined $e->{ended};
+            if (@queue && $count > 0) {
+                $next->();
+                return;
+            }
+            undef $next;
+            # a degraded (limited) answer is never cached: the next request asks Pathfinder again
+            _searchListSet($key, $e) unless $limited;
+            $answer->(undef, $limited);
+        });
+    };
+    $next->();
+}
+
 # _searchTypeFeed($client, $callback, $args, $passthrough)
 # Paginated drill-down into a single search type (track, album, artist, or playlist).
-# Per NAV-11: limit capped at 10 (Dev Mode). Maps LMS index/quantity to offset/limit.
-# _searchTypeFeed($client, $callback, $args, $passthrough)
-# GH #157: bounded multi-page fill for fixed-size JiveLite blocks — a
-# 210-item block against Spotify's dev-mode search limit (10) needs up to
-# 21 sequential calls; accepted per T-70-05, throttled by SpClient's
-# central request gate.
+# Maps LMS index/quantity to rows of the cached search list (79-58, see _searchListSlice): a
+# replay (index=row, quantity=1) opens the listed row, a miss fetches aligned pages of L items.
+# GH #157: a 210-item JiveLite block is filled from up to five aligned pages, throttled by
+# SpClient's central request gate.
 sub _searchTypeFeed {
     my ($client, $callback, $args, $passthrough) = @_;
 
@@ -3215,39 +3473,25 @@ sub _searchTypeFeed {
     );
     my $key = $typeToKey{$type} // "${type}s";
 
-    # 85-08: set when any page came from the degraded search (Pathfinder down)
-    my $limited = 0;
-
-    _fetchPages({
-        accountId    => $accountId,
-        apiFn        => sub {
-            my ($acct, $params, $cb) = @_;
-            Plugins::SpotOn::API::SpClient->search($acct, {
-                q      => $query,
-                type   => $type,
-                limit  => $params->{limit},
-                offset => $params->{offset},
-            }, sub {
-                my ($data, $e) = @_;
-                $limited = 1 if $data && ref $data eq 'HASH' && $data->{limited};
-                $cb->($data, $e);
-            });
-        },
-        pageLimit    => Plugins::SpotOn::API::SpClient->pageLimit('search'),
-        startOffset  => $offset,
-        maxItems     => $qty,
-        extractItems => sub { ($_[0]->{$key} || {})->{items} || [] },
-        extractTotal => sub { ($_[0]->{$key} || {})->{total} },
-        done         => sub {
-            my ($allItems, $err, $total) = @_;
+    _searchListSlice({
+        accountId => $accountId,
+        query     => $query,
+        type      => $type,
+        sect      => $key,
+        # R-5: Spotify search rejects offset >= 1000
+        cap       => 1000,
+        index     => $offset,
+        quantity  => $qty,
+        done      => sub {
+            my ($allItems, $total, $err, $limited) = @_;
             if (!@$allItems && $err) {
                 $callback->({ items => [ _authRequiredItem($client, $accountId, $err) ], offset => $offset, total => 0 });
                 return;
             }
 
-            # R-4: map nameless entries to { ignore => 1 } placeholders instead of
-            # filtering them out — XMLBrowser skips ignore-items and decrements
-            # totalCount, so offset/total stay aligned with the API's paging.
+            # R-4: map nameless entries (Pathfinder's slots) to { ignore => 1 } placeholders instead
+            # of filtering them out -- XMLBrowser skips ignore-items but keeps their position, so a
+            # row's id stays equal to Spotify's offset.
             my %typeToItem = (
                 track    => \&_trackItem,
                 album    => \&_albumItem,
@@ -3266,7 +3510,7 @@ sub _searchTypeFeed {
                 push @items, { name => cstring($client, $limited ? 'PLUGIN_SPOTON_SEARCH_LIMITED' : 'PLUGIN_SPOTON_NO_RESULTS'), type => 'textarea' };
             }
 
-            # R-5: Spotify search rejects offset >= 1000 — cap advertised total.
+            # R-5: Spotify search rejects offset >= 1000 -- cap advertised total.
             $total = 1000 if $total > 1000;
 
             $callback->({ items => \@items, offset => $offset, total => $total });
@@ -3714,8 +3958,8 @@ sub _albumTrackItem {
             cover    => $image,
             icon     => $image,
             year     => $year,
-            bitrate  => __PACKAGE__->_bitrateForClient($client) . 'k',
-            type     => __PACKAGE__->_typeString($client, 'Browse'),
+            bitrate  => __PACKAGE__->_bitrateLabelForClient($client),
+            type     => __PACKAGE__->_typeShortForClient($client),
             %trackIds,
         }, 604800);
     }
@@ -3861,35 +4105,6 @@ sub _playlistFeed {
 # Transcoding Engine (STR-01 through STR-08, LMS-11)
 # ============================================================
 
-sub _bitrateForClient {
-    my ($class, $client) = @_;
-
-    $client = $client->master if $client && $client->can('master');
-
-    # Issue #97: prefer actual stream bitrate from LMS when available
-    if ($client) {
-        my $song = $client->playingSong();
-        if ($song) {
-            # streambitrate is set by LMS from the audio stream header
-            my $streamBitrate = $song->streambitrate();
-            if ($streamBitrate && $streamBitrate > 0) {
-                # LMS reports bps, convert to kbps and round to nearest Spotify tier
-                my $kbps = int($streamBitrate / 1000 + 0.5);
-                return $kbps if $kbps > 0;
-            }
-        }
-    }
-
-    # Fallback: configured preference
-    my $bitrate = $prefs->get('bitrate') || 320;
-    if ($client) {
-        my $override = $prefs->client($client)->get('bitrateOverride');
-        $bitrate = $override if $override && $override =~ /^(?:96|160|320)$/;
-    }
-
-    return $bitrate;
-}
-
 # Return the configured bitrate preference (for daemon startup, not display)
 sub _bitrateConfigForClient {
     my ($class, $client) = @_;
@@ -3905,43 +4120,243 @@ sub _bitrateConfigForClient {
     return $bitrate;
 }
 
-sub _typeString {
-    my ($class, $client, $mode) = @_;
+# _typeString ("<LMS side>, SpotOn <mode>") was replaced by _formatLabel below (79-60).
 
-    $client = $client->master if $client && $client->can('master');
+# ============================================================
+# Format label of the playing song (79-60, forum #333)
+# ============================================================
+# "<Spotify side> \x{00B7} <LMS side>, SpotOn <mode>", e.g. "FLAC 1400k · FLAC 16,
+# SpotOn Connect". The Spotify side is MEASURED per track under Soloist (the
+# daemon log, Soloist::DeliveredFormat) and otherwise the configured level,
+# visibly marked as the setting; the LMS side is what the player gets. No value
+# here is a guess: LMS's guessBitrateFromFormat (706k for FLAC) is never shown,
+# and the bit depth reported is the source's, not the 32-bit transport width of
+# fake-libpulse's stream (the track's samplesize stays 32 for the transcoder).
 
-    my $fmt;
+my %LMS_SIDE_LABEL = (ogg => 'OGG', flac => 'FLAC 16', mp3 => 'MP3', pcm => 'PCM');
+my %CODEC_LABEL    = (flac => 'FLAC', vorbis => 'OGG', mp3 => 'MP3');
 
-    # 74b-02 (D-08, supersedes WR-03 / D-09): the label comes from the SAME
-    # mapping playback uses (DaemonManager->effectiveFormat ->
-    # ProtocolHandler->contentTypeFor), so the type written into every
-    # spoton_meta_* cache entry is what LMS will really stream: a FLAC choice
-    # the player cannot play (D-15) and Auto before the 74b-06 flip are
-    # labelled PCM, sync-group downgrades included. The cheap read is used on
-    # purpose: _typeString runs once per menu item, and effectiveOutput's
-    # checkBin diagnosis would log a warning per item when lame is missing.
-    # Eval-guarded: an undef client or a resolver that cannot run labels PCM.
-    if ($client) {
-        my $effective = eval {
-            require Plugins::SpotOn::Unified::DaemonManager;
-            (Plugins::SpotOn::Unified::DaemonManager->effectiveFormat($client))[0];
-        };
-        if ($@) {
-            main::INFOLOG && $log->is_info && $log->info("effectiveFormat failed: $@");
-            $fmt = 'pcm';
-        }
-        else {
-            $fmt = $effective || 'pcm';
-        }
+# 79-67 (user decision "An Material anpassen"): Material's formatTechInfo shows `type`
+# only up to 4 characters and `bitrate` only when it is longer than 1 character. So
+# `type` is the short LMS-side codec and `bitrate` the Spotify side measured for the
+# playing track; the two-part label below goes into the track info (_formatLineFor,
+# trackInfoMenu). DisplayFormat::rateLabel is the one rounding for both.
+
+# _lmsFormatFor($class, $client) -> ogg|flac|mp3|pcm. 74b-02 (D-08, supersedes WR-03 /
+# D-09): the label comes from the SAME mapping playback uses (DaemonManager->effectiveFormat
+# -> ProtocolHandler->contentTypeFor), so the type written into every spoton_meta_* cache
+# entry is what LMS will really stream: a FLAC choice the player cannot play (D-15) and Auto
+# before the 74b-06 flip are labelled PCM, sync-group downgrades included. The cheap read is
+# used on purpose: the label runs once per menu item, and effectiveOutput's checkBin
+# diagnosis would log a warning per item when lame is missing. Eval-guarded: an undef client
+# or a resolver that cannot run labels PCM.
+sub _lmsFormatFor {
+    my ($class, $client) = @_;
+    $client = $client->master if $client && $client->can('master') && $client->master;
+    return 'pcm' unless $client;
+    my $fmt = eval {
+        require Plugins::SpotOn::Unified::DaemonManager;
+        (Plugins::SpotOn::Unified::DaemonManager->effectiveFormat($client))[0];
+    };
+    if ($@) {
+        main::INFOLOG && $log->is_info && $log->info("effectiveFormat failed: $@");
+        return 'pcm';
     }
-    else {
-        $fmt = 'pcm';
+    return $fmt || 'pcm';
+}
+
+sub _isSoloistBackend {
+    my $name = eval { require Plugins::SpotOn::Unified::DaemonManager; Plugins::SpotOn::Unified::DaemonManager->backendName };
+    return defined $name && $name eq 'soloist' ? 1 : 0;
+}
+
+# _songUri($song) -> spotify:track:<id> / spotify:episode:<id> of a SpotOn song, else undef
+sub _songUri {
+    my ($song) = @_;
+    my $track = $song && $song->can('track') ? $song->track : undef;
+    my $url   = $track && $track->can('url') ? ($track->url // '') : '';
+    return "spotify:$1:$2" if $url =~ m{^spoton:(?://)?(track|episode):([A-Za-z0-9]+)};
+    return "spotify:$1:$2" if $url =~ m{^https?://[^/]+/(track|episode)/([A-Za-z0-9]+)};
+    return undef;
+}
+
+# _isLiveSong($class, $client, $song) -> 1 when $song is the player's playing or streaming song
+sub _isLiveSong {
+    my ($class, $client, $song) = @_;
+    return 0 unless $client && $song;
+    $client = $client->master if $client->can('master') && $client->master;
+    for my $live ($client->playingSong, ($client->can('streamingSong') ? $client->streamingSong : ())) {
+        return 1 if $live && Scalar::Util::refaddr($live) == Scalar::Util::refaddr($song);
     }
+    return 0;
+}
 
-    my %LABEL = (ogg => 'OGG', flac => 'FLAC', mp3 => 'MP3', pcm => 'PCM');
-    my $fmtLabel = $LABEL{$fmt} || uc($fmt);
+# _backendQuery($client, $what, %args) -> the player's backend role answer (undef: no opinion).
+# The amputation seam: Plugin.pm names no backend module, the role answers.
+sub _backendQuery {
+    my ($client, $what, %args) = @_;
+    return undef unless $client;
+    my $be = eval { require Plugins::SpotOn::Unified::DaemonManager; Plugins::SpotOn::Unified::DaemonManager->backendFor($client) }
+        or return undef;
+    return scalar eval { $be->query($what, client => $client, %args) };
+}
 
-    return "${fmtLabel}, SpotOn ${mode}";
+# _playingMode($class, $client) -> 'Connect' | 'Browse', from the real source: the
+# backend role answers (Soloist: the player's Control mode; librespot: the Connect claim).
+sub _playingMode {
+    my ($class, $client) = @_;
+    return 'Browse' unless $client;
+    $client = $client->master if $client->can('master') && $client->master;
+    my $mode = _backendQuery($client, 'playingMode');
+    return (defined $mode && $mode eq 'connect') ? 'Connect' : 'Browse';
+}
+
+# _deliveredFor($class, $client, $song) -> { codec, bitrate } | undef (Soloist only; test seam)
+sub _deliveredFor {
+    my ($class, $client, $song) = @_;
+    return undef unless $song && _isSoloistBackend();
+    my $uri = _songUri($song) or return undef;
+    my $rec = _backendQuery($client, 'deliveredFormat', uri => $uri);
+    return ref $rec eq 'HASH' ? $rec : undef;
+}
+
+# _settingMarker($class, $client) -> the word that marks the Spotify side as the setting, not a measurement
+sub _settingMarker {
+    my ($class, $client) = @_;
+    return cstring($client, 'PLUGIN_SPOTON_FORMAT_SETTING');
+}
+
+# _settingLevelLabel($class, $client) -> the configured Soloist level as text ("Lossless")
+sub _settingLevelLabel {
+    my ($class, $client) = @_;
+    my $key = _backendQuery($client, 'qualityLevelKey');
+    return $key ? cstring($client, $key) : 'Spotify';
+}
+
+# _spotifySideLabel($class, $client, $song) -> "FLAC 1400k" / "OGG 160k" (measured),
+# "<level> (setting)" without a measurement, "OGG <n>k" under librespot
+sub _spotifySideLabel {
+    my ($class, $client, $song) = @_;
+    $client = $client->master if $client && $client->can('master') && $client->master;
+    if (_isSoloistBackend()) {
+        # a menu item has no song: no log read, the setting
+        my $rec  = $song ? $class->_deliveredFor($client, $song) : undef;
+        my $rate = Plugins::SpotOn::DisplayFormat->rateLabel($rec);
+        return "$CODEC_LABEL{ $rec->{codec} } $rate" if $rate ne '';
+        return $class->_settingLevelLabel($client) . ' (' . $class->_settingMarker($client) . ')';
+    }
+    return 'OGG ' . $class->_bitrateConfigForClient($client) . 'k';
+}
+
+# _lmsSideLabel($class, $client) -> what the player gets; MP3 carries the player's LMS
+# bitrate limit ("MP3 192k", plain "MP3" without one; 79-67 C-1: the limit left the
+# bitrate field and is not dropped)
+sub _lmsSideLabel {
+    my ($class, $client) = @_;
+    $client = $client->master if $client && $client->can('master') && $client->master;
+    my $fmt = $class->_lmsFormatFor($client);
+    if ($fmt eq 'mp3') {
+        my $max = $client ? preferences('server')->client($client)->get('maxBitrate') : undef;
+        return (defined $max && $max =~ /^\d+$/ && $max > 0) ? "MP3 ${max}k" : 'MP3';
+    }
+    return $LMS_SIDE_LABEL{$fmt} || uc($fmt);
+}
+
+# _typeShortForClient($class, $client) -> FLAC | PCM | MP3 | OGG: the `type` field (79-67)
+sub _typeShortForClient {
+    my ($class, $client) = @_;
+    return Plugins::SpotOn::DisplayFormat->codecShort($class->_lmsFormatFor($client));
+}
+
+# _formatLabel($class, $client, $mode [, $song])
+sub _formatLabel {
+    my ($class, $client, $mode, $song) = @_;
+    # U+00B7 as a character, not as the two bytes of its UTF-8 form
+    return $class->_spotifySideLabel($client, $song) . " \x{00B7} " . $class->_lmsSideLabel($client) . ", SpotOn " . ($mode // 'Browse');
+}
+
+# _bitrateLabelForClient($class, $client [, $song]) -> the Spotify side (79-67), never a
+# guess: under Soloist the rate measured for $song ('' without a song or without a
+# measurement); under librespot the configured rate it requests ("320k"). Not LMS's
+# FLAC guess (706k), not the PCM transport rate (2822k/1411k), not the MP3 limit (that
+# is on the LMS side of the two-part label, C-1).
+sub _bitrateLabelForClient {
+    my ($class, $client, $song) = @_;
+    $client = $client->master if $client && $client->can('master') && $client->master;
+    if (_isSoloistBackend()) {
+        return '' unless $song;
+        return Plugins::SpotOn::DisplayFormat->rateLabel($class->_deliveredFor($client, $song));
+    }
+    return $class->_bitrateConfigForClient($client) . 'k';
+}
+
+# _sourceSampleSize($class, $client, $song) -> 16 | 24 | '' -- the source's bit
+# depth for the display (a measured FLAC source: 16, 24 above 2 Mbit/s); ''
+# for a lossy source or without a measurement (a defined '' wins over the
+# track's transport value in LMS's status, Queries.pm, and is not shown).
+sub _sourceSampleSize {
+    my ($class, $client, $song) = @_;
+    my $rec = $class->_deliveredFor($client, $song) or return '';
+    return '' unless ($rec->{codec} // '') eq 'flac';
+    return ($rec->{bitrate} // 0) > 2_000_000 ? 24 : 16;
+}
+
+# _displayMeta($class, $client, $song) -> (type, bitrate[, samplesize]) for getMetadataFor
+# (79-67): type the short LMS-side codec; the playing or streaming song gets the rate
+# measured for it and the source bit depth; any other url (history, queue) no measured
+# rate (Soloist '', librespot the configured one). Overrides a cached type/bitrate,
+# including records written before 79-67 (C-3).
+sub _displayMeta {
+    my ($class, $client, $song) = @_;
+    if ($song && $class->_isLiveSong($client, $song)) {
+        return (
+            type       => $class->_typeShortForClient($client),
+            bitrate    => $class->_bitrateLabelForClient($client, $song),
+            samplesize => $class->_sourceSampleSize($client, $song),
+        );
+    }
+    return (
+        type    => $class->_typeShortForClient($client),
+        bitrate => $class->_bitrateLabelForClient($client),
+    );
+}
+
+# _normSpotonUrl($url) -> the url in the spoton:// form (spoton:track:<id> -> spoton://track:<id>)
+sub _normSpotonUrl {
+    my ($url) = @_;
+    return '' unless defined $url;
+    (my $u = $url) =~ s{^spoton:(?!//)}{spoton://};
+    return $u;
+}
+
+# _formatLineFor($class, $client, $url) -> the two-part label for the track info (79-67):
+# the player's playing or streaming song with this url gets the measured Spotify side and
+# the real mode; any other url the setting-based label with "SpotOn Browse". The only
+# _formatLabel call site; only the playing/streaming song reaches the daemon-log read.
+sub _formatLineFor {
+    my ($class, $client, $url) = @_;
+    my $song = $class->_liveSongForUrl($client, $url);
+    return $class->_formatLabel($client, $song ? $class->_playingMode($client) : 'Browse', $song);
+}
+
+# _liveSongForUrl($class, $client, $url) -> the player's playing or streaming song whose
+# track url is $url (both in the spoton:// form), else undef
+sub _liveSongForUrl {
+    my ($class, $client, $url) = @_;
+    my $want = _normSpotonUrl($url);
+    my $master = $client;
+    $master = $master->master if $master && $master->can('master') && $master->master;
+    return undef unless $master && length $want;
+    my @live = grep { defined } (
+        scalar(eval { $master->playingSong }),
+        ($master->can('streamingSong') ? scalar(eval { $master->streamingSong }) : ()),
+    );
+    for my $s (@live) {
+        my $track = $s->can('track') ? $s->track : undef;
+        my $turl  = $track && $track->can('url') ? $track->url : undef;
+        return $s if defined $turl && _normSpotonUrl($turl) eq $want;
+    }
+    return undef;
 }
 
 # ============================================================

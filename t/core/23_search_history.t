@@ -193,6 +193,16 @@ sub decode_json { {} }
 1;
 END
 
+write_stub($stub_dir, 'JSON::XS::VersionOneAndTwo', <<'END');
+package JSON::XS::VersionOneAndTwo;
+use parent 'Exporter';
+our @EXPORT = qw(from_json to_json);
+use JSON::PP ();
+sub from_json { JSON::PP::decode_json($_[0]) }
+sub to_json   { JSON::PP::encode_json($_[0]) }
+1;
+END
+
 write_stub($stub_dir, 'Digest::MD5', <<'END');
 package Digest::MD5;
 use parent 'Exporter';
@@ -392,6 +402,48 @@ subtest 'H-01 regression: delete after reorder' => sub {
     Plugins::SpotOn::Plugin::_recentSearchesCLI($req);
     is_deeply($prefs->get('recentSearches'), ['beta', 'gamma'],
         'alpha deleted by value regardless of position');
+};
+
+# ============================================================
+# 79-58 (GH #168): the overview asks for 10 items per type, is cached per account + query, and
+# its Top Result skips Pathfinder's nameless slots
+# ============================================================
+
+subtest '79-58 overview: limit 10, cached, Top Result skips slots' => sub {
+    require Plugins::SpotOn::API::SpClient;   # loaded before the overrides (the Top Result item needs it)
+    my @searchCalls;
+    no warnings qw(redefine once);
+    local *Plugins::SpotOn::API::SpClient::search = sub {
+        my ($class, $acct, $params, $cb) = @_;
+        push @searchCalls, [ $acct, { %$params } ];
+        $cb->({
+            tracks    => { items => [ {}, { id => 't1', uri => 'spotify:track:t1', name => 'Track One', artists => [ { name => 'A' } ], album => { name => 'Al' } } ], total => 12 },
+            albums    => { items => [], total => 3 },
+            artists   => { items => [], total => 5 },
+            playlists => { items => [], total => 0 },
+        });
+    };
+    Slim::Utils::Cache->new->clear;
+    $prefs->set('activeAccount', 'acct-ov1');
+
+    my $r;
+    Plugins::SpotOn::Plugin::_searchFeed(undef, sub { $r = shift }, { search => 'Overview Query' });
+    is(scalar(@searchCalls), 1, 'the overview sends one search');
+    is($searchCalls[0][1]{limit}, 10, 'the overview asks for 10 items per type');
+    is($searchCalls[0][1]{type}, 'track,album,artist,playlist', 'one request for the four types');
+    my ($top) = grep { ($_->{name} // '') eq 'PLUGIN_SPOTON_TOP_RESULT' } @{ $r->{items} || [] };
+    ok($top && $top->{items}[0]{name} && $top->{items}[0]{name} ne '', 'the Top Result is the first track with a name (the slot is skipped)');
+    my ($arts) = grep { ($_->{name} // '') eq 'PLUGIN_SPOTON_ARTISTS' } @{ $r->{items} || [] };
+    ok($arts && ($arts->{line2} // '') eq '5', 'the category count still comes from the section total (GH #130)');
+
+    Plugins::SpotOn::Plugin::_searchFeed(undef, sub { $r = shift }, { search => 'Overview Query', index => 3, quantity => 1 });
+    is(scalar(@searchCalls), 1, 'the replayed overview within 300 s sends no new search');
+
+    $prefs->set('activeAccount', 'acct-ov2');
+    Plugins::SpotOn::Plugin::_searchFeed(undef, sub { $r = shift }, { search => 'Overview Query' });
+    is(scalar(@searchCalls), 2, 'another account does not get the cached overview');
+    $prefs->set('activeAccount', undef);
+    Slim::Utils::Cache->new->clear;
 };
 
 done_testing;

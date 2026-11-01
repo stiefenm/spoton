@@ -1,6 +1,13 @@
 [% PROCESS settings/header.html %]
 	[% title = "PLUGIN_SPOTON" %]
 
+	[%# 79-60 (handoff item 6): three sections. General holds the settings both playback
+	    backends read; then only the active backend's section (79-60-DEVRUN.md FIELD60:
+	    discovery, autoplay and the bitrate are read by the librespot daemon only, the
+	    Spotify streaming quality by Soloist only). %]
+	<h2>[% 'PLUGIN_SPOTON_PLAYER_SECTION_GENERAL' | string %]</h2>
+	<p style="margin:0 0 10px 0; font-size:0.9em; color:#888">[% 'PLUGIN_SPOTON_PLAYER_SECTION_GENERAL_DESC' | string %]</p>
+
 	[% WRAPPER setting title="PLUGIN_SPOTON_CONNECT_ENABLED" desc="PLUGIN_SPOTON_CONNECT_ENABLED_DESC" %]
 		<input type="checkbox" class="stdedit" name="pref_enableSpotifyConnect"
 		       id="pref_enableSpotifyConnect"
@@ -8,6 +15,69 @@
 		<input type="hidden" name="has_enableSpotifyConnect" value="1">
 		<label for="pref_enableSpotifyConnect">[% 'PLUGIN_SPOTON_CONNECT_ENABLED_LABEL' | string %]</label>
 	[% END %]
+
+	[% WRAPPER setting title="PLUGIN_SPOTON_STREAM_FORMAT" desc="PLUGIN_SPOTON_STREAM_FORMAT_DESC" %]
+		<select class="stdedit" name="pref_streamFormat" id="pref_streamFormat">
+			<option value="auto" [% IF streamFormat == 'auto' %]selected[% END %]>[% 'PLUGIN_SPOTON_STREAM_FORMAT_AUTO' | string %]</option>
+			[%# D-07: OGG passthrough is librespot-only -- hidden for the soloist backend %]
+			[% IF backend != 'soloist' %]
+			<option value="ogg"  [% IF streamFormat == 'ogg'  %]selected[% END %]>[% 'PLUGIN_SPOTON_STREAM_FORMAT_OGG'  | string %]</option>
+			[% END %]
+			<option value="pcm"  [% IF streamFormat == 'pcm'  %]selected[% END %]>[% 'PLUGIN_SPOTON_STREAM_FORMAT_PCM'  | string %]</option>
+			<option value="flac" [% IF streamFormat == 'flac' %]selected[% END %]>[% 'PLUGIN_SPOTON_STREAM_FORMAT_FLAC' | string %]</option>
+			<option value="mp3"  [% IF streamFormat == 'mp3'  %]selected[% END %]>[% 'PLUGIN_SPOTON_STREAM_FORMAT_MP3'  | string %]</option>
+		</select>
+		[%# 79-60: the MP3 rate comes from LMS's own per-player limit (custom-convert.conf smp mp3, IFB) - say where it is set and what it is now %]
+		<div style="margin-top:8px; color:#888; font-size:0.9em">[% 'PLUGIN_SPOTON_STREAM_FORMAT_MP3_LMS' | string(mp3Limit) | html %]</div>
+		[%# 74b-02 D-08: what this player really receives - computed in Player.pm, not here %]
+		[% IF streamFormatEffective %]
+		<div style="margin-top:8px; color:#888; font-size:0.9em">[% streamFormatEffective | html %]</div>
+		[% END %]
+		[% IF streamFormatReason %]
+		<div style="margin-top:4px; color:#888; font-size:0.9em">[% streamFormatReason | html %]</div>
+		[% END %]
+		[% IF streamFormatNote %]
+		<div style="margin-top:4px; color:#888; font-size:0.9em">[% streamFormatNote | html %]</div>
+		[% END %]
+	[% END %]
+
+	[% WRAPPER setting title="PLUGIN_SPOTON_STREAMING_MODE" desc="PLUGIN_SPOTON_STREAMING_MODE_DESC" %]
+		<select class="stdedit" name="pref_streamingMode" id="pref_streamingMode">
+			<option value="global" [% IF streamingMode == 'global' %]selected[% END %]>[% 'PLUGIN_SPOTON_STREAMING_MODE_USE_GLOBAL' | string %]</option>
+			<option value="direct" [% IF streamingMode == 'direct' %]selected[% END %]>[% 'PLUGIN_SPOTON_STREAMING_MODE_DIRECT' | string %]</option>
+			<option value="proxy"  [% IF streamingMode == 'proxy'  %]selected[% END %]>[% 'PLUGIN_SPOTON_STREAMING_MODE_PROXY'  | string %]</option>
+		</select>
+	[% END %]
+
+	[% IF backend == 'soloist' %]
+	<h2>[% 'PLUGIN_SPOTON_PLAYER_SECTION_SOLOIST' | string %]</h2>
+
+	[% WRAPPER setting title="PLUGIN_SPOTON_SOLOIST_QUALITY" desc="PLUGIN_SPOTON_SOLOIST_QUALITY_DESC" %]
+		<select class="stdedit" name="pref_soloistQuality"
+		        id="pref_soloistQuality"
+		        [% UNLESS soloistQualityAvailable %]disabled[% END %]>
+			<option value="global" [% IF soloistQuality == 'global' %]selected[% END %]>[% 'PLUGIN_SPOTON_SOLOIST_QUALITY_USE_GLOBAL' | string %]</option>
+			[% FOREACH l IN soloistQualityLevels %]
+			<option value="[% l.value %]" [% IF soloistQuality == l.value %]selected[% END %]>[% l.label | html %]</option>
+			[% END %]
+			[% IF soloistQualityStoredLabel %]
+			<option disabled selected>[% 'PLUGIN_SPOTON_SOLOIST_QUALITY_SET_IN_APP' | string(soloistQualityStoredLabel) | html %]</option>
+			[% END %]
+		</select>
+		<p style="margin:6px 0 0 0; font-size:0.85em; opacity:0.7">[% 'PLUGIN_SPOTON_SOLOIST_QUALITY_NEXT_TRACK' | string %]</p>
+		[% UNLESS soloistQualityAvailable %]
+		<p style="color: orange; margin-top:6px; font-size:0.85em">&#9679; [% 'PLUGIN_SPOTON_SOLOIST_QUALITY_UNAVAILABLE' | string %]</p>
+		[% END %]
+		[% IF soloistQualityDiffers %]
+		<p style="opacity:0.85; margin-top:6px; font-size:0.85em">[% 'PLUGIN_SPOTON_SOLOIST_QUALITY_EFFECTIVE' | string(soloistQualityEffectiveLabel) | html %]</p>
+		[% END %]
+		[% IF soloistQualityNotice %]
+		<p style="color: orange; margin-top:6px; font-size:0.85em">[% soloistQualityNotice | html %]</p>
+		[% END %]
+	[% END %]
+	<p style="margin:12px 0 0 0; font-size:0.9em; color:#888">[% 'PLUGIN_SPOTON_PLAYER_SECTION_OTHER_BACKEND' | string('librespot') | html %]</p>
+	[% ELSE %]
+	<h2>[% 'PLUGIN_SPOTON_PLAYER_SECTION_LIBRESPOT' | string %]</h2>
 
 	[% WRAPPER setting title="PLUGIN_SPOTON_DISCOVERY_ENABLED" desc="PLUGIN_SPOTON_DISCOVERY_ENABLED_DESC" %]
 		[% IF discoveryByCrashLoop %]
@@ -44,63 +114,6 @@
 	[% END %]
 	[% END %]
 
-	[% WRAPPER setting title="PLUGIN_SPOTON_STREAM_FORMAT" desc="PLUGIN_SPOTON_STREAM_FORMAT_DESC" %]
-		<select class="stdedit" name="pref_streamFormat" id="pref_streamFormat">
-			<option value="auto" [% IF streamFormat == 'auto' %]selected[% END %]>[% 'PLUGIN_SPOTON_STREAM_FORMAT_AUTO' | string %]</option>
-			[%# D-07: OGG passthrough is librespot-only -- hidden for the soloist backend %]
-			[% IF backend != 'soloist' %]
-			<option value="ogg"  [% IF streamFormat == 'ogg'  %]selected[% END %]>[% 'PLUGIN_SPOTON_STREAM_FORMAT_OGG'  | string %]</option>
-			[% END %]
-			<option value="pcm"  [% IF streamFormat == 'pcm'  %]selected[% END %]>[% 'PLUGIN_SPOTON_STREAM_FORMAT_PCM'  | string %]</option>
-			<option value="flac" [% IF streamFormat == 'flac' %]selected[% END %]>[% 'PLUGIN_SPOTON_STREAM_FORMAT_FLAC' | string %]</option>
-			<option value="mp3"  [% IF streamFormat == 'mp3'  %]selected[% END %]>[% 'PLUGIN_SPOTON_STREAM_FORMAT_MP3'  | string %]</option>
-		</select>
-		[%# 74b-02 D-08: what this player really receives - computed in Player.pm, not here %]
-		[% IF streamFormatEffective %]
-		<div style="margin-top:8px; color:#888; font-size:0.9em">[% streamFormatEffective | html %]</div>
-		[% END %]
-		[% IF streamFormatReason %]
-		<div style="margin-top:4px; color:#888; font-size:0.9em">[% streamFormatReason | html %]</div>
-		[% END %]
-		[% IF streamFormatNote %]
-		<div style="margin-top:4px; color:#888; font-size:0.9em">[% streamFormatNote | html %]</div>
-		[% END %]
-	[% END %]
-
-	[% WRAPPER setting title="PLUGIN_SPOTON_STREAMING_MODE" desc="PLUGIN_SPOTON_STREAMING_MODE_DESC" %]
-		<select class="stdedit" name="pref_streamingMode" id="pref_streamingMode">
-			<option value="global" [% IF streamingMode == 'global' %]selected[% END %]>[% 'PLUGIN_SPOTON_STREAMING_MODE_USE_GLOBAL' | string %]</option>
-			<option value="direct" [% IF streamingMode == 'direct' %]selected[% END %]>[% 'PLUGIN_SPOTON_STREAMING_MODE_DIRECT' | string %]</option>
-			<option value="proxy"  [% IF streamingMode == 'proxy'  %]selected[% END %]>[% 'PLUGIN_SPOTON_STREAMING_MODE_PROXY'  | string %]</option>
-		</select>
-	[% END %]
-
-	[% IF backend == 'soloist' %]
-	[% WRAPPER setting title="PLUGIN_SPOTON_SOLOIST_QUALITY" desc="PLUGIN_SPOTON_SOLOIST_QUALITY_DESC" %]
-		<select class="stdedit" name="pref_soloistQuality"
-		        id="pref_soloistQuality"
-		        [% UNLESS soloistQualityAvailable %]disabled[% END %]>
-			<option value="global" [% IF soloistQuality == 'global' %]selected[% END %]>[% 'PLUGIN_SPOTON_SOLOIST_QUALITY_USE_GLOBAL' | string %]</option>
-			[% FOREACH l IN soloistQualityLevels %]
-			<option value="[% l.value %]" [% IF soloistQuality == l.value %]selected[% END %]>[% l.label | html %]</option>
-			[% END %]
-			[% IF soloistQualityStoredLabel %]
-			<option disabled selected>[% 'PLUGIN_SPOTON_SOLOIST_QUALITY_SET_IN_APP' | string(soloistQualityStoredLabel) | html %]</option>
-			[% END %]
-		</select>
-		<p style="margin:6px 0 0 0; font-size:0.85em; opacity:0.7">[% 'PLUGIN_SPOTON_SOLOIST_QUALITY_NEXT_TRACK' | string %]</p>
-		[% UNLESS soloistQualityAvailable %]
-		<p style="color: orange; margin-top:6px; font-size:0.85em">&#9679; [% 'PLUGIN_SPOTON_SOLOIST_QUALITY_UNAVAILABLE' | string %]</p>
-		[% END %]
-		[% IF soloistQualityDiffers %]
-		<p style="opacity:0.85; margin-top:6px; font-size:0.85em">[% 'PLUGIN_SPOTON_SOLOIST_QUALITY_EFFECTIVE' | string(soloistQualityEffectiveLabel) | html %]</p>
-		[% END %]
-		[% IF soloistQualityNotice %]
-		<p style="color: orange; margin-top:6px; font-size:0.85em">[% soloistQualityNotice | html %]</p>
-		[% END %]
-	[% END %]
-	[% END %]
-
 	[% WRAPPER setting title="PLUGIN_SPOTON_BITRATE_OVERRIDE" desc="PLUGIN_SPOTON_BITRATE_OVERRIDE_DESC" %]
 		<select class="stdedit" name="pref_bitrateOverride" id="pref_bitrateOverride">
 			<option value=""    [% IF bitrateOverride == '' %]selected[% END %]>[% 'PLUGIN_SPOTON_BITRATE_GLOBAL' | string %]</option>
@@ -108,6 +121,8 @@
 			<option value="160" [% IF bitrateOverride == 160 %]selected[% END %]>160 kbps</option>
 			<option value="96"  [% IF bitrateOverride == 96  %]selected[% END %]>96 kbps</option>
 		</select>
+	[% END %]
+	<p style="margin:12px 0 0 0; font-size:0.9em; color:#888">[% 'PLUGIN_SPOTON_PLAYER_SECTION_OTHER_BACKEND' | string('Soloist') | html %]</p>
 	[% END %]
 
 [% PROCESS settings/footer.html %]

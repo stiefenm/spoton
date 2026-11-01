@@ -148,8 +148,10 @@ sub _searchArtists {
         offset => $offset,
     }, sub {
         my $result = shift;
+        # 79-58: search keeps nameless slots {} for unmappable or other-artist rows; skip them here
+        # so an all-slot page still counts as empty for the D6 retry
         my $tracks = ($result && $result->{tracks} && $result->{tracks}{items})
-            ? $result->{tracks}{items} : [];
+            ? [ grep { ref $_ eq 'HASH' && $_->{uri} } @{ $result->{tracks}{items} } ] : [];
 
         # D6: only retry on successful-but-empty, not on errors
         if (!@$tracks && $offset > 0 && $result && $result->{tracks}) {
@@ -161,7 +163,7 @@ sub _searchArtists {
             }, sub {
                 my $result2 = shift;
                 my $tracks2 = ($result2 && $result2->{tracks} && $result2->{tracks}{items})
-                    ? $result2->{tracks}{items} : [];
+                    ? [ grep { ref $_ eq 'HASH' && $_->{uri} } @{ $result2->{tracks}{items} } ] : [];
                 push @$allTracks, @$tracks2;
                 Slim::Utils::Timers::setTimer(undef, Time::HiRes::time() + DSTM_SEARCH_STAGGER_S,
                     sub { _searchArtists($client, $accountId, $artists, $idx + 1, $allTracks, $pool, $seedExclude, $cb) });
@@ -250,7 +252,7 @@ sub _cacheAndExtractUris {
     my @uris;
 
     require Plugins::SpotOn::Plugin;
-    my $type_str = Plugins::SpotOn::Plugin->_typeString(undef, 'Browse');
+    my $type_str = Plugins::SpotOn::Plugin->_typeShortForClient(undef);
 
     for my $track (@$tracks) {
         next unless $track->{uri} && $track->{uri} =~ /(track:[a-z0-9]+)/i;
@@ -272,7 +274,7 @@ sub _cacheAndExtractUris {
             cover    => $image,
             icon     => $image,
             year     => $year,
-            bitrate  => Plugins::SpotOn::Plugin->_bitrateForClient(undef) . 'k',
+            bitrate  => Plugins::SpotOn::Plugin->_bitrateLabelForClient(undef),
             type     => $type_str,
             %trackIds,
         }, 604800);

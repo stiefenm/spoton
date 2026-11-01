@@ -734,7 +734,7 @@ sub _timeZone {
 
 # _extractSectionItems($class, $result)
 # data.homeSections.sections[0].sectionItems.items[] -> arrayref of
-# { uri, typename, name, images }. Type-checked at every level; an unknown
+# { uri, typename, name, images, format, madeFor }. Type-checked at every level; an unknown
 # shape yields an empty list and a WARN, never a die (T-85-44). Filtering by
 # typename / DJ happens in SpClient->getMadeForYou.
 sub _extractSectionItems {
@@ -752,26 +752,107 @@ sub _extractSectionItems {
         return [];
     }
 
+    return [ grep { defined } map { _sectionItem($_) } @$items ];
+}
+
+# _sectionItem($item)
+# One sectionItems.items[] entry (homeSection and home share the shape) ->
+# { uri, typename, name, images, format, madeFor } or undef. format is the
+# playlist's Spotify format string ('' when absent), madeFor is 1 when the
+# attributes carry madeFor.username (79-59: the value -- a user name -- is
+# never kept).
+sub _sectionItem {
+    my ($item) = @_;
+    return undef unless ref($item) eq 'HASH';
+    my $content = ref($item->{content}) eq 'HASH' ? $item->{content} : {};
+    my $data    = ref($content->{data}) eq 'HASH'  ? $content->{data}  : {};
+
+    my $uri = $data->{uri};
+    $uri = $item->{uri} unless defined $uri && !ref($uri);
+    return undef unless defined $uri && !ref($uri) && length $uri;
+
+    my $typename = $data->{__typename};
+    $typename = $content->{__typename} unless defined $typename && !ref($typename);
+    my $name   = $data->{name};
+    my $format = $data->{format};
+    my $madeFor = (ref($data->{attributes}) eq 'ARRAY'
+        && grep { ref($_) eq 'HASH' && defined $_->{key} && !ref($_->{key}) && $_->{key} eq 'madeFor.username' }
+           @{ $data->{attributes} }) ? 1 : 0;
+
+    return {
+        uri      => $uri,
+        typename => (defined $typename && !ref($typename)) ? $typename : '',
+        name     => (defined $name && !ref($name)) ? $name : '',
+        images   => _imageItemsToRest($data->{images}),
+        format   => (defined $format && !ref($format)) ? $format : '',
+        madeFor  => $madeFor,
+    };
+}
+
+# ============================================================
+# home (79-59, GH #180: the whole Spotify home for Made For You)
+# ============================================================
+
+# home($class, $accountId, $cb)
+# One `home` query with the variables of the 79-59 measurement (the web
+# player's home variables, sectionItemsLimit 50, no uri). The hash is scraped
+# like every other op. $cb->(\@sections) with
+# { uri, title, items => [ _sectionItem ... ] } per row in Spotify's order
+# (title '' for an untitled row), or $cb->(undef, \%err).
+sub home {
+    my ($class, $accountId, $cb) = @_;
+
+    $class->query($accountId, 'home', {
+        homeEndUserIntegration         => 'INTEGRATION_WEB_PLAYER',
+        timeZone                       => _timeZone(),
+        sp_t                           => '',
+        facet                          => '',
+        sectionItemsLimit              => 50,
+        includeEpisodeContentRatingsV2 => \1,
+    }, sub {
+        my ($result, $err) = @_;
+        if ($err) {
+            $cb->(undef, $err);
+            return;
+        }
+        $cb->($class->_extractHomeSections($result));
+    });
+    return;
+}
+
+# _extractHomeSections($class, $result)
+# data.home.sectionContainer.sections.items[] -> arrayref of
+# { uri, title, items }. Type-checked at every level; an unknown shape yields
+# an empty list and a WARN, never a die (T-79-249).
+sub _extractHomeSections {
+    my ($class, $result) = @_;
+
+    my $home = (ref($result) eq 'HASH' && ref($result->{data}) eq 'HASH'
+                && ref($result->{data}{home}) eq 'HASH') ? $result->{data}{home} : undef;
+    my $sc   = ($home && ref($home->{sectionContainer}) eq 'HASH') ? $home->{sectionContainer} : undef;
+    my $ss   = ($sc && ref($sc->{sections}) eq 'HASH') ? $sc->{sections}{items} : undef;
+
+    unless (ref($ss) eq 'ARRAY') {
+        $log->warn('Pathfinder: home response has no sectionContainer.sections.items -- unknown shape');
+        return [];
+    }
+
     my @out;
-    for my $item (@$items) {
-        next unless ref($item) eq 'HASH';
-        my $content = ref($item->{content}) eq 'HASH' ? $item->{content} : {};
-        my $data    = ref($content->{data}) eq 'HASH'  ? $content->{data}  : {};
-
-        my $uri = $data->{uri};
-        $uri = $item->{uri} unless defined $uri && !ref($uri);
-        next unless defined $uri && !ref($uri) && length $uri;
-
-        my $typename = $data->{__typename};
-        $typename = $content->{__typename} unless defined $typename && !ref($typename);
-        my $name = $data->{name};
-
-        push @out, {
-            uri      => $uri,
-            typename => (defined $typename && !ref($typename)) ? $typename : '',
-            name     => (defined $name && !ref($name)) ? $name : '',
-            images   => _imageItemsToRest($data->{images}),
-        };
+    for my $sec (@$ss) {
+        next unless ref($sec) eq 'HASH';
+        my $uri = $sec->{uri};
+        next unless defined $uri && !ref($uri) && $uri =~ /\Aspotify:section:[A-Za-z0-9]{1,40}\z/;
+        my $sd    = ref($sec->{data}) eq 'HASH' ? $sec->{data} : {};
+        my $title = '';
+        if (ref($sd->{title}) eq 'HASH') {
+            for my $k (qw(transformedLabel text)) {
+                my $v = $sd->{title}{$k};
+                if (defined $v && !ref($v) && length $v) { $title = $v; last; }
+            }
+        }
+        my $items = (ref($sec->{sectionItems}) eq 'HASH' && ref($sec->{sectionItems}{items}) eq 'ARRAY')
+            ? $sec->{sectionItems}{items} : [];
+        push @out, { uri => $uri, title => $title, items => [ grep { defined } map { _sectionItem($_) } @$items ] };
     }
     return \@out;
 }
@@ -869,7 +950,8 @@ my %TYPE_OP      = (track => 'searchTracks', album => 'searchAlbums', artist => 
 # $cb->({ <types>s => { items, total, offset, limit }, ... }) in the Web-API
 # shape, or $cb->(undef, \%err). q = artist:"<name>" (DontStopTheMusic) searches
 # <name> and keeps only track items by an artist of that name, case-insensitively
-# (the field filter itself is not measured on searchTracks).
+# (the field filter itself is not measured on searchTracks); every other track and
+# every unmappable entry stays in the list as a nameless slot {} (79-58, GH #168).
 sub search {
     my ($class, $accountId, $params, $cb) = @_;
     $params ||= {};
@@ -948,7 +1030,10 @@ sub search {
             my @items;
             my $total = 0;
             if (ref($section) eq 'HASH' && ref($section->{items}) eq 'ARRAY') {
-                @items = grep { defined } map { _mapSearchItem($type, $_) } @{ $section->{items} };
+                # 79-58 (GH #168): an unmappable entry keeps its slot as a nameless {} so list
+                # positions stay equal to Spotify's offsets; callers map it to an ignore row (R-4)
+                # or skip it (Top Result, DontStopTheMusic).
+                @items = map { _mapSearchItem($type, $_) // {} } @{ $section->{items} };
                 $total = (defined $section->{totalCount} && $section->{totalCount} =~ /\A\d+\z/)
                     ? $section->{totalCount} + 0 : scalar(@items);
             } else {
@@ -956,9 +1041,10 @@ sub search {
             }
             if (defined $artistFilter && $type eq 'track') {
                 my $want = lc $artistFilter;
-                @items = grep {
+                # 79-58: a non-matching track becomes a slot, the row is not removed
+                @items = map {
                     my $t = $_;
-                    scalar grep { lc($_->{name} // '') eq $want } @{ $t->{artists} || [] }
+                    (scalar grep { lc($_->{name} // '') eq $want } @{ $t->{artists} || [] }) ? $t : {}
                 } @items;
             }
             $out{ $TYPE_KEY{$type} } = { items => \@items, total => $total, offset => $offset, limit => $limit };

@@ -572,8 +572,11 @@ ok( !defined(&Plugins::SpotOn::ProtocolHandler::trackInfoURL),
     ok( defined $result && ref($result) eq 'ARRAY',
         'CTX-04: trackInfoMenu returns arrayref for track URL with artistId+albumId' );
 
-    is( scalar @$result, 4,
-        'CTX-04: trackInfoMenu returns exactly 4 items for track with artistId and albumId' );
+    # 79-67: the format line (two-part label, Connect/Browse) is the first item
+    is( scalar @$result, 5,
+        'CTX-04: trackInfoMenu returns exactly 5 items for track with artistId and albumId (79-67: format line first)' );
+    ok( ref $result eq 'ARRAY' && ($result->[0]{type} // '') eq 'text' && ($result->[0]{name} // '') =~ /, SpotOn Browse\z/,
+        'CTX-04: the first item is the format line (type text, "..., SpotOn Browse")' );
 
     my @names  = map { $_->{name}  } @$result;
     ok( (grep { $_ eq 'PLUGIN_SPOTON_ARTIST_VIEW' } @names),
@@ -613,8 +616,10 @@ ok( !defined(&Plugins::SpotOn::ProtocolHandler::trackInfoURL),
     ok( defined $result && ref($result) eq 'ARRAY',
         'CTX-05: trackInfoMenu returns arrayref for episode URL with showId' );
 
-    is( scalar @$result, 3,
-        'CTX-05: trackInfoMenu returns exactly 3 items for episode with showId' );
+    is( scalar @$result, 4,
+        'CTX-05: trackInfoMenu returns exactly 4 items for episode with showId (79-67: format line first)' );
+    ok( ref $result eq 'ARRAY' && ($result->[0]{type} // '') eq 'text' && ($result->[0]{name} // '') =~ /, SpotOn Browse\z/,
+        'CTX-05: the first item is the format line (type text, "..., SpotOn Browse")' );
 
     my @names = map { $_->{name} } @$result;
     ok( (grep { $_ eq 'PLUGIN_SPOTON_SHOW_VIEW' } @names),
@@ -847,6 +852,9 @@ ok( !defined(&Plugins::SpotOn::ProtocolHandler::trackInfoURL),
     ok( $names[0] ne 'PLUGIN_SPOTON_SEARCH_LIMITED', 'CTX-SEARCH: no limited line when Pathfinder answered' );
 
     # --- limited ---
+    # 79-58: the overview is cached per account + query for 300 s; this case asks the same query
+    # again with a different (limited) answer, so it starts from an empty cache
+    Slim::Utils::Cache->new->clear;
     $Plugins::SpotOn::API::SpClient::next_search = { limited => 1, tracks => { items => [ $track->(1) ], total => 5 },
                                                       albums => { items => [], total => 0 }, artists => { items => [], total => 0 }, playlists => { items => [], total => 0 } };
     undef $r;

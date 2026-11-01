@@ -488,18 +488,26 @@ my @SRV_CATS = (
     # entries and the 84-26 entry (t/46 extract-run-79-eject, 84.3-settle pin the order).
     { name => 'server.log: LMS sync resync (player.sync INFO "<mac> resync: skipAhead|pauseFor <n>ms"; StreamingController.pm:566/576, 79-32 D-27 a2)',
       pat  => qr/resync: (?:skipAhead|pauseFor) -?\d+ms/,                                   count => 1 },
-    # 79-46 (D-34): three Control lines that were only counted (rule 4), each in its own
+    # 79-46 (D-34): four Control lines that were only counted (rule 4), each in its own
     # category, BEFORE the 84.3 entries and the 84-26 entry (t/46 extract-run-84.3-settle pins
     # the 84.3 buffering section directly before the 84-26 header; the 84-26 entry stays last). The
     # autoplay guard's pause (Control.pm:3979-3986, written through _recordErrorOnce as
     # "<mac>: daemon advanced to <uri> unrequested -- pausing"), the classify-unknown catch-all
-    # (Control.pm:3584-3589) and the context end without successor (Control.pm _maybeContextEnd).
+    # (Control.pm:3584-3589), the 79-66 command_result ack line (the fourth, see below) and the
+    # context end without successor (Control.pm _maybeContextEnd).
     # The D-34 measurement separates autoplay, natural end and app takeover with them; absence
     # reads "nicht gefunden im Fenster", never "did not happen".
     { name => 'server.log: D-34 autoplay guard (daemon advanced to <uri> unrequested -- pausing; Control.pm)',
       pat  => qr/daemon advanced to \S+ unrequested -- pausing/,                      count => 1 },
     { name => 'server.log: D-34 Control classify unknown (type=; Control.pm onEvent catch-all)',
       pat  => qr/Control: classify unknown -- type=/,                                  count => 1 },
+    # 79-66 (user decision 2026-10-31 "Neue Logzeile, Messlauf zählt die"): the record-only ack line
+    # of a command_result frame (Control.pm _commandResultLogLine, INFO; it replaced that frame's
+    # classify-unknown warn). runners/d34-scenarios.sh sc_pause_play counts it as the proof that
+    # Control sent a command between pause and play. INFO only: absence reads "nicht gefunden im
+    # Fenster", never "no command" (the window must be armed to plugin.spoton=INFO).
+    { name => 'server.log: 79-66 Control command_result ack (Control.pm _onFrameCommandResult, INFO)',
+      pat  => qr/Control: command_result -- command=/,                                 count => 1 },
     { name => 'server.log: D-34 context end without successor (Control.pm _maybeContextEnd)',
       pat  => qr/Control: context end without successor on /,                          count => 1 },
     # 84.3-03 (D-09): the context-end settle (Connect.pm _settleNow, 84.3-01) leaves FOUR kinds of

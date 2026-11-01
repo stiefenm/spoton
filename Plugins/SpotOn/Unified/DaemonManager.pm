@@ -315,7 +315,7 @@ sub _isConnectEnabled {
 
 # resolvePassthroughForClient($class, $client)
 # Single source of truth for OGG passthrough decisions (D-04/D-05/D-08).
-# Called by Daemon.pm (--passthrough flag) and Plugin.pm (_typeString display).
+# Called by Daemon.pm (--passthrough flag) and Plugin.pm (_formatLabel display).
 # Returns 1 if the player should receive raw Ogg/Vorbis, 0 for PCM.
 sub resolvePassthroughForClient {
     my ($class, $client) = @_;
@@ -468,7 +468,7 @@ sub resolveSoloistFormat {
 
     # WR-04 (Phase 76 review): identical fallback chain as every other reader
     # of the per-player format (Settings/Player.pm, ProtocolHandler.pm,
-    # Plugin.pm _typeString, resolvePassthroughForClient above) -- a legacy
+    # Plugin.pm _formatLabel, resolvePassthroughForClient above) -- a legacy
     # choice living solely in connectOggOverride must resolve the same here as
     # on the settings page.
     my $fmt = $prefs->client($target)->get('streamFormat')
@@ -499,7 +499,7 @@ sub effectiveFormat {
     my ($class, $client) = @_;
     return ('pcm', 'soc', '', '') unless $client;
 
-    # Normalise to the master like Plugin.pm _typeString does: the group
+    # Normalise to the master like Plugin.pm _formatLabel does: the group
     # streams as one and the master's pref governs.
     $client = $client->master if $client->can('master') && $client->master;
 
@@ -2499,10 +2499,53 @@ sub soloistGlibcProblem {
     return undef if !defined $ok || $ok;
 
     my $found = glibcVersion();
-    return "Soloist cannot run on this system: glibc $found found, Soloist needs glibc "
+    my $text = "Soloist cannot run on this system: glibc $found found, Soloist needs glibc "
          . SOLOIST_MIN_GLIBC
          . " or newer (Raspberry Pi OS Trixie / Debian 13 or newer). "
          . "Update the system or select the librespot backend.";
+
+    # 79-57 (GH #183): most users with an old glibc run the official Lyrion
+    # Docker image; name it, and the two ways out.
+    $text .= ' ' . soloistContainerHint() if runsInContainer();
+    return $text;
+}
+
+# 79-57 (GH #183): the container check's root (tests point it at a fixture
+# tree) and the sentence soloistGlibcProblem appends inside a container.
+our $CONTAINER_ROOT = '';
+
+sub runsInContainer {
+    require Plugins::SpotOn::Unified::HostEnv;
+    return Plugins::SpotOn::Unified::HostEnv::runsInContainer($CONTAINER_ROOT);
+}
+
+sub soloistContainerHint {
+    return 'This looks like a Docker container: the official Lyrion Docker image is based on Debian 12 '
+         . '(glibc 2.36). Use librespot, or an image based on Debian 13.';
+}
+
+# soloistMissingLibraryProblem() -- 79-57 (GH #177): the user-facing message
+# when the last Soloist version probe stopped at the dynamic loader because a
+# system library is missing; undef otherwise. Under a glibc below the floor
+# the glibc message is the actionable one (installing the library would not
+# let Soloist start), so this one stays silent there. Reads the probe's
+# in-memory record through the backend role (startCheck, the seam: the core
+# never names the Soloist modules); never runs anything.
+sub soloistMissingLibraryProblem {
+    return undef unless backendName() eq 'soloist' && platformSupportsSoloist();
+
+    my $glibcOk = soloistGlibcOk();
+    return undef if defined $glibcOk && !$glibcOk;
+
+    my $role = eval { backendClass() } or return undef;
+    my $reader = $role->can('startCheck') or return undef;
+    my $failure = eval { $reader->($role) };
+    return undef unless $failure && defined $failure->{soname}
+        && ($failure->{reason} // '') =~ /^missing_library:/;
+
+    my $pkg = $failure->{package_hint} // "the package that provides $failure->{soname}";
+    return "Soloist cannot start: the system library $failure->{soname} is missing. "
+         . "Install the package that provides it (Debian: $pkg), then restart LMS.";
 }
 
 # _reportAudioKeyState($acct, $state) -- the status-page side of the
@@ -2571,6 +2614,16 @@ sub assertStandingConditions {
         }
         else {
             Plugins::SpotOn::Status->clearError('Soloist', 'glibc');
+        }
+
+        # 79-57 (GH #177): a missing system library, from the last probe.
+        my $library = soloistMissingLibraryProblem();
+        if (defined $library) {
+            Plugins::SpotOn::Status->recordError('error', 'Soloist', $library, 'missing_library')
+                unless Plugins::SpotOn::Status->hasError('Soloist', 'missing_library');
+        }
+        else {
+            Plugins::SpotOn::Status->clearError('Soloist', 'missing_library');
         }
 
         # librespot audio-key refusal. Only the librespot backend can
@@ -2859,6 +2912,8 @@ sub startHelper {
             # multi-level hand-off of the SAME shared deadline
             # ($opts->{deferDeadline} travels through this hand-off
             # unchanged).
+            return $class->_deferStartWhileTerminating($clientId, $opts)
+                if _predecessorTerminating($clientId);    # 79-61 (FULL-2 WR-01)
             main::INFOLOG && $log->is_info && $log->info("Need to create Soloist daemon for $clientId");
             my $daemonClass = _daemonClass();
             # Phase 83.3 plan 09 (D-07 gap 3): this construction IS a
@@ -2904,6 +2959,8 @@ sub startHelper {
                 );
                 return;
             }
+            return $class->_deferStartWhileTerminating($clientId, $opts)
+                if _predecessorTerminating($clientId);    # 79-61 (FULL-2 WR-01)
             main::INFOLOG && $log->is_info && $log->info("Need to (re-)start Soloist daemon for $clientId");
             # Phase 83.3 plan 09 (D-07 gap 3): same anchor as the
             # construction branch above -- this is the OTHER (re)start site.
@@ -3095,6 +3152,8 @@ sub startHelper {
     }
 
     if (!$helper) {
+        return $class->_deferStartWhileTerminating($clientId, $opts)
+            if _predecessorTerminating($clientId);    # 79-61 (FULL-2 WR-01)
         main::INFOLOG && $log->is_info && $log->info("Need to create Unified daemon for $clientId");
         my $daemonClass = _daemonClass();
         $helper = $helperInstances{$clientId} = $daemonClass->new($clientId);
@@ -3124,6 +3183,8 @@ sub startHelper {
             );
             return;
         }
+        return $class->_deferStartWhileTerminating($clientId, $opts)
+            if _predecessorTerminating($clientId);    # 79-61 (FULL-2 WR-01)
         main::INFOLOG && $log->is_info && $log->info("Need to (re-)start Unified daemon for $clientId");
         # Phase 83.3 plan 17 (CR-01): flag consumed by the restart that
         # honoured it.
@@ -3245,6 +3306,33 @@ sub _restartForHealth {
     $class->startHelper($helper->mac);
 }
 
+# 79-61 (FULL-2 WR-01): a daemon stop no longer blocks until the process has
+# exited (Unified/ProcStop.pm). Until the previous process of this player is
+# gone, no new daemon is spawned on top of it (same data dir, same Connect
+# device id): the start is retried every START_DEFER_INTERVAL seconds,
+# bounded by ProcStop's TERM-then-KILL sequence (20 s at most).
+use constant START_DEFER_INTERVAL => 0.25;
+my %startDeferred;
+
+sub _predecessorTerminating {
+    my ($clientId) = @_;
+    require Plugins::SpotOn::Unified::ProcStop;
+    return Plugins::SpotOn::Unified::ProcStop->terminatingFor($clientId);
+}
+
+sub _deferStartWhileTerminating {
+    my ($class, $clientId, $opts) = @_;
+    return undef if $startDeferred{$clientId};
+    $startDeferred{$clientId} = 1;
+    main::INFOLOG && $log->is_info && $log->info("Start of the daemon for $clientId deferred - the previous process is still exiting");
+    Slim::Utils::Timers::setTimer($class, Time::HiRes::time() + START_DEFER_INTERVAL, sub {
+        delete $startDeferred{$clientId};
+        return if $shuttingDown;
+        $class->startHelper($clientId, $opts);
+    });
+    return undef;
+}
+
 sub stopHelper {
     my ($class, $clientId) = @_;
 
@@ -3321,6 +3409,12 @@ sub shutdown {
     if ($mode && $mode eq 'inactive-only') {
         %activeClientIds = map { $_->id => 1 } Slim::Player::Client::clients();
     }
+
+    # 79-61 (FULL-2 WR-01): the permanent shutdown (LMS stops) keeps the
+    # blocking stop -- nothing plays any more and no daemon may outlive LMS.
+    # 'restart' and 'inactive-only' stop without blocking.
+    require Plugins::SpotOn::Unified::ProcStop;
+    local $Plugins::SpotOn::Unified::ProcStop::SYNC = ($mode ? 0 : 1);
 
     foreach my $clientId (keys %helperInstances) {
         # In inactive-only mode, skip helpers for still-connected players
@@ -3466,7 +3560,16 @@ sub streamPortForClient {
 # cleanup never kills a live soloist daemon.
 sub helperPids {
     my $class = shift;
-    return map { $_->pid } grep { $_->alive } values %helperInstances;
+    my @pids = map { $_->pid } grep { $_->alive } values %helperInstances;
+
+    # 79-57 (79-REVIEW-55-FIX IN-05): a running smoke test of a renewal or
+    # placed candidate is no orphan. Reached through the backend's daemon
+    # class (the seam); a backend without smoke tests has no smokePids.
+    my $daemonClass = eval { _daemonClass() };
+    if ($daemonClass && (my $smoke = $daemonClass->can('smokePids'))) {
+        push @pids, eval { $smoke->($daemonClass) };
+    }
+    return @pids;
 }
 
 # uptime($class, $clientId)

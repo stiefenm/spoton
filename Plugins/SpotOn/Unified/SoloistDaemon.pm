@@ -209,10 +209,29 @@ sub _spawnArgs {
 # _idsDiffer() -- true when the real uid/gid differ from the effective ones.
 # Read on every call (never cached); also the test seam.
 sub _idsDiffer {
-	return 1 if $< != $>;
-	return 1 if (0 + $() != (0 + $));
+	my ($ruid, $euid, $rgid, $egid) = @_ ? @_ : ($<, $>, 0 + $(, 0 + $));
+	return 1 if $ruid != $euid;
+	return 1 if $rgid != $egid;
 	return 0;
 }
+
+# _useSecureExec($ruid, $euid, $rgid, $egid) -- 79-57 (I-4, 79-55-SECURITY):
+# spawn through the wrapper only when the ids differ AND the effective uid is
+# not 0. The wrapper sets the real uid to the effective one, so with an
+# effective uid 0 it would RAISE the real uid to 0; by construction that can
+# never happen. Pure (the ids are arguments); the spawn passes the current
+# ones.
+sub _useSecureExec {
+	my ($ruid, $euid, $rgid, $egid) = @_;
+	return 0 if $euid == 0;
+	return _idsDiffer($ruid, $euid, $rgid, $egid) ? 1 : 0;
+}
+
+# 79-57 (N3, 79-55-SECURITY): perl reads these at startup (module search
+# path, implicit -M/-I options). The wrapper perl runs with a real uid 0 on
+# piCorePlayer, so they are removed for the wrapper spawn only and restored
+# right after it; an equal-ids spawn keeps them (byte-identical env).
+use constant SECURE_EXEC_PERL_ENV => qw(PERL5LIB PERLLIB PERL5OPT);
 
 # The six variables that must reach Soloist through the wrapper's argv,
 # because the wrapper perl itself is exec'd in secure mode and loses LD_*.
@@ -228,10 +247,14 @@ use constant SECURE_EXEC_ENV_NAMES => qw(
 # Steps: (1) NAME=VALUE items up to a literal --, names from the six only;
 # (2) untaint argv, values and PATH/IFS/CDPATH/ENV/BASH_ENV/TERM unchanged
 # (perl enables taint by itself when the real uid is not 0 and differs from
-# the effective uid); (3) real gid := effective gid, real uid := effective
+# the effective uid); under taint PATH is set to /usr/bin:/bin, because exec
+# under taint also refuses a relative or world-writable PATH element and the
+# target is exec'd by absolute path anyway (79-57, IN-07); (3) real gid := effective gid, real uid := effective
 # uid, never the effective ids or the group list; (4) re-read and report a
 # failed change, then go on; (5) export the pairs; (6) exec in place (same
-# pid), list form, no shell.
+# pid), list form, no shell. The code loads no module (79-57, N3: the old
+# block that switched warnings off loaded warnings.pm through PERL5LIB; they are off
+# without -w anyway).
 # 79-55 R1 (WR-02): the allowlist is SECURE_EXEC_ENV_NAMES, interpolated
 # into the code, so sender and wrapper can never disagree. 79-55 R2
 # (WR-01 R2): the item parser takes any name up to the first =, so %ok is
@@ -257,6 +280,7 @@ for my $n (qw(PATH IFS CDPATH ENV BASH_ENV TERM)) {
 	next unless defined $ENV{$n};
 	($ENV{$n}) = $ENV{$n} =~ /\A(.*)\z/s;
 }
+$ENV{PATH} = '/usr/bin:/bin' if ${^TAINT};
 my $egid = 0 + $);
 $( = $egid;
 $< = $>;
@@ -266,11 +290,8 @@ if ($ru != $eu || $rg != $eg) {
 }
 $ENV{$_} = $set{$_} for sort keys %set;
 my $err;
-{
-	no warnings;
-	eval { exec { $ARGV[0] } @ARGV };
-	$err = $@ ? $@ : "$!";
-}
+eval { exec { $ARGV[0] } @ARGV };
+$err = $@ ? $@ : "$!";
 chomp $err;
 print STDERR "[spoton-exec] exec failed: $err\n";
 exit 127;
@@ -357,13 +378,18 @@ sub _spawnProcess {
 	# the loader keeps LD_PRELOAD / LD_LIBRARY_PATH. The LMS parent's ids are
 	# never changed.
 	my @spawnArgv = @$args;
-	if (_idsDiffer()) {
+	my %savedPerlEnv;
+	if (_useSecureExec($<, $>, 0 + $(, 0 + $))) {
 		if (-f $^X && -x _) {
 			my %pairs;
 			for my $name (SECURE_EXEC_ENV_NAMES) {
 				$pairs{$name} = $ENV{$name} if defined $ENV{$name};
 			}
 			@spawnArgv = _secureExecArgv(\%pairs, @$args);
+			# 79-57 N3: the wrapper perl starts without them (restored below)
+			for my $name (SECURE_EXEC_PERL_ENV) {
+				$savedPerlEnv{$name} = delete $ENV{$name} if exists $ENV{$name};
+			}
 			main::INFOLOG && $log->is_info && $log->info(sprintf(
 				'Soloist spawn through the secure-exec wrapper (79-55): real uid %d, effective uid %d, real gid %d, effective gid %d',
 				$<, $>, 0 + $(, 0 + $)));
@@ -392,6 +418,7 @@ sub _spawnProcess {
 	if (defined $savedLdLibraryPath) { $ENV{LD_LIBRARY_PATH} = $savedLdLibraryPath; }
 	else                             { delete $ENV{LD_LIBRARY_PATH}; }
 	if ($hadXdgRuntimeDir) { $ENV{XDG_RUNTIME_DIR} = $savedXdgRuntimeDir; }
+	$ENV{$_} = $savedPerlEnv{$_} for keys %savedPerlEnv;
 
 	tie *STDERR, 'Slim::Utils::Log::Trapper' if $had_stderr_tie;
 
@@ -1135,7 +1162,8 @@ sub _shutdownExistingControl {
 }
 
 sub stop {
-	my $self = shift;
+	my ($self, %o) = @_;
+	my $onGone = $o{onGone};
 
 	$self->_cancelPortPolls;
 	Slim::Utils::Timers::killTimers($self, \&_logCapTick);
@@ -1146,7 +1174,16 @@ sub stop {
 		main::INFOLOG && $log->is_info && $log->info(
 			"Quitting SpotOn Soloist daemon for " . $self->mac
 		);
-		$self->_proc->die;
+		# 79-61 (FULL-2 WR-01): non-blocking TERM-then-KILL (ProcStop); the
+		# blocking Proc::Background die() held the event loop up to 10 s for
+		# a daemon that ignores SIGTERM. $onGone runs once the process is
+		# gone (at once in the normal case).
+		require Plugins::SpotOn::Unified::ProcStop;
+		Plugins::SpotOn::Unified::ProcStop->terminate($self->_proc,
+			key => $self->mac, label => 'Soloist daemon ' . $self->mac, onGone => $onGone);
+	}
+	elsif ($onGone) {
+		$onGone->();
 	}
 
 	$self->_wsPort(undef);
@@ -1161,9 +1198,19 @@ sub stopForSync {
 	# helper has nothing to flag; DaemonManager's dead-helper gates check
 	# alive() first anyway, so this guard is belt-and-suspenders).
 	my $wasAlive = $self->alive;
-	$self->stop();
+	# 79-61 (FULL-2 WR-01): the sync subscription re-runs initHelpers 0.1 s
+	# after this stop; a daemon that takes longer to exit would still read
+	# as alive then and miss its restart -- re-run initHelpers once it is gone.
+	$self->stop(onGone => $wasAlive ? \&_initHelpersSoon : undef);
 	$self->_startTimes([]);
 	$self->_stoppedDeliberately(1) if $wasAlive;
+}
+
+sub _initHelpersSoon {
+	eval { require Plugins::SpotOn::Unified::DaemonManager; 1 } or return;
+	Slim::Utils::Timers::killTimers('Plugins::SpotOn::Unified::DaemonManager', \&Plugins::SpotOn::Unified::DaemonManager::initHelpers);
+	Slim::Utils::Timers::setTimer('Plugins::SpotOn::Unified::DaemonManager', Time::HiRes::time() + 0.1,
+		\&Plugins::SpotOn::Unified::DaemonManager::initHelpers);
 }
 
 sub pid {
@@ -1282,6 +1329,14 @@ sub _smokeVerdict {
 	return ('pending');
 }
 
+# 79-57 (79-REVIEW-55-FIX IN-05): pids of running smoke tests.
+my %_smokePids;
+
+# smokePids($class) -- the pids of smoke tests between spawn and verdict.
+sub smokePids {
+	return sort { $a <=> $b } keys %_smokePids;
+}
+
 # smokeTest($class, $binaryPath, $cb) -- spawns $binaryPath in a throwaway
 # smoke dir with a real spak-key (readKey()) and watches its stdout/stderr
 # for the "client expires in N days" line via an EVENT-DRIVEN pipe read
@@ -1341,6 +1396,12 @@ sub smokeTest {
 	my ($proc, $spawnError) = $throwaway->_spawnProcess(\@args, $wr, undef);
 	close($wr);
 
+	# 79-57 (79-REVIEW-55-FIX IN-05): the orphan sweep spares the running
+	# smoke candidate (DaemonManager->helperPids reads smokePids); the pid
+	# leaves the set at the verdict, in $cleanup below.
+	my $smokePid = $proc ? eval { $proc->pid } : undef;
+	$_smokePids{$smokePid} = 1 if $smokePid;
+
 	unless ($proc) {
 		close($rd);
 		File::Path::remove_tree($smokeDir);
@@ -1361,6 +1422,18 @@ sub smokeTest {
 
 	my ($readCb, $pollCb);
 
+	# 79-61 (FULL-2 WR-01): the smoke process is stopped without blocking;
+	# its throwaway data dir and its smokePids() entry (the orphan sweep
+	# spares it) go only once it is gone -- at once in the normal case.
+	my $gone = sub {
+		File::Path::remove_tree($smokeDir);
+		delete $_smokePids{$smokePid} if $smokePid;
+	};
+	my $stopProc = sub {
+		require Plugins::SpotOn::Unified::ProcStop;
+		Plugins::SpotOn::Unified::ProcStop->terminate($proc, label => 'Soloist smoke test', onGone => $gone);
+	};
+
 	my $cleanup = sub {
 		if ($rd) {
 			Slim::Networking::Select::removeRead($rd);
@@ -1368,7 +1441,7 @@ sub smokeTest {
 			$rd = undef;
 		}
 		Slim::Utils::Timers::killTimers($throwaway, $pollCb);
-		File::Path::remove_tree($smokeDir);
+		$gone->() unless $proc->alive;    # an alive process gets $gone from $stopProc
 	};
 
 	my $finish = sub {
@@ -1404,7 +1477,7 @@ sub smokeTest {
 		if ($verdict eq 'found') {
 			my ($days, $bannerVersion) = @rest;
 			my $killTime = Time::HiRes::time();
-			$proc->die;
+			$stopProc->();
 			Slim::Networking::Select::removeRead($rd) if $rd;
 
 			my $readySeen = ($buffer =~ /ready,/) ? 1 : 0;
@@ -1453,7 +1526,7 @@ sub smokeTest {
 			return;
 		}
 		if ($verdict eq 'timeout') {
-			$proc->die;
+			$stopProc->();
 			$finish->(0, { reason => 'no_expiry_line' });
 			return;
 		}

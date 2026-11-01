@@ -13,14 +13,14 @@ SpotOn is not a fork or a competitor. It is a from-scratch rewrite. Browse, Sear
 SpotOn plays audio through one of two backends, chosen in SpotOn Settings:
 
 - **librespot** (the default): the open-source Spotify client, shipped with SpotOn for every supported platform.
-- **Soloist**: Spotify's official client. It runs on Linux only. SpotOn downloads it from Spotify on your LMS host and never ships it (see [Terms](#terms)).
+- **Soloist**: Spotify's official client. SpotOn supports it on Linux only (see [Platforms](#platforms)). SpotOn downloads it from Spotify on your LMS host and never ships it (see [Terms](#terms)).
 
 | | librespot (default) | Soloist |
 |--|--------|--------|
-| **Platforms** | Linux, Windows, macOS | Linux only (x86_64, aarch64, armhf), glibc 2.38 or newer |
+| **Platforms** | Linux, Windows, macOS | In SpotOn: Linux only (x86_64, aarch64, armhf), glibc 2.38 or newer |
 | **Spotify quality** | Ogg Vorbis at 96/160/320 kbps | Spotify's own quality setting with the same names as in the Spotify app, up to Lossless (needs a Premium plan with lossless enabled) |
 | **Stream formats to the player** | OGG passthrough, FLAC, PCM, MP3 | FLAC 16, PCM, MP3 (Auto picks FLAC 16 on FLAC-capable players) |
-| **Setup** | Pair your Spotify account once | Pair your account once, enter your spak key, then pair each player once by tapping it in the Spotify app |
+| **Setup** | Pair your Spotify account once | Pair your account once, enter your Spotify Soloist API key, then pair each player once by tapping it in the Spotify app |
 | **Updates** | Ships with SpotOn | Soloist builds expire after 90 days; SpotOn renews them automatically, or you place your own build in the `manual/` folder |
 | **"Up Next" queue in the SpotOn menu** | Not available | Available |
 
@@ -51,7 +51,7 @@ SpotOn plays audio through one of two backends, chosen in SpotOn Settings:
 - LMS 8.0+ (LMS 9.x recommended)
 - Spotify Premium account
 - **Two-step setup, guided in SpotOn Settings:** (1) pair your Spotify account once: press **Konto koppeln** (*Pair account*) and pick the `SpotOn Authorization` device in your Spotify app while a track is playing, like connecting to a speaker; (2) with the Soloist backend only, pair each player once as well by tapping it in the Spotify app's device picker. No browser login and no Spotify Developer App are needed. If the Spotify app cannot see the pairing device (Docker, VLANs), drop a `credentials.json` into the `__DISCOVER__` folder instead, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
-- **For Soloist only:** a Linux host with glibc 2.38 or newer (for example Debian 13 or Raspberry Pi OS Trixie), and your own spak key. The spak key is Spotify's access key for Soloist; you get it with your Spotify Premium account as described in [Spotify's Soloist documentation](https://developer.spotify.com/documentation/soloist/concepts/authentication). SpotOn stores it locally and never transmits it.
+- **For Soloist only:** a Linux host with glibc 2.38 or newer (for example Debian 13 or Raspberry Pi OS Trixie), and your own Spotify Soloist API key (called spak key in earlier SpotOn versions). It is Spotify's access key for Soloist; you get it with your Spotify Premium account as described in [Spotify's Soloist documentation](https://developer.spotify.com/documentation/soloist/concepts/authentication). SpotOn stores it locally and never transmits it.
 
 ### Platforms
 
@@ -64,7 +64,7 @@ SpotOn plays audio through one of two backends, chosen in SpotOn Settings:
 | x86_64 Windows | librespot only | Yes: Browse playback on Windows 11 with LMS 9.1.1; Spotify Connect on Windows not tested |
 | macOS (Universal Binary: Intel + Apple Silicon) | librespot only | No: CI compile only, not tested |
 
-Windows and macOS run librespot only; Soloist exists for Linux only. On an older Linux (glibc below 2.38) SpotOn Settings shows no Soloist hint; if Soloist is selected there anyway, it cannot start and the SpotOn status page says why, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md). Use librespot on such a system. On macOS, if you download the binary manually (not via the LMS plugin manager), you may need to run `xattr -d com.apple.quarantine /path/to/spoton` in Terminal before first use.
+Windows and macOS run librespot only. Spotify also offers Soloist for Windows and macOS (Apple Silicon), but SpotOn does not use it there: SpotOn captures Soloist's audio through a PulseAudio stand-in that exists for Linux only. On an older Linux (glibc below 2.38) SpotOn Settings shows no Soloist hint; if Soloist is selected there anyway, it cannot start and the SpotOn status page says why, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md). Use librespot on such a system. On macOS, if you download the binary manually (not via the LMS plugin manager), you may need to run `xattr -d com.apple.quarantine /path/to/spoton` in Terminal before first use.
 
 ## Installation
 
@@ -78,13 +78,13 @@ Windows and macOS run librespot only; Soloist exists for Linux only. On an older
 
 SpotOn starts with librespot. Pair your account in SpotOn Settings (step 1 above).
 
-**Using Soloist:** on a Linux system that can run Soloist, SpotOn Settings shows a hint "Soloist is available on this system. To use it, get your spak key from Spotify:" with a link and a key field. Enter your spak key there and save; the page then offers the switch to Soloist. After the switch SpotOn downloads Soloist from Spotify, starts it, and asks you to pair each player once by tapping it in the Spotify app's device picker.
+**Using Soloist:** on a Linux system that can run Soloist, SpotOn Settings shows a hint "Soloist is available on this system. To use it, get your Spotify Soloist API key from Spotify:" with a link and a key field. Enter your Spotify Soloist API key there and save; the page then offers the switch to Soloist. After the switch SpotOn downloads Soloist from Spotify, starts it, and asks you to pair each player once by tapping it in the Spotify app's device picker.
 
 **Upgrading from 3.5.x:** your settings and accounts are taken over. A custom client ID from 3.5.x is removed because SpotOn no longer uses the Web API. An account whose stored login cannot be used any more is marked "Please pair this account once"; one pairing with the same Spotify account fixes it, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
 ## Troubleshooting
 
-See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for common issues and solutions, including Soloist (glibc, spak key, player pairing, renewal), Docker setup, Connect audio problems, and how to collect diagnostic data.
+See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for common issues and solutions, including Soloist (glibc, Spotify Soloist API key, player pairing, renewal), Docker setup, Connect audio problems, and how to collect diagnostic data.
 
 ## Known limitations
 

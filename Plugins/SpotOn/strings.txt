@@ -77,43 +77,43 @@ PLUGIN_SPOTON_BACKEND
 	SV	Uppspelningsbackend
 
 PLUGIN_SPOTON_BACKEND_DESC
-	CS	Vyberte přehrávací engine použitý pro streamování: librespot (výchozí, dobře otestovaný) nebo Soloist (oficiální binární soubor Spotify, vyžaduje spak-key). Přepnutí restartuje démony.
-	DA	Vælg den afspilningsmotor, der bruges til streaming: librespot (standard, veltestet) eller Soloist (Spotifys officielle binærfil, kræver en spak-nøgle). Skift genstarter dæmonerne.
-	DE	Wähle die für das Streaming verwendete Wiedergabe-Engine: librespot (Standard, gut getestet) oder Soloist (Spotifys offizielles Binary, benötigt einen spak-Key). Der Wechsel startet die Daemons neu.
-	EN	Choose the playback engine used for streaming: librespot (default, well-tested) or Soloist (Spotify's official binary, requires a spak-key). Switching restarts the daemons.
-	ES	Elige el motor de reproducción usado para el streaming: librespot (predeterminado, bien probado) o Soloist (el binario oficial de Spotify, requiere una spak-key). Cambiar reinicia los daemons.
-	FR	Choisissez le moteur de lecture utilisé pour le streaming : librespot (par défaut, bien testé) ou Soloist (le binaire officiel de Spotify, nécessite une spak-key). Le changement redémarre les démons.
-	IT	Scegli il motore di riproduzione usato per lo streaming: librespot (predefinito, ben testato) o Soloist (il binario ufficiale di Spotify, richiede una spak-key). Il cambio riavvia i demoni.
-	NL	Kies de afspeel-engine die wordt gebruikt voor streaming: librespot (standaard, goed getest) of Soloist (Spotify's officiële binaire bestand, vereist een spak-key). Wisselen herstart de daemons.
-	NO	Velg avspillingsmotoren som brukes for strømming: librespot (standard, godt testet) eller Soloist (Spotifys offisielle binærfil, krever en spak-nøkkel). Bytte starter daemonene på nytt.
-	PL	Wybierz silnik odtwarzania używany do strumieniowania: librespot (domyślny, dobrze przetestowany) lub Soloist (oficjalny plik binarny Spotify, wymaga klucza spak). Przełączenie restartuje demony.
-	SV	Välj uppspelningsmotorn som används för streaming: librespot (standard, väl testad) eller Soloist (Spotifys officiella binärfil, kräver en spak-nyckel). Byte startar om demonerna.
+	CS	Vyberte přehrávací engine použitý pro streamování: librespot (výchozí, dobře otestovaný) nebo Soloist (oficiální binární soubor Spotify, vyžaduje klíč Spotify Soloist API). Přepnutí restartuje démony.
+	DA	Vælg den afspilningsmotor, der bruges til streaming: librespot (standard, veltestet) eller Soloist (Spotifys officielle binærfil, kræver en Spotify Soloist API-nøgle). Skift genstarter dæmonerne.
+	DE	Wähle die für das Streaming verwendete Wiedergabe-Engine: librespot (Standard, gut getestet) oder Soloist (Spotifys offizielles Binary, benötigt einen Spotify-Soloist-API-Key). Der Wechsel startet die Daemons neu.
+	EN	Choose the playback engine used for streaming: librespot (default, well-tested) or Soloist (Spotify's official binary, requires a Spotify Soloist API key). Switching restarts the daemons.
+	ES	Elige el motor de reproducción usado para el streaming: librespot (predeterminado, bien probado) o Soloist (el binario oficial de Spotify, requiere una clave de API de Spotify Soloist). Cambiar reinicia los daemons.
+	FR	Choisissez le moteur de lecture utilisé pour le streaming : librespot (par défaut, bien testé) ou Soloist (le binaire officiel de Spotify, nécessite une clé API Spotify Soloist). Le changement redémarre les démons.
+	IT	Scegli il motore di riproduzione usato per lo streaming: librespot (predefinito, ben testato) o Soloist (il binario ufficiale di Spotify, richiede una chiave API di Spotify Soloist). Il cambio riavvia i demoni.
+	NL	Kies de afspeel-engine die wordt gebruikt voor streaming: librespot (standaard, goed getest) of Soloist (Spotify's officiële binaire bestand, vereist een Spotify Soloist API-sleutel). Wisselen herstart de daemons.
+	NO	Velg avspillingsmotoren som brukes for strømming: librespot (standard, godt testet) eller Soloist (Spotifys offisielle binærfil, krever en Spotify Soloist API-nøkkel). Bytte starter daemonene på nytt.
+	PL	Wybierz silnik odtwarzania używany do strumieniowania: librespot (domyślny, dobrze przetestowany) lub Soloist (oficjalny plik binarny Spotify, wymaga klucza API Spotify Soloist). Przełączenie restartuje demony.
+	SV	Välj uppspelningsmotorn som används för streaming: librespot (standard, väl testad) eller Soloist (Spotifys officiella binärfil, kräver en Spotify Soloist API-nyckel). Byte startar om demonerna.
 
 PLUGIN_SPOTON_SOLOIST_KEY
-	CS	spak-key
-	DA	spak-nøgle
-	DE	spak-Key
-	EN	spak-Key
-	ES	spak-key
-	FR	spak-key
-	IT	spak-key
-	NL	spak-key
-	NO	spak-nøkkel
-	PL	klucz spak
-	SV	spak-nyckel
+	CS	Klíč Spotify Soloist API
+	DA	Spotify Soloist API-nøgle
+	DE	Spotify-Soloist-API-Key
+	EN	Spotify Soloist API key
+	ES	Clave de API de Spotify Soloist
+	FR	Clé API Spotify Soloist
+	IT	Chiave API di Spotify Soloist
+	NL	Spotify Soloist API-sleutel
+	NO	Spotify Soloist API-nøkkel
+	PL	Klucz API Spotify Soloist
+	SV	Spotify Soloist API-nyckel
 
 PLUGIN_SPOTON_SOLOIST_KEY_DESC
-	CS	Klíč spak potřebný ke spuštění binárního souboru Soloist. Získejte jej ze svého předplatného Spotify Premium podle dokumentace Soloist od Spotify. Ukládá se lokálně, SpotOn jej nikam nepřenáší.
-	DA	Spak-nøglen, der kræves for at køre Soloist-binærfilen. Hentes fra din Spotify Premium-konto ifølge Spotifys Soloist-dokumentation. Gemmes lokalt og overføres aldrig nogen steder af SpotOn.
-	DE	Der spak-Key, der zum Ausführen des Soloist-Binaries benötigt wird. Über dein Spotify-Premium-Konto gemäß Spotifys Soloist-Dokumentation zu beziehen. Wird lokal gespeichert und von SpotOn nirgendwohin übertragen.
-	EN	The spak-key required to run the Soloist binary. Obtain it from your Spotify Premium account per Spotify's Soloist documentation. Stored locally, never transmitted anywhere by SpotOn.
-	ES	La spak-key necesaria para ejecutar el binario Soloist. Obténla desde tu cuenta de Spotify Premium según la documentación de Soloist de Spotify. Se guarda localmente y SpotOn nunca la transmite a ningún sitio.
-	FR	La spak-key nécessaire pour exécuter le binaire Soloist. À obtenir depuis votre compte Spotify Premium selon la documentation Soloist de Spotify. Stockée localement, jamais transmise nulle part par SpotOn.
-	IT	La spak-key necessaria per eseguire il binario Soloist. Ottienila dal tuo account Spotify Premium secondo la documentazione Soloist di Spotify. Salvata localmente, mai trasmessa altrove da SpotOn.
-	NL	De spak-key die nodig is om het Soloist binaire bestand uit te voeren. Verkrijgbaar via je Spotify Premium-account volgens Spotify's Soloist-documentatie. Wordt lokaal opgeslagen en nooit door SpotOn ergens naartoe verzonden.
-	NO	Spak-nøkkelen som kreves for å kjøre Soloist-binærfilen. Hentes fra Spotify Premium-kontoen din i henhold til Spotifys Soloist-dokumentasjon. Lagres lokalt og overføres aldri noe sted av SpotOn.
-	PL	Klucz spak wymagany do uruchomienia pliku binarnego Soloist. Uzyskaj go ze swojego konta Spotify Premium zgodnie z dokumentacją Soloist firmy Spotify. Przechowywany lokalnie, nigdy nie jest wysyłany przez SpotOn.
-	SV	Spak-nyckeln som krävs för att köra Soloist-binärfilen. Hämtas från ditt Spotify Premium-konto enligt Spotifys Soloist-dokumentation. Lagras lokalt och skickas aldrig någonstans av SpotOn.
+	CS	Klíč Spotify Soloist API potřebný ke spuštění binárního souboru Soloist. Získejte jej ze svého předplatného Spotify Premium podle dokumentace Soloist od Spotify. Ukládá se lokálně, SpotOn jej nikam nepřenáší.
+	DA	Spotify Soloist API-nøglen, der kræves for at køre Soloist-binærfilen. Hentes fra din Spotify Premium-konto ifølge Spotifys Soloist-dokumentation. Gemmes lokalt og overføres aldrig nogen steder af SpotOn.
+	DE	Der Spotify-Soloist-API-Key, der zum Ausführen des Soloist-Binaries benötigt wird. Über dein Spotify-Premium-Konto gemäß Spotifys Soloist-Dokumentation zu beziehen. Wird lokal gespeichert und von SpotOn nirgendwohin übertragen.
+	EN	The Spotify Soloist API key required to run the Soloist binary. Obtain it from your Spotify Premium account per Spotify's Soloist documentation. Stored locally, never transmitted anywhere by SpotOn.
+	ES	La clave de API de Spotify Soloist necesaria para ejecutar el binario Soloist. Obténla desde tu cuenta de Spotify Premium según la documentación de Soloist de Spotify. Se guarda localmente y SpotOn nunca la transmite a ningún sitio.
+	FR	La clé API Spotify Soloist nécessaire pour exécuter le binaire Soloist. À obtenir depuis votre compte Spotify Premium selon la documentation Soloist de Spotify. Stockée localement, jamais transmise nulle part par SpotOn.
+	IT	La chiave API di Spotify Soloist necessaria per eseguire il binario Soloist. Ottienila dal tuo account Spotify Premium secondo la documentazione Soloist di Spotify. Salvata localmente, mai trasmessa altrove da SpotOn.
+	NL	De Spotify Soloist API-sleutel die nodig is om het Soloist binaire bestand uit te voeren. Verkrijgbaar via je Spotify Premium-account volgens Spotify's Soloist-documentatie. Wordt lokaal opgeslagen en nooit door SpotOn ergens naartoe verzonden.
+	NO	Spotify Soloist API-nøkkelen som kreves for å kjøre Soloist-binærfilen. Hentes fra Spotify Premium-kontoen din i henhold til Spotifys Soloist-dokumentasjon. Lagres lokalt og overføres aldri noe sted av SpotOn.
+	PL	Klucz API Spotify Soloist wymagany do uruchomienia pliku binarnego Soloist. Uzyskaj go ze swojego konta Spotify Premium zgodnie z dokumentacją Soloist firmy Spotify. Przechowywany lokalnie, nigdy nie jest wysyłany przez SpotOn.
+	SV	Spotify Soloist API-nyckeln som krävs för att köra Soloist-binärfilen. Hämtas från ditt Spotify Premium-konto enligt Spotifys Soloist-dokumentation. Lagras lokalt och skickas aldrig någonstans av SpotOn.
 
 PLUGIN_SPOTON_SOLOIST_BINARY_MISSING
 	CS	Binární soubor Soloist nebyl nalezen - bude v případě potřeby automaticky stažen.
@@ -129,30 +129,30 @@ PLUGIN_SPOTON_SOLOIST_BINARY_MISSING
 	SV	Soloist-binärfilen hittades inte - den laddas ner automatiskt vid behov.
 
 PLUGIN_SPOTON_SOLOIST_KEY_MISSING
-	CS	Není nakonfigurován žádný klíč spak - Soloist bez něj nemůže spustit.
-	DA	Ingen spak-nøgle konfigureret - Soloist kan ikke starte uden en.
-	DE	Kein spak-Key konfiguriert - Soloist kann ohne diesen nicht starten.
-	EN	No spak-key configured - Soloist cannot start without one.
-	ES	No hay ninguna spak-key configurada - Soloist no puede iniciarse sin una.
-	FR	Aucune spak-key configurée - Soloist ne peut pas démarrer sans.
-	IT	Nessuna spak-key configurata - Soloist non può avviarsi senza.
-	NL	Geen spak-key geconfigureerd - Soloist kan niet starten zonder.
-	NO	Ingen spak-nøkkel konfigurert - Soloist kan ikke starte uten en.
-	PL	Nie skonfigurowano klucza spak - Soloist nie może się uruchomić bez niego.
-	SV	Ingen spak-nyckel konfigurerad - Soloist kan inte starta utan en.
+	CS	Není nakonfigurován žádný klíč Spotify Soloist API - Soloist bez něj nemůže spustit.
+	DA	Ingen Spotify Soloist API-nøgle konfigureret - Soloist kan ikke starte uden en.
+	DE	Kein Spotify-Soloist-API-Key konfiguriert - Soloist kann ohne diesen nicht starten.
+	EN	No Spotify Soloist API key configured - Soloist cannot start without one.
+	ES	No hay ninguna clave de API de Spotify Soloist configurada - Soloist no puede iniciarse sin una.
+	FR	Aucune clé API Spotify Soloist configurée - Soloist ne peut pas démarrer sans.
+	IT	Nessuna chiave API di Spotify Soloist configurata - Soloist non può avviarsi senza.
+	NL	Geen Spotify Soloist API-sleutel geconfigureerd - Soloist kan niet starten zonder.
+	NO	Ingen Spotify Soloist API-nøkkel konfigurert - Soloist kan ikke starte uten en.
+	PL	Nie skonfigurowano klucza API Spotify Soloist - Soloist nie może się uruchomić bez niego.
+	SV	Ingen Spotify Soloist API-nyckel konfigurerad - Soloist kan inte starta utan en.
 
 PLUGIN_SPOTON_SOLOIST_HINT
-	CS	Soloist je na tomto systému k dispozici. Pro jeho použití získejte svůj klíč spak od Spotify:
-	DA	Soloist er tilgængelig på dette system. For at bruge det skal du hente din spak-nøgle fra Spotify:
-	DE	Soloist ist auf diesem System verfügbar. Um es zu nutzen, hole dir deinen spak-Key von Spotify:
-	EN	Soloist is available on this system. To use it, get your spak key from Spotify:
-	ES	Soloist está disponible en este sistema. Para usarlo, obtén tu spak-key de Spotify:
-	FR	Soloist est disponible sur ce système. Pour l'utiliser, obtenez votre spak-key auprès de Spotify :
-	IT	Soloist è disponibile su questo sistema. Per usarlo, ottieni la tua spak-key da Spotify:
-	NL	Soloist is beschikbaar op dit systeem. Om het te gebruiken, haal je je spak-key op bij Spotify:
-	NO	Soloist er tilgjengelig på dette systemet. For å bruke det, hent spak-nøkkelen din fra Spotify:
-	PL	Soloist jest dostępny w tym systemie. Aby go używać, pobierz swój klucz spak od Spotify:
-	SV	Soloist är tillgängligt på det här systemet. För att använda det, hämta din spak-nyckel från Spotify:
+	CS	Soloist je na tomto systému k dispozici. Pro jeho použití získejte svůj klíč Spotify Soloist API od Spotify:
+	DA	Soloist er tilgængelig på dette system. For at bruge det skal du hente din Spotify Soloist API-nøgle fra Spotify:
+	DE	Soloist ist auf diesem System verfügbar. Um es zu nutzen, hole dir deinen Spotify-Soloist-API-Key von Spotify:
+	EN	Soloist is available on this system. To use it, get your Spotify Soloist API key from Spotify:
+	ES	Soloist está disponible en este sistema. Para usarlo, obtén tu clave de API de Spotify Soloist de Spotify:
+	FR	Soloist est disponible sur ce système. Pour l'utiliser, obtenez votre clé API Spotify Soloist auprès de Spotify :
+	IT	Soloist è disponibile su questo sistema. Per usarlo, ottieni la tua chiave API di Spotify Soloist da Spotify:
+	NL	Soloist is beschikbaar op dit systeem. Om het te gebruiken, haal je je Spotify Soloist API-sleutel op bij Spotify:
+	NO	Soloist er tilgjengelig på dette systemet. For å bruke det, hent Spotify Soloist API-nøkkelen din fra Spotify:
+	PL	Soloist jest dostępny w tym systemie. Aby go używać, pobierz swój klucz API Spotify Soloist od Spotify:
+	SV	Soloist är tillgängligt på det här systemet. För att använda det, hämta din Spotify Soloist API-nyckel från Spotify:
 
 PLUGIN_SPOTON_SOLOIST_HINT_LINK
 	CS	jak získat klíč
@@ -194,17 +194,17 @@ PLUGIN_SPOTON_SOLOIST_SWITCH_BUTTON
 	SV	Byt till Soloist
 
 PLUGIN_SPOTON_SOLOIST_UNSUPPORTED_OS
-	CS	Soloist je podporován pouze na Linuxu. Na této platformě prosím použijte librespot.
-	DA	Soloist understøttes kun på Linux. Brug venligst librespot på denne platform.
-	DE	Soloist wird nur unter Linux unterstützt. Bitte auf dieser Plattform librespot verwenden.
-	EN	Soloist is only supported on Linux. Please use librespot on this platform.
-	ES	Soloist solo es compatible con Linux. Usa librespot en esta plataforma.
-	FR	Soloist n'est pris en charge que sous Linux. Veuillez utiliser librespot sur cette plateforme.
-	IT	Soloist è supportato solo su Linux. Utilizza librespot su questa piattaforma.
-	NL	Soloist wordt alleen ondersteund op Linux. Gebruik librespot op dit platform.
-	NO	Soloist støttes kun på Linux. Bruk librespot på denne plattformen.
-	PL	Soloist jest obsługiwany tylko w systemie Linux. Na tej platformie użyj librespot.
-	SV	Soloist stöds endast på Linux. Använd librespot på denna plattform.
+	CS	SpotOn podporuje Soloist pouze na Linuxu. Na této platformě prosím použijte librespot.
+	DA	SpotOn understøtter kun Soloist på Linux. Brug venligst librespot på denne platform.
+	DE	SpotOn unterstützt Soloist nur unter Linux. Bitte auf dieser Plattform librespot verwenden.
+	EN	SpotOn supports Soloist on Linux only. Please use librespot on this platform.
+	ES	SpotOn solo admite Soloist en Linux. Usa librespot en esta plataforma.
+	FR	SpotOn ne prend en charge Soloist que sous Linux. Veuillez utiliser librespot sur cette plateforme.
+	IT	SpotOn supporta Soloist solo su Linux. Utilizza librespot su questa piattaforma.
+	NL	SpotOn ondersteunt Soloist alleen op Linux. Gebruik librespot op dit platform.
+	NO	SpotOn støtter Soloist kun på Linux. Bruk librespot på denne plattformen.
+	PL	SpotOn obsługuje Soloist tylko w systemie Linux. Na tej platformie użyj librespot.
+	SV	SpotOn stöder Soloist endast på Linux. Använd librespot på denna plattform.
 
 PLUGIN_SPOTON_SOLOIST_STATUS
 	CS	Soloist připraven
@@ -220,30 +220,30 @@ PLUGIN_SPOTON_SOLOIST_STATUS
 	SV	Soloist redo
 
 PLUGIN_SPOTON_SOLOIST_KEY_INVALID
-	CS	Klíč spak obsahuje neplatné znaky nebo je příliš krátký - nebyl uložen.
-	DA	Spak-nøglen indeholder ugyldige tegn eller er for kort - den blev ikke gemt.
-	DE	Der spak-Key enthält ungültige Zeichen oder ist zu kurz - er wurde nicht gespeichert.
-	EN	The spak-key contains invalid characters or is too short - it was not saved.
-	ES	La spak-key contiene caracteres no válidos o es demasiado corta - no se guardó.
-	FR	La spak-key contient des caractères non valides ou est trop courte - elle n'a pas été enregistrée.
-	IT	La spak-key contiene caratteri non validi o è troppo corta - non è stata salvata.
-	NL	De spak-key bevat ongeldige tekens of is te kort - deze is niet opgeslagen.
-	NO	Spak-nøkkelen inneholder ugyldige tegn eller er for kort - den ble ikke lagret.
-	PL	Klucz spak zawiera nieprawidłowe znaki lub jest zbyt krótki - nie został zapisany.
-	SV	Spak-nyckeln innehåller ogiltiga tecken eller är för kort - den sparades inte.
+	CS	Klíč Spotify Soloist API obsahuje neplatné znaky nebo je příliš krátký - nebyl uložen.
+	DA	Spotify Soloist API-nøglen indeholder ugyldige tegn eller er for kort - den blev ikke gemt.
+	DE	Der Spotify-Soloist-API-Key enthält ungültige Zeichen oder ist zu kurz - er wurde nicht gespeichert.
+	EN	The Spotify Soloist API key contains invalid characters or is too short - it was not saved.
+	ES	La clave de API de Spotify Soloist contiene caracteres no válidos o es demasiado corta - no se guardó.
+	FR	La clé API Spotify Soloist contient des caractères non valides ou est trop courte - elle n'a pas été enregistrée.
+	IT	La chiave API di Spotify Soloist contiene caratteri non validi o è troppo corta - non è stata salvata.
+	NL	De Spotify Soloist API-sleutel bevat ongeldige tekens of is te kort - deze is niet opgeslagen.
+	NO	Spotify Soloist API-nøkkelen inneholder ugyldige tegn eller er for kort - den ble ikke lagret.
+	PL	Klucz API Spotify Soloist zawiera nieprawidłowe znaki lub jest zbyt krótki - nie został zapisany.
+	SV	Spotify Soloist API-nyckeln innehåller ogiltiga tecken eller är för kort - den sparades inte.
 
 PLUGIN_SPOTON_SOLOIST_KEY_WRITE_FAILED
-	CS	Klíč spak se nepodařilo uložit (chyba zápisu) - zkuste to prosím znovu.
-	DA	Spak-nøglen kunne ikke gemmes (skrivefejl) - prøv igen.
-	DE	Der spak-Key konnte nicht gespeichert werden (Schreibfehler) - bitte erneut versuchen.
-	EN	Failed to save the spak-key (write error) - please try again.
-	ES	No se pudo guardar la spak-key (error de escritura) - inténtalo de nuevo.
-	FR	Impossible d'enregistrer la spak-key (erreur d'écriture) - veuillez réessayer.
-	IT	Impossibile salvare la spak-key (errore di scrittura) - riprova.
-	NL	De spak-key kon niet worden opgeslagen (schrijffout) - probeer het opnieuw.
-	NO	Spak-nøkkelen kunne ikke lagres (skrivefeil) - prøv igjen.
-	PL	Nie udało się zapisać klucza spak (błąd zapisu) - spróbuj ponownie.
-	SV	Spak-nyckeln kunde inte sparas (skrivfel) - försök igen.
+	CS	Klíč Spotify Soloist API se nepodařilo uložit (chyba zápisu) - zkuste to prosím znovu.
+	DA	Spotify Soloist API-nøglen kunne ikke gemmes (skrivefejl) - prøv igen.
+	DE	Der Spotify-Soloist-API-Key konnte nicht gespeichert werden (Schreibfehler) - bitte erneut versuchen.
+	EN	Failed to save the Spotify Soloist API key (write error) - please try again.
+	ES	No se pudo guardar la clave de API de Spotify Soloist (error de escritura) - inténtalo de nuevo.
+	FR	Impossible d'enregistrer la clé API Spotify Soloist (erreur d'écriture) - veuillez réessayer.
+	IT	Impossibile salvare la chiave API di Spotify Soloist (errore di scrittura) - riprova.
+	NL	De Spotify Soloist API-sleutel kon niet worden opgeslagen (schrijffout) - probeer het opnieuw.
+	NO	Spotify Soloist API-nøkkelen kunne ikke lagres (skrivefeil) - prøv igjen.
+	PL	Nie udało się zapisać klucza API Spotify Soloist (błąd zapisu) - spróbuj ponownie.
+	SV	Spotify Soloist API-nyckeln kunde inte sparas (skrivfel) - försök igen.
 
 PLUGIN_SPOTON_SETTINGS_BACKEND_SECTION
 	CS	Přehrávací backend
@@ -766,17 +766,17 @@ PLUGIN_SPOTON_SOLOIST_QUALITY
 	SV	Spotify-streamingkvalitet
 
 PLUGIN_SPOTON_SOLOIST_QUALITY_DESC
-	CS	Kvalita, se kterou Spotify streamuje na toto zařízení Soloist - stejné názvy jako v aplikaci Spotify. Bezztrátový režim vyžaduje předplatné Premium s povoleným Lossless.
-	DA	Kvalitet Spotify streamer til denne Soloist-enhed - samme navne som i Spotify-appen. Tabsfri kræver en Premium-plan med lossless aktiveret.
-	DE	Qualität, mit der Spotify an dieses Soloist-Gerät streamt - dieselben Namen wie in der Spotify-App. Verlustfrei benötigt einen Premium-Plan mit aktiviertem Lossless.
-	EN	Quality Spotify streams to this Soloist device - the same names as in the Spotify app. Lossless needs a Premium plan with lossless enabled.
-	ES	Calidad con la que Spotify transmite a este dispositivo Soloist - los mismos nombres que en la app de Spotify. Sin pérdida requiere un plan Premium con lossless activado.
-	FR	Qualité à laquelle Spotify diffuse vers cet appareil Soloist - les mêmes noms que dans l'application Spotify. Sans perte nécessite un abonnement Premium avec le mode sans perte activé.
-	IT	Qualità con cui Spotify trasmette a questo dispositivo Soloist - gli stessi nomi dell'app Spotify. Senza perdita richiede un piano Premium con lossless attivato.
-	NL	Kwaliteit waarmee Spotify naar dit Soloist-apparaat streamt - dezelfde namen als in de Spotify-app. Lossless vereist een Premium-abonnement met lossless ingeschakeld.
-	NO	Kvalitet Spotify strømmer til denne Soloist-enheten - samme navn som i Spotify-appen. Tapsfri krever en Premium-plan med lossless aktivert.
-	PL	Jakość, w jakiej Spotify strumieniuje do tego urządzenia Soloist - te same nazwy co w aplikacji Spotify. Bezstratna wymaga planu Premium z włączonym trybem lossless.
-	SV	Kvalitet Spotify strömmar till den här Soloist-enheten - samma namn som i Spotify-appen. Förlustfri kräver ett Premium-abonnemang med lossless aktiverat.
+	CS	Platí jen pro Soloist. Kvalita, se kterou Spotify streamuje na toto zařízení Soloist - stejné názvy jako v aplikaci Spotify. Bezztrátový režim vyžaduje předplatné Premium s povoleným Lossless.
+	DA	Bruges kun med Soloist. Kvalitet Spotify streamer til denne Soloist-enhed - samme navne som i Spotify-appen. Tabsfri kræver en Premium-plan med lossless aktiveret.
+	DE	Gilt nur für Soloist. Qualität, mit der Spotify an dieses Soloist-Gerät streamt - dieselben Namen wie in der Spotify-App. Verlustfrei benötigt einen Premium-Plan mit aktiviertem Lossless.
+	EN	Only used with Soloist. Quality Spotify streams to this Soloist device - the same names as in the Spotify app. Lossless needs a Premium plan with lossless enabled.
+	ES	Solo se usa con Soloist. Calidad con la que Spotify transmite a este dispositivo Soloist - los mismos nombres que en la app de Spotify. Sin pérdida requiere un plan Premium con lossless activado.
+	FR	Utilisé uniquement avec Soloist. Qualité à laquelle Spotify diffuse vers cet appareil Soloist - les mêmes noms que dans l'application Spotify. Sans perte nécessite un abonnement Premium avec le mode sans perte activé.
+	IT	Usato solo con Soloist. Qualità con cui Spotify trasmette a questo dispositivo Soloist - gli stessi nomi dell'app Spotify. Senza perdita richiede un piano Premium con lossless attivato.
+	NL	Alleen gebruikt met Soloist. Kwaliteit waarmee Spotify naar dit Soloist-apparaat streamt - dezelfde namen als in de Spotify-app. Lossless vereist een Premium-abonnement met lossless ingeschakeld.
+	NO	Brukes bare med Soloist. Kvalitet Spotify strømmer til denne Soloist-enheten - samme navn som i Spotify-appen. Tapsfri krever en Premium-plan med lossless aktivert.
+	PL	Używane tylko z Soloist. Jakość, w jakiej Spotify strumieniuje do tego urządzenia Soloist - te same nazwy co w aplikacji Spotify. Bezstratna wymaga planu Premium z włączonym trybem lossless.
+	SV	Används bara med Soloist. Kvalitet Spotify strömmar till den här Soloist-enheten - samma namn som i Spotify-appen. Förlustfri kräver ett Premium-abonnemang med lossless aktiverat.
 
 PLUGIN_SPOTON_SOLOIST_QUALITY_AUTOMATIC
 	CS	Automaticky
@@ -868,6 +868,123 @@ PLUGIN_SPOTON_SOLOIST_QUALITY_LOSSLESS_24
 	NO	Tapsfri (24-bit, angitt i Spotify-appen)
 	PL	Bezstratna (24-bitowa, ustawiona w aplikacji Spotify)
 	SV	Förlustfri (24-bit, inställd i Spotify-appen)
+
+PLUGIN_SPOTON_PLAYER_SECTION_GENERAL
+	CS	Obecné
+	DA	Generelt
+	DE	Allgemein
+	EN	General
+	ES	General
+	FR	Général
+	IT	Generale
+	NL	Algemeen
+	NO	Generelt
+	PL	Ogólne
+	SV	Allmänt
+
+PLUGIN_SPOTON_PLAYER_SECTION_GENERAL_DESC
+	CS	Tato nastavení platí pro oba backendy přehrávání (librespot i Soloist).
+	DA	Disse indstillinger gælder for begge afspilnings-backends (librespot og Soloist).
+	DE	Diese Einstellungen gelten für beide Wiedergabe-Backends (librespot und Soloist).
+	EN	These settings apply to both playback backends (librespot and Soloist).
+	ES	Estos ajustes se aplican a ambos backends de reproducción (librespot y Soloist).
+	FR	Ces réglages s'appliquent aux deux backends de lecture (librespot et Soloist).
+	IT	Queste impostazioni valgono per entrambi i backend di riproduzione (librespot e Soloist).
+	NL	Deze instellingen gelden voor beide afspeel-backends (librespot en Soloist).
+	NO	Disse innstillingene gjelder for begge avspillingsbackendene (librespot og Soloist).
+	PL	Te ustawienia dotyczą obu backendów odtwarzania (librespot i Soloist).
+	SV	Dessa inställningar gäller för båda uppspelningsbackendarna (librespot och Soloist).
+
+PLUGIN_SPOTON_PLAYER_SECTION_LIBRESPOT
+	CS	Pouze s librespot
+	DA	Kun med librespot
+	DE	Nur mit librespot
+	EN	Only with librespot
+	ES	Solo con librespot
+	FR	Uniquement avec librespot
+	IT	Solo con librespot
+	NL	Alleen met librespot
+	NO	Kun med librespot
+	PL	Tylko z librespot
+	SV	Endast med librespot
+
+PLUGIN_SPOTON_PLAYER_SECTION_SOLOIST
+	CS	Pouze se Soloist
+	DA	Kun med Soloist
+	DE	Nur mit Soloist
+	EN	Only with Soloist
+	ES	Solo con Soloist
+	FR	Uniquement avec Soloist
+	IT	Solo con Soloist
+	NL	Alleen met Soloist
+	NO	Kun med Soloist
+	PL	Tylko z Soloist
+	SV	Endast med Soloist
+
+PLUGIN_SPOTON_PLAYER_SECTION_OTHER_BACKEND
+	CS	Nastavení, která platí jen pro %s, se zde zobrazí, když je v nastavení SpotOn zvolen jako backend přehrávání.
+	DA	Indstillingerne, der kun gælder for %s, vises her, når det er valgt som afspilnings-backend i SpotOn-indstillingerne.
+	DE	Die Einstellungen, die nur für %s gelten, erscheinen hier, wenn es in den SpotOn-Einstellungen als Wiedergabe-Backend gewählt ist.
+	EN	The settings that only apply to %s appear here when it is chosen as the playback backend in the SpotOn settings.
+	ES	Los ajustes que solo se aplican a %s aparecen aquí cuando se elige como backend de reproducción en los ajustes de SpotOn.
+	FR	Les réglages propres à %s apparaissent ici lorsqu'il est choisi comme backend de lecture dans les réglages de SpotOn.
+	IT	Le impostazioni valide solo per %s compaiono qui quando è scelto come backend di riproduzione nelle impostazioni di SpotOn.
+	NL	De instellingen die alleen voor %s gelden, verschijnen hier wanneer het als afspeel-backend is gekozen in de SpotOn-instellingen.
+	NO	Innstillingene som bare gjelder for %s, vises her når det er valgt som avspillingsbackend i SpotOn-innstillingene.
+	PL	Ustawienia dotyczące tylko %s pojawiają się tutaj, gdy zostanie on wybrany jako backend odtwarzania w ustawieniach SpotOn.
+	SV	Inställningarna som bara gäller %s visas här när det har valts som uppspelningsbackend i SpotOn-inställningarna.
+
+PLUGIN_SPOTON_STREAM_FORMAT_MP3_LMS
+	CS	Bitrate MP3 se nastavuje v LMS: Nastavení přehrávače, Zvuk, Omezení přenosové rychlosti (bitrate) (nyní: %s).
+	DA	MP3-bithastigheden indstilles i LMS: Indstillinger for afspiller, Lyd, Begrænsning af bithastighed (lige nu: %s).
+	DE	Die MP3-Bitrate wird in LMS eingestellt: Player-Einstellungen, Audio, Bitraten-Beschränkung (zurzeit: %s).
+	EN	The MP3 bitrate is set in LMS: Player Settings, Audio, Bitrate Limiting (currently: %s).
+	ES	La tasa de bits de MP3 se ajusta en LMS: Configuración de reproductor, Audio, Limitación de velocidad de bits (ahora: %s).
+	FR	Le débit MP3 se règle dans LMS : Réglages de la platine, Audio, Limite transcodage (actuellement : %s).
+	IT	Il bitrate MP3 si imposta in LMS: Impostazioni lettore, Audio, Limitazione del bitrate (attualmente: %s).
+	NL	De MP3-bitsnelheid stel je in LMS in: Instellingen van muziekspeler, Audio, Bitsnelheid limiteren (nu: %s).
+	NO	MP3-bithastigheten stilles inn i LMS: Spillerinnstillinger, Lyd, Begrensning av bithastighet (nå: %s).
+	PL	Przepływność MP3 ustawia się w LMS: Ustawienia odtwarzacza, Dźwięk, Ograniczenie szybkości transmisji bitów (obecnie: %s).
+	SV	MP3-bithastigheten ställs in i LMS: Spelarinställningar, Ljud, Gräns för bithastighet (just nu: %s).
+
+PLUGIN_SPOTON_MP3_LIMIT_NONE
+	CS	bez omezení, výchozí LAME
+	DA	ingen grænse, LAME-standard
+	DE	keine Begrenzung, LAME-Standard
+	EN	no limit, LAME default
+	ES	sin límite, valor predeterminado de LAME
+	FR	aucune limite, valeur par défaut de LAME
+	IT	nessun limite, predefinito di LAME
+	NL	geen limiet, LAME-standaard
+	NO	ingen grense, LAME-standard
+	PL	bez limitu, domyślne LAME
+	SV	ingen gräns, LAME-standard
+
+PLUGIN_SPOTON_MP3_LIMIT_KBPS
+	CS	%s kbps
+	DA	%s kbps
+	DE	%s kbps
+	EN	%s kbps
+	ES	%s kbps
+	FR	%s kbps
+	IT	%s kbps
+	NL	%s kbps
+	NO	%s kbps
+	PL	%s kbps
+	SV	%s kbps
+
+PLUGIN_SPOTON_FORMAT_SETTING
+	CS	nastavení
+	DA	indstilling
+	DE	Einstellung
+	EN	setting
+	ES	ajuste
+	FR	réglage
+	IT	impostazione
+	NL	instelling
+	NO	innstilling
+	PL	ustawienie
+	SV	inställning
 
 PLUGIN_SPOTON_SOLOIST_QUALITY_USE_GLOBAL
 	CS	Použít globální nastavení
@@ -1884,17 +2001,17 @@ PLUGIN_SPOTON_AUTOPLAY_ENABLED
 	SV	Automatisk uppspelning (Autoplay)
 
 PLUGIN_SPOTON_AUTOPLAY_ENABLED_DESC
-	CS	Pokud je aktivováno, Spotify pokračuje v přehrávání podobných skladeb po skončení playlistu nebo alba (pouze režim Connect).
-	DA	Når aktiveret, fortsætter Spotify med at afspille lignende numre efter en playliste eller et album slutter (kun Connect-tilstand).
-	DE	Wenn aktiviert, spielt Spotify nach Ende einer Playlist oder eines Albums ähnliche Titel weiter (nur Connect-Modus).
-	EN	When enabled, Spotify continues playing similar tracks after a playlist or album ends (Connect mode only).
-	ES	Cuando está activado, Spotify continúa reproduciendo canciones similares tras finalizar una lista o álbum (solo modo Connect).
-	FR	Lorsqu'activé, Spotify continue la lecture avec des titres similaires après la fin d'une playlist ou d'un album (mode Connect uniquement).
-	IT	Se abilitato, Spotify continua a riprodurre brani simili dopo la fine di una playlist o di un album (solo modalità Connect).
-	NL	Indien ingeschakeld, speelt Spotify vergelijkbare nummers af nadat een afspeellijst of album is afgelopen (alleen Connect-modus).
-	NO	Når aktivert, fortsetter Spotify å spille lignende spor etter at en spilleliste eller et album er ferdig (kun Connect-modus).
-	PL	Po włączeniu Spotify kontynuuje odtwarzanie podobnych utworów po zakończeniu playlisty lub albumu (tylko tryb Connect).
-	SV	När aktiverat fortsätter Spotify att spela liknande låtar efter att en spellista eller ett album har avslutats (endast Connect-läge).
+	CS	Platí jen pro librespot. Pokud je aktivováno, Spotify pokračuje v přehrávání podobných skladeb po skončení playlistu nebo alba (pouze režim Connect).
+	DA	Bruges kun med librespot. Når aktiveret, fortsætter Spotify med at afspille lignende numre efter en playliste eller et album slutter (kun Connect-tilstand).
+	DE	Gilt nur für librespot. Wenn aktiviert, spielt Spotify nach Ende einer Playlist oder eines Albums ähnliche Titel weiter (nur Connect-Modus).
+	EN	Only used with librespot. When enabled, Spotify continues playing similar tracks after a playlist or album ends (Connect mode only).
+	ES	Solo se usa con librespot. Cuando está activado, Spotify continúa reproduciendo canciones similares tras finalizar una lista o álbum (solo modo Connect).
+	FR	Utilisé uniquement avec librespot. Lorsqu'activé, Spotify continue la lecture avec des titres similaires après la fin d'une playlist ou d'un album (mode Connect uniquement).
+	IT	Usato solo con librespot. Se abilitato, Spotify continua a riprodurre brani simili dopo la fine di una playlist o di un album (solo modalità Connect).
+	NL	Alleen gebruikt met librespot. Indien ingeschakeld, speelt Spotify vergelijkbare nummers af nadat een afspeellijst of album is afgelopen (alleen Connect-modus).
+	NO	Brukes bare med librespot. Når aktivert, fortsetter Spotify å spille lignende spor etter at en spilleliste eller et album er ferdig (kun Connect-modus).
+	PL	Używane tylko z librespot. Po włączeniu Spotify kontynuuje odtwarzanie podobnych utworów po zakończeniu playlisty lub albumu (tylko tryb Connect).
+	SV	Används bara med librespot. När aktiverat fortsätter Spotify att spela liknande låtar efter att en spellista eller ett album har avslutats (endast Connect-läge).
 
 PLUGIN_SPOTON_AUTOPLAY_ENABLED_LABEL
 	CS	Automatické přehrávání aktivovat
@@ -1988,17 +2105,17 @@ PLUGIN_SPOTON_DISCOVERY_ENABLED
 	SV	mDNS-identifiering
 
 PLUGIN_SPOTON_DISCOVERY_ENABLED_DESC
-	CS	Oznámit zařízení přes mDNS v místní síti (Spotify App najde zařízení bez síťového obchvatu)
-	DA	Annoncer enhed via mDNS i det lokale netværk (Spotify-appen finder enheden uden netværksomvej)
-	DE	Gerät via mDNS im lokalen Netzwerk ankündigen (Spotify-App findet Gerät ohne Netzwerkumweg)
-	EN	Announce device via mDNS in local network (Spotify app discovers device without network detour)
-	ES	Anunciar dispositivo a través de mDNS en la red local (la App de Spotify descubre el dispositivo sin desvío de red)
-	FR	Annoncer l'appareil via mDNS sur le réseau local (l'application Spotify découvre l'appareil sans détour réseau)
-	IT	Annuncia dispositivo via mDNS nella rete locale (l'app Spotify scopre il dispositivo senza deviazioni di rete)
-	NL	Apparaat via mDNS aankondigen in lokaal netwerk (Spotify-app ontdekt apparaat zonder netwerkomweg)
-	NO	Kunngjør enhet via mDNS i lokalt nettverk (Spotify-appen finner enheten uten nettverksomvei)
-	PL	Ogłoś urządzenie przez mDNS w sieci lokalnej (aplikacja Spotify wykrywa urządzenie bez obejścia sieciowego)
-	SV	Annonsera enhet via mDNS i lokalt nätverk (Spotify-appen hittar enheten utan nätverksomväg)
+	CS	Platí jen pro librespot. Oznámit zařízení přes mDNS v místní síti (Spotify App najde zařízení bez síťového obchvatu)
+	DA	Bruges kun med librespot. Annoncer enhed via mDNS i det lokale netværk (Spotify-appen finder enheden uden netværksomvej)
+	DE	Gilt nur für librespot. Gerät via mDNS im lokalen Netzwerk ankündigen (Spotify-App findet Gerät ohne Netzwerkumweg)
+	EN	Only used with librespot. Announce device via mDNS in local network (Spotify app discovers device without network detour)
+	ES	Solo se usa con librespot. Anunciar dispositivo a través de mDNS en la red local (la App de Spotify descubre el dispositivo sin desvío de red)
+	FR	Utilisé uniquement avec librespot. Annoncer l'appareil via mDNS sur le réseau local (l'application Spotify découvre l'appareil sans détour réseau)
+	IT	Usato solo con librespot. Annuncia dispositivo via mDNS nella rete locale (l'app Spotify scopre il dispositivo senza deviazioni di rete)
+	NL	Alleen gebruikt met librespot. Apparaat via mDNS aankondigen in lokaal netwerk (Spotify-app ontdekt apparaat zonder netwerkomweg)
+	NO	Brukes bare med librespot. Kunngjør enhet via mDNS i lokalt nettverk (Spotify-appen finner enheten uten nettverksomvei)
+	PL	Używane tylko z librespot. Ogłoś urządzenie przez mDNS w sieci lokalnej (aplikacja Spotify wykrywa urządzenie bez obejścia sieciowego)
+	SV	Används bara med librespot. Annonsera enhet via mDNS i lokalt nätverk (Spotify-appen hittar enheten utan nätverksomväg)
 
 PLUGIN_SPOTON_DISCOVERY_ENABLED_LABEL
 	CS	mDNS zjišťování aktivní
@@ -2365,17 +2482,17 @@ PLUGIN_SPOTON_BITRATE_OVERRIDE
 	SV	Bithastighet (spelare)
 
 PLUGIN_SPOTON_BITRATE_OVERRIDE_DESC
-	CS	Přepíše globální přenosovou rychlost pro tohoto přehrávače. Výchozí nastavení používá globální hodnotu.
-	DA	Tilsidesætter den globale bithastighed for denne afspiller. Standard bruger den globale værdi.
-	DE	Überschreibt die globale Bitrate für diesen Player. Standard nutzt den globalen Wert.
-	EN	Overrides global bitrate for this player. Default uses the global value.
-	ES	Anula la tasa de bits global para este reproductor. El predeterminado usa el valor global.
-	FR	Remplace le débit binaire global pour ce lecteur. Par défaut, utilise la valeur globale.
-	IT	Sostituisce il bitrate globale per questo player. Il valore predefinito usa il valore globale.
-	NL	Overschrijft de globale bitsnelheid voor deze speler. Standaard gebruikt de globale waarde.
-	NO	Overstyrer global bithastighet for denne spilleren. Standard bruker den globale verdien.
-	PL	Zastępuje globalną przepływność dla tego odtwarzacza. Domyślnie używa wartości globalnej.
-	SV	Åsidosätter den globala bithastigheten för denna spelare. Standard använder det globala värdet.
+	CS	Platí jen pro librespot. Přepíše globální přenosovou rychlost pro tohoto přehrávače. Výchozí nastavení používá globální hodnotu.
+	DA	Bruges kun med librespot. Tilsidesætter den globale bithastighed for denne afspiller. Standard bruger den globale værdi.
+	DE	Gilt nur für librespot. Überschreibt die globale Bitrate für diesen Player. Standard nutzt den globalen Wert.
+	EN	Only used with librespot. Overrides global bitrate for this player. Default uses the global value.
+	ES	Solo se usa con librespot. Anula la tasa de bits global para este reproductor. El predeterminado usa el valor global.
+	FR	Utilisé uniquement avec librespot. Remplace le débit binaire global pour ce lecteur. Par défaut, utilise la valeur globale.
+	IT	Usato solo con librespot. Sostituisce il bitrate globale per questo player. Il valore predefinito usa il valore globale.
+	NL	Alleen gebruikt met librespot. Overschrijft de globale bitsnelheid voor deze speler. Standaard gebruikt de globale waarde.
+	NO	Brukes bare med librespot. Overstyrer global bithastighet for denne spilleren. Standard bruker den globale verdien.
+	PL	Używane tylko z librespot. Zastępuje globalną przepływność dla tego odtwarzacza. Domyślnie używa wartości globalnej.
+	SV	Används bara med librespot. Åsidosätter den globala bithastigheten för denna spelare. Standard använder det globala värdet.
 
 PLUGIN_SPOTON_BITRATE_GLOBAL
 	CS	Globální (výchozí)

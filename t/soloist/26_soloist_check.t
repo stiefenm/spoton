@@ -313,7 +313,11 @@ sub write_fake_binary {
         <$fh>;
     };
     unlike($src, qr/`\$(?:checkCmd|candidate|binary)/, 'no backtick invocation of the Soloist binary');
-    like($src, qr/open\(my \$fh, '-\|', \$candidate, VERSION_FLAG\)/, "version check uses array-form open('-|', ...)");
+    # 79-57 (GH #177): the probe forks with open('-|') and no command, and the
+    # child execs the binary in list form (indirect object, never a shell),
+    # so the loader's stderr can be merged into the read pipe.
+    like($src, qr/open\(my \$fh, '-\|'\);/, "version check forks with open('-|') and no command (79-57)");
+    like($src, qr/exec \{ \$candidate \} \$candidate, VERSION_FLAG;/, "version check execs the binary in list form, never a shell (79-57)");
 }
 
 # ============================================================
@@ -578,6 +582,329 @@ sub write_fake_binary {
     chmod(0755, $path);
     ok(!defined(Plugins::SpotOn::Soloist::_versionProbe($path)),
         '_versionProbe() returns undef when the binary exits without --version output');
+}
+
+# ============================================================
+# Test 19 (79-57, GH #177): _versionProbeDetail() keeps the loader's stderr
+# message. A binary the dynamic loader cannot start prints nothing on
+# stdout; the reason names the missing library instead of
+# version_unparsable. The fixture text is the real loader message of the
+# unchanged soloist binary in debian:trixie-slim (79-57-DEVRUN.md).
+# ============================================================
+sub write_stderr_binary {
+    my ($path, $stderrFile, $exit) = @_;
+    open(my $fh, '>', $path) or die "write_stderr_binary: $!";
+    print $fh "#!/bin/sh\n";
+    print $fh "cat '$stderrFile' >&2\n";
+    print $fh "exit $exit\n";
+    close($fh);
+    chmod(0755, $path);
+}
+
+my $loader_fixture = "$project_dir/t/fixtures/soloist-loader/libatomic-missing.stderr.txt";
+my $glibc_fixture  = "$project_dir/t/fixtures/soloist-loader/glibc-too-old.stderr.txt";
+
+{
+    reset_all();
+    my $dir = tempdir(CLEANUP => 1);
+    my $path = catfile($dir, 'soloist');
+    write_stderr_binary($path, $loader_fixture, 127);
+    ok(Plugins::SpotOn::Soloist->can('_versionProbeDetail'),
+        '79-57 #177: _versionProbeDetail() exists');
+    my $d = Plugins::SpotOn::Soloist->can('_versionProbeDetail')
+        ? Plugins::SpotOn::Soloist::_versionProbeDetail($path) : {};
+    is($d->{reason}, 'missing_library:libatomic.so.1',
+        '79-57 #177: the real loader message (exit 127) gives reason missing_library:libatomic.so.1');
+    is($d->{soname}, 'libatomic.so.1', '79-57 #177: the detail names the soname');
+    is($d->{exit}, 127, '79-57 #177: the detail keeps the exit status');
+    ok(!defined $d->{version}, '79-57 #177: no version on a loader failure');
+    ok(!defined(Plugins::SpotOn::Soloist::_versionProbe($path)),
+        '79-57 #177: _versionProbe() keeps its contract (undef) on a loader failure');
+
+    my $f = Plugins::SpotOn::Soloist->can('lastProbeFailure')
+        ? Plugins::SpotOn::Soloist::lastProbeFailure() : undef;
+    is(ref $f, 'HASH', '79-57 #177: lastProbeFailure() holds the failure');
+    is($f && $f->{soname}, 'libatomic.so.1', '79-57 #177: lastProbeFailure() names the soname');
+    is($f && $f->{package_hint}, 'libatomic1', '79-57 #177: lastProbeFailure() names the Debian package libatomic1');
+    ok(scalar(grep { /libatomic\.so\.1/ && /libatomic1/ } @Slim::Utils::Log::logged),
+        '79-57 #177: the warn line names the soname and the package');
+    ok(!scalar(grep { /cannot open shared object file/ } @Slim::Utils::Log::logged),
+        '79-57 T-79-240: the full loader stderr is never logged');
+
+    # a successful probe clears the failure
+    my $good = catfile($dir, 'soloist-good');
+    write_fake_binary($good, '1.3.8.68');
+    is(Plugins::SpotOn::Soloist::_versionProbe($good), '1.3.8.68', '79-57 #177: a good binary still parses');
+    ok(!defined(Plugins::SpotOn::Soloist->can('lastProbeFailure')
+        ? Plugins::SpotOn::Soloist::lastProbeFailure() : 'none'),
+        '79-57 #177: a successful probe clears lastProbeFailure()');
+}
+
+{
+    reset_all();
+    my $dir = tempdir(CLEANUP => 1);
+    my $path = catfile($dir, 'soloist');
+    my $err = catfile($dir, 'gcc.err');
+    open(my $eh, '>', $err) or die $!;
+    print $eh "/s/soloist: error while loading shared libraries: libgcc_s.so.1: cannot open shared object file: No such file or directory\n";
+    close $eh;
+    write_stderr_binary($path, $err, 127);
+    my $d = Plugins::SpotOn::Soloist->can('_versionProbeDetail')
+        ? Plugins::SpotOn::Soloist::_versionProbeDetail($path) : {};
+    is($d->{reason}, 'missing_library:libgcc_s.so.1', '79-57 #177: libgcc_s.so.1 is named as well');
+    my $f = Plugins::SpotOn::Soloist->can('lastProbeFailure')
+        ? Plugins::SpotOn::Soloist::lastProbeFailure() : undef;
+    is($f && $f->{package_hint}, 'libgcc-s1', '79-57 #177: libgcc_s.so.1 maps to the Debian package libgcc-s1');
+}
+
+{
+    reset_all();
+    my $dir = tempdir(CLEANUP => 1);
+    my $path = catfile($dir, 'soloist');
+    open(my $fh, '>', $path) or die $!;
+    print $fh "#!/bin/sh\necho 'this is not a version line'\nexit 0\n";
+    close $fh;
+    chmod 0755, $path;
+    my $d = Plugins::SpotOn::Soloist->can('_versionProbeDetail')
+        ? Plugins::SpotOn::Soloist::_versionProbeDetail($path) : {};
+    is($d->{reason}, 'version_unparsable',
+        '79-57 #177: garbage on stdout with exit 0 still reads version_unparsable');
+    is($d->{exit}, 0, '79-57 #177: exit 0 is kept for the garbage case');
+}
+
+{
+    reset_all();
+    my $dir = tempdir(CLEANUP => 1);
+    my $path = catfile($dir, 'soloist');
+    write_fake_binary($path, '1.3.8.68');
+    my $d = Plugins::SpotOn::Soloist->can('_versionProbeDetail')
+        ? Plugins::SpotOn::Soloist::_versionProbeDetail($path) : {};
+    is($d->{version}, '1.3.8.68', '79-57 #177: the success case gives the version in the detail');
+    ok(!defined $d->{reason}, '79-57 #177: the success case has no reason');
+}
+
+# ============================================================
+# Test 20 (79-57, GH #183): on a system whose glibc is below the floor the
+# probe's warn line names the glibc reason, not only "unexpected --version
+# output (0 bytes)". The fixture is the real stderr of the unchanged soloist
+# in a Debian 12 image with libatomic1 (buildpack-deps:bookworm, exit 1).
+# DaemonManager is not loaded in this harness; its soloistGlibcProblem() is
+# stood in for by a test double (the real one is pinned in t/soloist/28).
+# ============================================================
+{
+    no warnings 'once';
+    our $GLIBC_PROBLEM;
+    no strict 'refs';
+    *{'Plugins::SpotOn::Unified::DaemonManager::soloistGlibcProblem'} = sub { $GLIBC_PROBLEM };
+}
+{
+    reset_all();
+    local $main::GLIBC_PROBLEM = 'Soloist cannot run on this system: glibc 2.36 found, Soloist needs glibc 2.38 or newer (Raspberry Pi OS Trixie / Debian 13 or newer). '
+        . 'Update the system or select the librespot backend. This looks like a Docker container: the official Lyrion Docker image is based on Debian 12 (glibc 2.36). Use librespot, or an image based on Debian 13.';
+    my $dir = tempdir(CLEANUP => 1);
+    my $path = catfile($dir, 'soloist');
+    write_stderr_binary($path, $glibc_fixture, 1);
+    @Slim::Utils::Log::logged = ();
+    my $d = Plugins::SpotOn::Soloist::_versionProbeDetail($path);
+    is($d->{reason}, 'glibc_too_old:GLIBC_2.38', '79-57 #183: the real bookworm loader text gives glibc_too_old:GLIBC_2.38');
+    is($d->{glibc_needed}, '2.38', '79-57 #183: the detail names the needed glibc version');
+    my @glibc = grep { /glibc 2\.36 found/ && /2\.38/ } @Slim::Utils::Log::logged;
+    is(scalar(@glibc), 1, '79-57 #183: exactly one warn line names the found and the needed glibc')
+        or diag('LOGGED=' . join(' | ', @Slim::Utils::Log::logged));
+    like($glibc[0] // '', qr/official Lyrion Docker image/, '79-57 #183: the warn line carries the container sentence when DaemonManager gives it');
+    like($glibc[0] // '', qr/glibc_too_old:GLIBC_2\.38/, '79-57 #183: the warn line names the probe reason');
+    is(scalar(@Slim::Utils::Log::logged), 1, '79-57 #183: one warn line per probe, not two');
+}
+{
+    # "nothing at all": no output, exit 1, glibc below the floor
+    reset_all();
+    local $main::GLIBC_PROBLEM = 'Soloist cannot run on this system: glibc 2.36 found, Soloist needs glibc 2.38 or newer (Raspberry Pi OS Trixie / Debian 13 or newer). Update the system or select the librespot backend.';
+    my $dir = tempdir(CLEANUP => 1);
+    my $path = catfile($dir, 'soloist');
+    open(my $fh, '>', $path) or die $!;
+    print $fh "#!/bin/sh\nexit 1\n";
+    close $fh;
+    chmod 0755, $path;
+    @Slim::Utils::Log::logged = ();
+    my $d = Plugins::SpotOn::Soloist::_versionProbeDetail($path);
+    is($d->{reason}, 'version_unparsable', '79-57 #183: an empty probe stays version_unparsable');
+    is(scalar(grep { /glibc 2\.36 found/ && /version_unparsable/ } @Slim::Utils::Log::logged), 1,
+        '79-57 #183: an empty probe on an old glibc logs the glibc reason, not only "0 bytes"')
+        or diag('LOGGED=' . join(' | ', @Slim::Utils::Log::logged));
+}
+{
+    # glibc not detectable (no DaemonManager message): the line still names GLIBC_2.38
+    reset_all();
+    local $main::GLIBC_PROBLEM = undef;
+    my $dir = tempdir(CLEANUP => 1);
+    my $path = catfile($dir, 'soloist');
+    write_stderr_binary($path, $glibc_fixture, 1);
+    @Slim::Utils::Log::logged = ();
+    Plugins::SpotOn::Soloist::_versionProbeDetail($path);
+    is(scalar(grep { /needs glibc 2\.38/ } @Slim::Utils::Log::logged), 1,
+        '79-57 #183: without a detected glibc the warn line still names the needed glibc 2.38')
+        or diag('LOGGED=' . join(' | ', @Slim::Utils::Log::logged));
+}
+
+# ============================================================
+# Test 22 (79-57 fork chain): in LMS, STDERR is tied to
+# Slim::Utils::Log::Trapper, which has no OPEN method (pitfall T-29-09). The
+# version check's child must not die on its STDERR reopen and must never
+# return into the caller: on the dev LMS (2026-10-31 11:32) the escaped child
+# kept running as a second LMS and forked more of itself (10 LMS processes in
+# 4 minutes, 79-57-DEVRUN.md "Task 3 step 7"). The double below has the same
+# methods as Trapper (TIEHANDLE, PRINT, FILENO, UNTIE) and no OPEN. A child
+# that returns into this file writes a marker file and leaves with _exit, so
+# a defect shows as a marker, never as a forked test run.
+# ============================================================
+{
+    package TrapperNoOpen;
+    sub TIEHANDLE { my $class = shift; bless [], $class }
+    sub PRINT     { 1 }
+    sub FILENO    { 2 }
+    sub UNTIE     {}
+}
+
+sub probe_with_tied_stderr {
+    my ($path, $marker) = @_;
+    require POSIX;
+    my $parent = $$;
+    my ($d, $tiedAfter, $err);
+    {
+        local $SIG{ALRM} = sub { die "probe timeout\n" };
+        alarm 20;
+        tie *STDERR, 'TrapperNoOpen';
+        $d = eval { Plugins::SpotOn::Soloist::_versionProbeDetail($path) };
+        $err = $@;
+        if ($$ != $parent) {
+            # an escaped child: mark it and leave without running anything else
+            if (open(my $mh, '>>', $marker)) { print $mh "$$\n"; close $mh; }
+            POSIX::_exit(0);
+        }
+        $tiedAfter = ref(tied(*STDERR)) // '';
+        untie *STDERR;
+        alarm 0;
+    }
+    return ($d, $tiedAfter, $err);
+}
+
+{
+    reset_all();
+    my $dir = tempdir(CLEANUP => 1);
+    my $path = catfile($dir, 'soloist');
+    write_fake_binary($path, '1.3.8.68');
+    my $marker = catfile($dir, 'escaped-child');
+    my ($d, $tiedAfter, $err) = probe_with_tied_stderr($path, $marker);
+    is($err, '', '79-57 fork chain: the probe returns with STDERR tied (no die, no timeout)');
+    ok(!-e $marker, '79-57 fork chain: with STDERR tied to a class without OPEN the probe child never returns into the caller')
+        or diag('escaped child pids: ' . do { open(my $m, '<', $marker); local $/; <$m> // '' });
+    is($d && $d->{version}, '1.3.8.68', '79-57 fork chain: with STDERR tied to a class without OPEN the probe still reads the version');
+    is($tiedAfter, 'TrapperNoOpen', "79-57 fork chain: the parent's STDERR tie is untouched by the probe");
+}
+
+{
+    # exec fails (not executable): the child must still end in _exit, never return
+    reset_all();
+    my $dir = tempdir(CLEANUP => 1);
+    my $path = catfile($dir, 'soloist');
+    open(my $fh, '>', $path) or die $!;
+    print $fh "#!/bin/sh\necho 'soloist 1.3.8.68'\n";
+    close $fh;
+    chmod 0644, $path;
+    my $marker = catfile($dir, 'escaped-child');
+    @Slim::Utils::Log::logged = ();
+    my ($d, $tiedAfter, $err) = probe_with_tied_stderr($path, $marker);
+    ok(!-e $marker, '79-57 fork chain: when exec fails with STDERR tied the probe child ends in _exit, never returns into the caller')
+        or diag('escaped child pids: ' . do { open(my $m, '<', $marker); local $/; <$m> // '' });
+    ok(!defined($d && $d->{version}), '79-57 fork chain: a failed exec gives no version');
+    is(scalar(grep { /version check failed to run \(exec failed\)/ } @Slim::Utils::Log::logged), 1,
+        '79-57 fork chain: a failed exec with STDERR tied is reported as exec failed by the parent')
+        or diag('LOGGED=' . join(' | ', @Slim::Utils::Log::logged));
+}
+
+# ============================================================
+# Test 21 (79-57 IN-03): an existing Users dir that cannot be opened reads
+# unknown (undef), not "never paired" (0); an empty one stays 0, a filled
+# one 1.
+# ============================================================
+SKIP: {
+    skip 'running as root: an unreadable dir is still readable', 3 if $> == 0;
+    reset_all();
+    my $mac = 'aa:bb:cc:dd:57:03';
+    my $users = catdir(Plugins::SpotOn::Soloist::dataDirForClient($mac), 'settings', 'Users');
+    make_path($users);
+    is(Plugins::SpotOn::Soloist::isPairedForClient($mac), 0, '79-57 IN-03: an empty Users dir reads 0 (never paired)');
+    open(my $fh, '>', catfile($users, 'someone')) or die $!;
+    close $fh;
+    is(Plugins::SpotOn::Soloist::isPairedForClient($mac), 1, '79-57 IN-03: a filled Users dir reads 1');
+    chmod 0000, $users;
+    my $r = Plugins::SpotOn::Soloist::isPairedForClient($mac);
+    chmod 0700, $users;
+    ok(!defined $r, '79-57 IN-03: an unreadable Users dir reads undef (unknown), never a defined "never paired"');
+}
+
+# ============================================================
+# 79-63 R2 (79-REVIEW-BETA3-R1 WR-02): LMS ignores SIGPIPE (Slim/bootstrap.pm:243)
+# and SIG_IGN survives exec. A candidate that ignores write errors -- a shell
+# loop, or a wrapper that prints and then waits -- would then outlive the
+# probe's close() and hold the single-threaded server. The probe child resets
+# PIPE to DEFAULT before exec, so the child dies of SIGPIPE once the parent
+# has read its 4 KB and closed. Each probe runs in its own process group
+# under a hard deadline; on timeout the whole group is killed (no orphaned
+# loop), and the cell fails instead of hanging the suite.
+# ============================================================
+sub probe_within {
+    my ($path, $secs) = @_;
+    require POSIX;
+    require Time::HiRes;
+    my $t0 = Time::HiRes::time();
+    my $pid = fork;
+    die "fork: $!" unless defined $pid;
+    if (!$pid) {
+        setpgrp(0, 0);
+        $SIG{PIPE} = 'IGNORE';    # as LMS
+        my $d = eval { Plugins::SpotOn::Soloist::_versionProbeDetail($path) };
+        POSIX::_exit($d ? 0 : 3);
+    }
+    my $done;
+    while (Time::HiRes::time() - $t0 < $secs) {
+        my $r = waitpid($pid, POSIX::WNOHANG());
+        if ($r == $pid) { $done = ($? >> 8) == 0 ? 'returned' : 'died'; last; }
+        Time::HiRes::sleep(0.05);
+    }
+    unless ($done) {
+        kill 'KILL', -$pid;
+        waitpid($pid, 0);
+        $done = 'timeout';
+    }
+    return ($done, Time::HiRes::time() - $t0);
+}
+{
+    reset_all();
+    my $dir = tempdir(CLEANUP => 1);
+    my %stub = (
+        'shell loop'           => "#!/bin/sh\nwhile :; do echo 'soloist help text, ignoring write errors'; done\n",
+        'print then sleep 30'  => "#!/bin/sh\nprintf '%0200000d' 0\nsleep 30\n",
+    );
+    for my $name (sort keys %stub) {
+        (my $file = $name) =~ s/\W+/_/g;
+        my $path = catfile($dir, $file);
+        open(my $fh, '>', $path) or die $!;
+        print $fh $stub{$name};
+        close $fh;
+        chmod 0755, $path;
+        my ($how, $secs) = probe_within($path, 8);
+        is($how, 'returned', "79-63 R2 WR-02: a candidate '$name' does not outlive the probe's close() under LMS's ignored SIGPIPE")
+            or diag(sprintf 'probe %s after %.2f s', $how, $secs);
+    }
+}
+{
+    # the reset sits in the child branch before exec (source pin next to the behaviour)
+    open(my $sfh, '<', "$project_dir/Plugins/SpotOn/Soloist.pm") or die $!;
+    my $src = do { local $/; <$sfh> };
+    my ($child) = $src =~ /(if \(!\$pid\) \{.*?POSIX::_exit\(127\);)/s;
+    like($child // '', qr/\$SIG\{PIPE\}\s*=\s*'DEFAULT';.*exec \{ \$candidate \}/s,
+        '79-63 R2 WR-02: the probe child resets SIGPIPE to DEFAULT before exec');
 }
 
 done_testing();

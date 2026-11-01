@@ -1136,4 +1136,41 @@ sub empty_manual_dir {
     is($r16b, 'absent', "Case 16: emptying the manual folder resets to 'absent'");
 }
 
+# ============================================================
+# Case 17 (79-57, GH #177): a placed binary the dynamic loader cannot start
+# (real loader message from debian:trixie-slim, exit 127) is rejected with
+# the named library; garbage stdout with exit 0 stays version_unparsable.
+# ============================================================
+{
+    my $fixture = "$project_dir/t/fixtures/soloist-loader/libatomic-missing.stderr.txt";
+    reset_env();
+    seed_active_binary('1.3.8.68');
+    empty_manual_dir();
+    make_path(manual_dir());
+    my $placed = catfile(manual_dir(), 'soloist');
+    open(my $fh, '>', $placed) or die $!;
+    print $fh "#!/bin/sh\ncat '$fixture' >&2\nexit 127\n";
+    close $fh;
+    chmod 0755, $placed;
+
+    my $r = Plugins::SpotOn::Soloist::checkPlacedBinary();
+    is($r, 'started', "Case 17 (79-57 #177): checkPlacedBinary returns 'started'");
+    is(Plugins::SpotOn::Soloist::placedState()->{status}, 'rejected', "Case 17: placedState status is 'rejected'");
+    is(Plugins::SpotOn::Soloist::placedState()->{reason}, 'missing_library:libatomic.so.1',
+        "Case 17 (79-57 #177): reason names the missing library, not version_unparsable");
+    is(scalar(@Plugins::SpotOn::Unified::SoloistDaemon::SMOKE_CALLS), 0, "Case 17: smokeTest never called");
+
+    reset_env();
+    seed_active_binary('1.3.8.68');
+    empty_manual_dir();
+    make_path(manual_dir());
+    open($fh, '>', $placed) or die $!;
+    print $fh "#!/bin/sh\necho 'garbage'\nexit 0\n";
+    close $fh;
+    chmod 0755, $placed;
+    Plugins::SpotOn::Soloist::checkPlacedBinary();
+    is(Plugins::SpotOn::Soloist::placedState()->{reason}, 'version_unparsable',
+        "Case 17 (79-57 #177): garbage stdout with exit 0 still reads version_unparsable");
+}
+
 done_testing();

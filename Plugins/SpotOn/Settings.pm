@@ -29,6 +29,11 @@ use constant SETTINGS_URL => 'plugins/SpotOn/settings/basic.html';
 # key just because this field round-tripped its own masked placeholder.
 use constant SOLOIST_KEY_MASKED_PREVIEW => '********';
 
+# 79-61 (FULL-1 WR-04): the diagnostic bundle scans only this much of the
+# end of server.log. The whole file was read line by line inside the request
+# handler before; a few hundred MB of debug log stalled LMS's single thread.
+use constant SERVER_LOG_TAIL_BYTES => 2 * 1024 * 1024;
+
 my $log   = Slim::Utils::Log->logger('plugin.spoton');
 my $prefs = preferences('plugin.spoton');
 
@@ -788,6 +793,23 @@ sub _diagnosticBundleHandler {
     else {
         push @backendLines, 'glibc check: ok';
     }
+    # 79-57 (GH #177): what the last Soloist version probe reported. Only the
+    # soname, the GLIBC version and a package name, never the raw stderr.
+    if ($isSoloist) {
+        my $failure = eval { $role->can('startCheck') ? $role->startCheck() : undef };
+        my $reason = $failure ? ($failure->{reason} // '') : '';
+        if ($reason =~ /^missing_library:/ && defined $failure->{soname}) {
+            my $pkg = $failure->{package_hint} // "the package that provides $failure->{soname}";
+            push @backendLines, "Soloist start check: missing library $failure->{soname} "
+                . "(install the package that provides it; Debian: $pkg)";
+        }
+        elsif (length $reason) {
+            push @backendLines, "Soloist start check: $reason";
+        }
+        else {
+            push @backendLines, 'Soloist start check: ok';
+        }
+    }
     unless ($isSoloist) {
         push @backendLines, 'Bitrate: ' . ($prefs->get('bitrate') || 320);
         push @backendLines, 'Normalization: ' . ($prefs->get('normalization') ? 'on' : 'off');
@@ -898,9 +920,15 @@ sub _diagnosticBundleHandler {
     my $logdir = $serverPrefs->get('logdir');
     my $serverLogFile = $logdir ? catfile($logdir, 'server.log') : undef;
     if ($serverLogFile && -f $serverLogFile) {
-        $logs .= "--- LMS server.log (SpotOn entries, last 200) ---\n";
+        $logs .= "--- LMS server.log (SpotOn entries, last 200, from the last 2 MB) ---\n";
         if (open(my $sfh, '<', $serverLogFile)) {
             my @spotonLines;
+            # 79-61 (FULL-1 WR-04): bounded tail, like _readLogTail; the
+            # first, partial line after the seek is dropped.
+            if ((-s $sfh || 0) > SERVER_LOG_TAIL_BYTES) {
+                seek($sfh, -SERVER_LOG_TAIL_BYTES(), 2);
+                scalar <$sfh>;
+            }
             while (my $line = <$sfh>) {
                 push @spotonLines, $line if $line =~ /SpotOn|spoton/i;
                 shift @spotonLines if @spotonLines > 200;
@@ -1006,20 +1034,22 @@ sub _readLogTail {
 # CSRF guard for write endpoints (P-CR-03)
 # addRawFunction handlers bypass LMS's built-in CSRF protection
 # (Slim::Web::HTTP dispatches raw functions before CSRF check on line 512).
-# This guard validates X-Requested-With: XMLHttpRequest for write endpoints
-# when LMS has csrfProtectionLevel enabled.
+# This guard requires POST plus X-Requested-With: XMLHttpRequest for every
+# write endpoint, whatever csrfProtectionLevel says. 79-61 (FULL-1 WR-03):
+# LMS ships with level 0, and the old level-0 short-circuit left the write
+# routes open to a plain cross-origin GET (an <img> tag). A cross-origin
+# simple request cannot set the header, and the page's own JS sends POST
+# with it on every write call.
 # Read-only endpoints (discoveryStatus, diagnosticBundle) are not guarded.
 # ============================================================
 sub _csrfCheck {
     my ($httpClient, $response) = @_;
 
-    my $serverPrefs = preferences('server');
-    return 1 unless $serverPrefs->get('csrfProtectionLevel');
-
     my $request = $response->request;
+    my $method  = $request ? ($request->method // '') : '';
     return 1 if $request
-        && $request->header('X-Requested-With')
-        && $request->header('X-Requested-With') eq 'XMLHttpRequest';
+        && uc($method) eq 'POST'
+        && ($request->header('X-Requested-With') // '') eq 'XMLHttpRequest';
 
     $response->code(403);
     $response->header('Content-Length' => 0);

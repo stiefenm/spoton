@@ -40,6 +40,7 @@ package FakeSettingsRequest;
 sub new { my ($class, %args) = @_; return bless { headers => {}, %args }, $class }
 sub header  { my ($self, $name) = @_; return $self->{headers}{$name} }
 sub content { return $_[0]->{content} }
+sub method  { return $_[0]->{method} }    # 79-61 FULL-1 WR-03: write routes check the HTTP method
 
 package main;
 
@@ -655,6 +656,8 @@ sub mac { return $_[0]->{mac} }
 sub routes       { return [] }
 sub settingsInfo { my ($class, $p) = @_; %$p = (%$p, %SETTINGS_INFO); return 'ok' }
 sub keyState     { return { supported => 1, present => $KEY_PRESENT } }
+our $START_CHECK = undef;    # 79-57 (GH #177): the role's startCheck() answer
+sub startCheck   { return $START_CHECK }
 sub storeKey     { return (1) }
 sub clearKey     { return 1 }
 sub qualityInfo  { return { supported => 0, validLevels => [], (length $EFFECTIVE_LABEL ? (effectiveLabel => $EFFECTIVE_LABEL) : ()) } }
@@ -1437,7 +1440,7 @@ sub resolve_raw_route {
         Plugins::SpotOn::API::Credentials::reset_calls();
         $Plugins::SpotOn::API::Credentials::next_start_pairing = $nextStart if $nextStart;
         @Slim::Web::HTTP::http_responses = ();
-        my $response = FakeSettingsResponse->new(request => FakeSettingsRequest->new(headers => {%hdr}));
+        my $response = FakeSettingsResponse->new(request => FakeSettingsRequest->new(method => 'POST', headers => {%hdr}));
         Plugins::SpotOn::Settings::_playerAuthStartHandler('http_client_pa', $response);
         my $payload = eval { JSON::PP::decode_json(${ $Slim::Web::HTTP::http_responses[0][2] }) } || {};
         return ($response, $payload);
@@ -1459,7 +1462,7 @@ sub resolve_raw_route {
 
     $serverPrefs->set('csrfProtectionLevel', 0);
     $nextStart = [0, 'just_paired'];
-    ($resp, $payload) = $run->();
+    ($resp, $payload) = $run->('X-Requested-With' => 'XMLHttpRequest');    # 79-61 WR-03: level 0 no longer skips the header check
     $nextStart = undef;
     is_deeply([ @{ $payload }{qw(status reason)} ], [ 'error', 'just_paired' ],
         '85-10: a refusal reason from startPairing is passed through symbolically');
@@ -1718,7 +1721,7 @@ sub resolve_raw_route {
     $write->("$spotonDir/74b4-unified.log", 10);
     $write->("$spotonDir/74b4-soloist.log.1.tmp", 10);    # 74b WR-02: leftover of a failed tail copy
     @Slim::Web::HTTP::http_responses = ();
-    my $res = FakeSettingsResponse->new();
+    my $res = FakeSettingsResponse->new(request => FakeSettingsRequest->new(method => 'POST', headers => { 'X-Requested-With' => 'XMLHttpRequest' }));
     Plugins::SpotOn::Settings::_clearLogsHandler(undef, $res);
     my $payload = eval { JSON::PP::decode_json(${ $Slim::Web::HTTP::http_responses[0][2] }) } || {};
     ok(-e "$spotonDir/74b4-soloist.log" && -z "$spotonDir/74b4-soloist.log",
@@ -1862,6 +1865,29 @@ sub resolve_raw_route {
     $Plugins::SpotOn::Unified::DaemonManager::fake_glibc_problem = 'Soloist cannot run on this system: glibc 2.36 found';
     (undef, $body) = $bundle->();
     like($body, qr/^glibc check: Soloist cannot run on this system: glibc 2\.36 found$/m, '79-24 IN-03: soloist with a problem keeps its message');
+
+    # --- 79-57 (GH #177): the Soloist start check line --------------------
+    # The core reaches the probe record only through the role (startCheck);
+    # the real probe -> record path is pinned in t/soloist/26 and 28.
+    {
+        $p->set('backend', 'soloist');
+        $Plugins::SpotOn::Unified::DaemonManager::fake_glibc = '2.43';
+        $Plugins::SpotOn::Unified::DaemonManager::fake_glibc_problem = undef;
+        $Plugins::SpotOn::Backend::Soloist::START_CHECK = {
+            reason => 'missing_library:libatomic.so.1', soname => 'libatomic.so.1',
+            package_hint => 'libatomic1', at => time(),
+        };
+        (undef, $body) = $bundle->();
+        like($body, qr/^Soloist start check: missing library libatomic\.so\.1 \(install the package that provides it; Debian: libatomic1\)$/m,
+            '79-57 #177: the diag report names the missing library and the Debian package');
+        $Plugins::SpotOn::Backend::Soloist::START_CHECK = { reason => 'version_unparsable', at => time() };
+        (undef, $body) = $bundle->();
+        like($body, qr/^Soloist start check: version_unparsable$/m, '79-57 #177: a real parse failure still reads version_unparsable');
+        $Plugins::SpotOn::Backend::Soloist::START_CHECK = undef;
+        (undef, $body) = $bundle->();
+        like($body, qr/^Soloist start check: ok$/m, '79-57 #177: with no probe failure the line reads ok');
+        unlike($body, qr/missing library/, '79-57 #177: no missing-library text without a failure');
+    }
 
     # restore what the access cells below expect
     $Plugins::SpotOn::Unified::DaemonManager::fake_glibc = '2.43';
@@ -2009,6 +2035,99 @@ sub resolve_raw_route {
     Slim::Player::Client::set_mock_clients();
     $p->set('diagnosticMode', 0);
     unlink "$spotonDir/0200005a1144-soloist.log";
+}
+
+# ============================================================
+# 79-61 (79-REVIEW-FULL-1 WR-03): the CSRF guard was inert under the LMS
+# default (csrfProtectionLevel 0) and the write routes accepted GET. A
+# cross-origin <img src=".../clearLogs"> deleted the daemon logs. The guard
+# now always requires POST plus X-Requested-With: XMLHttpRequest (a header a
+# cross-origin simple request cannot set); the page's own JS sends both.
+# ============================================================
+{
+    require Plugins::SpotOn::Settings;
+    require JSON::PP;
+    my $serverPrefs = Slim::Utils::Prefs::preferences('server');
+    my $spotonDir = File::Spec->catdir($serverPrefs->get('cachedir'), 'spoton');
+    make_path($spotonDir);
+    my $victim = "$spotonDir/7961-connect.log";
+    my $plant = sub { open(my $fh, '>', $victim) or die "$victim: $!"; print $fh "keep me\n"; close($fh); };
+    my $clear = sub {
+        my (%req) = @_;
+        $plant->();
+        @Slim::Web::HTTP::http_responses = ();
+        my $res = FakeSettingsResponse->new(request => FakeSettingsRequest->new(%req));
+        Plugins::SpotOn::Settings::_clearLogsHandler(undef, $res);
+        return $res;
+    };
+    my $xhr = { 'X-Requested-With' => 'XMLHttpRequest' };
+
+    $serverPrefs->set('csrfProtectionLevel', 0);    # the LMS default
+
+    my $res = $clear->(method => 'GET', headers => {});
+    is($res->code, 403, '79-61 WR-03: a plain cross-origin GET to clearLogs is refused under the LMS default (level 0)');
+    ok(-e $victim, '79-61 WR-03: the refused GET deletes no log');
+
+    $res = $clear->(method => 'GET', headers => {%$xhr});
+    is($res->code, 403, '79-61 WR-03: a GET is refused even with the XHR header (write routes are POST only)');
+
+    $res = $clear->(method => 'POST', headers => {});
+    is($res->code, 403, '79-61 WR-03: a POST without the X-Requested-With token is refused under level 0');
+    ok(-e $victim, '79-61 WR-03: the refused POST deletes no log');
+
+    $res = $clear->(method => 'POST', headers => {%$xhr});
+    isnt($res->code // 200, 403, '79-61 WR-03: the page\'s own POST with the XHR header still passes');
+    ok(!-e $victim, '79-61 WR-03: the accepted POST clears the logs');
+
+    $serverPrefs->set('csrfProtectionLevel', 1);
+    $res = $clear->(method => 'GET', headers => {%$xhr});
+    is($res->code, 403, '79-61 WR-03: under level 1 a GET is refused as well');
+    $serverPrefs->set('csrfProtectionLevel', 0);
+    unlink $victim;
+}
+
+# ============================================================
+# 79-61 (79-REVIEW-FULL-1 WR-04): the diagnostic bundle scanned the WHOLE
+# server.log line by line inside the request handler; a few hundred MB of
+# debug log stalled LMS's single thread and dried out every player. The scan
+# now covers a bounded tail (SERVER_LOG_TAIL_BYTES), like _readLogTail for
+# the daemon logs, and the bundle says so.
+# ============================================================
+{
+    require Plugins::SpotOn::Settings;
+    require Encode;
+    my $p   = Slim::Utils::Prefs::preferences('plugin.spoton');
+    my $srv = Slim::Utils::Prefs::preferences('server');
+    no warnings 'redefine';
+    local $main::VERSION = '9.1.1-test';
+    local *Plugins::SpotOn::Plugin::_pluginDataFor = sub { '9.9.9-test' };
+    my $logdir = tempdir(CLEANUP => 1);
+    my $cap = 2 * 1024 * 1024;
+    open(my $fh, '>', "$logdir/server.log") or die $!;
+    print $fh "[early] SpotOn: EARLY-MARKER-7961 far outside the tail\n";
+    my $filler = ('[x] Slim::Player: unrelated line ' . ('z' x 60) . "\n");
+    print $fh $filler for 1 .. int((3 * $cap) / length($filler));    # ~6 MB of non-SpotOn lines
+    print $fh "[late] SpotOn: LATE-MARKER-7961 $_\n" for 1 .. 5;
+    close($fh);
+    ok(-s "$logdir/server.log" > 2 * $cap, '79-61 WR-04: harness precondition -- server.log is larger than twice the tail cap');
+
+    $srv->set('logdir', $logdir);
+    Slim::Player::Client::set_mock_clients();
+    $p->set('diagnosticMode', 1);
+    @Slim::Web::HTTP::http_responses = ();
+    my $res = FakeSettingsResponse->new();
+    Plugins::SpotOn::Settings::_diagnosticBundleHandler(undef, $res);
+    my $ref  = $Slim::Web::HTTP::http_responses[0][2];
+    my $text = $ref ? $$ref : '';
+
+    is($res->code, 200, '79-61 WR-04: the bundle still answers 200 with a large server.log');
+    like($text, qr/LATE-MARKER-7961 5/, '79-61 WR-04: SpotOn lines from the tail of server.log are in the bundle');
+    unlike($text, qr/EARLY-MARKER-7961/, '79-61 WR-04: a SpotOn line far before the tail is not read (bounded scan)');
+    like($text, qr/server\.log.*last 2 MB/, '79-61 WR-04: the bundle states that only the last 2 MB of server.log were scanned');
+    is(Plugins::SpotOn::Settings::SERVER_LOG_TAIL_BYTES(), $cap, '79-61 WR-04: the tail cap is 2 MB');
+
+    $srv->set('logdir', undef);
+    $p->set('diagnosticMode', 0);
 }
 
 done_testing();

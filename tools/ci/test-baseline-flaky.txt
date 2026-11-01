@@ -1,0 +1,5 @@
+# Flake allow-list for tools/ci/test-baseline.sh (79-64, FULL-5 WR-09).
+# A test file that is red on its first run and green on the retry is reported
+# as FLAKY and fails the gate, unless its basename stands here with a reason.
+# Format: <basename><TAB><reason>, one per line. An entry without a reason is
+# refused (exit 2). Empty on purpose: every entry is a decision, not a default.

@@ -791,10 +791,13 @@ t_block('PF cookies', sub {
 t_block('MFY source', sub {
     reset_all();
     seed_hash('homeSection', $HASH_OLD);
+    seed_hash('home', $HASH_OLD);    # 79-59: op home is asked too; this fixture's home carries no rows
     http_rule(qr{pathfinder/v2/query}, pf_fixture_responder());
 
     my ($res, $err, $called) = run_mfy();
-    my @pf = pf_requests();
+    my @all = pf_requests();
+    is(scalar(grep { pf_body($_)->{operationName} eq 'home' } @all), 1, 'MFY: one home query is issued (79-59)');
+    my @pf = grep { pf_body($_)->{operationName} eq 'homeSection' } @all;
     is(scalar(@pf), 2, 'MFY: exactly two homeSection queries are issued');
     is_deeply([ map { pf_body($_)->{operationName} } @pf ], ['homeSection', 'homeSection'], 'MFY: both queries are homeSection');
     is_deeply([ map { pf_body($_)->{variables}{uri} } @pf ], [$SECTION_MFY, $SECTION_TOP], 'MFY: uri SECTION_MFY first, then SECTION_TOPMIX');
@@ -874,6 +877,7 @@ t_block('WR-13 healthy-empty vs error', sub {
     # shown (D-17), but the status says "empty", not "error", and no error is recorded
     reset_all();
     seed_hash('homeSection', $HASH_OLD);
+    seed_hash('home', $HASH_OLD);    # 79-59: op home answers too (no rows)
     my $empty = clone($FX->{homeSection_mfy});
     $empty->{data}{homeSections}{sections}[0]{sectionItems}{items} = [];
     http_rule(qr{pathfinder/v2/query}, sub { return (200, $JSON->encode($empty)) });
@@ -921,6 +925,7 @@ t_block('WR-13 menu text', sub {
     # Pathfinder answered, the rootlist has no Spotify-made mix either: "No results"
     reset_all();
     seed_hash('homeSection', $HASH_OLD);
+    seed_hash('home', $HASH_OLD);    # 79-59: op home answers too (no rows)
     http_rule(qr{pathfinder/v2/query}, sub { return (200, $JSON->encode($noPlaylists)) });
     http_rule(qr{/playlist/v2/user/.+/rootlist}, $unrelated);
     my $out;
@@ -1363,6 +1368,310 @@ t_block('PF top and search end to end', sub {
     ok($res && scalar(@{ $res->{tracks}{items} }) == 3 && !$res->{limited}, 'PF search: a multi-type search answers from one searchDesktop request');
     is(scalar(grep { $_->{url} eq 'https://open.spotify.com/' } @Slim::Networking::SimpleAsyncHTTP::requests), 1,
         'PF top and search: the cold cache cost exactly one scrape for both');
+});
+
+# ============================================================
+# 79-59 (GH #180): the daylist and the account's other personal lists from
+# the whole home (op home), by the user's rule (MIX59_CHOSEN=rule:personal-non-radio):
+# id prefix 37i9dQZF1E or 37i9dQZEVX, madeFor.username present, format not
+# inspiredby-mix. Layout: daylist, Daily Mixes, Discover Weekly, Release Radar
+# on top, the rest in one folder per Spotify row (Spotify's title, Spotify's
+# order), untitled rows' lists below the top entries. Fixture: the trimmed real
+# replies t/fixtures/pathfinder/79-59-made-for-you.json.
+# ============================================================
+my $FX59 = do {
+    my $f = "$project_dir/t/fixtures/pathfinder/79-59-made-for-you.json";
+    open(my $fh, '<:raw', $f) or BAIL_OUT("cannot read fixture $f: $!");
+    local $/; JSON::PP->new->utf8->decode(<$fh>);
+};
+my $DAYLIST59 = 'spotify:playlist:37i9dQZF1EP6YuccBxUcC1';
+my $FUNWO59   = 'spotify:playlist:37i9dQZF1EIdBKZUQJyqDm';
+my $SOUL59    = 'spotify:playlist:37i9dQZF1EQntZpEGgfBif';
+my @TOP59 = (
+    $DAYLIST59,
+    'spotify:playlist:37i9dQZF1E3a6pKpVe40mF', 'spotify:playlist:37i9dQZF1E3agjx7jh6NAH',
+    'spotify:playlist:37i9dQZF1E36NB7mrxWwbJ', 'spotify:playlist:37i9dQZF1E36AMXEwzycvH',
+    'spotify:playlist:37i9dQZF1E35inxxG3M2aK', 'spotify:playlist:37i9dQZF1E37VP7CF6t3aw',
+    'spotify:playlist:37i9dQZEVXcLuBdTdkGtju',
+    'spotify:playlist:37i9dQZEVXbkoDWHZvXaFe',
+);
+
+# every Playlist item of a home reply, as [uri, format, madeFor, sectionTitle]
+sub fx59_playlists {
+    my ($home) = @_;
+    my @out;
+    for my $s (@{ $home->{data}{home}{sectionContainer}{sections}{items} }) {
+        my $t = (($s->{data} || {})->{title} || {})->{transformedLabel};
+        for my $it (@{ $s->{sectionItems}{items} }) {
+            my $d = (($it->{content} || {})->{data}) || {};
+            next unless ($d->{__typename} // '') eq 'Playlist';
+            my $mf = grep { $_->{key} eq 'madeFor.username' } @{ $d->{attributes} || [] };
+            push @out, [ $d->{uri}, $d->{format} // '', $mf ? 1 : 0, $t ];
+        }
+    }
+    return @out;
+}
+
+sub pf59_responder {
+    my (%o) = @_;
+    my $home = $o{home} // $FX59->{home};
+    my $top  = $o{topmix} // $FX59->{homeSection_topmix};
+    my $mfy  = $o{mfy} // $FX59->{homeSection_mfy};
+    return sub {
+        my $req = pf_body($_[0]);
+        my $op  = $req->{operationName} // '';
+        if ($op eq 'home') {
+            return $o{home_fail} ? (500, '') : (200, $JSON->encode($home));
+        }
+        if ($op eq 'homeSection') {
+            return (500, '') if $o{sections_fail};
+            my $uri = $req->{variables}{uri} // '';
+            return (200, $JSON->encode($uri eq $SECTION_MFY ? $mfy : $uri eq $SECTION_TOP ? $top : { data => {} }));
+        }
+        return (200, '{"data":{}}');
+    };
+}
+sub seed59 { seed_hash('homeSection', $HASH_OLD); seed_hash('home', $HASH_OLD); }
+sub layout_uris {
+    my ($l) = @_;
+    return ([ map { $_->{uri} } @{ $l->{top} || [] } ], [ map { $_->{uri} } @{ $l->{loose} || [] } ],
+            [ map { [ $_->{title}, [ map { $_->{uri} } @{ $_->{items} } ] ] } @{ $l->{folders} || [] } ]);
+}
+
+t_block('79-59 MFY home op', sub {
+    reset_all();
+    seed59();
+    http_rule(qr{pathfinder/v2/query}, pf59_responder());
+
+    my ($res, $err, $called) = run_mfy();
+    my @ops = map { pf_body($_)->{operationName} } pf_requests();
+    is_deeply([ sort @ops ], [ 'home', 'homeSection', 'homeSection' ], '79-59: one home query and the two homeSection queries');
+    my ($homeReq) = grep { pf_body($_)->{operationName} eq 'home' } pf_requests();
+    is($homeReq && pf_body($homeReq)->{variables}{sectionItemsLimit}, 50, '79-59: the home query uses the measured sectionItemsLimit 50');
+    ok($res && !$err && $called == 1 && $res->{source} eq 'pathfinder', '79-59: one pathfinder result');
+
+    my @u = @{ uris_of($res) };
+    is(scalar(grep { $_ eq $DAYLIST59 } @u), 1, '79-59: the daylist is listed exactly once (GH #180)');
+    my %c; $c{$_}++ for @u;
+    is(scalar(grep { $c{$_} > 1 } keys %c), 0, '79-59: no uri is listed twice');
+    ok(!(grep { $_ eq $DJ_URI } @u), '79-59: DJ stays out');
+
+    my @pl = fx59_playlists($FX59->{home});
+    my @radios = map { $_->[0] } grep { $_->[1] eq 'inspiredby-mix' } @pl;
+    my @edMf   = map { $_->[0] } grep { $_->[0] =~ /37i9dQZF1D/ && $_->[2] } @pl;
+    my @user   = map { $_->[0] } grep { $_->[0] !~ /37i9dQ/ } @pl;
+    ok(@radios >= 3 && @edMf >= 2 && @user >= 1, '79-59: the fixture carries radios, editorial lists with madeFor and user playlists');
+    my %in = map { $_ => 1 } @u;
+    is(scalar(grep { $in{$_} } @radios), 0, '79-59: no artist radio (format inspiredby-mix) is listed');
+    is(scalar(grep { $in{$_} } @edMf), 0, '79-59: no editorial list is listed, even when it carries madeFor');
+    is(scalar(grep { $in{$_} } @user), 0, '79-59: no user or neutralised playlist is listed');
+    my @kept = map { $_->[0] } grep { $_->[0] =~ /\Aspotify:playlist:37i9dQZ(?:F1E|EVX)/ && $_->[2] && $_->[1] ne 'inspiredby-mix' } @pl;
+    is(scalar(grep { !$in{$_} } @kept), 0, '79-59: every personal non-radio list of the home is listed');
+
+    my $l = $res->{layout};
+    ok(ref $l eq 'HASH', '79-59: the result carries a layout');
+    my ($top, $loose, $folders) = layout_uris($l);
+    is_deeply($top, \@TOP59, '79-59: on top daylist, Daily Mix 1-6, Discover Weekly, Release Radar (in that order)');
+    is_deeply($loose, [ $FUNWO59 ], '79-59: a list from the untitled row sits below the top entries');
+    is_deeply([ map { $_->[0] } @$folders ], [ 'Your top mixes', 'Made for you' ], '79-59: one folder per contributing Spotify row, Spotify title, Spotify order');
+    my ($tm) = grep { $_->[0] eq 'Your top mixes' } @$folders;
+    my @homeTop = map { $_->[0] } grep { ($_->[3] // '') eq 'Your top mixes' } @pl;
+    is_deeply([ @{ $tm->[1] }[0 .. $#homeTop] ], \@homeTop, '79-59: the top-mixes folder starts with the home row in Spotify order');
+    my @legacyTop = map { $_->{content}{data}{uri} } @{ $FX59->{homeSection_topmix}{data}{homeSections}{sections}[0]{sectionItems}{items} };
+    my %tmIn = map { $_ => 1 } @{ $tm->[1] };
+    is(scalar(grep { !$tmIn{$_} } @legacyTop), 0, '79-59: every mix SECTION_TOPMIX answers still appears (nothing of today drops out)');
+    my ($mf) = grep { $_->[0] eq 'Made for you' } @$folders;
+    is_deeply($mf->[1], [ $SOUL59 ], '79-59: two rows titled "Made for you" share one folder; a list shown elsewhere is not repeated');
+    is_deeply([ @u ], [ @$top, @$loose, map { @{ $_->[1] } } @$folders ], '79-59: items is the flat menu order (top, loose, folders)');
+    is($SP->madeForYouStatus()->{mixCount}, scalar(@u), '79-59: the status page counts every listed list');
+});
+
+t_block('79-59 MFY generic rule', sub {
+    reset_all();
+    seed59();
+    my $home = clone($FX59->{home});
+    my $row = $home->{data}{home}{sectionContainer}{sections}{items}[4];   # Your top mixes
+    my $mk = sub {
+        my ($id, $fmt, $mf, $name) = @_;
+        my $uri = "spotify:playlist:$id";
+        return { uri => $uri, content => { data => { __typename => 'Playlist', uri => $uri, name => $name,
+            ($fmt ? (format => $fmt) : ()),
+            attributes => [ $mf ? ({ key => 'madeFor.username', value => 'listener' }) : () ] } } };
+    };
+    push @{ $row->{sectionItems}{items} },
+        $mk->('37i9dQZF1E99NEWKINDxx01', 'future-kind', 1, 'New Kind'),
+        $mk->('37i9dQZF1E99NOMADExxx02', 'topic-mix',   0, 'No madeFor'),
+        $mk->('37i9dQZF1DX99EDITORxx03', 'editorial',   1, 'Editorial with madeFor'),
+        $mk->('37i9dQZEVX99RADIOxxxx04', 'inspiredby-mix', 1, 'A Radio');
+    http_rule(qr{pathfinder/v2/query}, pf59_responder(home => $home));
+    my ($res) = run_mfy();
+    my %in = map { $_ => 1 } @{ uris_of($res) };
+    ok($in{'spotify:playlist:37i9dQZF1E99NEWKINDxx01'}, '79-59 rule: a personal list of a format SpotOn does not know is listed (no allow-list)');
+    ok(!$in{'spotify:playlist:37i9dQZF1E99NOMADExxx02'}, '79-59 rule: a 37i9dQZF1E list without madeFor.username is not listed');
+    ok(!$in{'spotify:playlist:37i9dQZF1DX99EDITORxx03'}, '79-59 rule: madeFor alone is not enough (editorial id prefix)');
+    ok(!$in{'spotify:playlist:37i9dQZEVX99RADIOxxxx04'}, '79-59 rule: format inspiredby-mix stays out under any prefix');
+});
+
+t_block('79-59 MFY source failures', sub {
+    # home fails: the two sections list their items as before, flat, and lastError names the home query
+    reset_all();
+    seed59();
+    http_rule(qr{pathfinder/v2/query}, pf59_responder(home_fail => 1));
+    my ($res) = run_mfy();
+    is($res->{source}, 'pathfinder', '79-59: home failed, the sections still answer');
+    ok(!$res->{layout}, '79-59: without the home reply the list stays flat (today\'s form)');
+    my @legacy = grep { $_ ne $DJ_URI } map { $_->{content}{data}{uri} }
+        map { @{ $_->{data}{homeSections}{sections}[0]{sectionItems}{items} } } ($FX59->{homeSection_mfy}, $FX59->{homeSection_topmix});
+    my %s; @legacy = grep { !$s{$_}++ } @legacy;
+    is_deeply(uris_of($res), \@legacy, '79-59: the flat list is SECTION_MFY then SECTION_TOPMIX, de-duplicated');
+    like($SP->madeForYouStatus()->{lastError} // '', qr/\Ahome\b/, '79-59: lastError names the failed source (home)');
+
+    # the sections fail, home answers: the full layout from home alone
+    reset_all();
+    seed59();
+    http_rule(qr{pathfinder/v2/query}, pf59_responder(sections_fail => 1));
+    ($res) = run_mfy();
+    my ($top) = layout_uris($res->{layout} || {});
+    is_deeply($top, \@TOP59, '79-59: the sections failed, home alone fills the layout');
+    ok(defined $SP->madeForYouStatus()->{lastError}, '79-59: and the section error stays visible');
+
+    # everything fails: the rootlist fallback, unchanged rule
+    reset_all();
+    seed59();
+    http_rule(qr{pathfinder/v2/query}, sub { return (500, '') });
+    rootlist_rule();
+    ($res) = run_mfy();
+    is($res->{source}, 'rootlist-fallback', '79-59: the rootlist fallback only when every source yields nothing');
+});
+
+t_block('79-59 MFY feed folders', sub {
+    reset_all();
+    seed59();
+    http_rule(qr{pathfinder/v2/query}, pf59_responder());
+    Slim::Utils::Prefs::preferences('plugin.spoton')->set('activeAccount', 'acct1');
+    my $client = MockClient->new('player-mfy59');
+    my $out;
+    Plugins::SpotOn::Plugin::_madeForYouFeed($client, sub { $out = shift }, {});
+    my @items = @{ $out->{items} || [] };
+    is_deeply([ map { $_->{passthrough}[0]{playlistId} } @items[0 .. 9] ],
+        [ map { (split /:/)[2] } @TOP59, $FUNWO59 ], '79-59 feed: the top entries and the untitled-row list come first, as playlists');
+    my @folders = grep { !$_->{passthrough} } @items;
+    is_deeply([ map { $_->{name} } @folders ], [ 'Your top mixes', 'Made for you' ], '79-59 feed: then one folder per row, named by Spotify');
+    ok(!(grep { ref $_->{items} ne 'ARRAY' || !@{ $_->{items} } } @folders), '79-59 feed: every folder holds its lists');
+    ok(!(grep { ($_->{type} // '') ne 'playlist' } map { @{ $_->{items} } } @folders), '79-59 feed: folder entries are playlist items');
+    is(scalar(@items), 10 + scalar(@folders), '79-59 feed: nothing else on the top level');
+});
+
+# ============================================================
+# 79-59 Task 3: the dedupe invariant of the assumption-delta block. An item
+# that two sources list appears once, at its first place in Spotify's row
+# order (within a row, home's items before a homeSection's extras); checked
+# for each source pair: home+topmix, home+mfy, mfy+topmix (home absent).
+# ============================================================
+t_block('79-59 MFY dedupe invariant', sub {
+    my $mix = sub {
+        my ($id, $fmt, $name) = @_;
+        my $uri = "spotify:playlist:$id";
+        return { uri => $uri, content => { data => { __typename => 'Playlist', uri => $uri, name => $name,
+            format => $fmt, attributes => [ { key => 'madeFor.username', value => 'listener' } ] } } };
+    };
+    my $hsItems = sub { $_[0]{data}{homeSections}{sections}[0]{sectionItems}{items} };
+    my $row = sub {
+        my ($home, $uri) = @_;
+        my ($r) = grep { $_->{uri} eq $uri } @{ $home->{data}{home}{sectionContainer}{sections}{items} };
+        return $r->{sectionItems}{items};
+    };
+    my $count = sub { my ($res, $u) = @_; scalar grep { $_ eq $u } @{ uris_of($res) } };
+    my $where = sub {
+        my ($res, $u) = @_;
+        my $l = $res->{layout} || {};
+        for my $k (qw(top loose)) { return $k if grep { $_->{uri} eq $u } @{ $l->{$k} || [] } }
+        for my $f (@{ $l->{folders} || [] }) { return "folder:$f->{title}" if grep { $_->{uri} eq $u } @{ $f->{items} } }
+        return 'none';
+    };
+
+    # home + topmix: a mix in home's top-mixes row and in SECTION_TOPMIX
+    reset_all(); seed59();
+    my $home = clone($FX59->{home});
+    my $top  = clone($FX59->{homeSection_topmix});
+    my $X = $mix->('37i9dQZF1EQ99INVHTxxx01', 'topic-mix', 'Inv HT');
+    push @{ $row->($home, $SECTION_TOP) }, $X;
+    unshift @{ $hsItems->($top) }, clone($X);
+    http_rule(qr{pathfinder/v2/query}, pf59_responder(home => $home, topmix => $top));
+    my ($res) = run_mfy();
+    my $u = $X->{uri};
+    is($count->($res, $u), 1, 'invariant home+topmix: listed once');
+    my ($f) = grep { $_->{title} eq 'Your top mixes' } @{ $res->{layout}{folders} };
+    my @fu = map { $_->{uri} } @{ $f->{items} };
+    my $nHome = scalar(@{ $row->($home, $SECTION_TOP) }) - 1;   # the row before $X: 10 home mixes
+    is($fu[$nHome], $u, 'invariant home+topmix: at its place in home\'s row, not where SECTION_TOPMIX put it (first)');
+
+    # home + mfy: a mix in home's top-mixes row and in SECTION_MFY: row 2 (the MFY row) comes first in Spotify's order
+    reset_all(); seed59();
+    $home = clone($FX59->{home});
+    my $mfy = clone($FX59->{homeSection_mfy});
+    my $Y = $mix->('37i9dQZF1EQ99INVHMxxx02', 'topic-mix', 'Inv HM');
+    push @{ $row->($home, $SECTION_TOP) }, $Y;
+    push @{ $hsItems->($mfy) }, clone($Y);
+    http_rule(qr{pathfinder/v2/query}, pf59_responder(home => $home, mfy => $mfy));
+    ($res) = run_mfy();
+    is($count->($res, $Y->{uri}), 1, 'invariant home+mfy: listed once');
+    is($where->($res, $Y->{uri}), 'folder:Made For Listener', 'invariant home+mfy: at its first place in row order (the MFY row before the top-mixes row)');
+    my ($tmf) = grep { $_->{title} eq 'Your top mixes' } @{ $res->{layout}{folders} };
+    ok(!(grep { $_->{uri} eq $Y->{uri} } @{ $tmf->{items} }), 'invariant home+mfy: and not again in the later row');
+
+    # mfy + topmix, home absent: the flat list keeps SECTION_MFY's place
+    reset_all(); seed59();
+    $mfy = clone($FX59->{homeSection_mfy});
+    $top = clone($FX59->{homeSection_topmix});
+    my $Z = $mix->('37i9dQZF1EQ99INVMTxxx03', 'topic-mix', 'Inv MT');
+    push @{ $hsItems->($mfy) }, $Z;
+    unshift @{ $hsItems->($top) }, clone($Z);
+    http_rule(qr{pathfinder/v2/query}, pf59_responder(home_fail => 1, mfy => $mfy, topmix => $top));
+    ($res) = run_mfy();
+    my @flat = @{ uris_of($res) };
+    is($count->($res, $Z->{uri}), 1, 'invariant mfy+topmix: listed once');
+    my $nMfy = scalar(grep { $_->{content}{data}{uri} ne $DJ_URI } @{ $hsItems->($mfy) }) - 1;
+    is($flat[$nMfy], $Z->{uri}, 'invariant mfy+topmix: at the end of the SECTION_MFY part, not at the head of SECTION_TOPMIX');
+});
+
+# 79-59 Task 3: the Made For You list is kept for the browse tier only
+# (300 s), so the menu a user descends into is the one LMS showed (LMS fetches
+# coderef menus again on every descent, and the Spotify home answers
+# differently per request); an answer with a failed source is not kept; the
+# lists' tracks follow the 300 s playlist envelope cache.
+t_block('79-59 MFY list cache', sub {
+    reset_all(); seed59();
+    my $n = 0;
+    my $base = pf59_responder();
+    http_rule(qr{pathfinder/v2/query}, sub {
+        my $req = pf_body($_[0]);
+        return $base->($_[0]) unless ($req->{operationName} // '') eq 'home';
+        # every home request answers a different one-item row, as live
+        my $home = clone($FX59->{home});
+        my $r = $home->{data}{home}{sectionContainer}{sections}{items}[5]{sectionItems}{items}[0]{content}{data};
+        $n++;
+        $r->{uri} = 'spotify:playlist:37i9dQZF1EQ99ROTATExx' . sprintf('%02d', $n);
+        return (200, $JSON->encode($home));
+    });
+    my ($r1) = run_mfy();
+    my $p1 = scalar(pf_requests());
+    my ($r2) = run_mfy();
+    is(scalar(pf_requests()), $p1, '79-59 cache: a second open within the TTL sends no Pathfinder request');
+    is_deeply(uris_of($r2), uris_of($r1), '79-59 cache: and shows the same lists in the same places (stable menu indices)');
+    ok($CK->ttl('spoton_mfy_list_acct1') > 0 && $CK->ttl('spoton_mfy_list_acct1') <= 300, '79-59 cache: kept at most 300 s (browse tier)');
+    is(Plugins::SpotOn::API::SpClient::MFY_LIST_TTL(), 300, '79-59 cache: MFY_LIST_TTL is 300');
+    $CK->remove('spoton_mfy_list_acct1');
+    my ($r3) = run_mfy();
+    ok(scalar(pf_requests()) > $p1 && !(grep { $_ eq 'spotify:playlist:37i9dQZF1EQ99ROTATExx01' } @{ uris_of($r3) }),
+        '79-59 cache: after it expires the next open reads the home again');
+    is(Plugins::SpotOn::API::SpClient::PLAYLIST_ENVELOPE_TTL(), 300, '79-59 cache: a list\'s tracks follow the 300 s playlist envelope cache');
+
+    # a failed source: shown, not kept
+    reset_all(); seed59();
+    http_rule(qr{pathfinder/v2/query}, pf59_responder(home_fail => 1));
+    my ($f1) = run_mfy();
+    ok($f1 && @{ $f1->{items} } && !defined $CK->get('spoton_mfy_list_acct1'), '79-59 cache: an answer with a failed source is not kept');
 });
 
 done_testing();

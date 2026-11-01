@@ -1329,12 +1329,16 @@ for my $c (['album', 'searchAlbums', 'albums'], ['artist', 'searchArtists', 'art
     ok($result && @{ $result->{$key}{items} } >= 2, "search type=$type: $key.items mapped");
 }
 
-# GenericError items (podcasts) are skipped
+# GenericError items (podcasts) keep their slot as a nameless {} (79-58, GH #168: list positions stay
+# equal to Spotify's offsets; the menus turn the slot into an ignore row)
 {
     reset_all(); pf_seed(); pf_ops_rule();
     my ($result);
     $SP->search('acct31b', { q => 'jazz', type => 'show' }, sub { ($result) = @_ });
-    is(scalar(@{ $result->{shows}{items} }), 2, 'search type=show: the GenericError podcast item is skipped');
+    my @named = grep { defined $_->{name} } @{ $result->{shows}{items} };
+    is(scalar(@named), 2, 'search type=show: two mapped podcast items');
+    is(scalar(@{ $result->{shows}{items} }), scalar(@{ $PFX->{searchDesktop}{data}{searchV2}{podcasts}{items} }),
+        'search type=show: the GenericError podcast item keeps its slot (one entry per raw item)');
     is($result->{shows}{total}, $PFX->{searchDesktop}{data}{searchV2}{podcasts}{totalCount}, 'search type=show: total is the totalCount');
 }
 
@@ -1383,9 +1387,12 @@ for my $c (['album', 'searchAlbums', 'albums'], ['artist', 'searchArtists', 'art
     my ($result);
     $SP->search('acct34', { q => 'artist:"artist 2"', type => 'track', limit => 10, offset => 0 }, sub { ($result) = @_ });
     my @q = pf_reqs();
+    my @kept = grep { defined $_->{name} } @{ $result->{tracks}{items} };
     ok(scalar(@q) == 1 && pf_vars($q[0])->{variables}{searchTerm} eq 'artist 2'
-        && scalar(@{ $result->{tracks}{items} }) == 1 && $result->{tracks}{items}[0]{artists}[0]{name} eq 'Artist 2',
+        && scalar(@kept) == 1 && $kept[0]{artists}[0]{name} eq 'Artist 2',
         'search artist:"<name>": searchTerm is the bare name, track items kept only for that artist (case-insensitive)');
+    ok(!grep({ !defined $_->{name} && keys %$_ } @{ $result->{tracks}{items} }),
+        'search artist:"<name>": every other track is an empty slot {} (79-58), not a row of another artist');
 }
 
 # Pathfinder failing -> track results from the existing context-resolve path, flagged limited
@@ -2571,6 +2578,7 @@ sub to_json_fixture_mfy {
         'madeForYouStatus: before any call hashState unknown, no fallback, no mixes');
 
     Slim::Utils::Cache->new()->set('spoton_pf_hash_homeSection', 'a' x 64);
+    Slim::Utils::Cache->new()->set('spoton_pf_hash_home', 'a' x 64);    # 79-59: op home is asked too
     Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{pathfinder/v2/query}, to_json_fixture_mfy());
     $SP->getMadeForYou('acctST1', sub { });
     $st = $SP->madeForYouStatus();
@@ -3387,6 +3395,114 @@ sub capture43 {
     my @masked = grep { /\$log->(?:info|warn|error|debug)\(/ && /_logPath\(\$cleanPath\)/ } split /\n/, $src;
     is(scalar(@raw) . '/' . (scalar(@masked) >= 11 ? 'ok' : scalar(@masked)), '0/ok',
         '79-43 M3: no SpClient log line prints $cleanPath unmasked (the cache-hit INFO line included); 11 lines go through _logPath');
+}
+
+# ============================================================
+# 79-61 (79-REVIEW-FULL-3 WR-05): a persistent spclient 401 turned every
+# request into a login5 mint. D-07a allows one remint per request; across
+# requests the pattern was 401 -> remove token -> mint -> 401 -> unauthorized,
+# and the NEXT request repeated it. After a confirmed unauthorized the
+# account is remembered for 60 s: its next 401 is reported at once, the
+# cached token is kept (so no mint), and a 2xx answer for the account lifts
+# the memory again so a real token expiry later still gets its one remint.
+# ============================================================
+{
+    reset_all();
+    my $cache = Slim::Utils::Cache->new();
+    $cache->set('spoton_login5_token_acct7961', 'tok', 3600);
+    $Slim::Networking::SimpleAsyncHTTP::auto_mode = 'error_401';
+
+    my @ids = ('7961aaaaaaaaaaaaaaaaaa', '7961bbbbbbbbbbbbbbbbbb', '7961cccccccccccccccccc');
+    my @errs;
+    for my $id (@ids) {
+        $SP->getTrack('acct7961', $id, sub { push @errs, $_[1] });
+    }
+    my @http = Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests();
+    is(scalar(@errs), 3, '79-61 WR-05: harness -- all three requests answered');
+    is(scalar(grep { ref $_ eq 'HASH' && ($_->{code} // 0) == 401 } @errs), 3, '79-61 WR-05: all three are reported unauthorized (401)');
+    is(scalar(@http), 4, '79-61 WR-05: the first request takes its D-07a remint (2 attempts), the next two one attempt each (4, not 6)');
+    is(scalar(@Plugins::SpotOn::API::Login5::getToken_calls), 4, '79-61 WR-05: no remint for the second and third request (4 token reads, not 6)');
+    ok(Plugins::SpotOn::API::SpClient::_unauthMemory('acct7961'), '79-61 WR-05: the confirmed unauthorized account is remembered');
+    $cache->set('spoton_login5_token_acct7961', 'tok2', 3600);
+
+    # a 2xx for the account lifts the memory
+    $Slim::Networking::SimpleAsyncHTTP::auto_mode = 'success';
+    my $ok;
+    $SP->getTrack('acct7961', '7961dddddddddddddddddd', sub { $ok = $_[0] });
+    ok(!Plugins::SpotOn::API::SpClient::_unauthMemory('acct7961'), '79-61 WR-05: a successful answer clears the unauthorized memory');
+
+    Slim::Networking::SimpleAsyncHTTP::reset_requests();
+    $Slim::Networking::SimpleAsyncHTTP::auto_mode = 'error_401';
+    Plugins::SpotOn::API::Login5::reset_calls();
+    $SP->getTrack('acct7961', '7961eeeeeeeeeeeeeeeeee', sub { });
+    my @http2 = Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests();
+    is(scalar(@http2), 2, '79-61 WR-05: after the memory is lifted, a 401 gets its one D-07a remint again');
+
+    # another account is not affected by acct7961's memory
+    Slim::Networking::SimpleAsyncHTTP::reset_requests();
+    $Slim::Networking::SimpleAsyncHTTP::auto_mode = 'error_401';
+    $SP->getTrack('acct7962', '7962aaaaaaaaaaaaaaaaaa', sub { });
+    is(scalar(Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests()), 2, '79-61 WR-05: the memory is per account (another account still gets its remint)');
+
+    $Slim::Networking::SimpleAsyncHTTP::auto_mode = 'success';
+}
+
+# ============================================================
+# 79-61 (79-REVIEW-FULL-3 WR-03): SpClient->gate is the central gate for
+# spclient requests outside _request (Soloist's playback-settings). It shares
+# _request's concurrency slots and 429 key, frees a slot whose request never
+# answers, and noteRateLimit records a gated caller's 429 in the shared key.
+# ============================================================
+{
+    reset_all();
+    my $cache = Slim::Utils::Cache->new();
+    $cache->remove(Plugins::SpotOn::API::SpClient::SPCLIENT_RATE_LIMIT_KEY());
+    @Slim::Utils::Timers::set_calls = ();
+
+    my @releases;
+    my $ran = 0;
+    for (1 .. 2) {
+        $SP->gate("t$_", sub { $ran++; push @releases, $_[0] }, sub { });
+    }
+    is($ran, 2, '79-61 WR-03 gate: two gated requests run while slots are free');
+    is($SP->statusSnapshot->{api}{inflightCount} // $SP->statusSnapshot->{inflightCount}, 2,
+        '79-61 WR-03 gate: they occupy the same in-flight count _request uses');
+
+    my $thirdRan = 0;
+    @Slim::Utils::Timers::set_calls = ();
+    $SP->gate('t3', sub { $thirdRan++; $_[0]->() }, sub { });
+    is($thirdRan, 0, '79-61 WR-03 gate: a third request waits while both slots are taken (cap shared with _request)');
+    ok(scalar(grep { ref($_->[2]) eq 'CODE' } @Slim::Utils::Timers::set_calls) >= 1, '79-61 WR-03 gate: the waiting request is re-tried by a timer');
+
+    $_->() for @releases;
+    $_->() for @releases;    # a second release is a no-op
+    is($SP->statusSnapshot->{api}{inflightCount} // $SP->statusSnapshot->{inflightCount}, 0,
+        '79-61 WR-03 gate: released slots return to zero, a double release does not go negative');
+
+    # a request that never answers is freed by the watchdog timer
+    @Slim::Utils::Timers::set_calls = ();
+    $SP->gate('lost', sub { }, sub { });
+    my ($watch) = grep { ref($_->[2]) eq 'CODE' } @Slim::Utils::Timers::set_calls;
+    is($SP->statusSnapshot->{api}{inflightCount} // $SP->statusSnapshot->{inflightCount}, 1, '79-61 WR-03 gate: a lost request holds its slot');
+    $watch->[2]->() if $watch;
+    is($SP->statusSnapshot->{api}{inflightCount} // $SP->statusSnapshot->{inflightCount}, 0, '79-61 WR-03 gate: the watchdog frees the slot of a request that never answered');
+
+    # a die inside $run releases and reports blocked
+    my $why;
+    $SP->gate('dies', sub { die "boom\n" }, sub { $why = $_[0] });
+    is($why, 'internal_error', '79-61 WR-03 gate: a die in the dispatch is reported to the caller');
+    is($SP->statusSnapshot->{api}{inflightCount} // $SP->statusSnapshot->{inflightCount}, 0, '79-61 WR-03 gate: ... and its slot is released');
+
+    # the shared 429 key: noteRateLimit sets it, gate and _request both honour it
+    $SP->noteRateLimit(7);
+    ok($cache->get(Plugins::SpotOn::API::SpClient::SPCLIENT_RATE_LIMIT_KEY()), '79-61 WR-03 gate: noteRateLimit sets the shared spclient rate key');
+    my ($gRan, $gWhy) = (0, undef);
+    $SP->gate('limited', sub { $gRan++ }, sub { $gWhy = $_[0] });
+    is($gRan . '|' . ($gWhy // ''), '0|rate_limited_local', '79-61 WR-03 gate: a gated request is short-circuited by the shared key');
+    my $err;
+    $SP->getTrack('acct1', '7961ffffffffffffffffff', sub { $err = $_[1] });
+    is(($err && $err->{error}) // '', 'rate_limited_local', '79-61 WR-03 gate: _request is short-circuited by a 429 a gated caller recorded');
+    $cache->remove(Plugins::SpotOn::API::SpClient::SPCLIENT_RATE_LIMIT_KEY());
 }
 
 done_testing();

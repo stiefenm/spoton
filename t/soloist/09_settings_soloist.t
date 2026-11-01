@@ -39,6 +39,7 @@ package FakeSettingsRequest;
 sub new { my ($class, %args) = @_; return bless { headers => {}, %args }, $class }
 sub header  { my ($self, $name) = @_; return $self->{headers}{$name} }
 sub content { return $_[0]->{content} }
+sub method  { return $_[0]->{method} }    # 79-61 FULL-1 WR-03: write routes check the HTTP method
 
 package main;
 
@@ -968,7 +969,7 @@ SKIP: {
 
     # renew (POST) with the XHR header
     @Slim::Web::HTTP::http_responses = ();
-    my $xhr = FakeSettingsResponse->new(request => FakeSettingsRequest->new(headers => { 'X-Requested-With' => 'XMLHttpRequest' }));
+    my $xhr = FakeSettingsResponse->new(request => FakeSettingsRequest->new(method => 'POST', headers => { 'X-Requested-With' => 'XMLHttpRequest' }));
     eval { $renew_handler->('http_client_renew', $xhr) };
     is_deeply(\@fired, [ 'renewNow' ], '84-13: the resolved soloistRenew route fires the role renewNow');
     is(scalar(@renew_calls), 1, '83.3-03: the renew route calls renewBinary exactly once');
@@ -1037,17 +1038,17 @@ SKIP: {
     is($server->get('csrfProtectionLevel'), 1, '84-13 csrf: harness precondition -- csrfProtectionLevel=1 is readable');
 
     @Slim::Web::HTTP::http_responses = ();
-    my $noHdr = FakeSettingsResponse->new(request => FakeSettingsRequest->new);
+    my $noHdr = FakeSettingsResponse->new(request => FakeSettingsRequest->new(method => 'POST'));
     eval { $renew->('http_client_csrf', $noHdr) };
     is($noHdr->code, 403, '84-13 csrf: renew POST without X-Requested-With -> 403 (T-84-161)');
     is($nowCalls, 0, '84-13 csrf: the role renewNow is never reached without the header');
 
-    my $withHdr = FakeSettingsResponse->new(request => FakeSettingsRequest->new(headers => { 'X-Requested-With' => 'XMLHttpRequest' }));
+    my $withHdr = FakeSettingsResponse->new(request => FakeSettingsRequest->new(method => 'POST', headers => { 'X-Requested-With' => 'XMLHttpRequest' }));
     eval { $renew->('http_client_csrf', $withHdr) };
     is($nowCalls, 1, '84-13 csrf: with the header the role renewNow runs once');
     is($withHdr->code, 200, '84-13 csrf: with the header the answer is 200 (_jsonResponse)');
 
-    my $get = FakeSettingsResponse->new(request => FakeSettingsRequest->new);
+    my $get = FakeSettingsResponse->new(request => FakeSettingsRequest->new(method => 'GET'));
     eval { $status->('http_client_csrf', $get) };
     is($get->code, 200, '84-13 csrf: the status GET answers through _jsonResponse without the header (no 403)');
     is($get->content_type, 'application/json', '84-13 csrf: the status GET answer is JSON');
@@ -1661,6 +1662,90 @@ sub d12_render {
             });
         }
     }
+}
+
+# ============================================================
+# 79-60 Task 4: the player settings page in sections General / librespot /
+# Soloist. Template Toolkit is not bundled outside LMS (CI's hidden-tree leg), so
+# a small renderer below evaluates exactly the directive subset player.html uses
+# (IF/UNLESS/ELSE/END with ==, != and truthiness, WRAPPER and FOREACH as
+# transparent blocks, comments) and records what an active branch renders: the
+# WRAPPER titles, the string keys and the form field names.
+# ============================================================
+sub tt60_render {
+    my ($tpl, $vars) = @_;
+    my (@wrappers, @strings, @fields);
+    my @stack = ({ active => 1 });
+    my $cond = sub {
+        my ($e) = @_;
+        $e =~ s/^\s+|\s+$//g;
+        # a right-hand side is a 'string', a number or a variable (a loop variable such as l.value reads '')
+        my $rhs = sub { my ($r) = @_; return $1 if $r =~ /\A'([^']*)'\z/; return $r if $r =~ /\A\d+\z/; return $vars->{$r} // '' };
+        if ($e =~ /\A(\w+)\s*(==|!=)\s*('[^']*'|\d+|[\w.]+)\z/) {
+            my $eq = (($vars->{$1} // '') eq $rhs->($3)) ? 1 : 0;
+            return $2 eq '==' ? $eq : !$eq;
+        }
+        return $vars->{$1} ? 1 : 0 if $e =~ /\A(\w+)\z/;
+        die "tt60_render: unsupported condition <$e>\n";
+    };
+    my @parts = split /(\[%.*?%\])/s, $tpl;
+    for my $part (@parts) {
+        my $act = $stack[-1]{active};
+        if ($part =~ /\A\[%(.*)%\]\z/s) {
+            (my $d = $1) =~ s/^[\s-]+|[\s-]+$//g;
+            next if $d =~ /\A#/;
+            if ($d =~ /\AIF\s+(.+)\z/s)        { my $c = $cond->($1); push @stack, { active => $act && $c, parent => $act, taken => $c }; next }
+            if ($d =~ /\AUNLESS\s+(.+)\z/s)    { my $c = !$cond->($1); push @stack, { active => $act && $c, parent => $act, taken => $c }; next }
+            if ($d =~ /\AELSIF\s+(.+)\z/s)     { my $t = $stack[-1]; my $c = !$t->{taken} && $cond->($1); $t->{active} = $t->{parent} && $c; $t->{taken} ||= $c; next }
+            if ($d eq 'ELSE')                  { my $t = $stack[-1]; $t->{active} = $t->{parent} && !$t->{taken}; $t->{taken} = 1; next }
+            if ($d eq 'END')                   { pop @stack; die "tt60_render: unbalanced END\n" unless @stack; next }
+            if ($d =~ /\AWRAPPER\s+setting\s+title="([^"]+)"/) { push @wrappers, $1 if $act; push @stack, { active => $act, parent => $act, taken => 1 }; next }
+            if ($d =~ /\A(?:WRAPPER|FOREACH)\b/) { push @stack, { active => $act, parent => $act, taken => 1 }; next }
+            push @strings, $1 if $act && $d =~ /\A'([A-Z0-9_]+)'\s*\|\s*string/;
+            next;
+        }
+        next unless $act;
+        push @fields, $1 while $part =~ /name="(pref_\w+)"/g;
+    }
+    die "tt60_render: unclosed block\n" unless @stack == 1;
+    return { wrappers => \@wrappers, strings => \@strings, fields => \@fields };
+}
+
+{
+    my $tpl_file = "$project_dir/Plugins/SpotOn/HTML/EN/plugins/SpotOn/settings/player.html";
+    my $tpl = do { open(my $fh, '<', $tpl_file) or die "$tpl_file: $!"; local $/; <$fh> };
+    my %base = (canAutoplay => 1, dstmAvailable => 0, discoveryByCrashLoop => 0, soloistQualityAvailable => 1,
+                streamFormat => 'auto', streamingMode => 'global', soloistQuality => 'global', bitrateOverride => '', mp3Limit => '320 kbps');
+    my $sol = eval { tt60_render($tpl, { %base, backend => 'soloist' }) } || do { diag("render soloist: $@"); { wrappers => [], strings => [], fields => [] } };
+    my $lib = eval { tt60_render($tpl, { %base, backend => 'librespot' }) } || do { diag("render librespot: $@"); { wrappers => [], strings => [], fields => [] } };
+    my $has = sub { my ($list, $x) = @_; return (grep { $_ eq $x } @$list) ? 1 : 0 };
+    my $pos = sub { my ($list, $x) = @_; for my $i (0 .. $#$list) { return $i if $list->[$i] eq $x } return -1 };
+
+    # Soloist: General + Soloist, no librespot field
+    ok($has->($sol->{strings}, 'PLUGIN_SPOTON_PLAYER_SECTION_GENERAL'), '79-60 soloist: the General section heading is shown');
+    ok($has->($sol->{strings}, 'PLUGIN_SPOTON_PLAYER_SECTION_SOLOIST'), '79-60 soloist: the Soloist section heading is shown');
+    ok(!$has->($sol->{strings}, 'PLUGIN_SPOTON_PLAYER_SECTION_LIBRESPOT'), '79-60 soloist: no librespot section heading');
+    ok($has->($sol->{strings}, 'PLUGIN_SPOTON_PLAYER_SECTION_OTHER_BACKEND'), '79-60 soloist: one line says where the other backend\'s settings appear');
+    ok(!$has->($sol->{fields}, 'pref_bitrateOverride'), '79-60 soloist: bitrateOverride (librespot only) is not on the page');
+    ok(!$has->($sol->{fields}, 'pref_enableDiscovery') && !$has->($sol->{fields}, 'pref_enableAutoplay'),
+        '79-60 soloist: discovery and autoplay (read by the librespot daemon only) are not on the page');
+    ok($has->($sol->{fields}, 'pref_soloistQuality'), '79-60 soloist: soloistQuality is on the page');
+    ok($has->($sol->{fields}, $_), "79-60 soloist: General keeps $_") for qw(pref_enableSpotifyConnect pref_streamFormat pref_streamingMode);
+    ok($pos->($sol->{strings}, 'PLUGIN_SPOTON_PLAYER_SECTION_GENERAL') < $pos->($sol->{strings}, 'PLUGIN_SPOTON_PLAYER_SECTION_SOLOIST')
+        && $pos->($sol->{wrappers}, 'PLUGIN_SPOTON_STREAMING_MODE') < $pos->($sol->{wrappers}, 'PLUGIN_SPOTON_SOLOIST_QUALITY'),
+        '79-60 soloist: General comes first, then the Soloist section');
+
+    # librespot: the reverse
+    ok($has->($lib->{strings}, 'PLUGIN_SPOTON_PLAYER_SECTION_LIBRESPOT'), '79-60 librespot: the librespot section heading is shown');
+    ok(!$has->($lib->{strings}, 'PLUGIN_SPOTON_PLAYER_SECTION_SOLOIST'), '79-60 librespot: no Soloist section heading');
+    ok($has->($lib->{strings}, 'PLUGIN_SPOTON_PLAYER_SECTION_OTHER_BACKEND'), '79-60 librespot: the line about the other backend is shown');
+    ok($has->($lib->{fields}, $_), "79-60 librespot: $_ is on the page") for qw(pref_bitrateOverride pref_enableDiscovery pref_enableAutoplay);
+    ok(!$has->($lib->{fields}, 'pref_soloistQuality'), '79-60 librespot: soloistQuality (Soloist only) is not on the page');
+
+    # the MP3 text names the LMS setting and carries the current limit
+    ok($has->($sol->{strings}, 'PLUGIN_SPOTON_STREAM_FORMAT_MP3_LMS') && $has->($lib->{strings}, 'PLUGIN_SPOTON_STREAM_FORMAT_MP3_LMS'),
+        '79-60: the MP3 line (bitrate set in LMS) is shown under both backends');
+    like($tpl, qr/'PLUGIN_SPOTON_STREAM_FORMAT_MP3_LMS'\s*\|\s*string\(mp3Limit\)\s*\|\s*html/, '79-60: the MP3 line takes the current limit (mp3Limit) through string() and the html filter');
 }
 
 done_testing();

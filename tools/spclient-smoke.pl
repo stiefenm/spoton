@@ -33,6 +33,19 @@
 #   perl tools/spclient-smoke.pl <credentials.json> <trackId|-> pathfinder-ops
 #   perl tools/spclient-smoke.pl <credentials.json> <trackId|-> pathfinder-query <operation> <variables-json-file> <wpcid>
 #   perl tools/spclient-smoke.pl <credentials.json> <trackId|-> extmeta-probe <sizes> [query]
+#   perl tools/spclient-smoke.pl <credentials.json> <trackId|-> home-sections [<spotify:section:uri> ...]
+#
+# home-sections (79-59, GH #180): one Pathfinder `home` query (sectionItemsLimit 50) with the bearer and header set
+# SpotOn's Pathfinder.pm sends (the main login5 mint of the stored credentials, no client token), and one line per
+# home row and per row item, read-only:
+#   HOME_SECTION i=<n> uri=<spotify:section:...> title=<text|-> items=<n>
+#   HOME_ITEM i=<n> j=<n> type=<typename|-> uri=<uri> name=<name|->
+#   HOME_SECTIONS=<count>          (HOME_SECTIONS=none when the reply carries no data.home)
+# With section uris the mode sends SpotOn's own `homeSection` query once per uri instead (the variables of
+# Pathfinder.pm homeSection: sectionItemsLimit 10 plus uri), each answer headed by `HOME_QUERY op=homeSection
+# uri=<uri>` and printed with the same lines (data.homeSections). One login5 mint and one scrape for all uris.
+# SPOTON_SMOKE_HOME_DUMP=<path> writes the raw reply to <path> (mode 0600, never overwritten) for a trimmed
+# fixture; keep it outside git. Never printed: the bearer, the client token, the username, the greeting.
 #
 # extmeta-probe (79-27, D-18): the batch ceiling of spclient's extended-metadata endpoint. <sizes> is a comma list
 # of integers 1..1000 (e.g. 50,100,200,500); [query] is an optional raw query string appended to the path (e.g.
@@ -716,6 +729,7 @@ sub check_mode_args {
         'pathfinder-ops'      => '',
         'pathfinder-query'    => '<operation> <variables-json-file> <wpcid>',
         'extmeta-probe'       => '<sizes: comma list of 1..1000> [query]',
+        'home-sections'       => '[<spotify:section:uri> ...]',
     );
     return undef if $mode eq '' || $mode eq 'profile';
     return "unknown mode '$mode'" unless exists $usage{$mode};
@@ -728,6 +742,9 @@ sub check_mode_args {
         return "probe: body file not readable: $r[1]" if @r && !-r $r[1];
     }
     elsif ($mode eq 'profile-keys' || $mode eq 'rootlist-list' || $mode eq 'wpcid-probe' || $mode eq 'pathfinder-ops') { return $u if @a; }
+    elsif ($mode eq 'home-sections') {
+        return $u if @a > 40 || grep { !/\Aspotify:section:[A-Za-z0-9]{1,40}\z/ } @a;
+    }
     elsif ($mode eq 'pathfinder-query') {
         return $u unless @a == 3 && $a[0] =~ /\A[A-Za-z][A-Za-z0-9_]*\z/ && $a[2] eq 'wpcid';
         return "pathfinder-query: variables file not readable: $a[1]" unless -r $a[1];
@@ -1039,6 +1056,126 @@ sub pathfinder_query {
     print_query_result($code, $body);
 }
 
+# _home_text($s) -- one line, at most 80 chars, '-' when empty (names and titles are data, never reshaped further)
+sub _home_text {
+    my ($s) = @_;
+    return '-' unless defined $s && !ref $s && length $s;
+    $s =~ s/\s+/ /g;
+    $s =~ s/\A //;
+    $s =~ s/ \z//;
+    return length $s ? substr($s, 0, 80) : '-';
+}
+
+# _home_section_title($sectionData) -- title.transformedLabel, title.text or a plain string title
+sub _home_section_title {
+    my ($sd) = @_;
+    return '-' unless ref $sd eq 'HASH';
+    my $t = $sd->{title};
+    return _home_text($t) unless ref $t;
+    return '-' unless ref $t eq 'HASH';
+    for my $k (qw(transformedLabel text originalLabel)) {
+        return _home_text($t->{$k}) if defined $t->{$k} && !ref $t->{$k} && length $t->{$k};
+    }
+    return '-';
+}
+
+# print_home_sections($code, $body) -- 79-59: the rows of the home reply and their items (uri, typename, name)
+sub print_home_sections {
+    my ($code, $body) = @_;
+    my $d = eval { decode_json($body) };
+    my $hasErrors = (ref $d eq 'HASH' && ref $d->{errors} eq 'ARRAY' && @{ $d->{errors} }) ? 1 : 0;
+    print "home HTTP $code errors=" . (($hasErrors || $code !~ /^2/) ? 1 : 0) . "\n";
+    print "query errors=1 persisted_query_not_found=1\n" if defined $body && $body =~ /PersistedQueryNotFound/;
+    my $data = (ref $d eq 'HASH' && ref $d->{data} eq 'HASH') ? $d->{data} : {};
+    my $ss;
+    if (ref $data->{home} eq 'HASH') {                       # op home: data.home.sectionContainer.sections.items[]
+        my $sc = ref $data->{home}{sectionContainer} eq 'HASH' ? $data->{home}{sectionContainer} : {};
+        $ss = ref $sc->{sections} eq 'HASH' ? $sc->{sections}{items} : undef;
+        $ss = [] unless ref $ss eq 'ARRAY';
+    }
+    elsif (ref $data->{homeSections} eq 'HASH' && ref $data->{homeSections}{sections} eq 'ARRAY') {   # op homeSection
+        $ss = $data->{homeSections}{sections};
+    }
+    unless ($ss) {
+        print "HOME_SECTIONS=none\n";
+        return 0;
+    }
+    my $i = 0;
+    for my $sec (@$ss) {
+        next unless ref $sec eq 'HASH';
+        $i++;
+        my $suri  = (defined $sec->{uri} && !ref $sec->{uri} && $sec->{uri} =~ /\Aspotify:section:[A-Za-z0-9]+\z/) ? $sec->{uri} : '-';
+        my $items = (ref $sec->{sectionItems} eq 'HASH' && ref $sec->{sectionItems}{items} eq 'ARRAY') ? $sec->{sectionItems}{items} : [];
+        print "HOME_SECTION i=$i uri=$suri title=" . _home_section_title($sec->{data}) . ' items=' . scalar(@$items) . "\n";
+        my $j = 0;
+        for my $it (@$items) {
+            next unless ref $it eq 'HASH';
+            $j++;
+            my $content = ref $it->{content} eq 'HASH' ? $it->{content} : {};
+            my $data    = ref $content->{data} eq 'HASH' ? $content->{data} : {};
+            my $uri = $data->{uri};
+            $uri = $it->{uri} unless defined $uri && !ref $uri && length $uri;
+            $uri = '-' unless defined $uri && !ref $uri && $uri =~ /\Aspotify:[A-Za-z-]+:[A-Za-z0-9:._@-]+\z/;
+            my $type = $data->{__typename};
+            $type = $content->{__typename} unless defined $type && !ref $type && length $type;
+            $type = '-' unless defined $type && !ref $type && $type =~ /\A[A-Za-z0-9_]+\z/;
+            my $name = $data->{name};
+            $name = $data->{profile}{name} if !(defined $name && !ref $name) && ref $data->{profile} eq 'HASH';
+            print "HOME_ITEM i=$i j=$j type=$type uri=$uri name=" . _home_text($name) . "\n";
+        }
+    }
+    print "HOME_SECTIONS=$i\n";
+    return $i;
+}
+
+# home_sections($ctx, @sectionUris) -- 79-59: one `home` query, or one `homeSection` query per section uri,
+# with SpotOn's bearer, printed per row
+sub home_sections {
+    my ($ctx, @sectionUris) = @_;
+    my $op = @sectionUris ? 'homeSection' : 'home';
+    my $sc = scrape_web_player();
+    my $hash = $sc->{ops}{$op};
+    unless ($hash) {
+        print "ABORT op_not_in_bundle\n";
+        exit 7;
+    }
+    # The bearer SpotOn's Pathfinder.pm uses in production: the main login5 mint of this run (librespot
+    # client id), no client token, the plugin's header set. (The WP-CID login5 of wpcid-probe answered
+    # BAD_REQUEST on 2026-10-31, and it is not the path SpotOn reads Made For You through.)
+    binmode(STDOUT, ':encoding(UTF-8)');   # names are decoded JSON strings
+    my $dumped = 0;
+    for my $sectionUri (@sectionUris ? @sectionUris : (undef)) {
+        print "HOME_QUERY op=homeSection uri=$sectionUri\n" if defined $sectionUri;
+        my %vars = (
+            homeEndUserIntegration => 'INTEGRATION_WEB_PLAYER', timeZone => 'Europe/Berlin', sp_t => '', facet => '',
+            sectionItemsLimit => (defined $sectionUri ? 10 : 50), includeEpisodeContentRatingsV2 => JSON::PP::true,
+        );
+        $vars{uri} = $sectionUri if defined $sectionUri;
+        my ($code, $body) = curlReq(method => 'POST', url => PATHFINDER_URL,
+            body => JSON::PP->new->canonical->encode({
+                operationName => $op, variables => \%vars,
+                extensions    => { persistedQuery => { version => 1, sha256Hash => $hash } },
+            }),
+            headers => [
+                "Authorization: Bearer $ctx->{token}", 'Content-Type: application/json;charset=UTF-8',
+                'Accept: application/json', 'App-Platform: WebPlayer', 'Origin: https://open.spotify.com',
+                'Referer: https://open.spotify.com/', 'spotify-app-version: ' . WP_CLIENT_VERSION, _wpHeaders(),
+            ]);
+        if (!$dumped++ && defined(my $dump = $ENV{SPOTON_SMOKE_HOME_DUMP})) {
+            if (sysopen(my $fh, $dump, O_WRONLY | O_CREAT | O_EXCL, 0600)) {
+                binmode $fh;
+                print {$fh} ($body // '');
+                close $fh;
+                print 'home-dump: written bytes=' . length($body // '') . "\n";
+            }
+            else {
+                print "home-dump: refused (exists or not writable)\n";
+            }
+        }
+        print_home_sections($code, $body);
+    }
+}
+
 # LoginError names, duplicated from Plugins::SpotOn::API::Login5 (this tool stays LMS-free):
 # librespot login5.proto at 19959512.
 my %LOGIN_ERROR_NAME = (
@@ -1214,6 +1351,7 @@ if ($mode eq 'wpcid-probe')          { wpcid_probe($ctx); }
 if ($mode eq 'pathfinder-ops')       { pathfinder_ops(); }
 if ($mode eq 'pathfinder-query')     { pathfinder_query($ctx, @modeArgs); }
 if ($mode eq 'extmeta-probe')         { extmeta_probe($ctx, @modeArgs); }
+if ($mode eq 'home-sections')         { home_sections($ctx, @modeArgs); }
 
 print "OK: login5 + spclient round-trip succeeded end to end.\n";
 exit 0;

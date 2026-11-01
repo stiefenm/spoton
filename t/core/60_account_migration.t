@@ -673,4 +673,43 @@ ok($AM->can('resumeJournal'), 'WR-01: AccountMigration exposes resumeJournal');
         'Plugin.pm: the authChainMigrated one-shot runs before DaemonManager->init(); both prefs have defaults');
 }
 
+# ============================================================
+# 79-61 (79-REVIEW-FULL-3 WR-04): re-key into an EXISTING but empty target
+# directory. The refusal gate only looked at <new>/credentials.json, so the
+# prefs entry moved to the new id, _renameDir saw -e <new>, gave up (return
+# 0), the journal was cleared and credentials.json stayed under <old>: the
+# account was unusable until re-pairing and the old file orphaned. When the
+# target holds no credentials.json, the file moves into it (mode 0600).
+# ============================================================
+{
+    seed_rekey_world();
+    make_path(account_dir($NEW));                     # leftover empty target dir
+    my $orig_creds = slurp(catfile(account_dir($OLD), 'credentials.json'));
+    attempt { $AM->run };
+    my $accounts = $prefs->get('accounts') || {};
+    ok(exists $accounts->{$NEW} && !exists $accounts->{$OLD},
+        '79-61 WR-04: harness -- the prefs entry moved to the new id');
+    ok(-f catfile(account_dir($NEW), 'credentials.json'),
+        '79-61 WR-04: credentials.json reaches the existing empty target directory');
+    is(-f catfile(account_dir($NEW), 'credentials.json') ? slurp(catfile(account_dir($NEW), 'credentials.json')) : '',
+        $orig_creds, '79-61 WR-04: the moved credentials.json is the old one, byte for byte');
+    ok(!-e catfile(account_dir($OLD), 'credentials.json'),
+        '79-61 WR-04: no orphaned credentials.json is left under the old id');
+    my $mode = (stat(catfile(account_dir($NEW), 'credentials.json')))[2];
+    is(defined $mode ? sprintf('%04o', $mode & 07777) : 'none', '0600',
+        '79-61 WR-04: the moved credentials.json is readable by the owner only');
+    is_deeply($prefs->get('authChainRekeyPending'), {}, '79-61 WR-04: journal empty afterwards');
+}
+
+# The same-user target that already holds a credentials.json is left as it is
+# (FULL-3 IN-03 stays a separate, open item): nothing is overwritten.
+{
+    seed_rekey_world();
+    write_json(account_dir($NEW), 'credentials.json', { auth_type => 1, username => 'bob', auth_data => 'TkVX' });
+    my $target_before = slurp(catfile(account_dir($NEW), 'credentials.json'));
+    attempt { $AM->run };
+    is(slurp(catfile(account_dir($NEW), 'credentials.json')), $target_before,
+        '79-61 WR-04: a target credentials.json of the same user is never overwritten');
+}
+
 done_testing();

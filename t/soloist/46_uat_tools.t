@@ -5726,4 +5726,17 @@ subtest 'd34-E4-context-end-category' => sub {
     unlike($body, qr/Control: dispatch play/, 'd34-E4: an unrelated line stays out of the category');
 };
 
+# 79-66 (user decision 2026-10-31 "Neue Logzeile, Messlauf zählt die"): the quiet INFO ack line of a command_result frame
+# (Control.pm _commandResultLogLine) has its own category, so the pause_play verdict can count it.
+subtest '79-66-command-result-ack-category' => sub {
+    my $hdr = 'server.log: 79-66 Control command_result ack (Control.pm _onFrameCommandResult, INFO)';
+    my ($exit, $stdout, $stderr) = $d34_run_srv->(
+        '[26-10-26 12:00:06.0000] Plugins::SpotOn::Soloist::Control::_onFrameCommandResult (4400) Control: command_result -- command=seek (02:00:00:5a:11:01)');
+    is($exit, 0, '79-66: extract-run.pl exits 0') or diag("stderr: $stderr");
+    my $body = $d34_section->($stdout, $hdr);
+    like($body, qr/Control: command_result -- command=seek \(02:00:00:5a:11:01\)/,
+        '79-66: the ack line lands in its own category');
+    unlike($body, qr/Control: dispatch play/, '79-66: an unrelated line stays out of the category');
+};
+
 done_testing();

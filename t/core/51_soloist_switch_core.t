@@ -449,4 +449,58 @@ my $DM = 'Plugins::SpotOn::Unified::DaemonManager';
     }
 }
 
+# ============================================================
+# 79-61 (79-REVIEW-FULL-2 WR-01): a daemon stop no longer blocks until the
+# process has exited (Unified/ProcStop.pm). startHelper must not spawn a new
+# daemon for a player whose previous process is still exiting (same data
+# dir, same Connect device id); the start is retried by a timer and goes
+# ahead once the predecessor is gone.
+# ============================================================
+{
+    require Plugins::SpotOn::Backend;
+    Plugins::SpotOn::Backend::classFor('librespot');
+    require Plugins::SpotOn::Unified::ProcStop;
+
+    my $cachedir = tempdir(CLEANUP => 1);
+    make_path("$cachedir/spoton");
+    open(my $cf, '>', "$cachedir/spoton/credentials.json") or die "credentials.json: $!";
+    print $cf '{}';
+    close $cf;
+    local $Slim::Utils::Prefs::FAKE_VALUES{backend}       = 'librespot';
+    local $Slim::Utils::Prefs::FAKE_VALUES{cachedir}      = $cachedir;
+    local $Slim::Utils::Prefs::FAKE_VALUES{activeAccount} = undef;
+
+    {
+        package Test::DyingProc;
+        sub new   { bless { alive => 1 }, shift }
+        sub alive { $_[0]{alive} }
+        sub pid   { 4343 }
+        sub die   { 0 }          # ignores TERM: stays alive until the test says so
+        sub autoterminate { 0 }
+    }
+    my @timers;
+    no warnings 'redefine';
+    local *Slim::Utils::Timers::setTimer = sub { my ($obj, $when, $cb, @a) = @_; push @timers, [$obj, $when, $cb, @a]; };
+
+    my $mac  = 'aa:bb:cc:dd:61:51';
+    my $dying = Test::DyingProc->new;
+    Plugins::SpotOn::Unified::ProcStop->terminate($dying, key => $mac, label => 'test predecessor');
+    ok(Plugins::SpotOn::Unified::ProcStop->terminatingFor($mac), '79-61 WR-01: harness -- the predecessor is registered as terminating');
+
+    @timers = ();
+    my $h = $DM->startHelper($mac);
+    ok(!defined $h, '79-61 WR-01: startHelper spawns no daemon while the previous process of the player is still exiting');
+    ok(!defined $DM->helperForClient($mac), '79-61 WR-01: no helper is registered for the player meanwhile');
+    my @retry = grep { ref($_->[2]) eq 'CODE' && !ref($_->[0]) } @timers;
+    is(scalar(@retry), 1, '79-61 WR-01: one deferred start is armed');
+    my $again = $DM->startHelper($mac);
+    is(scalar(grep { ref($_->[2]) eq 'CODE' && !ref($_->[0]) } @timers), 1, '79-61 WR-01: a second startHelper does not arm a second deferral');
+
+    $dying->{alive} = 0;    # the predecessor is gone
+    $_->[2]->($_->[0], @$_[3 .. $#$_]) for @retry;
+    my $helper = $DM->helperForClient($mac);
+    ok($helper && $helper->backendName eq 'librespot', '79-61 WR-01: the deferred start spawns the daemon once the predecessor is gone');
+    $DM->stopHelper($mac);
+}
+
 done_testing();

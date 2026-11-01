@@ -164,7 +164,7 @@ END
 
 write_stub($stub_dir, 'Slim::Utils::Misc', <<'END');
 package Slim::Utils::Misc;
-sub crackURL         { return ('127.0.0.1', 80, '/') }
+sub crackURL         { my ($u) = @_; return ($u // '') =~ m{^\w+://([^/:]+)(?::(\d+))?(/.*)?$} ? ($1, $2 // 80, $3 // '/') : ('127.0.0.1', 80, '/') }    # 79-61: parses like LMS
 sub findbin           { }
 sub addFindBinPaths   { }
 1;
@@ -200,6 +200,11 @@ sub new {
     push @NEW_ARGS, $args;
     return bless { %$args }, $class;
 }
+# 79-61 (FULL-1 WR-01): the base behaviour LMS's HTTP.pm has -- requestString
+# always adds "Range: bytes=0-", canEnhanceHTTP returns the useEnhancedHTTP
+# pref (here: on).
+sub requestString { my ($self, $client, $url) = @_; return "GET $url HTTP/1.0\r\nRange: bytes=0-\r\n\r\n"; }
+sub canEnhanceHTTP { return 1; }
 1;
 END
 
@@ -577,6 +582,43 @@ sub reset_state {
     my $r2 = $pkg->new({ url => 'spoton://connect-99', client => $client });
     ok(!defined $r2, 'new(): Connect URL with no alive daemon -> undef');
     is(scalar(@Slim::Player::Protocols::HTTP::NEW_ARGS), 0, 'new(): base class HTTP->new is not called when the daemon is missing');
+}
+
+# ============================================================
+# 79-61 (79-REVIEW-FULL-1 WR-01): requestString / canEnhanceHTTP overrides
+# were dead code for proxied streams. new() returned a plain
+# Slim::Player::Protocols::HTTP object, so the socket's own requestString and
+# canEnhanceHTTP calls dispatched to the base class: "Range: bytes=0-" was
+# always sent and Enhanced HTTP followed the LMS pref, against an endless
+# daemon stream. The stream object must be of a class whose overrides run,
+# and it must stay a Slim::Player::Protocols::HTTP for everything else.
+# ============================================================
+{
+    reset_state();
+    my $client = MockClient->new();
+    $Plugins::SpotOn::Unified::DaemonManager::HELPER = MockHelper->new(port => 4242);
+
+    my $conn = $pkg->new({ url => 'spoton://connect-99', client => $client });
+    ok($conn && $conn->isa('Slim::Player::Protocols::HTTP'),
+        '79-61 WR-01: the Connect proxy stream object is still a Slim::Player::Protocols::HTTP');
+    my $req = $conn ? $conn->requestString($client, 'http://127.0.0.1:4242/stream') : '';
+    unlike($req, qr/^Range:/mi, '79-61 WR-01: the proxied /stream request carries no Range header');
+    like($req, qr{^GET /stream HTTP/1\.0}m, '79-61 WR-01: the proxied /stream request is the plain GET of the override');
+    is($conn ? $conn->canEnhanceHTTP($client, 'http://127.0.0.1:4242/stream') : 1, 0,
+        '79-61 WR-01: Enhanced HTTP is off for the daemon stream even with useEnhancedHTTP on');
+
+    my $song = MockSong->new(client => $client, track => MockTrack->new(url => 'spoton://track:abc'));
+    my $browse = $pkg->new({ url => 'spoton://track:abc', client => $client, song => $song });
+    my $breq = $browse ? $browse->requestString($client, 'http://127.0.0.1:4242/track/abc') : '';
+    unlike($breq, qr/^Range:/mi, '79-61 WR-01: the proxied Browse /track/ request carries no Range header');
+    is($browse ? $browse->canEnhanceHTTP($client, 'http://127.0.0.1:4242/track/abc') : 1, 0,
+        '79-61 WR-01: Enhanced HTTP is off for the Browse daemon stream');
+
+    my $foreign = $pkg->new({ url => 'http://example.invalid/a.mp3', client => $client });
+    like($foreign ? $foreign->requestString($client, 'http://example.invalid/a.mp3') : '', qr/^Range: bytes=0-/m,
+        '79-61 WR-01: a foreign URL keeps the base request (Range unchanged)');
+    is($foreign ? $foreign->canEnhanceHTTP($client, 'http://example.invalid/a.mp3') : 0, 1,
+        '79-61 WR-01: a foreign URL keeps the base Enhanced HTTP answer');
 }
 
 # ============================================================

@@ -416,7 +416,7 @@ sub setup_prefs {
 }
 
 # ============================================================
-# Test 1: _typeString returns format + mode only (LMS shows bitrate separately)
+# Test 1: _formatLabel (79-60, was _typeString): Spotify side, LMS side, mode
 # ============================================================
 {
     my $client = MockClient->new('player_ogg');
@@ -425,16 +425,16 @@ sub setup_prefs {
         client       => $client,
         streamFormat => 'ogg',
     );
-    my $result = Plugins::SpotOn::Plugin->_typeString($client, 'Browse');
-    is($result, 'OGG, SpotOn Browse',
-        'META-02: streamFormat=ogg + passthrough=1 => "OGG, SpotOn Browse"');
+    my $result = scalar eval { Plugins::SpotOn::Plugin->_formatLabel($client, 'Browse') };
+    is($result, "OGG 320k \x{00B7} OGG, SpotOn Browse",
+        'META-02 / 79-60: streamFormat=ogg + passthrough=1 => "OGG 320k <U+00B7> OGG, SpotOn Browse" (librespot side: the configured rate)');
 }
 
 
 
 
 # ============================================================
-# Test 5: _typeString with streamFormat=auto + passthrough=1
+# Test 5: _formatLabel (79-60, was _typeString) with streamFormat=auto + passthrough=1
 # D-05: auto resolves to OGG when passthrough capability is true
 # ============================================================
 {
@@ -444,9 +444,9 @@ sub setup_prefs {
         streamFormat => 'auto',
         passthrough  => 1,
     );
-    my $result = Plugins::SpotOn::Plugin->_typeString($client, 'Browse');
-    is($result, 'OGG, SpotOn Browse',
-        'D-05: streamFormat=auto + passthrough=1 => "OGG, SpotOn Browse"');
+    my $result = scalar(eval { Plugins::SpotOn::Plugin->_formatLabel($client, 'Browse') }) // '';
+    like($result, qr/\AOGG \d+k \x{00B7} OGG, SpotOn Browse\z/,
+        'D-05 / 79-60: streamFormat=auto + passthrough=1 => "OGG <n>k <U+00B7> OGG, SpotOn Browse"');
 }
 
 

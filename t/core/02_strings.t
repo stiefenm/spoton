@@ -497,6 +497,35 @@ SKIP: {
     is(join(',', sort keys %$N), join(',', @L), '79-24 MP3-NOTE: PLUGIN_SPOTON_STREAM_FORMAT_MP3_NOTE has exactly the eleven languages');
     my @keep_claims = grep { ($N->{$_} // '') =~ $KEEP_CLAIM{$_} } @L;
     is(join(',', @keep_claims), '', '79-24 MP3-NOTE: no note language says FLAC 16 keeps the Spotify quality (languages still claiming are listed)');
+
+    # 79-60 Task 2: the "(setting)" marker of the format label's Spotify side
+    my $FS = $val{PLUGIN_SPOTON_FORMAT_SETTING} || {};
+    is(join(',', sort keys %$FS), join(',', @L), '79-60: PLUGIN_SPOTON_FORMAT_SETTING has exactly the eleven languages');
+    is($FS->{EN}, 'setting', '79-60: PLUGIN_SPOTON_FORMAT_SETTING EN "setting"');
+    is($FS->{DE}, 'Einstellung', '79-60: PLUGIN_SPOTON_FORMAT_SETTING DE "Einstellung"');
+    is(join(',', grep { ($FS->{$_} // '') =~ /[\x{2013}\x{2014}()]/ } @L), '', '79-60: the marker carries no dash and no brackets (the label adds them)');
+
+    # 79-60 Task 4: player settings sections and plain per-field texts, every language
+    for my $k (qw(PLUGIN_SPOTON_PLAYER_SECTION_GENERAL PLUGIN_SPOTON_PLAYER_SECTION_GENERAL_DESC PLUGIN_SPOTON_PLAYER_SECTION_LIBRESPOT PLUGIN_SPOTON_PLAYER_SECTION_SOLOIST
+                  PLUGIN_SPOTON_PLAYER_SECTION_OTHER_BACKEND PLUGIN_SPOTON_STREAM_FORMAT_MP3_LMS PLUGIN_SPOTON_MP3_LIMIT_NONE
+                  PLUGIN_SPOTON_MP3_LIMIT_KBPS)) {
+        my $V = $val{$k} || {};
+        is(join(',', sort keys %$V), join(',', @L), "79-60: $k has exactly the eleven languages");
+        is(join(',', grep { ($V->{$_} // '') =~ /[\x{2013}\x{2014}]/ } @L), '', "79-60: $k carries no en or em dash");
+    }
+    for my $k (qw(PLUGIN_SPOTON_PLAYER_SECTION_OTHER_BACKEND PLUGIN_SPOTON_STREAM_FORMAT_MP3_LMS PLUGIN_SPOTON_MP3_LIMIT_KBPS)) {
+        my $V = $val{$k} || {};
+        is(join(',', grep { (() = ($V->{$_} // '') =~ /%s/g) != 1 } @L), '', "79-60: $k has exactly one %s in every language");
+    }
+    my %SCOPE = (PLUGIN_SPOTON_BITRATE_OVERRIDE_DESC => 'librespot', PLUGIN_SPOTON_DISCOVERY_ENABLED_DESC => 'librespot',
+                 PLUGIN_SPOTON_AUTOPLAY_ENABLED_DESC => 'librespot', PLUGIN_SPOTON_SOLOIST_QUALITY_DESC => 'Soloist');
+    for my $k (sort keys %SCOPE) {
+        my $V = $val{$k} || {};
+        is(join(',', grep { ($V->{$_} // '') !~ /\Q$SCOPE{$k}\E/ } @L), '', "79-60: $k names its backend ($SCOPE{$k}) in every language");
+    }
+    like($val{PLUGIN_SPOTON_STREAM_FORMAT_MP3_LMS}{EN} // '', qr/Bitrate Limiting/, '79-60: the EN MP3 line names the LMS setting "Bitrate Limiting" (LMS SETUP_MAXBITRATE, verbatim)');
+    like($val{PLUGIN_SPOTON_STREAM_FORMAT_MP3_LMS}{DE} // '', qr/Bitraten-Beschr\x{e4}nkung/, '79-60: the DE MP3 line names the LMS setting "Bitraten-Beschr\x{e4}nkung" (LMS SETUP_MAXBITRATE, verbatim)');
+    is($val{PLUGIN_SPOTON_PLAYER_SECTION_GENERAL}{DE} // '', 'Allgemein', '79-60: DE General section "Allgemein"');
 }
 
 done_testing();

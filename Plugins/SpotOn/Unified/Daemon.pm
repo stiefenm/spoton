@@ -35,6 +35,9 @@ use constant AUDIO_CACHE_LIMIT_BYTES => 1024 * 1024 * 1024;
 # Replaces the old synchronous usleep loop that blocked the LMS event loop.
 use constant PORT_POLL_INTERVAL     => 0.1;
 use constant PORT_POLL_MAX_ATTEMPTS => 100;
+# 79-61 (FULL-2 WR-07): a foreign spoton-port-* file is swept only when it is
+# older than any announcement window can be (10 s poll, 3 s stagger).
+use constant PORT_FILE_STALE_SECONDS => 60;
 
 __PACKAGE__->mk_accessor( rw => qw(
 	id
@@ -493,11 +496,18 @@ sub _pollPortFile {
 
 	# Clean up tempfile. On Windows the daemon may still hold the FD open
 	# (no POSIX unlink semantics), so unlink can fail — stale files are
-	# cleaned up on next daemon start via the glob below.
+	# cleaned up by a later poll's completion via the glob below.
 	# W1: bsd_glob — plain glob() splits its argument on whitespace and
 	# silently fails for cache paths with spaces (e.g. C:\Program Files\...).
+	# 79-61 (FULL-2 WR-07): the glob removes only files older than
+	# PORT_FILE_STALE_SECONDS. A younger spoton-port-* file may belong to
+	# another daemon still inside its announcement window (staggered 3 s,
+	# polled up to 10 s); deleting it made that daemon time out and get
+	# killed as a crash. Same 60 s rule as DaemonManager's Soloist sweep.
 	unlink $port_tmpfile;
 	for my $stale (bsd_glob(catfile(catdir($serverPrefs->get('cachedir'), 'spoton'), 'spoton-port-*'))) {
+		my $mtime = (stat($stale))[9];
+		next unless defined $mtime && time() - $mtime > PORT_FILE_STALE_SECONDS;
 		unlink $stale;
 	}
 
@@ -505,7 +515,7 @@ sub _pollPortFile {
 		my $reason = defined $port_line ? "unexpected output: $port_line"
 		           : ($procAlive ? "timeout" : "daemon exited");
 		$log->warn("SpotOn Unified daemon did not announce HTTP stream port ($reason) - aborting");
-		$self->_proc->die if $self->_proc && $self->_proc->alive;
+		$self->_terminateProc if $self->_proc && $self->_proc->alive;    # 79-61 (FULL-2 WR-01)
 		$self->_streamPort(undef);
 		return;
 	}
@@ -624,12 +634,30 @@ sub stop {
 		$log->warn("[DIAG] daemon_stop: mac=" . $self->mac . " pid=" . ($self->pid || 'unknown')
 			. " uptime=" . sprintf('%.1f', $self->uptime) . "s")
 			if $prefs->get('diagnosticMode');
-		$self->_proc->die;
+		# 79-61 (FULL-2 WR-01): non-blocking TERM-then-KILL, see ProcStop.
+		$self->_terminateProc;
 		$self->_streamPort(undef);
 	}
 	elsif (main::INFOLOG && $log->is_info) {
 		$log->info("This Unified daemon is dead already... no need to stop it!");
 	}
+}
+
+# 79-61 (FULL-2 WR-01): stop this daemon's process without blocking the
+# event loop (Unified/ProcStop.pm); registered under the MAC so DaemonManager
+# spawns no new daemon for the player while the old one still exits.
+sub _terminateProc {
+	my ($self, %o) = @_;
+	require Plugins::SpotOn::Unified::ProcStop;
+	return Plugins::SpotOn::Unified::ProcStop->terminate($self->_proc,
+		key => $self->mac, label => 'Unified daemon ' . ($self->mac // '?'), onGone => $o{onGone});
+}
+
+sub _initHelpersSoon {
+	eval { require Plugins::SpotOn::Unified::DaemonManager; 1 } or return;
+	Slim::Utils::Timers::killTimers('Plugins::SpotOn::Unified::DaemonManager', \&Plugins::SpotOn::Unified::DaemonManager::initHelpers);
+	Slim::Utils::Timers::setTimer('Plugins::SpotOn::Unified::DaemonManager', Time::HiRes::time() + 0.1,
+		\&Plugins::SpotOn::Unified::DaemonManager::initHelpers);
 }
 
 sub stopForSync {
@@ -644,7 +672,9 @@ sub stopForSync {
 		main::INFOLOG && $log->is_info && $log->info(
 			"Stopping SpotOn Unified daemon for sync: " . $self->mac
 		);
-		$self->_proc->die;
+		# 79-61 (FULL-2 WR-01): non-blocking; the sync subscription's 0.1 s
+		# initHelpers can come before a slow exit, so re-run it once gone.
+		$self->_terminateProc(onGone => \&_initHelpersSoon);
 		$self->_streamPort(undef);    # clear stale port; start() will set the new one
 		$self->_startTimes([]);
 		# Phase 83.3 plan 17 (CR-01): a deliberate stop is never a crash --

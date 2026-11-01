@@ -407,6 +407,10 @@ write_stub($stub_dir, 'Plugins::SpotOn::Plugin', <<'END');
 package Plugins::SpotOn::Plugin;
 use constant SPOTON_CACHE_VERSION => 4;   # M5: mirrors real Plugin.pm constant
 sub _pluginDataFor { 'test-version' }
+# 79-60 Task 3: Status.pm resolves the account of a Soloist helper's player through
+# _getAccountId($client); %ACCT maps the fake client's mac to its account.
+our %ACCT = ();
+sub _getAccountId { my ($c) = @_; return $ACCT{ ref $c ? ($c->{mac} // '') : '' } // ''; }
 1;
 END
 
@@ -457,6 +461,7 @@ sub new {
     my ($class, %args) = @_;
     return bless { %args }, $class;
 }
+sub backendName        { return 'soloist' }   # 79-63 R1 CR-01: Status asks the helper's own role
 sub mac                { return $_[0]->{mac} }
 sub alive               { return $_[0]->{alive} }
 sub pid                 { return $_[0]->{pid} }
@@ -483,6 +488,7 @@ sub new {
     my ($class, %args) = @_;
     return bless { %args }, $class;
 }
+sub backendName        { return 'librespot' } # 79-63 R1 CR-01: Status asks the helper's own role
 sub mac                { return $_[0]->{mac} }
 sub alive               { return $_[0]->{alive} }
 sub pid                 { return $_[0]->{pid} }
@@ -597,7 +603,7 @@ require Plugins::SpotOn::Plugin;
 # Tests
 # ============================================================
 
-plan tests => 22;   # 84-09: soloist half of t/13_status_page.t (T-7/WR-05 over the REAL Backend::Soloist state()); the rest is t/core/13_status_page_core.t
+plan tests => 33;   # 79-60: +11 Auth Health Connect cells (Soloist daemons per account); 84-09: soloist half of t/13_status_page.t (T-7/WR-05 over the REAL Backend::Soloist state()); the rest is t/core/13_status_page_core.t
 
 # Test 1: Status.pm compiles
 require_ok('Plugins::SpotOn::Status');
@@ -800,3 +806,45 @@ require Plugins::SpotOn::Unified::DaemonManager;   # 84-09: load the stub BEFORE
     is($d->{wsConnected}, 0, "WR-05: Fall E -- Control's wsConnected wins over a connected socket stub");
 }
 
+
+# ============================================================
+# 79-60 Task 3 (forum #333 B): the Auth Health "Connect" row under Soloist. A
+# SoloistDaemon has no _accountId (SoloistDaemon.pm: on purpose), so the row is
+# taken from the Soloist daemons of the players whose account is this account,
+# and connectActive names the player whose Control is in a Connect session.
+# ============================================================
+{
+    no warnings 'redefine', 'once';
+    require Plugins::SpotOn::Unified::SoloistDaemon;
+    my $prefs = Slim::Utils::Prefs::preferences('plugin.spoton');
+    $prefs->set(accounts => { fixtureAcct1 => {}, fixtureAcct2 => {} });
+    my ($A1, $A2, $B1) = ('02:00:00:00:60:01', '02:00:00:00:60:02', '02:00:00:00:60:03');
+    local %Plugins::SpotOn::Plugin::ACCT = ($A1 => 'fixtureAcct1', $A2 => 'fixtureAcct1', $B1 => 'fixtureAcct2');
+    local *Test::FakeStatusClient::name = sub { 'Player-' . substr($_[0]->{mac}, -2) };
+    my $SD = 'Plugins::SpotOn::Unified::SoloistDaemon';
+    local @Plugins::SpotOn::Unified::DaemonManager::HELPERS = (
+        $SD->new(mac => $A1, alive => 1, pid => 4101, uptime => 65),
+        $SD->new(mac => $A2, alive => 1, pid => 4102, uptime => 30),
+        $SD->new(mac => $B1, alive => 1, pid => 4201, uptime => 10),
+    );
+    my $C = 'Plugins::SpotOn::Soloist::Control';
+    local %Plugins::SpotOn::Soloist::Control::CONTROLS = ($A1 => $C->new(mode => 'browse'), $A2 => $C->new(mode => 'connect'), $B1 => $C->new(mode => 'browse'));
+
+    my $c1 = (eval { Plugins::SpotOn::Status::_collectAuthHealth('fixtureAcct1') } || {})->{connect} || {};
+    is($c1->{alive}, 1, '79-60: two alive Soloist daemons of account 1 => connect.alive 1 (was 0: no _accountId match)');
+    ok(defined $c1->{pid} && ($c1->{pid} == 4101 || $c1->{pid} == 4102), "79-60: connect.pid is one of the account's live daemons");
+    is($c1->{players}, 2, "79-60: connect.players counts the account's live daemons");
+    is($c1->{connectActive}, 'Player-02', '79-60: connectActive names the player in a Connect session (player name, not mac)');
+    is_deeply([ sort keys %$c1 ], [ sort qw(alive pid uptime players connectActive) ], '79-60: connect keys alive pid uptime players connectActive (no username, no mac key)');
+
+    my $c2 = (eval { Plugins::SpotOn::Status::_collectAuthHealth('fixtureAcct2') } || {})->{connect} || {};
+    is($c2->{players}, 1, '79-60: account 2 counts only its own player');
+    is($c2->{connectActive}, '', '79-60: account 2 has no Connect session => connectActive ""');
+    is($c2->{pid}, 4201, '79-60: account 2 reports its own daemon');
+
+    $_->{alive} = 0 for @Plugins::SpotOn::Unified::DaemonManager::HELPERS;
+    my $c3 = (eval { Plugins::SpotOn::Status::_collectAuthHealth('fixtureAcct1') } || {})->{connect} || {};
+    is($c3->{alive}, 0, '79-60: no daemon alive => connect.alive 0 as before');
+    is($c3->{players}, 0, '79-60: no daemon alive => players 0');
+    is($c3->{connectActive}, '', '79-60: no daemon alive => no Connect player');
+}
