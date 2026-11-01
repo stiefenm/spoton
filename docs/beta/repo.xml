@@ -15,20 +15,20 @@
     <plugins>
         <plugin
             name="SpotOn"
-            version="4.0.0beta2.2"
+            version="4.0.0beta3"
             target="unix|mac|windows"
             minTarget="8.0"
             maxTarget="*"
-            sha="da2047ac312cd357afdca4aadfa4fdb9e3dc0178"
-            url="https://github.com/stiefenm/spoton/releases/download/v4.0.0-beta.2.2/SpotOn-v4.0.0-beta.2.2.zip"
+            sha="2119789b223c160b4d3e0959371068dbc770dced"
+            url="https://github.com/stiefenm/spoton/releases/download/v4.0.0-beta.3/SpotOn-v4.0.0-beta.3.zip"
             category="musicservices"
             creator="Marek Stiefenhofer"
             email="sti@posteo.de"
         >
             <title lang="EN">SpotOn (Beta)</title>
             <title lang="DE">SpotOn (Beta)</title>
-            <desc lang="EN">Spotify plugin for Lyrion Music Server - beta 4.0.0-beta.2.2</desc>
-            <desc lang="DE">Spotify-Plugin fuer Lyrion Music Server - Beta 4.0.0-beta.2.2</desc>
+            <desc lang="EN">Spotify plugin for Lyrion Music Server - beta 4.0.0-beta.3</desc>
+            <desc lang="DE">Spotify-Plugin fuer Lyrion Music Server - Beta 4.0.0-beta.3</desc>
         </plugin>
     </plugins>
 </extensions>
