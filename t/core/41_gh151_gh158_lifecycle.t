@@ -328,7 +328,11 @@ sub master { return $_[0]; }
 sub pluginData {
     my $self = shift;
     my $key  = shift;
-    $self->{pluginData}{$key} = shift if @_;
+    # 79-69 (GH #151): LMS's real rule, /usr/share/perl5/Slim/Player/Client.pm:1253
+    # (Client.pm:1253 `if ( defined $value )`): an undef value does NOT write,
+    # it is a read. The former fake stored undef, i.e. treated it as a delete,
+    # which hid the beta.3 bug (the clear of connectPrevPower never happened).
+    $self->{pluginData}{$key} = $_[0] if @_ && defined $_[0];
     return $self->{pluginData}{$key};
 }
 sub power       { return $_[0]->{power}; }
@@ -363,6 +367,60 @@ sub pause_unpause_dispatched {
     } @Slim::Control::Request::EXECUTED;
 }
 
+# ------------------------------------------------------------------
+# 79-69 (GH #151, D-36) helpers. The saved pre-Connect power state is read
+# through Connect.pm's _prevPowerGet (a cleared state is the PREV_POWER_NONE
+# sentinel, never an undef write: LMS ignores that, Client.pm:1253). At RED
+# the sub does not exist yet: the helper then reads the raw value, so the
+# RED cells fail with `not ok` instead of dying.
+# ------------------------------------------------------------------
+sub prev_power {
+    my ($client) = @_;
+    my $f = Plugins::SpotOn::Connect->can('_prevPowerGet');
+    return $f ? $f->($client) : $client->pluginData('connectPrevPower');
+}
+
+sub set_power_pref {
+    my ($v) = @_;
+    if (defined $v) { $Slim::Utils::Prefs::FAKE_VALUES{connectPowerOff} = $v; }
+    else            { delete $Slim::Utils::Prefs::FAKE_VALUES{connectPowerOff}; }
+}
+
+# fire the due _powerOffDue timers of ONE client at (now + $after_s); other
+# timers of the harness stay untouched. Returns the number fired.
+sub fire_power_off {
+    my ($client, $after_s) = @_;
+    my $now = Time::HiRes::time() + $after_s;
+    my $cb  = \&Plugins::SpotOn::Connect::_powerOffDue;
+    my @due = grep { $_->[2] == $cb && $_->[0] == $client && $_->[1] <= $now } @Slim::Utils::Timers::TIMERS;
+    my %gone = map { ("$_" => 1) } @due;
+    @Slim::Utils::Timers::TIMERS = grep { !$gone{"$_"} } @Slim::Utils::Timers::TIMERS;
+    for my $t (@due) {
+        my ($obj, undef, $f, @extra) = @$t;
+        $f->($obj, @extra);
+    }
+    return scalar(@due);
+}
+
+sub power_off_timers {
+    my ($client) = @_;
+    my $cb = \&Plugins::SpotOn::Connect::_powerOffDue;
+    return scalar(grep { $_->[2] == $cb && $_->[0] == $client } @Slim::Utils::Timers::TIMERS);
+}
+
+# start / end of a session WITHOUT resetting @EXECUTED (the blip cells count
+# power commands across both events)
+sub raw_start {
+    my ($client) = @_;
+    Plugins::SpotOn::Connect::_connectEvent(Test::FakeRequest->new($client, _cmd => 'start', _p2 => undef));
+    $client->pluginData(newTrack => 0);
+    $client->{power} = 1;    # production: the playlist play of the start powers the player on
+}
+sub raw_end {
+    my ($client) = @_;
+    Plugins::SpotOn::Connect::_connectEvent(Test::FakeRequest->new($client, _cmd => 'stop', _p2 => 'inactive'));
+}
+
 sub start_session {
     my ($client) = @_;
     @Slim::Control::Request::EXECUTED = ();
@@ -381,22 +439,27 @@ sub start_session {
 
 # ==================================================================
 # GH-151 Scenario 1: player was OFF before the session -- session end
-# ('inactive'-marked stop) must power it back OFF.
+# ('inactive'-marked stop) powers it back OFF, since 79-69 (D-36) only
+# when the per-player setting connectPowerOff is on, and after the 30 s wait.
 # ==================================================================
 {
+    set_power_pref(1);
     my $client = Test::FakeClient->new(power => 0);
     start_session($client);
     is($client->pluginData('connectPrevPower'), 0,
         'GH-151: pre-Connect power state (off) saved on session start');
+    $client->{power} = 1;    # 79-69: the session's playlist play powers the player on
 
     @Slim::Control::Request::EXECUTED = ();
     my $stopReq = Test::FakeRequest->new($client, _cmd => 'stop', _p2 => 'inactive');
     Plugins::SpotOn::Connect::_connectEvent($stopReq);
+    fire_power_off($client, 31);
 
     is(power_off_dispatched(), 1,
-        'GH-151: session-end (inactive stop) restores power OFF for a player that was off before');
-    is($client->pluginData('connectPrevPower'), undef,
+        'GH-151: session-end (inactive stop) restores power OFF for a player that was off before (setting on, after the wait)');
+    is(prev_power($client), undef,
         'GH-151: saved power flag is cleared after restore');
+    set_power_pref(undef);
 }
 
 # ==================================================================
@@ -712,8 +775,191 @@ sub _d02_onNewSong {
     is($ctl->mode, 'idle', "84.1-07 N4: mode idle after leaveConnect");
     is(Plugins::SpotOn::Connect->isSpotifyConnect($client), 0, "84.1-07 N4: claim released");
     is(power_off_dispatched(), 0, "84.1-07 N4: no power 0 dispatched (discard, not a power-off)");
-    is($client->pluginData('connectPrevPower'), undef, "84.1-07 N4: connectPrevPower discarded (GH #151 parity)");
+    is(prev_power($client), undef, "84.1-07 N4: connectPrevPower discarded (GH #151 parity)");
     Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
+}
+
+# ==================================================================
+# 79-69 (GH #151, D-36): the power-off after Connect is a per-player opt-in
+# (connectPowerOff, default off) with a 30 s wait, and it works in EVERY
+# session since the clear is a defined sentinel, not an undef write that LMS
+# ignores (Client.pm:1253). All cells run against the fake that follows that
+# rule (see Test::FakeClient::pluginData).
+# ==================================================================
+
+# a: the fake follows LMS's rule
+{
+    my $c = Test::FakeClient->new();
+    $c->pluginData(connectPrevPower => 1);
+    $c->pluginData(connectPrevPower => undef);
+    is($c->pluginData('connectPrevPower'), 1,
+        '79-69 T1 a: the fake follows Client.pm:1253 - an undef write does not clear the value');
+}
+
+# b: the live bug - session A from power on ends, session B from power off
+# ends: B must still power off (beta.3 kept A's saved 1 until the next restart)
+{
+    set_power_pref(1);
+    my $client = Test::FakeClient->new(power => 1);
+    raw_start($client);
+    raw_end($client);
+    fire_power_off($client, 60);
+    $client->{power} = 0;
+    @Slim::Control::Request::EXECUTED = ();
+    raw_start($client);
+    raw_end($client);
+    fire_power_off($client, 31);
+    is(power_off_dispatched(), 1,
+        '79-69 T1 b: the second session of a player (first one from power on) still powers off after the wait');
+    set_power_pref(undef);
+}
+
+# c: the default - setting unset: no power-off, saved state cleared
+{
+    set_power_pref(undef);
+    my $client = Test::FakeClient->new(power => 0);
+    @Slim::Control::Request::EXECUTED = ();
+    raw_start($client);
+    raw_end($client);
+    is(power_off_dispatched(), 0, '79-69 T1 c: default (setting off) - no power 0 at the session end');
+    fire_power_off($client, 60);
+    is(power_off_dispatched(), 0, '79-69 T1 c: default (setting off) - no power 0 after the wait either');
+    is(prev_power($client), undef, '79-69 T1 c: default - the saved state is cleared (a defined sentinel reads as undef)');
+    is(power_off_timers($client), 0, '79-69 T1 c: default - no timer is armed');
+}
+
+# d: the wait - nothing at +29 s, one power 0 at +30 s
+{
+    set_power_pref(1);
+    my $client = Test::FakeClient->new(power => 0);
+    @Slim::Control::Request::EXECUTED = ();
+    raw_start($client);
+    raw_end($client);
+    is(power_off_dispatched(), 0, '79-69 T1 d: no power 0 at the session end itself (the wait runs first)');
+    fire_power_off($client, 29);
+    is(power_off_dispatched(), 0, '79-69 T1 d: no power 0 at +29 s');
+    fire_power_off($client, 30);
+    is(power_off_dispatched(), 1, '79-69 T1 d: exactly one power 0 at +30 s');
+    set_power_pref(undef);
+}
+
+# e: a blip - the session is picked up again inside the wait
+{
+    set_power_pref(1);
+    my $client = Test::FakeClient->new(power => 0);
+    @Slim::Control::Request::EXECUTED = ();
+    raw_start($client);
+    raw_end($client);
+    $client->{power} = 1;    # the replay of the Connect stream switches the player on
+    raw_start($client);
+    fire_power_off($client, 60);
+    is(power_off_dispatched(), 0, '79-69 T1 e: blip - no power 0 at the end, none after +60 s');
+    is(prev_power($client), 0, '79-69 T1 e: blip - the saved state (off) is kept for the next session end');
+    raw_end($client);
+    fire_power_off($client, 31);
+    is(power_off_dispatched(), 1, '79-69 T1 e: blip - the next session end powers off after the wait');
+    set_power_pref(undef);
+}
+
+# f: other playback starts inside the wait (the D-02 discard site: claim bound,
+# mode connect), and f2: the production shape after a session end (claim
+# released, mode idle - the generic check)
+{
+    set_power_pref(1);
+    my $client = Test::FakeClientSong->new(power => 0, isPlaying => 0, song => undef);
+    Plugins::SpotOn::Connect->bindConnectClaim($client, 'transfer');
+    my $ctl = Test::FakeCtlD02->new(mode => 'connect', client => $client);
+    @Slim::Control::Request::EXECUTED = ();
+    {
+        no warnings 'redefine';
+        local *Plugins::SpotOn::Soloist::Control::for_client = sub { $ctl };
+        raw_start($client);
+        raw_end($client);
+        $client->{song} = Test::FakeSongD02->new(
+            track => Test::FakeTrackD02->new('http://radio.example/1live.mp3'), streamUrl => undef);
+        Plugins::SpotOn::Connect::_onNewSong(Test::FakeRequestD02->new($client));
+    }
+    fire_power_off($client, 60);
+    is(power_off_dispatched(), 0, '79-69 T1 f: other playback inside the wait - no power 0 after +60 s');
+    is(power_off_timers($client), 0, '79-69 T1 f: other playback - the timer is gone');
+    is(prev_power($client), undef, '79-69 T1 f: other playback - the saved state is cleared');
+    Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
+
+    my $c2 = Test::FakeClientSong->new(power => 0, isPlaying => 0, song => undef);
+    my $ctl2 = Test::FakeCtlD02->new(mode => 'connect', client => $c2);
+    @Slim::Control::Request::EXECUTED = ();
+    {
+        no warnings 'redefine';
+        local *Plugins::SpotOn::Soloist::Control::for_client = sub { $ctl2 };
+        raw_start($c2);
+        raw_end($c2);
+        $ctl2->{mode} = 'idle';   # Control leaves connect right after the stop 'inactive' emit
+        $c2->{song} = Test::FakeSongD02->new(
+            track => Test::FakeTrackD02->new('http://radio.example/1live.mp3'), streamUrl => undef);
+        Plugins::SpotOn::Connect::_onNewSong(Test::FakeRequestD02->new($c2));
+    }
+    fire_power_off($c2, 60);
+    is(power_off_dispatched(), 0, '79-69 T1 f2: other playback after the session claim was released - no power 0');
+    is(prev_power($c2), undef, '79-69 T1 f2: the saved state is cleared');
+    set_power_pref(undef);
+}
+
+# g: the setting is switched off inside the wait
+{
+    set_power_pref(1);
+    my $client = Test::FakeClient->new(power => 0);
+    @Slim::Control::Request::EXECUTED = ();
+    raw_start($client);
+    raw_end($client);
+    set_power_pref(0);
+    fire_power_off($client, 31);
+    is(power_off_dispatched(), 0, '79-69 T1 g: setting switched off inside the wait - no power 0 at fire');
+    set_power_pref(undef);
+}
+
+# h: at fire the player plays something that is not the Connect session
+{
+    set_power_pref(1);
+    my $client = Test::FakeClientSong->new(power => 0, isPlaying => 0, song => undef);
+    @Slim::Control::Request::EXECUTED = ();
+    raw_start($client);
+    raw_end($client);
+    $client->{isPlaying} = 1;
+    $client->{song} = Test::FakeSongD02->new(
+        track => Test::FakeTrackD02->new('http://radio.example/1live.mp3'), streamUrl => undef);
+    fire_power_off($client, 31);
+    is(power_off_dispatched(), 0, '79-69 T1 h: the player plays non-Connect content at fire - no power 0');
+    set_power_pref(undef);
+}
+
+# j (found live, 79-69 Task 3 window on lavender-UAT, 2026-11-02): the session is entered by a `resume`
+# event on a player that already holds the Connect stream (the daemon still had its paused session; no
+# `start` arrives). The resume's `pause 0` powers the player on, so the pre-Connect state must be saved
+# THERE too - without it the session end finds nothing saved and never powers off.
+{
+    set_power_pref(1);
+    my $song   = Test::FakeSongC4->new(url => 'spoton://connect-1790000000001');
+    my $client = Test::FakeClientSong->new(power => 0, isPlaying => 0, song => $song, elapsed => 0);
+    @Slim::Control::Request::EXECUTED = ();
+    Plugins::SpotOn::Connect::_connectEvent(
+        Test::FakeRequest->new($client, _cmd => 'resume', _p2 => '5Awt99LSbIaTmWkoOFhP03', _p3 => '120.000'));
+    is(prev_power($client), 0, '79-69 T1 j: a resume on a player that already holds the Connect stream saves the pre-Connect state (off)');
+    $client->{power} = 1;       # the resume's pause 0 powered the player on
+    $client->{isPlaying} = 1;
+    raw_end($client);
+    $client->{isPlaying} = 0;   # the session-end pause took effect
+    fire_power_off($client, 31);
+    is(power_off_dispatched(), 1, '79-69 T1 j: the session end after a resume-entered session powers off after the wait');
+    # a player that was ON before such a resume is never switched off
+    my $c2 = Test::FakeClientSong->new(power => 1, isPlaying => 0, song => Test::FakeSongC4->new(url => 'spoton://connect-1790000000002'), elapsed => 0);
+    @Slim::Control::Request::EXECUTED = ();
+    Plugins::SpotOn::Connect::_connectEvent(
+        Test::FakeRequest->new($c2, _cmd => 'resume', _p2 => '5Awt99LSbIaTmWkoOFhP03', _p3 => '120.000'));
+    is(prev_power($c2), 1, '79-69 T1 j: a resume on a player that was on saves "on"');
+    raw_end($c2);
+    fire_power_off($c2, 60);
+    is(power_off_dispatched(), 0, '79-69 T1 j: a player that was on before the resume is not switched off');
+    set_power_pref(undef);
 }
 
 # --- 84.1-07 N5 (revision 2): the REAL _onLmsStop calls endForeignLeave
@@ -828,6 +1074,216 @@ Plugins::SpotOn::Connect->initConnectHandlers;
     is(scalar(@stop_listeners), 1, "84.1-08 N7a: exactly one listener matches ('stop')");
 }
 
+# 79-70 BR4-02: a power-on by anyone but SpotOn inside the 30 s wait cancels the wait (the player is in use). The
+# dispatch goes through the REAL subscription (_lms_listeners_for('power')) and, as a fallback at RED, the sub by name.
+{
+    package Test::FakeRequestPower70;
+    sub new    { my ($class, $client, $source) = @_; return bless { client => $client, source => $source }, $class; }
+    sub client { return $_[0]->{client}; }
+    sub source { return $_[0]->{source}; }
+    package main;
+
+    my @power_listeners = _lms_listeners_for('power');
+    is(scalar(@power_listeners), 1, "79-70 BR4-02 a: exactly one listener matches ('power') after init");
+    my ($on_power) = @power_listeners;
+    $on_power ||= Plugins::SpotOn::Connect->can('_onPower') || sub { };
+    my $fire_power = sub { my ($client, $source) = @_; $on_power->(Test::FakeRequestPower70->new($client, $source)); };
+
+    # b: a manual `power 1` inside the wait cancels it and clears the saved state
+    {
+        set_power_pref(1);
+        my $client = Test::FakeClient->new(power => 0);
+        @Slim::Control::Request::EXECUTED = ();
+        raw_start($client);
+        raw_end($client);
+        is(power_off_timers($client), 1, '79-70 BR4-02 b: the wait is armed after the session end');
+        $client->{power} = 1;    # the user presses power on the player / in the web UI
+        $fire_power->($client, undef);
+        is(power_off_timers($client), 0, '79-70 BR4-02 b: a manual power-on inside the wait kills the timer');
+        is(prev_power($client), undef, '79-70 BR4-02 b: ... and clears the saved state');
+        fire_power_off($client, 60);
+        is(power_off_dispatched(), 0, '79-70 BR4-02 b: no power 0 at +30 s / +60 s under the user hands');
+        set_power_pref(undef);
+    }
+
+    # c: SpotOn's own power request (source = Connect) does not cancel the wait
+    {
+        set_power_pref(1);
+        my $client = Test::FakeClient->new(power => 0);
+        @Slim::Control::Request::EXECUTED = ();
+        raw_start($client);
+        raw_end($client);
+        $client->{power} = 1;
+        $fire_power->($client, 'Plugins::SpotOn::Connect');
+        is(power_off_timers($client), 1, '79-70 BR4-02 c: a SpotOn-sourced power request leaves the wait armed');
+        is(prev_power($client), 0, '79-70 BR4-02 c: ... and the saved state alone');
+        fire_power_off($client, 31);
+        is(power_off_dispatched(), 1, '79-70 BR4-02 c: the wait still ends in the one power 0');
+        set_power_pref(undef);
+    }
+
+    # d: a power-off notification (the player is off) inside the wait does not cancel it
+    {
+        set_power_pref(1);
+        my $client = Test::FakeClient->new(power => 0);
+        @Slim::Control::Request::EXECUTED = ();
+        raw_start($client);
+        raw_end($client);
+        $client->{power} = 0;
+        $fire_power->($client, undef);
+        is(power_off_timers($client), 1, '79-70 BR4-02 d: a power notification for an OFF player leaves the wait armed');
+        is(prev_power($client), 0, '79-70 BR4-02 d: ... and the saved state');
+        set_power_pref(undef);
+    }
+
+    # e: no wait armed (a live session, the saved state waits for its end): a power-on does not touch the state
+    {
+        set_power_pref(1);
+        my $client = Test::FakeClient->new(power => 0);
+        @Slim::Control::Request::EXECUTED = ();
+        raw_start($client);                 # saved 0, the start's playlist play powers the player on
+        $fire_power->($client, undef);
+        is(prev_power($client), 0, '79-70 BR4-02 e: without an armed wait a power-on leaves the saved state (the session is live)');
+        raw_end($client);
+        fire_power_off($client, 31);
+        is(power_off_dispatched(), 1, '79-70 BR4-02 e: the session end still powers off after the wait');
+        set_power_pref(undef);
+    }
+
+    # f: the wait is gone (fired) - a later power-on is no business of the handler
+    {
+        set_power_pref(1);
+        my $client = Test::FakeClient->new(power => 0);
+        raw_start($client);
+        raw_end($client);
+        fire_power_off($client, 31);
+        $client->{power} = 1;
+        $fire_power->($client, undef);
+        is(prev_power($client), undef, '79-70 BR4-02 f: after the wait fired nothing is saved and nothing is touched');
+        is(power_off_timers($client), 0, '79-70 BR4-02 f: no timer appears');
+        set_power_pref(undef);
+    }
+}
+
+# 79-70 BR4-03: the saved "was off" state does not survive a session that ends other than through the normal
+# `stop inactive` path (claim released for any other reason, daemon torn down mid-session). A stale 0 would power
+# off a LATER session's player that was on before it (GH #151: "a player that was on before simply stays on").
+{
+    my $discard = Plugins::SpotOn::Connect->can('discardPowerState');
+
+    # a: a claim release for any reason but 'inactive' discards the saved state
+    for my $reason ('foreign-lms-content', 'browse-entry', 'transfer', 'test') {
+        set_power_pref(1);
+        my $client = Test::FakeClient->new(power => 0);
+        raw_start($client);
+        is(prev_power($client), 0, "79-70 BR4-03 a ($reason): the pre-Connect state (off) is saved");
+        Plugins::SpotOn::Connect->releaseConnectClaim($client, $reason);
+        is(prev_power($client), undef, "79-70 BR4-03 a ($reason): releaseConnectClaim discards the saved state");
+        set_power_pref(undef);
+    }
+
+    # b: the normal session end keeps the state and the wait: releaseConnectClaim('inactive') follows the stop
+    {
+        set_power_pref(1);
+        my $client = Test::FakeClient->new(power => 0);
+        @Slim::Control::Request::EXECUTED = ();
+        raw_start($client);
+        raw_end($client);
+        Plugins::SpotOn::Connect->releaseConnectClaim($client, 'inactive');
+        is(prev_power($client), 0, "79-70 BR4-03 b: releaseConnectClaim('inactive') keeps the saved state (the wait owns it)");
+        is(power_off_timers($client), 1, "79-70 BR4-03 b: ... and keeps the wait armed");
+        fire_power_off($client, 31);
+        is(power_off_dispatched(), 1, "79-70 BR4-03 b: the normal session end still powers off after the wait");
+        set_power_pref(undef);
+    }
+
+    # c: an armed wait is cancelled when the player goes into Browse (browse-entry release): other playback
+    {
+        set_power_pref(1);
+        my $client = Test::FakeClient->new(power => 0);
+        @Slim::Control::Request::EXECUTED = ();
+        raw_start($client);
+        raw_end($client);
+        Plugins::SpotOn::Connect->releaseConnectClaim($client, 'browse-entry');
+        is(power_off_timers($client), 0, "79-70 BR4-03 c: a browse-entry release inside the wait kills the timer");
+        fire_power_off($client, 60);
+        is(power_off_dispatched(), 0, "79-70 BR4-03 c: no power 0 after Browse playback took over");
+        set_power_pref(undef);
+    }
+
+    # d: the live failure: session A (player off) is lost with the daemon (no stop inactive); a later session B
+    # of a player that was ON must not power it off
+    {
+        set_power_pref(1);
+        my $client = Test::FakeClient->new(power => 0);
+        @Slim::Control::Request::EXECUTED = ();
+        raw_start($client);                           # A: saved off
+        ok($discard, '79-70 BR4-03 d: Connect has discardPowerState (the daemon-gone hook)');
+        $discard->('Plugins::SpotOn::Connect', $client, 'daemon shutdown') if $discard;
+        is(prev_power($client), undef, '79-70 BR4-03 d: the daemon teardown discards the saved state');
+        $client->{power} = 1;                         # hours later: the player is switched on for LMS content
+        raw_start($client);                           # B: saved on
+        is(prev_power($client), 1, '79-70 BR4-03 d: session B saves "on" (no stale off wins)');
+        raw_end($client);
+        fire_power_off($client, 60);
+        is(power_off_dispatched(), 0, '79-70 BR4-03 d: session B of a player that was on is never powered off');
+        set_power_pref(undef);
+    }
+
+    # e: the hook also drops an armed wait (daemon torn down inside the 30 s)
+    {
+        set_power_pref(1);
+        my $client = Test::FakeClient->new(power => 0);
+        @Slim::Control::Request::EXECUTED = ();
+        raw_start($client);
+        raw_end($client);
+        $discard->('Plugins::SpotOn::Connect', $client, 'daemon shutdown') if $discard;
+        is(power_off_timers($client), 0, '79-70 BR4-03 e: the hook drops an armed wait');
+        is(prev_power($client), undef, '79-70 BR4-03 e: ... and the state');
+        # nothing saved, nothing armed: a no-op that does not die
+        $discard->('Plugins::SpotOn::Connect', $client, 'daemon shutdown') if $discard;
+        is(prev_power($client), undef, '79-70 BR4-03 e: the hook without saved state is a no-op');
+        set_power_pref(undef);
+    }
+}
+
+# 79-70 BR4-R1-01: the 'inactive' release exempts the saved state only when the `stop inactive` handler really took
+# it over (an armed wait). Control emits that stop through _emit, which is silent while Connect is switched off for
+# the player (enableSpotifyConnect), yet releases with 'inactive' regardless: the saved "was off" would survive into a
+# LATER session of a player that was on and power it off.
+{
+    # f: the emission was dropped (no raw_end), the release says 'inactive': nothing armed -> the state goes
+    {
+        set_power_pref(1);
+        my $client = Test::FakeClient->new(power => 0);
+        @Slim::Control::Request::EXECUTED = ();
+        raw_start($client);                           # A: saved off; Connect is switched off for the player, A ends
+        is(prev_power($client), 0, '79-70 BR4-R1-01 f: the pre-Connect state (off) is saved');
+        Plugins::SpotOn::Connect->releaseConnectClaim($client, 'inactive');   # the stop inactive never reached Connect
+        is(power_off_timers($client), 0, '79-70 BR4-R1-01 f: no wait is armed');
+        is(prev_power($client), undef, "79-70 BR4-R1-01 f: releaseConnectClaim('inactive') without an armed wait discards the saved state");
+        $client->{power} = 1;                         # later the switch is on again, the player runs LMS content
+        raw_start($client);                           # B: saves on (no stale off wins)
+        is(prev_power($client), 1, '79-70 BR4-R1-01 f: session B saves "on"');
+        raw_end($client);
+        fire_power_off($client, 60);
+        is(power_off_dispatched(), 0, '79-70 BR4-R1-01 f: session B of a player that was on is never powered off');
+        set_power_pref(undef);
+    }
+
+    # g: the normal path (handler ran, wait armed) is untouched, also when the pref is on and the state is "was on"
+    {
+        set_power_pref(1);
+        my $client = Test::FakeClient->new(power => 1);
+        raw_start($client);
+        raw_end($client);                             # was on: the handler clears the state itself
+        Plugins::SpotOn::Connect->releaseConnectClaim($client, 'inactive');
+        is(prev_power($client), undef, '79-70 BR4-R1-01 g: a was-on player keeps no state after the normal end');
+        is(power_off_timers($client), 0, '79-70 BR4-R1-01 g: ... and arms no wait');
+        set_power_pref(undef);
+    }
+}
+
 # 84.1-08 N7b (D-01(b), browse)
 {
     my ($stop_cr) = _lms_listeners_for('stop');
@@ -938,10 +1394,15 @@ Plugins::SpotOn::Connect->initConnectHandlers;
 }
 
 # 84.1-08 N7f
+my $power_listeners_before_shutdown = scalar(_lms_listeners_for('power'));
 Plugins::SpotOn::Connect->shutdown;
 {
     my @stop_listeners  = _lms_listeners_for('stop');
     my @clear_listeners = _lms_listeners_for('playlist', 'clear');
+    my @power_listeners = _lms_listeners_for('power');
+    # 79-70 BR4-02 g: shutdown unsubscribes the power listener symmetrically (LMS keys %listeners by coderef)
+    is($power_listeners_before_shutdown, 1, "79-70 BR4-02 g: the power listener is registered before shutdown");
+    is(scalar(@power_listeners), 0, "79-70 BR4-02 g: after shutdown no listener matches ('power')");
     is(scalar(@stop_listeners), 0, "84.1-08 N7f: after shutdown no listener matches ('stop')");
     is(scalar(@clear_listeners), 0, "84.1-08 N7f: after shutdown no listener matches ('playlist','clear')");
 }
@@ -2612,8 +3073,10 @@ sub grace_case {
 # power restore, LMS kept playing a dead stream.
 # ==================================================================
 {
+    set_power_pref(1);    # 79-69 (D-36): the power-off is an opt-in, 30 s after the session end
     my $client = Test::FakeClient->new(power => 0, isPlaying => 1);
     start_session($client);
+    $client->{power} = 1;                  # the session's playlist play powers the player on
     $client->pluginData(newTrack => 1);    # the metadata fetch is still in flight
     my $ctl = Test::FakeCtlD02->new(client => $client, mode => 'connect');
     no warnings 'redefine';
@@ -2624,7 +3087,11 @@ sub grace_case {
     Plugins::SpotOn::Connect::_connectEvent($stopReq);
     my @pause = grep { $_->{cmd} && ref($_->{cmd}) eq 'ARRAY' && ($_->{cmd}[0] // '') eq 'pause' && ($_->{cmd}[1] // '') eq '1' } @Slim::Control::Request::EXECUTED;
     is(scalar(@pause), 1, '79-61 WR-04: a session end (stop inactive) inside the newTrack window still pauses the player');
-    is(power_off_dispatched(), 1, '79-61 WR-04: ... and restores the pre-session power state');
+    $client->{isPlaying} = 0;    # the pause took effect
+    $ctl->{mode} = 'idle';       # Control leaves connect right after the stop 'inactive' emit
+    fire_power_off($client, 31);
+    is(power_off_dispatched(), 1, '79-61 WR-04: ... and restores the pre-session power state (after the 30 s wait)');
+    set_power_pref(undef);
 
     # a plain (unmarked) stop inside the window is still ignored, as before
     my $c2 = Test::FakeClient->new(power => 1, isPlaying => 1);
@@ -2710,6 +3177,293 @@ sub grace_case {
     Plugins::SpotOn::Connect::_connectEvent(Test::FakeRequest->new($c3, _cmd => 'start', _p2 => '', _p3 => '', _p4 => 'restored'));
     is($playCount->(), 1, '79-61 WR-06: the isPlaying exception (daemon-crash recovery) also holds for a restored start');
     for my $c ($c1, $c2, $c3) { Plugins::SpotOn::Connect->releaseConnectClaim($c, 'test') if Plugins::SpotOn::Connect->can('releaseConnectClaim'); }
+}
+
+# ==================================================================
+# 79-68 T1 (GH #167, D-35): the Connect event carries the item kind.
+# `_p2` = spotify:episode:<id> -> an LMS entry spoton://episode:<id> (never
+# spoton://track:<id>); a bare id stays a track; anything else is refused.
+# ==================================================================
+{
+    my $EP = '6hDIr2Ngy8ijkGk3o77Li2';
+    my $plays = sub {
+        return map { $_->{cmd}[2] } grep {
+            $_->{cmd} && ref($_->{cmd}) eq 'ARRAY'
+                && ($_->{cmd}[0] // '') eq 'playlist' && ($_->{cmd}[1] // '') eq 'play'
+        } @Slim::Control::Request::EXECUTED;
+    };
+    local $Plugins::SpotOn::Unified::DaemonManager::UPTIME = 60;
+    no warnings 'redefine';
+    local *Plugins::SpotOn::Unified::DaemonManager::helperForClient = sub { $c4_soloist };    # the Soloist shape: connectEntry pertrack
+
+    # a: start of an episode
+    {
+        my $c = Test::FakeClient->new(power => 1, isPlaying => 0);
+        @Slim::Control::Request::EXECUTED = ();
+        # the wire as LMS hands it over: _p2 is the bare id, Control's extra tagged token `kind:episode` arrives as `kind`
+        Plugins::SpotOn::Connect::_connectEvent(Test::FakeRequest->new($c, _cmd => 'start', _p2 => $EP, _p3 => '', kind => 'episode'));
+        is_deeply([ $plays->() ], [ 'spoton://episode:6hDIr2Ngy8ijkGk3o77Li2' ], '79-68 T1 a: start of an episode plays spoton://episode:<id>');
+        is($c->pluginData('eventTrackUri'), "spotify:episode:$EP", '79-68 T1 a: eventTrackUri is spotify:episode:<id>');
+        is($c->pluginData('connectOwnPlayUri'), "spoton://episode:$EP", '79-68 T1 a: connectOwnPlayUri equals the URL');
+        Plugins::SpotOn::Connect->releaseConnectClaim($c, 'test') if Plugins::SpotOn::Connect->can('releaseConnectClaim');
+    }
+
+    # b: start with the bare id stays a track
+    {
+        my $c = Test::FakeClient->new(power => 1, isPlaying => 0);
+        @Slim::Control::Request::EXECUTED = ();
+        Plugins::SpotOn::Connect::_connectEvent(Test::FakeRequest->new($c, _cmd => 'start', _p2 => $EP, _p3 => ''));
+        is_deeply([ $plays->() ], [ "spoton://track:$EP" ], '79-68 T1 b: start with a bare id plays spoton://track:<id> (unchanged)');
+        is($c->pluginData('eventTrackUri'), "spotify:track:$EP", '79-68 T1 b: eventTrackUri is spotify:track:<id> (unchanged)');
+        Plugins::SpotOn::Connect->releaseConnectClaim($c, 'test') if Plugins::SpotOn::Connect->can('releaseConnectClaim');
+    }
+
+    # c: _connectItem table
+    {
+        my $f = Plugins::SpotOn::Connect->can('_connectItem');
+        ok($f, '79-68 T1 c: Connect has _connectItem');
+        my $row = sub { my @r = $f ? $f->($_[0]) : ('no-sub'); return \@r; };
+        is_deeply($row->("spotify:episode:$EP"), [ 'episode', $EP, 1 ], '79-68 T1 c: spotify:episode:X -> (episode, X, 1)');
+        is_deeply($row->("spotify:track:$EP"),   [ 'track',   $EP, 1 ], '79-68 T1 c: spotify:track:X -> (track, X, 1)');
+        is_deeply($row->($EP),                   [ 'track',   $EP, 0 ], '79-68 T1 c: bare X -> (track, X, 0)');
+        is_deeply($row->(''),                    [], '79-68 T1 c: the empty string -> ()');
+        is_deeply($row->(undef),                 [], '79-68 T1 c: undef -> ()');
+        is_deeply($row->("spotify:album:$EP"),   [], '79-68 T1 c: spotify:album:X -> ()');
+        is_deeply($row->("spoton://track:$EP"),  [], '79-68 T1 c: spoton://track:X -> ()');
+        is_deeply($row->('a' x 65),              [], '79-68 T1 c: a 65-char id -> ()');
+    }
+
+    # c2: _requestItem -- the item of a REQUEST (bare _p2 plus the optional `kind` parameter)
+    {
+        my $f = Plugins::SpotOn::Connect->can('_requestItem');
+        ok($f, '79-68 T1 c2: Connect has _requestItem');
+        my $row = sub { my %p = @_; my @r = $f ? $f->(Test::FakeRequest->new(Test::FakeClient->new, _cmd => 'start', %p)) : ('no-sub'); return \@r; };
+        is_deeply($row->(_p2 => $EP, kind => 'episode'), [ 'episode', $EP, 1 ], '79-68 T1 c2: bare id + kind=episode -> (episode, id, 1)');
+        is_deeply($row->(_p2 => $EP),                    [ 'track',   $EP, 0 ], '79-68 T1 c2: bare id alone (librespot, a Soloist track) -> (track, id, 0)');
+        is_deeply($row->(_p2 => $EP, kind => 'track'),   [ 'track',   $EP, 0 ], '79-68 T1 c2: kind=track is no information -> (track, id, 0)');
+        is_deeply($row->(_p2 => $EP, kind => 'album'),   [ 'track',   $EP, 0 ], '79-68 T1 c2: an unknown kind value is ignored');
+        is_deeply($row->(_p2 => '',  kind => 'episode'), [], '79-68 T1 c2: no id -> () whatever the kind');
+        is_deeply($row->(kind => 'episode'),             [], '79-68 T1 c2: absent _p2 -> ()');
+        is_deeply($row->(_p2 => "spotify:album:$EP", kind => 'episode'), [], '79-68 T1 c2: a refused _p2 stays refused with a kind');
+    }
+
+    # d: refusal of a non-empty item outside the whitelist (six sub-cases)
+    for my $cmd (qw(start change resume)) {
+        for my $bad ('spotify:album:6hDIr2Ngy8ijkGk3o77Li2', 'A' x 65) {
+            my $c = Test::FakeClient->new(power => 1, isPlaying => 0);
+            @Slim::Control::Request::EXECUTED = ();
+            @Slim::Utils::Log::WARNS = ();
+            my $meta = 0;
+            no warnings 'redefine';
+            local *Plugins::SpotOn::Connect::_fetchTrackMetadata = sub { $meta++ };
+            Plugins::SpotOn::Connect::_connectEvent(Test::FakeRequest->new($c, _cmd => $cmd, _p2 => $bad, _p3 => ''));
+            my $len = length($bad);
+            my $tag = "79-68 T1 d: $cmd with a $len-char refused item";
+            is(scalar($plays->()), 0, "$tag - no playlist play");
+            ok(!defined $c->pluginData('eventTrackUri'), "$tag - no eventTrackUri write");
+            is($meta, 0, "$tag - no metadata fetch");
+            ok(!$c->pluginData('pendingConnect'), "$tag - no pendingConnect");
+            my @w = grep { /refused item/ } @Slim::Utils::Log::WARNS;
+            is(scalar(@w), 1, "$tag - exactly one WARN line");
+            is($w[0], "Connect: refused item ($len chars) for $cmd", "$tag - the WARN names the command and the length only");
+            Plugins::SpotOn::Connect->releaseConnectClaim($c, 'test') if Plugins::SpotOn::Connect->can('releaseConnectClaim');
+        }
+    }
+
+    # e: absent _p2 keeps the no-track-id path (regression cells, pass on the base too)
+    for my $cmd (qw(change resume)) {
+        my $c = Test::FakeClient->new(power => 1, isPlaying => 0);
+        start_session($c);
+        @Slim::Control::Request::EXECUTED = ();
+        @Slim::Utils::Log::WARNS = ();
+        Plugins::SpotOn::Connect::_connectEvent(Test::FakeRequest->new($c, _cmd => $cmd, _p2 => undef, _p3 => undef));
+        is(scalar(grep { /refused item/ } @Slim::Utils::Log::WARNS), 0, "79-68 T1 e: $cmd without _p2 is not refused");
+        is(scalar(grep { /^spoton:\/\/(?:track|episode):/ } $plays->()), 0,
+            "79-68 T1 e: $cmd without _p2 issues no per-track play");
+        Plugins::SpotOn::Connect->releaseConnectClaim($c, 'test') if Plugins::SpotOn::Connect->can('releaseConnectClaim');
+    }
+}
+
+# ==================================================================
+# 79-68 T3 (GH #167, D-35): the kind reaches every remaining Connect entry
+# (change, resume, ready re-entry, deferred change) and the metadata fetch.
+# ==================================================================
+{
+    my $EP  = '6hDIr2Ngy8ijkGk3o77Li2';
+    my $URL = "spoton://episode:$EP";
+    no warnings 'redefine';
+    my @FETCH68;
+    local *Plugins::SpotOn::Connect::_fetchTrackMetadata = sub { push @FETCH68, [ @_[1 .. $#_] ] };
+
+    # change (immediate path)
+    {
+        my ($client, $ctl) = h_setup();
+        @FETCH68 = ();
+        h_connect($client, $ctl, _cmd => 'change', _p2 => $EP, _p3 => $H_OLD, _p4 => 'departed', kind => 'episode');
+        is_deeply([ map { $_->{cmd}[2] } h_plays() ], [ $URL ], '79-68 T3 change: a change of an episode plays spoton://episode:<id>');
+        is($client->pluginData('eventTrackUri'), "spotify:episode:$EP", '79-68 T3 change: eventTrackUri is spotify:episode:<id>');
+        is($client->pluginData('connectOwnPlayUri'), $URL, '79-68 T3 change: connectOwnPlayUri equals the URL');
+        is_deeply($FETCH68[0], [ $EP, 'episode', 1 ], '79-68 T3 change: the metadata fetch gets (id, episode, known)');
+        Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
+    }
+
+    # resume (off-stream re-entry: no song)
+    {
+        my ($client, $ctl) = h_setup();
+        $client->{song} = undef;
+        @Slim::Control::Request::EXECUTED = ();
+        h_connect($client, $ctl, _cmd => 'resume', _p2 => $EP, _p3 => '12.000', kind => 'episode');
+        is_deeply([ map { $_->{cmd}[2] } h_plays() ], [ $URL ], '79-68 T3 resume: an off-stream resume of an episode re-enters with spoton://episode:<id>');
+        is($client->pluginData('connectOwnPlayUri'), $URL, '79-68 T3 resume: the marker is stamped with the episode URL');
+        Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
+    }
+
+    # ready replay of the last announced item
+    {
+        my ($client, $ctl) = h_setup();
+        $client->pluginData(eventTrackUri => "spotify:episode:$EP");
+        @Slim::Control::Request::EXECUTED = ();
+        h_connect($client, $ctl, _cmd => 'ready');
+        is_deeply([ map { $_->{cmd}[2] } h_plays() ], [ $URL ], '79-68 T3 ready: a ready replay of spotify:episode:<id> plays spoton://episode:<id>');
+        Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
+    }
+
+    # deferred change (the hold) and its cap fallback
+    {
+        my ($client, $ctl) = h_setup();
+        h_connect($client, $ctl, _cmd => 'change', _p2 => $EP, _p3 => $H_OLD, _p4 => 'live', kind => 'episode');
+        my @ins = h_inserts();
+        is_deeply([ map { $_->{cmd}[2] } @ins ], [ $URL ], '79-68 T3 deferred: a deferred change of an episode inserts spoton://episode:<id>');
+        is($client->pluginData('connectOwnPlayUri'), $URL, '79-68 T3 deferred: the hold stamps the episode URL');
+        h_lms_inserted();
+        @Slim::Control::Request::EXECUTED = ();
+        $Slim::Player::Source::PLAYMODE = 'stop';
+        h_fire_at(1_790_000_060);
+        is_deeply([ map { $_->{cmd}[2] } h_plays() ], [ $URL ], '79-68 T3 deferred: the cap fallback plays the episode URL');
+        Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
+    }
+
+    # invariant: wire p2 -> LMS entry -> eventTrackUri keeps kind and id, for both kinds
+    # (kind, the wire as Control sends it as an LMS request: p2 bare + optional `kind`, the id)
+    for my $row ([ 'track',   { _p2 => '5Awt99LSbIaTmWkoOFhP03' },                        '5Awt99LSbIaTmWkoOFhP03' ],
+                 [ 'track',   { _p2 => 'spotify:track:5Awt99LSbIaTmWkoOFhP03' },          '5Awt99LSbIaTmWkoOFhP03' ],
+                 [ 'episode', { _p2 => $EP, kind => 'episode' },                          $EP ],
+                 [ 'episode', { _p2 => "spotify:episode:$EP" },                           $EP ]) {
+        my ($kind, $wire, $id) = @$row;
+        my $label = join(',', map { "$_=$wire->{$_}" } sort keys %$wire);
+        for my $cmd (qw(start change)) {
+            my ($client, $ctl) = h_setup();
+            @Slim::Control::Request::EXECUTED = ();
+            h_connect($client, $ctl, _cmd => $cmd, %$wire, _p3 => ($cmd eq 'start' ? '' : $H_OLD), _p4 => 'departed');
+            is_deeply([ map { $_->{cmd}[2] } h_plays() ], [ "spoton://$kind:$id" ], "79-68 T3 invariant: $cmd $label -> spoton://$kind:$id");
+            is($client->pluginData('eventTrackUri'), "spotify:$kind:$id", "79-68 T3 invariant: $cmd $label -> eventTrackUri spotify:$kind:$id");
+            Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
+        }
+    }
+}
+
+# 79-68 T3 librespot: the real _fetchTrackMetadata (kind-aware). SpClient, Slim::Music::Info and the Plugin helpers are
+# faked here; a bare id (known 0 = librespot) whose getTrack answers a real not-found (code 404) asks getEpisode once
+# (79-70 BR4-01: only that; a timeout, a 5xx, a 429 or a missing token is no proof that the id is no track).
+{
+    no warnings 'redefine';
+    $INC{'Plugins/SpotOn/API/SpClient.pm'} ||= 'faked-79-68';
+    $INC{'Slim/Music/Info.pm'}              ||= 'faked-79-68';
+    my (@TRACK_CALLS, @EP_CALLS, $TRACK_REPLY, $TRACK_ERR, $EP_REPLY);
+    local *Plugins::SpotOn::API::SpClient::TRACK_META_FORMAT = sub { 2 };
+    local *Plugins::SpotOn::API::SpClient::getTrack   = sub { my ($c, $a, $id, $cb) = @_; push @TRACK_CALLS, $id; $cb->($TRACK_REPLY, $TRACK_ERR); };
+    local *Plugins::SpotOn::API::SpClient::getEpisode = sub { my ($c, $a, $id, $cb) = @_; push @EP_CALLS, $id;    $cb->($EP_REPLY); };
+    my @TITLES;
+    local *Slim::Music::Info::setCurrentTitle = sub { push @TITLES, [ @_[0, 1] ] };
+    local *Plugins::SpotOn::Plugin::_releaseYear       = sub { return '' };
+    local *Plugins::SpotOn::Plugin::_extractTrackIds   = sub { return () };
+    local *Plugins::SpotOn::Plugin::_largestImage      = sub { my $i = shift; return ref($i) eq 'ARRAY' && @$i ? $i->[-1]{url} : undef };
+    local *Plugins::SpotOn::Plugin::_typeShortForClient    = sub { 'FLAC' };
+    local *Plugins::SpotOn::Plugin::_bitrateLabelForClient = sub { '1411' };
+    local *Slim::Control::Request::notifyFromArray = sub { };
+    {
+        package Test::LibSong68;
+        sub new { bless { info => undef, dur => 0 }, shift }
+        sub track { return bless { url => 'spoton://connect-1790000000001' }, 'Test::LibTrack68' }
+        sub streamUrl { 'http://127.0.0.1:1/stream' }
+        sub pluginData { my ($s, $k, $v) = @_; $s->{$k} = $v if @_ == 3; return $s->{$k}; }
+        sub duration { my $s = shift; $s->{dur} = shift if @_; return $s->{dur}; }
+        package Test::LibTrack68; sub url { $_[0]{url} }
+        package Test::LibClient68; our @ISA = ('Test::FakeClientSong');
+        sub streamingProgressBar { }
+        sub currentPlaylistUpdateTime { }
+    }
+    my $EP = '6hDIr2Ngy8ijkGk3o77Li2';
+    my $mk = sub { my $c = Test::LibClient68->new(power => 1, isPlaying => 1, song => Test::LibSong68->new); $c->pluginData(newTrack => 1); return $c; };
+
+    # a bare id, getTrack answers 404: one getEpisode, eventTrackUri flipped to the episode, title/show/cover shown
+    {
+        my $c = $mk->();
+        (@TRACK_CALLS, @EP_CALLS) = ();
+        $TRACK_REPLY = undef;
+        $TRACK_ERR   = { error => 'HTTP Error 404', code => 404 };
+        $EP_REPLY = { uri => "spotify:episode:$EP", name => 'Vier Engel', duration_ms => 5174000, images => [ { url => 'https://i.scdn.co/ep.jpg' } ],
+                      show => { name => 'Der Baetchcast', images => [ { url => 'https://i.scdn.co/show.jpg' } ] } };
+        $c->pluginData(eventTrackUri => "spotify:track:$EP");
+        Plugins::SpotOn::Connect::_fetchTrackMetadata($c, $EP, 'track', 0);
+        is_deeply(\@TRACK_CALLS, [ $EP ], '79-68 T3 librespot: the bare id is asked as a track first');
+        is_deeply(\@EP_CALLS, [ $EP ], '79-68 T3 librespot: a track miss for a bare id asks getEpisode exactly once');
+        is($c->pluginData('eventTrackUri'), "spotify:episode:$EP", '79-68 T3 librespot: eventTrackUri is the episode URI before the mapping');
+        my $info = $c->playingSong->pluginData('info') // {};
+        is($info->{title},  'Vier Engel',     '79-68 T3 librespot: the episode title is shown');
+        is($info->{artist}, 'Der Baetchcast', '79-68 T3 librespot: the show is shown as the artist');
+        is($info->{album},  'Der Baetchcast', '79-68 T3 librespot: ... and as the album');
+        is($info->{cover},  'https://i.scdn.co/ep.jpg', '79-68 T3 librespot: the episode cover wins over the show cover');
+    }
+
+    # a bare id whose getTrack yields a track never asks getEpisode
+    {
+        my $c = $mk->();
+        (@TRACK_CALLS, @EP_CALLS) = ();
+        $TRACK_ERR = undef;
+        $TRACK_REPLY = { uri => "spotify:track:$EP", name => 'A Song', artists => [ { name => 'An Artist' } ], album => { name => 'An Album', images => [ { url => 'https://i.scdn.co/a.jpg' } ] }, duration_ms => 1000 };
+        $c->pluginData(eventTrackUri => "spotify:track:$EP");
+        Plugins::SpotOn::Connect::_fetchTrackMetadata($c, $EP, 'track', 0);
+        is(scalar(@EP_CALLS), 0, '79-68 T3 librespot: a bare id that is a track never asks getEpisode');
+        is(($c->playingSong->pluginData('info') // {})->{title}, 'A Song', '79-68 T3 librespot: the track is shown as before');
+    }
+
+    # 79-70 BR4-01: a getTrack miss that is NOT a definitive not-found never asks getEpisode and never flips
+    # eventTrackUri: connect timeout / transport error (code 0), a 5xx, a 429, a missing token, an empty answer
+    for my $row (
+        [ 'timeout (code 0)',     { error => 'Connect timed out', code => 0 } ],
+        [ '500',                  { error => 'HTTP Error 500', code => 500 } ],
+        [ '503',                  { error => 'HTTP Error 503', code => 503 } ],
+        [ 'rate_limited (429)',   { error => 'rate_limited', code => 429 } ],
+        [ 'rate_limited_local',   { error => 'rate_limited_local', code => 429 } ],
+        [ 'no_token (no code)',   { error => 'no_token' } ],
+        [ 'unauthorized (401)',   { error => 'unauthorized', code => 401 } ],
+        [ 'no data, no error',    undef ],
+    ) {
+        my ($label, $err) = @$row;
+        my $c = $mk->();
+        (@TRACK_CALLS, @EP_CALLS) = ();
+        $TRACK_REPLY = undef;
+        $TRACK_ERR   = $err;
+        $EP_REPLY    = { uri => "spotify:episode:$EP", name => 'Never Asked', images => [], show => { name => 'S', images => [] } };
+        $c->pluginData(eventTrackUri => "spotify:track:$EP");
+        Plugins::SpotOn::Connect::_fetchTrackMetadata($c, $EP, 'track', 0);
+        is(scalar(@EP_CALLS), 0, "79-70 BR4-01 $label: a bare id whose getTrack failed that way never asks getEpisode");
+        is($c->pluginData('eventTrackUri'), "spotify:track:$EP", "79-70 BR4-01 $label: eventTrackUri stays the track URI");
+    }
+    $TRACK_ERR = undef;
+
+    # kind episode goes straight to getEpisode (no getTrack)
+    {
+        my $c = $mk->();
+        (@TRACK_CALLS, @EP_CALLS) = ();
+        $EP_REPLY = { uri => "spotify:episode:$EP", name => 'Vier Engel', images => [], show => { name => 'Show', images => [ { url => 'https://i.scdn.co/show.jpg' } ] } };
+        $c->pluginData(eventTrackUri => "spotify:episode:$EP");
+        Plugins::SpotOn::Connect::_fetchTrackMetadata($c, $EP, 'episode', 1);
+        is(scalar(@TRACK_CALLS), 0, '79-68 T3 librespot: kind episode never asks getTrack');
+        is_deeply(\@EP_CALLS, [ $EP ], '79-68 T3 librespot: kind episode asks getEpisode once');
+        is(($c->playingSong->pluginData('info') // {})->{cover}, 'https://i.scdn.co/show.jpg', '79-68 T3 librespot: no episode image -> the show image');
+    }
 }
 
 done_testing();

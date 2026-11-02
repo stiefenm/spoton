@@ -1432,6 +1432,17 @@ sub _asyncRefetch {
 
     # D-05: debounce — skip if already fetching this URL
     return unless $url;
+
+    # 79-68 (GH #167, D-35a): an episode or chapter the Soloist daemon is playing is displayed from the daemon's own
+    # item, without a request. Ahead of the debounce and the negative cache on purpose: the first playback_state
+    # frames carry an EMPTY item (spike 015) and a refetch started then may already have failed; the item that
+    # arrives with track_changed must still win. Everything the item cannot serve falls through to getEpisode below.
+    if ($canonical && $canonical =~ m{^spoton://episode:([A-Za-z0-9]+)$}
+        && _episodeFromRoleItem($client, $url, $canonical, $1))
+    {
+        return;
+    }
+
     return if $_pendingRefetch{$url};
 
     # Phase 82 (Befund 2 / Pitfall 10): the metadata fetch for this exact url
@@ -1453,6 +1464,11 @@ sub _asyncRefetch {
         if ($connect_meta && $connect_meta->{spotifyUri}
             && $connect_meta->{spotifyUri} =~ m/^spotify:track:([A-Za-z0-9]+)$/) {
             $trackId = $1;
+        }
+        # 79-68: a librespot Connect episode (its metadata fetch stored spotify:episode:<id>)
+        elsif ($connect_meta && $connect_meta->{spotifyUri}
+            && $connect_meta->{spotifyUri} =~ m/^spotify:episode:([A-Za-z0-9]+)$/) {
+            $episodeId = $1;
         }
     }
     return unless $trackId || $episodeId;
@@ -1566,40 +1582,12 @@ sub _asyncRefetch {
         }
 
         # Pitfall 3: for Connect URLs, store under Browse URL key so future lookups find it
+        # (79-68: an episode under its spoton://episode:<id> key)
         my $cacheUrl = ($url && $url =~ m{spoton://connect-})
-            ? "spoton://track:$trackId"
+            ? ($episodeId ? "spoton://episode:$episodeId" : "spoton://track:$trackId")
             : $canonical;
 
-        $cache->set('spoton_meta_' . md5_hex($cacheUrl), \%new_meta, 604800);
-
-        # 79-43 (D-33 FULL-3 CR-01): a Connect history record that was read without the current marker is healed
-        # in place - its names are replaced by the fresh ones, everything else (spotifyUri, type, bitrate) stays.
-        if ($url && $url =~ m{spoton://connect-}) {
-            my $histKey = 'spoton_meta_' . md5_hex($url);
-            my $hist    = $cache->get($histKey);
-            if (ref($hist) eq 'HASH' && !_metaCurrent($hist)) {
-                $cache->set($histKey, {
-                    %$hist,
-                    map { $_ => $new_meta{$_} } qw(_spoton_fmt title artist album duration cover icon year),
-                }, 604800);
-            }
-        }
-
-        $new_meta{url} ||= $cacheUrl;
-        my $refetchSong;
-        if ($client && $client->can('currentSongForUrl')) {
-            $refetchSong = $client->currentSongForUrl($url)
-                        || $client->currentSongForUrl($cacheUrl);
-        }
-        _applyRuntimeMetadata($client, $refetchSong, $cacheUrl, \%new_meta);
-
-        # Notify LMS to refresh NowPlaying display
-        if ($client) {
-            require Slim::Control::Request;
-            $client->currentPlaylistUpdateTime(Time::HiRes::time())
-                if $client->can('currentPlaylistUpdateTime');
-            Slim::Control::Request::notifyFromArray($client, ['newmetadata']);
-        }
+        _storeRefetchedMeta($client, $url, $cacheUrl, \%new_meta);
     };
 
     if ($episodeId) {
@@ -1607,6 +1595,90 @@ sub _asyncRefetch {
     } else {
         Plugins::SpotOn::API::SpClient->getTrack($accountId, $trackId, $fetchCb);
     }
+}
+
+# _storeRefetchedMeta($client, $url, $cacheUrl, \%new_meta) -- the shared tail of a successful metadata refetch (the
+# SpClient callback of _asyncRefetch and the 79-68 item bridge): cache the record, heal a Connect history record, hand
+# the names to the runtime song and tell LMS to refresh Now Playing.
+sub _storeRefetchedMeta {
+    my ($client, $url, $cacheUrl, $newMeta) = @_;
+    require Plugins::SpotOn::API::SpClient;   # 79-43 (D-33 FULL-3 CR-01): every spoton_meta writer stamps the format marker
+    my %new_meta = (%$newMeta, _spoton_fmt => Plugins::SpotOn::API::SpClient::TRACK_META_FORMAT());
+
+    $cache->set('spoton_meta_' . md5_hex($cacheUrl), \%new_meta, 604800);
+
+    # 79-43 (D-33 FULL-3 CR-01): a Connect history record that was read without the current marker is healed
+    # in place - its names are replaced by the fresh ones, everything else (spotifyUri, type, bitrate) stays.
+    if ($url && $url =~ m{spoton://connect-}) {
+        my $histKey = 'spoton_meta_' . md5_hex($url);
+        my $hist    = $cache->get($histKey);
+        if (ref($hist) eq 'HASH' && !_metaCurrent($hist)) {
+            $cache->set($histKey, {
+                %$hist,
+                map { $_ => $new_meta{$_} } qw(_spoton_fmt title artist album duration cover icon year),
+            }, 604800);
+        }
+    }
+
+    $new_meta{url} ||= $cacheUrl;
+    my $refetchSong;
+    if ($client && $client->can('currentSongForUrl')) {
+        $refetchSong = $client->currentSongForUrl($url)
+                    || $client->currentSongForUrl($cacheUrl);
+    }
+    _applyRuntimeMetadata($client, $refetchSong, $cacheUrl, \%new_meta);
+
+    # Notify LMS to refresh NowPlaying display
+    if ($client) {
+        require Slim::Control::Request;
+        $client->currentPlaylistUpdateTime(Time::HiRes::time())
+            if $client->can('currentPlaylistUpdateTime');
+        Slim::Control::Request::notifyFromArray($client, ['newmetadata']);
+    }
+}
+
+# _episodeFromRoleItem($client, $url, $canonical, $episodeId) -- 79-68 (GH #167, D-35a): the daemon's own item as the
+# display source of a spoton://episode:<id> entry. Asks the player's backend role for its current item (Soloist: the
+# last track_changed item, normalized by Control; the librespot role has none). Accepts it only when its uri IS
+# spotify:episode:<id> and it carries a name, a show line and an https image; the record is then built without a
+# request. The show line is the joined artists when the item has creators, else the parent name (album.name); the
+# album stays the parent name. Returns 1 when it served the display, else 0 (the caller falls back to getEpisode).
+sub _episodeFromRoleItem {
+    my ($client, $url, $canonical, $episodeId) = @_;
+    return 0 unless $client && $episodeId;
+
+    my $item = eval {
+        require Plugins::SpotOn::Unified::DaemonManager;
+        my $be = Plugins::SpotOn::Unified::DaemonManager->backendFor($client);
+        $be ? $be->query('currentItem') : undef;
+    };
+    return 0 unless ref($item) eq 'HASH' && defined $item->{uri} && $item->{uri} eq "spotify:episode:$episodeId";
+
+    my $name = $item->{name};
+    return 0 unless defined $name && !ref $name && length $name;
+    my $album  = ref($item->{album}) eq 'HASH' ? $item->{album} : {};
+    my $parent = (defined $album->{name} && !ref $album->{name}) ? $album->{name} : '';
+    my $artistLine = join(', ', grep { defined && length } map { ref($_) eq 'HASH' ? $_->{name} : undef } @{ ref($item->{artists}) eq 'ARRAY' ? $item->{artists} : [] });
+    $artistLine = $parent unless length $artistLine;
+    return 0 unless length $artistLine;
+    my $cover = _largestImage(ref($album->{images}) eq 'ARRAY' ? $album->{images} : []);
+    return 0 unless $cover && $cover =~ m{^https://};
+
+    require Plugins::SpotOn::API::SpClient;
+    $cache->remove('spoton_meta_neg_' . md5_hex($url));
+    my $dur = ($item->{duration_ms} && !ref $item->{duration_ms}) ? $item->{duration_ms} : 0;
+    _storeRefetchedMeta($client, $url, $canonical, {
+        _spoton_fmt => Plugins::SpotOn::API::SpClient::TRACK_META_FORMAT(),
+        title    => $name,
+        artist   => $artistLine,
+        album    => $parent,
+        duration => $dur / 1000,
+        cover    => $cover,
+        icon     => $cover,
+        year     => '',
+        showName => $parent,
+    });
+    return 1;
 }
 
 sub _largestImage { Plugins::SpotOn::Plugin::_largestImage(@_) }

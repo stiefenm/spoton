@@ -138,7 +138,9 @@ sub write_fixture {
 # Die zwoelf Mitschnitte der Phasen 81-84 sind das protokollierte Archiv, auf dem die festen Zahlen unten
 # beruhen. Phase-85-Mitschnitte (s85-*) kommen als weitere Fixtures hinzu, gehoeren aber nicht zu dieser
 # Messung und verschieben sie nicht (85-03: s85-get-queue-reply.jsonl hat n_mit 12 -> 13 gemacht).
-my @real_fixtures = grep { $_ !~ m{/s85-[^/]*\.jsonl\z} } sort glob("$project_dir/t/fixtures/soloist/*.jsonl");
+# 79-68: die beiden track_changed-Items der Spike-015-Mitschnitte (79-68-track_changed-*.jsonl) sind einzelne
+# Zeilen ohne Positionsframe und gehoeren ebenso nicht zu dieser Messung.
+my @real_fixtures = grep { $_ !~ m{/(?:s85|79-68)-[^/]*\.jsonl\z} } sort glob("$project_dir/t/fixtures/soloist/*.jsonl");
 
 # Echter Daemon-Log-Schnappschuss der Phase 83 (liegt ausserhalb des Repos,
 # weil 24 MB / 351660 Zeilen). Vorhanden -> die WR-06-Zaehler werden

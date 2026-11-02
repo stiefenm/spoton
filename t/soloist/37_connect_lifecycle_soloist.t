@@ -660,7 +660,7 @@ if ($leave_connect_g11) {
 $INC{'Plugins/SpotOn/Connect.pm'} = __FILE__;
 
 my %src3;
-for my $name (qw(_liveCaps _playUrlFor bindConnectClaim _onLmsPlaylistChanged _holdCaps _holdCap _holdRecheck _holdMax _holdClose)) {
+for my $name (qw(_liveCaps _itemUri _itemUrl _playUrlFor bindConnectClaim _onLmsPlaylistChanged _holdCaps _holdCap _holdRecheck _holdMax _holdClose)) {
     ($src3{$name}) = $connect =~ /(sub \Q$name\E \{.*?\n\})\n/s;
     ($src3{$name}) = $connect =~ /^(sub \Q$name\E .*?\})$/m unless $src3{$name};
 }

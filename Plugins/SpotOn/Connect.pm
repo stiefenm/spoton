@@ -74,7 +74,25 @@ use constant CTX_END_MARGIN_S => 2.0;
 # context end from the stored snapshot (D-02 says ~1-2 s; RESEARCH A2).
 use constant SETTLE_GRACE_S => 1.5;
 
+# 79-69 (GH #151, D-36): the power-off after a Connect session is a per-player
+# opt-in (pref connectPowerOff, unset reads 0) and runs CONNECT_POWER_OFF_DELAY_S
+# seconds after the session end, unless Connect resumes or other playback
+# starts inside the wait.
+use constant CONNECT_POWER_OFF_DELAY_S => 30;
+
+# 79-69: LMS's Client::pluginData writes only `if ( defined $value )`
+# (/usr/share/perl5/Slim/Player/Client.pm:1253): an undef value is a READ, so
+# `pluginData(connectPrevPower => undef)` never cleared anything and the first
+# value saved after an LMS start stuck until the next restart (beta.3: the
+# power-off after Connect never ran, GH #151). A cleared state is therefore
+# written as this DEFINED sentinel; _prevPowerGet reads it as undef.
+use constant PREV_POWER_NONE => -1;
+
 my $prefs       = preferences('plugin.spoton');
+
+# 79-69: client ids with a power-off wait pending (set when the timer is armed,
+# dropped when it fires or is cancelled).
+my %_powerOffArmed;
 my $serverPrefs = preferences('server');
 my $log         = logger('plugin.spoton');
 
@@ -140,6 +158,9 @@ sub initConnectHandlers {
     # the prefetch (the B6 runner adds the successor AFTER the title started).
     # Own coderef per the CR-01 rule above.
     Slim::Control::Request::subscribe(\&_onLmsPlaylistChanged, [['playlist'], ['add', 'insert', 'addtracks', 'inserttracks', 'move', 'delete', 'repeat', 'shuffle']]);
+    # 79-70 BR4-02 (GH #151): a power-on by anyone but SpotOn inside the power-off wait means the player is in use
+    # and cancels the wait. Own coderef per the CR-01 rule above.
+    Slim::Control::Request::subscribe(\&_onPower, [['power']]);
 
     $initialized = 1;
 }
@@ -268,6 +289,17 @@ sub releaseConnectClaim {
     # on every Browse getNextTrack, clears it too). False scalar, never undef
     # (pluginData treats undef as a read).
     $client->pluginData(connectOwnPlayUri => '');
+    # 79-70 BR4-03 (GH #151): the saved pre-Connect power state belongs to ONE session. The normal end
+    # (`stop inactive`, Control then releases with 'inactive') hands it to the power-off wait; any other release
+    # (foreign content, a Browse entry, ...) ends the session without that path, so a saved "was off" would
+    # survive into a LATER session of a player that was on and power it off. Unconditional on the claim: the
+    # Browse entry releases without a bound claim too, and Browse playback is "other playback" for the wait.
+    # 79-70 BR4-R1-01: the 'inactive' exemption holds only while the `stop inactive` handler really took the state
+    # over, i.e. a wait is armed (every other branch of _restorePowerAfterConnect clears the state). Control releases
+    # with 'inactive' even when its `stop inactive` emission was dropped (Connect switched off for the player,
+    # _emitAllowed); then nothing consumed the state and it must go like any other stale one.
+    $class->discardPowerState($client, "claim released (" . ($source // '?') . ")")
+        unless ($source // '') eq 'inactive' && $_powerOffArmed{ $client->id };
     if ($_activeConnectPlayer && $_activeConnectPlayer eq $client->id) {
         $_activeConnectPlayer = undef;
         $client->pluginData(pendingConnect => 0);
@@ -275,6 +307,28 @@ sub releaseConnectClaim {
             "Connect claim: released " . $client->id . " source=" . ($source // '?')
         );
     }
+}
+
+# discardPowerState($class, $client, $reason) -- 79-70 BR4-03 (GH #151): the saved pre-Connect power state and a
+# pending power-off wait are dropped WITHOUT powering anything off. Called where a Connect session ends without the
+# `stop inactive` marker: releaseConnectClaim for every reason except an 'inactive' release that finds
+# an armed wait, and Control::shutdown of a Connect session (daemon gone, restart, backend switch). The safe direction: a dropped state means the player is left as it
+# is (the opt-in never powers off on a guess). A no-op when nothing is saved or armed.
+sub discardPowerState {
+    my ($class, $client, $reason) = @_;
+    return unless $client;
+    $client = $client->master if $client->can('master');
+
+    my $armed = $_powerOffArmed{ $client->id };
+    return unless $armed || defined _prevPowerGet($client);
+
+    _powerOffCancel($client, $reason // 'session ended');
+    _prevPowerClear($client);
+    main::INFOLOG && $log->is_info && $log->info(
+        "Discarding saved pre-Connect power state for " . $client->id . " - session ended without the inactive marker ("
+        . ($reason // '?') . ") (GH #151)"
+    );
+    return;
 }
 
 # _isDeadHistoryUrl($url)
@@ -302,6 +356,7 @@ sub shutdown {
         Slim::Control::Request::unsubscribe(\&_onLmsStop);
         Slim::Control::Request::unsubscribe(\&_onLmsClear);
         Slim::Control::Request::unsubscribe(\&_onLmsPlaylistChanged);
+        Slim::Control::Request::unsubscribe(\&_onPower);
 
         $_activeConnectPlayer = undef;
         %_connectEntrySong = ();
@@ -765,6 +820,19 @@ sub _onNewSong {
         $be->notify('leaveBrowse');
     }
 
+    # 79-69 (GH #151, D-36): other playback starting inside the power-off wait
+    # cancels it. The two discard sites below only see a session whose claim is
+    # still bound (mode connect); after the session end Control has already left
+    # connect and released the claim, so the wait would otherwise run on. A
+    # newsong is "other playback" when it carries a url, is no Connect stream
+    # and the role is not in connect (a new Connect session cancels at its
+    # start / change / resume event instead).
+    if ($_powerOffArmed{ $client->id } && $url =~ /\S/ && $url !~ m{^spoton://connect-}
+        && ($mode->() // '') ne 'connect') {
+        _powerOffCancel($client, 'other playback');
+        _prevPowerClear($client);
+    }
+
     # 84.1-07 (D-02): foreign LMS content while in a Connect session ends
     # the session cleanly. Placed BEFORE CON-17, which returns early while
     # mode is connect -- exactly why the D-16 release below never fired
@@ -800,12 +868,13 @@ sub _onNewSong {
         # is obviously in use). Copied from the D-16 block below:
         # leaveConnect releases the claim first, so that block no longer
         # fires for this case.
-        if (defined $client->pluginData('connectPrevPower')) {
+        if (defined _prevPowerGet($client)) {
             main::INFOLOG && $log->is_info && $log->info(
                 "Discarding saved pre-Connect power state for " . $client->id
                 . " - user started other playback (GH #151)"
             );
-            $client->pluginData(connectPrevPower => undef);
+            _powerOffCancel($client, 'other playback');
+            _prevPowerClear($client);
         }
         }
     }
@@ -882,12 +951,13 @@ sub _onNewSong {
             # GH #151: session over because the user started other playback —
             # discard the saved power state WITHOUT powering off (the player
             # is obviously in use).
-            if (defined $client->pluginData('connectPrevPower')) {
+            if (defined _prevPowerGet($client)) {
                 main::INFOLOG && $log->is_info && $log->info(
                     "Discarding saved pre-Connect power state for " . $client->id
                     . " - user started other playback (GH #151)"
                 );
-                $client->pluginData(connectPrevPower => undef);
+                _powerOffCancel($client, 'other playback');
+                _prevPowerClear($client);
             }
         }
     }
@@ -1130,11 +1200,13 @@ sub _holdCancel {
     return;
 }
 
-# _holdOpen($client, $newTrackId) -- called from the change handler for a
+# _holdOpen($client, $newTrackId, $kind) -- called from the change handler for a
 # `live` change that passed the H-i predicates. Inserts the deferred item,
 # records the playing index, arms the cap re-check, logs the opening.
+# 79-68: $kind (track|episode) says which spoton:// entry is inserted.
 sub _holdOpen {
-    my ($client, $newTrackId) = @_;
+    my ($client, $newTrackId, $kind) = @_;
+    $kind ||= 'track';
 
     my $id  = $client->id;
     my $now = Time::HiRes::time();
@@ -1148,8 +1220,9 @@ sub _holdOpen {
 
     my $song = $client->playingSong();
     my $hold = {
-        uri        => "spoton://track:$newTrackId",
+        uri        => _itemUrl($kind, $newTrackId),
         trackId    => $newTrackId,
+        kind       => $kind,
         oldUrl     => ($song && $song->track ? ($song->track->url // '') : ''),
         playingIdx => Slim::Player::Source::playingSongIndex($client),
         since      => $now,
@@ -1182,9 +1255,9 @@ sub _holdOpen {
 # `playlist play` (D-05: the daemon's flush-disconnect is the EOF of the old
 # track; this playlist play starts the next one).
 sub _dispatchChangePlay {
-    my ($client, $newTrackId) = @_;
+    my ($client, $newTrackId, $kind) = @_;
 
-    my $changePlayUrl = "spoton://track:$newTrackId";
+    my $changePlayUrl = _itemUrl($kind || 'track', $newTrackId);
     $client->pluginData(connectSessionPaused => 0);
     $client->pluginData(connectStartTime => Time::HiRes::time());
     $client->pluginData(connectStreamDispatchTs => Time::HiRes::time());   # 84-02: _streamElapsedSeconds
@@ -1216,7 +1289,7 @@ sub _holdFallback {
 
     my $hold = $_hold{ $client->id } or return;
     _holdClose($client, "cap reason=$reason");
-    _dispatchChangePlay($client, $hold->{trackId});
+    _dispatchChangePlay($client, $hold->{trackId}, $hold->{kind});
 }
 
 # _holdCheck($client) -- the safety timer, ONE rule with a fixed precedence;
@@ -1698,16 +1771,58 @@ sub _liveCaps {
     return $be->capabilities;
 }
 
-# _playUrlFor($client, $trackId) -- the LMS playlist URL a Connect entry
+# _connectItem($raw) -- 79-68 (GH #167, D-35, T-79-291): parse an item string
+# into (kind, id, known): spotify:episode:<id> -> (episode, id, 1),
+# spotify:track:<id> -> (track, id, 1), a bare id -> (track, id, 0: the kind
+# is not known from the string). Anything else yields the empty list. The ONE
+# place an item string is parsed (the wire's `_p2`, a stored eventTrackUri);
+# every URI and URL below is built from the result (_itemUri, _itemUrl).
+sub _connectItem {
+    my ($raw) = @_;
+    return () unless defined $raw;
+    return ($1, $2, 1) if $raw =~ /^spotify:(track|episode):([A-Za-z0-9]{1,64})$/;
+    return ('track', $1, 0) if $raw =~ /^([A-Za-z0-9]{1,64})$/;
+    return ();
+}
+
+# _requestItem($request) -- 79-68: the item of a spottyconnect start/change/resume REQUEST as (kind, id, known).
+# On the wire `_p2` is always a bare id (LMS turns any `name:value` token into a named parameter, so a
+# `spotify:episode:<id>` could never arrive as `_p2`); Soloist::Control marks an episode or chapter with the extra
+# tagged token `kind:episode` (param `kind`). librespot sends the bare id alone (known 0). The empty list means
+# "no item" (an absent or empty `_p2`) or a refused one (anything _connectItem does not accept).
+sub _requestItem {
+    my ($request) = @_;
+    my ($kind, $id, $known) = _connectItem($request->getParam('_p2'));
+    return () unless defined $id;
+    if (!$known && ($request->getParam('kind') // '') eq 'episode') {
+        ($kind, $known) = ('episode', 1);
+    }
+    return ($kind, $id, $known);
+}
+
+# _itemUri($kind, $id) -- the Spotify URI of a Connect item (eventTrackUri).
+sub _itemUri {
+    my ($kind, $id) = @_;
+    return "spotify:$kind:$id";
+}
+
+# _itemUrl($kind, $id) -- the LMS entry URL of a Connect item.
+sub _itemUrl {
+    my ($kind, $id) = @_;
+    return "spoton://$kind:$id";
+}
+
+# _playUrlFor($client, $trackId, $kind) -- the LMS playlist URL a Connect entry
 # plays (D-04 backend dispatch, 84-08 on capabilities->{connectEntry}):
-#   pertrack  (and a track id) -> spoton://track:<id>  -- one LMS entry per
-#             Spotify track (same audio contract as Browse)
+#   pertrack  (and an item id) -> spoton://<kind>:<id> -- one LMS entry per
+#             Spotify item (same audio contract as Browse); $kind is track
+#             (default) or episode (79-68)
 #   otherwise                  -> spoton://connect-<ms> -- the repeating
 #             stream with a unique timestamp URL (librespot, Windows
 #             constraint; also a per-track backend without a track id)
 sub _playUrlFor {
-    my ($client, $trackId) = @_;
-    return "spoton://track:$trackId"
+    my ($client, $trackId, $kind) = @_;
+    return _itemUrl($kind || 'track', $trackId)
         if $trackId && (_liveCaps($client)->{connectEntry} // '') eq 'pertrack';
     my $ts = int(Time::HiRes::time() * 1000);
     return sprintf("spoton://connect-%u", $ts);
@@ -1718,6 +1833,8 @@ sub _playUrlFor {
 # spottyconnect JSON-RPC dispatch handler (Binary → LMS direction, CON-03)
 #
 # Wire vocabulary (librespot-spoton connect.rs):
+#   (79-68: start/change/resume of an episode or chapter from Soloist carry one extra TAGGED token `kind:episode`
+#    after the positional arguments -> request param `kind`; the ids stay bare base62)
 #   start  — new track begins (None -> Some);  p1=track_id(base62), p2=""
 #   change — track changes mid-playback;        p1=new_track_id, p2=previous_track_id
 #   stop   — PlayerEvent::Paused OR Stopped;    p1="", p2=""  (NOTE: no 'pause' event)
@@ -1739,6 +1856,20 @@ sub _connectEvent {
     main::INFOLOG && $log->is_info && $log->info(sprintf(
         'Got spottyconnect event for %s: %s', $client->id, $cmd
     ));
+
+    # 79-68 (T-79-291): a non-empty item of a start/change/resume that
+    # _connectItem does not accept is refused here, before the start claim and
+    # before any handler state. The WARN names the command and the length only.
+    if ($cmd eq 'start' || $cmd eq 'change' || $cmd eq 'resume') {
+        my $rawItem = $request->getParam('_p2');
+        if (defined $rawItem && length($rawItem) && !(my @accepted = _requestItem($request))) {
+            $log->warn(sprintf('Connect: refused item (%d chars) for %s', length($rawItem), $cmd));
+            return;
+        }
+        # 79-69 (GH #151, D-36): the session is back inside the power-off wait -
+        # cancel the wait, keep the saved state (the next session end re-arms it).
+        _powerOffCancel($client, 'connect resumed');
+    }
 
     # Diagnostic timing (#3): capture entry timestamp when diagnosticMode is active
     my $diagMode = $prefs->get('diagnosticMode');
@@ -1930,7 +2061,8 @@ sub _connectEvent {
     # -----------------------------------------------------------------
     if ($cmd eq 'resume') {
         _settleCancel($client, 'resume');    # 84.3-01
-        my $trackId  = $request->getParam('_p2');
+        my ($kind, $trackId, $kindKnown) = _requestItem($request);    # 79-68
+        $kind ||= 'track';
         my $position = $request->getParam('_p3');
 
         # Check actual playing URL, not just the $_activeConnectPlayer flag.
@@ -1996,11 +2128,11 @@ sub _connectEvent {
             # below) — save the pre-Connect power state if no session save
             # exists yet (e.g. a restart-suppressed session resuming here;
             # first save wins, same rule as the start handler).
-            if (!defined $client->pluginData('connectPrevPower')) {
-                $client->pluginData(connectPrevPower => ($client->power ? 1 : 0));
+            if (!defined _prevPowerGet($client)) {
+                _prevPowerSet($client, $client->power ? 1 : 0);
                 main::INFOLOG && $log->is_info && $log->info(
                     "Saved pre-Connect power state for " . $client->id . ": "
-                    . ($client->pluginData('connectPrevPower') ? 'on' : 'off') . " (GH #151)"
+                    . (_prevPowerGet($client) ? 'on' : 'off') . " (GH #151)"
                 );
             }
 
@@ -2040,15 +2172,15 @@ sub _connectEvent {
             }
 
             if ($trackId) {
-                $client->pluginData(eventTrackUri => "spotify:track:$trackId");
+                $client->pluginData(eventTrackUri => _itemUri($kind, $trackId));
             }
 
             # D-04 backend dispatch: Soloist Connect uses spoton://track:ID
             # entries (same audio contract as Browse); librespot keeps the
             # repeating-stream spoton://connect-<ts> URL (Windows constraint).
             # 84-08: _playUrlFor asks the role's connectEntry.
-            my $playUrl = _playUrlFor($client, $trackId);
-            if ($playUrl =~ m{^spoton://track:}) {
+            my $playUrl = _playUrlFor($client, $trackId, $kind);
+            if ($playUrl =~ m{^spoton://(?:track|episode):}) {
                 $client->pluginData(connectStreamDispatchTs => Time::HiRes::time());   # 84-02: _streamElapsedSeconds
                 $client->pluginData(connectOwnPlayUri => $playUrl);   # 84.2-05: one-shot dispatch marker (see _dispatchChangePlay)
                 # 84-02 C4-c: the reactivation transfer-in (seek + resume while
@@ -2068,7 +2200,7 @@ sub _connectEvent {
             $client->pluginData(pendingConnect => 0);
 
             if ($trackId) {
-                _fetchTrackMetadata($client, $trackId);
+                _fetchTrackMetadata($client, $trackId, $kind, $kindKnown);
             }
 
             $log->warn("[DIAG] [$diagTs] resume: player=" . $client->id
@@ -2085,6 +2217,20 @@ sub _connectEvent {
         main::INFOLOG && $log->is_info && $log->info(
             "Resume event: trackId=$trackId position=$position"
         );
+
+        # GH #151 (79-69, found live on lavender-UAT 2026-11-02): a session can be entered by this
+        # `resume` alone - the daemon still holds its paused session, no `start` arrives, the player
+        # already holds the Connect stream - and the `pause 0` below powers the player on. The
+        # pre-Connect power state is saved HERE too (first save wins, same rule as the start handler
+        # and the re-entry above); without it the session end finds nothing saved and the opt-in
+        # power-off never runs.
+        if (!defined _prevPowerGet($client)) {
+            _prevPowerSet($client, $client->power ? 1 : 0);
+            main::INFOLOG && $log->is_info && $log->info(
+                "Saved pre-Connect power state for " . $client->id . ": "
+                . (_prevPowerGet($client) ? 'on' : 'off') . " (GH #151)"
+            );
+        }
 
         # Unpause squeezelite — CRITICAL: use ['pause', 0] NOT ['play'].
         # ['play'] would open a new HTTP stream connection and break the
@@ -2182,7 +2328,8 @@ sub _connectEvent {
     if ($cmd eq 'start') {
         _holdCancel($client, 'start');    # 84-17 (H-c): a new session
         _settleCancel($client, 'start');  # 84.3-01
-        my $trackId = $request->getParam('_p2');
+        my ($kind, $trackId, $kindKnown) = _requestItem($request);    # 79-68
+        $kind ||= 'track';
         # 84-02 C4-c: Control's transfer-in passes the app position (seconds,
         # '%.3f') as the third parameter; '' when unknown. It becomes the
         # CON-17 progress that _onNewSong applies to the new Song's clock --
@@ -2239,8 +2386,8 @@ sub _connectEvent {
             ));
 
             if ($trackId) {
-                $client->pluginData(eventTrackUri => "spotify:track:$trackId");
-                _fetchTrackMetadata($client, $trackId);
+                $client->pluginData(eventTrackUri => _itemUri($kind, $trackId));
+                _fetchTrackMetadata($client, $trackId, $kind, $kindKnown);
             }
 
             $log->warn("[DIAG] [$diagTs] start_suppressed: player=" . $client->id
@@ -2261,11 +2408,11 @@ sub _connectEvent {
         # Spirc reconnect) must not overwrite the saved value with the
         # now-on state. Cleared at a real session end (stop 'inactive'
         # marker) or when the user starts other playback (_onNewSong).
-        if (!defined $client->pluginData('connectPrevPower')) {
-            $client->pluginData(connectPrevPower => ($client->power ? 1 : 0));
+        if (!defined _prevPowerGet($client)) {
+            _prevPowerSet($client, $client->power ? 1 : 0);
             main::INFOLOG && $log->is_info && $log->info(
                 "Saved pre-Connect power state for " . $client->id . ": "
-                . ($client->pluginData('connectPrevPower') ? 'on' : 'off') . " (GH #151)"
+                . (_prevPowerGet($client) ? 'on' : 'off') . " (GH #151)"
             );
         }
 
@@ -2303,7 +2450,7 @@ sub _connectEvent {
 
         # Stale-API-fallback: if API returns no track, use the binary's track_id
         if ($trackId) {
-            $client->pluginData(eventTrackUri => "spotify:track:$trackId");
+            $client->pluginData(eventTrackUri => _itemUri($kind, $trackId));
         }
 
         # D-04 backend dispatch: Soloist Connect uses spoton://track:ID
@@ -2311,9 +2458,9 @@ sub _connectEvent {
         # repeating-stream spoton://connect-<ts> URL (Windows constraint).
         # $trackId is already in scope from _p2 above.
         # 84-08: _playUrlFor asks the role's connectEntry.
-        my $startPlayUrl = _playUrlFor($client, $trackId);
+        my $startPlayUrl = _playUrlFor($client, $trackId, $kind);
         {
-            if ($startPlayUrl =~ m{^spoton://track:}) {
+            if ($startPlayUrl =~ m{^spoton://(?:track|episode):}) {
                 $client->pluginData(connectStreamDispatchTs => Time::HiRes::time());   # 84-02: _streamElapsedSeconds
                 $client->pluginData(connectOwnPlayUri => $startPlayUrl);   # 84.2-05: one-shot dispatch marker (see _dispatchChangePlay)
                 # 84-02 C4-c: a transfer-in enters mid-title and no seek echo
@@ -2334,7 +2481,7 @@ sub _connectEvent {
 
         # Fetch metadata for NowPlaying display via API::SpClient (D-08/D-13)
         if ($trackId) {
-            _fetchTrackMetadata($client, $trackId);
+            _fetchTrackMetadata($client, $trackId, $kind, $kindKnown);
         }
 
         $log->warn("[DIAG] [$diagTs] start: player=" . $client->id
@@ -2376,7 +2523,8 @@ sub _connectEvent {
             return;
         }
 
-        my $newTrackId  = $request->getParam('_p2');
+        my ($kind, $newTrackId, $kindKnown) = _requestItem($request);    # 79-68
+        $kind ||= 'track';
         my $prevTrackId = $request->getParam('_p3');
         # 84-17 (L1 repair): the 4th positional is the audio shim's own
         # classification of this title change, read by Soloist::Control from
@@ -2498,13 +2646,13 @@ sub _connectEvent {
         {
             # 84-08: the per-track entry branch (connectEntry pertrack).
             if ((_liveCaps($client)->{connectEntry} // '') eq 'pertrack' && $newTrackId) {
-                $client->pluginData(eventTrackUri => "spotify:track:$newTrackId");
-                _fetchTrackMetadata($client, $newTrackId);
+                $client->pluginData(eventTrackUri => _itemUri($kind, $newTrackId));
+                _fetchTrackMetadata($client, $newTrackId, $kind, $kindKnown);
 
                 if ($wantHold) {
                     # 84-17: no `playlist play` -- the deferred item is the
                     # NEXT playlist entry and LMS advances by itself.
-                    _holdOpen($client, $newTrackId);
+                    _holdOpen($client, $newTrackId, $kind);
                     $log->warn("[DIAG] [$diagTs] change: player=" . $client->id
                         . " prev=" . ($prevTrackId || 'none')
                         . " new=" . ($newTrackId || 'none')
@@ -2517,7 +2665,7 @@ sub _connectEvent {
                 # Every Soloist 'change' dispatches a new playlist entry —
                 # flush-disconnect (D-05) delivers the EOF for the previous
                 # track; this playlist play starts the next one.
-                my $changePlayUrl = "spoton://track:$newTrackId";
+                my $changePlayUrl = _itemUrl($kind, $newTrackId);
                 $client->pluginData(connectSessionPaused => 0);
                 $client->pluginData(connectStartTime => Time::HiRes::time());
                 $client->pluginData(connectStreamDispatchTs => Time::HiRes::time());   # 84-02: _streamElapsedSeconds
@@ -2541,8 +2689,8 @@ sub _connectEvent {
 
         # Fetch metadata for the new track (D-13) — librespot path
         if ($newTrackId) {
-            $client->pluginData(eventTrackUri => "spotify:track:$newTrackId");
-            _fetchTrackMetadata($client, $newTrackId);
+            $client->pluginData(eventTrackUri => _itemUri($kind, $newTrackId));
+            _fetchTrackMetadata($client, $newTrackId, $kind, $kindKnown);
         }
 
         # 82-05: the 260827-of9 forced-reconnect block that used to sit
@@ -2702,8 +2850,8 @@ sub _connectEvent {
                 if (_liveCaps($client)->{readyReplaysLastTrack}) {
                     # Derive trackId from eventTrackUri (last announced track)
                     my $readyTrackUri = $client->pluginData('eventTrackUri') || '';
-                    if ($readyTrackUri =~ m{^spotify:(?:track|episode):([A-Za-z0-9]+)$}) {
-                        $readyPlayUrl = "spoton://track:$1";
+                    if (my ($readyKind, $readyId) = _connectItem($readyTrackUri)) {
+                        $readyPlayUrl = _itemUrl($readyKind, $readyId);
                         # 84.2-05 (producer P5): practically unreachable today, stamped anyway --
                         # a reach while the daemon is paused must not drop the session.
                         $client->pluginData(connectOwnPlayUri => $readyPlayUrl);
@@ -2728,54 +2876,148 @@ sub _connectEvent {
     main::INFOLOG && $log->is_info && $log->info("Unhandled spottyconnect command: $cmd");
 }
 
+# _prevPowerGet($client) -> 0 | 1 | undef
+# 79-69: the saved pre-Connect power state. The cleared sentinel
+# (PREV_POWER_NONE) and anything else read as undef ("nothing saved").
+sub _prevPowerGet {
+    my ($client) = @_;
+    my $v = $client->pluginData('connectPrevPower');
+    return (defined $v && ($v eq '0' || $v eq '1')) ? ($v + 0) : undef;
+}
+
+# _prevPowerSet($client, $on) -- saves 1 or 0 (always a defined value).
+sub _prevPowerSet {
+    my ($client, $on) = @_;
+    $client->pluginData(connectPrevPower => ($on ? 1 : 0));
+    return;
+}
+
+# _prevPowerClear($client) -- the clear: a DEFINED sentinel, because LMS
+# ignores an undef write (Client.pm:1253, see PREV_POWER_NONE).
+sub _prevPowerClear {
+    my ($client) = @_;
+    $client->pluginData(connectPrevPower => PREV_POWER_NONE);
+    return;
+}
+
+# _playsForeign($client, $roleMode) -> 1 when the player plays something that
+# is not the Connect session (a url that is neither a spoton://connect- stream
+# nor the role's own connect mode). Phase 78-04: a Soloist Connect session is
+# recognised by the role's mode (83.1-07), not by the url.
+sub _playsForeign {
+    my ($client, $roleMode) = @_;
+    my $song = $client->playingSong();
+    my $url  = $song ? ($song->track->url || $song->streamUrl || '') : '';
+    return ($client->isPlaying && $url !~ m{spoton://connect-} && ($roleMode // '') ne 'connect') ? 1 : 0;
+}
+
+sub _roleMode {
+    my ($client) = @_;
+    require Plugins::SpotOn::Unified::DaemonManager;
+    my $be = Plugins::SpotOn::Unified::DaemonManager->backendFor($client);
+    return $be ? $be->state->{mode} : undef;
+}
+
 # _restorePowerAfterConnect($client)
-# GH #151: restore the pre-Connect power state at Connect session end
-# (ShairTunes prior art). Only powers OFF (never on): a player that was
-# already on before the session simply stays on. Guards:
+# GH #151 (D-36): at Connect session end, power the player OFF again if it was
+# off before the session - as a per-player opt-in (pref connectPowerOff,
+# default off) and CONNECT_POWER_OFF_DELAY_S seconds later (_powerOffDue),
+# not at once. Only powers OFF (never on): a player that was already on
+# before the session simply stays on. Guards:
 #   - no-op unless a power state was saved for this session
-#   - the saved flag is ALWAYS cleared, even on the skip paths, so a stale
-#     value can never leak into a later session (first-save-wins contract)
-#   - skip the power-off if the player is meanwhile playing something that
-#     is not the Connect stream (user started local playback during/after
-#     the session — powering off would kill their music)
+#   - a state that is not going to be used is cleared at once, so a stale
+#     value can never leak into a later session (first-save-wins contract);
+#     while a wait is pending the state is KEPT (the session may resume)
+#   - no wait is armed while the player plays something that is not the
+#     Connect stream (user started local playback during/after the session)
 # Sync groups: _connectEvent normalizes to the master client (the daemon
 # lives on the master), so save/restore applies to the player that received
-# the event — each member with its own session is handled individually.
+# the event and the master's setting counts.
 sub _restorePowerAfterConnect {
     my ($client) = @_;
 
-    my $prev = $client->pluginData('connectPrevPower');
+    my $prev = _prevPowerGet($client);
     return unless defined $prev;
 
-    # Always clear first — no path below may leave a stale saved state.
-    $client->pluginData(connectPrevPower => undef);
-
     if ($prev) {
+        _prevPowerClear($client);
         main::DEBUGLOG && $log->is_debug && $log->debug(
             "Session end: player " . $client->id . " was on before Connect - leaving on (GH #151)"
         );
         return;
     }
 
-    my $song = $client->playingSong();
-    my $url  = $song ? ($song->track->url || $song->streamUrl || '') : '';
-    # Phase 78-04: also accept a Soloist Connect session (Control's own
-    # mode) as "Connect stream" so GH-#151 power restore works at Soloist
-    # session end. 83.1-07: replaces the former Soloist track-ID
-    # URL-matching heuristic with Control's mode.
-    # 84-08: the session mode comes from the backend role.
-    require Plugins::SpotOn::Unified::DaemonManager;
-    my $restorePowerMode = Plugins::SpotOn::Unified::DaemonManager->backendFor($client)->state->{mode};
-    if ($client->isPlaying && $url !~ m{spoton://connect-}
-        && ($restorePowerMode // '') ne 'connect') {
+    unless ($prefs->client($client)->get('connectPowerOff')) {
+        _prevPowerClear($client);
+        main::INFOLOG && $log->is_info && $log->info(
+            "Session end: power-off after Connect is off for " . $client->id . " - leaving on (GH #151)"
+        );
+        return;
+    }
+
+    if (_playsForeign($client, _roleMode($client))) {
+        _prevPowerClear($client);
         main::INFOLOG && $log->is_info && $log->info(
             "Session end: " . $client->id . " is playing something else - skipping power-off (GH #151)"
         );
         return;
     }
 
+    _powerOffCancel($client);
+    $_powerOffArmed{ $client->id } = 1;
+    Slim::Utils::Timers::setTimer($client, Time::HiRes::time() + CONNECT_POWER_OFF_DELAY_S, \&_powerOffDue);
     main::INFOLOG && $log->is_info && $log->info(
-        "Session end: restoring pre-Connect power state (off) for " . $client->id . " (GH #151)"
+        "Session end: power-off in " . CONNECT_POWER_OFF_DELAY_S . " s for " . $client->id
+        . " unless Connect resumes (GH #151)"
+    );
+}
+
+# _powerOffDue($client) -- the timer callback of the wait: switch the player
+# off now, unless anything changed since the session end (setting, saved
+# state, Connect active again, other content playing, already off).
+sub _powerOffDue {
+    my ($client) = @_;
+
+    delete $_powerOffArmed{ $client->id };
+
+    my $prev = _prevPowerGet($client);
+    return unless defined $prev;
+
+    unless ($prev == 0 && $prefs->client($client)->get('connectPowerOff')) {
+        _prevPowerClear($client);
+        main::INFOLOG && $log->is_info && $log->info(
+            "power-off cancelled - setting or saved state changed (" . $client->id . ") (GH #151)"
+        );
+        return;
+    }
+
+    my $mode = _roleMode($client);
+    if (($mode // '') eq 'connect') {
+        # a Connect session is active again: its own session end re-arms the wait
+        main::INFOLOG && $log->is_info && $log->info(
+            "power-off cancelled - Connect is active again (" . $client->id . ") (GH #151)"
+        );
+        return;
+    }
+    if (_playsForeign($client, $mode)) {
+        _prevPowerClear($client);
+        main::INFOLOG && $log->is_info && $log->info(
+            "power-off cancelled - " . $client->id . " is playing something else (GH #151)"
+        );
+        return;
+    }
+
+    _prevPowerClear($client);
+
+    unless ($client->power) {
+        main::INFOLOG && $log->is_info && $log->info(
+            "power-off skipped - " . $client->id . " is already off (GH #151)"
+        );
+        return;
+    }
+
+    main::INFOLOG && $log->is_info && $log->info(
+        "Session end: restoring pre-Connect power state (off) for " . $client->id . " after the wait (GH #151)"
     );
 
     my $powerReq = Slim::Control::Request->new($client->id, ['power', 0]);
@@ -2783,17 +3025,67 @@ sub _restorePowerAfterConnect {
     $powerReq->execute();
 }
 
-# _fetchTrackMetadata($client, $trackId)
+# _onPower($request) -- 79-70 BR4-02 (GH #151, D-36): a `power` notification while the power-off wait is armed.
+# Someone other than SpotOn switched the player ON inside the 30 s (a press on the player, the LMS web UI, a
+# controller): the player is in use, so the wait is cancelled and the saved state discarded WITHOUT a power-off.
+# - SpotOn's own power 0 (source-marked, dispatched by _powerOffDue after the wait is already disarmed) is skipped
+#   by the source check, like _onPause / _onLmsStop.
+# - Only an armed wait is touched: during a live session the saved state must wait for the session end, and the
+#   start's own `playlist play` powering the player on is not a cancel.
+# - Only an ON player counts (a power-off notification inside the wait changes nothing; _powerOffDue skips an
+#   already-off player).
+sub _onPower {
+    my ($request) = @_;
+
+    return if $request->source && $request->source eq __PACKAGE__;
+
+    my $client = $request->client() or return;
+    $client = $client->master;
+
+    return unless $_powerOffArmed{ $client->id };
+    return unless $client->power;
+
+    _powerOffCancel($client, 'player powered on by someone else');
+    _prevPowerClear($client);
+}
+
+# _powerOffCancel($client, $reason) -- drops a pending wait (no-op without
+# one); logs the reason when a wait was really pending. The saved state is
+# NOT touched here (callers decide: resume keeps it, other playback clears it).
+sub _powerOffCancel {
+    my ($client, $reason) = @_;
+    my $was = delete $_powerOffArmed{ $client->id };
+    Slim::Utils::Timers::killTimers($client, \&_powerOffDue);
+    if ($was && defined $reason) {
+        main::INFOLOG && $log->is_info && $log->info(
+            "power-off cancelled - $reason (" . $client->id . ") (GH #151)"
+        );
+    }
+    return;
+}
+
+# _fetchTrackMetadata($client, $trackId, $kind, $known)
 # Fetches track metadata over spclient and updates NowPlaying display.
 # Uses API::SpClient->getTrack() (D-08, 85-07 D-11): spclient is the only
 # metadata source -- there is no Web API fallback, a network error is
 # retried inside getTrack, and a failure here just resets the NowPlaying
 # progress (this is NOT a sender of noteMetadataMissing; only the
 # ProtocolHandler refetch classifies a real 404).
+#
+# 79-68 (GH #167, D-35): $kind is track (default) or episode. An episode
+# goes straight to getEpisode (the existing facade; 79-71 moves it onto
+# Pathfinder). $known says whether the kind came from the wire: librespot
+# always sends a bare id ($known 0, kind track), and a bare id whose
+# getTrack yields no data is asked ONCE as an episode (eventTrackUri is
+# flipped to the episode URI first, so the stale guard keeps the answer).
+# Callers that pass no $known keep today's behaviour (no fallback).
 sub _fetchTrackMetadata {
-    my ($client, $trackId) = @_;
+    my ($client, $trackId, $kind, $known) = @_;
 
     return unless $trackId;
+    $kind ||= 'track';
+    # A per-track backend (Soloist) tags an episode on the wire itself, so its bare id IS a track: no fallback there.
+    $known = 1 if (_liveCaps($client)->{connectEntry} // '') eq 'pertrack';
 
     require Plugins::SpotOn::API::SpClient;
 
@@ -2802,7 +3094,7 @@ sub _fetchTrackMetadata {
                  || '';
     $log->warn("[DIAG] metadata_fetch: mac=" . $client->id . " track=$trackId account=$accountId") if $prefs->get('diagnosticMode');
 
-    Plugins::SpotOn::API::SpClient->getTrack($accountId, $trackId, sub {
+    my $onInfo = sub {
         my ($trackInfo) = @_;
 
         # Stale-API protection (T-05-14 / Pitfall 5): the binary's event track_id
@@ -2863,11 +3155,22 @@ sub _fetchTrackMetadata {
         }
 
         my $title    = $trackInfo->{name};
-        my $artist   = join(', ', map { $_->{name} } @{ $trackInfo->{artists} || [] });
-        my $album    = ($trackInfo->{album} || {})->{name} || '';
+        my ($artist, $album, $cover, $year);
         my $duration = ($trackInfo->{duration_ms} || 0) / 1000;
-        my $cover    = _largestImage(($trackInfo->{album} || {})->{images}) || IMG_TRACK;
-        my $year     = Plugins::SpotOn::Plugin::_releaseYear(($trackInfo->{album} || {})->{release_date});
+        if (($trackInfo->{uri} // '') =~ /^spotify:episode:/) {
+            # 79-68: an episode or chapter -- the show is both the artist and the album line; the episode's own
+            # image wins over the show's
+            my $show = ref($trackInfo->{show}) eq 'HASH' ? $trackInfo->{show} : {};
+            $artist = $album = $show->{name} || '';
+            $cover  = _largestImage($trackInfo->{images}) || _largestImage($show->{images}) || IMG_TRACK;
+            $year   = Plugins::SpotOn::Plugin::_releaseYear($trackInfo->{release_date});
+        }
+        else {
+            $artist = join(', ', map { $_->{name} } @{ $trackInfo->{artists} || [] });
+            $album  = ($trackInfo->{album} || {})->{name} || '';
+            $cover  = _largestImage(($trackInfo->{album} || {})->{images}) || IMG_TRACK;
+            $year   = Plugins::SpotOn::Plugin::_releaseYear(($trackInfo->{album} || {})->{release_date});
+        }
 
         # Instant display update — set on both logical and stream URL so renderers
         # that key their display off the stream URL (e.g. UPnPBridge) also get the title
@@ -2957,6 +3260,30 @@ sub _fetchTrackMetadata {
             "Track metadata updated: $title - $artist"
         );
         $log->warn("[DIAG] metadata_success: mac=" . $client->id . " track=$trackId title=$title duration=$duration") if $prefs->get('diagnosticMode');
+    };
+
+    if ($kind eq 'episode') {
+        Plugins::SpotOn::API::SpClient->getEpisode($accountId, $trackId, $onInfo);
+        return;
+    }
+
+    Plugins::SpotOn::API::SpClient->getTrack($accountId, $trackId, sub {
+        my ($trackInfo, $err) = @_;
+
+        # 79-68: a bare id from librespot (kind not known from the wire) that is no track: ask once as an episode.
+        # 79-70 BR4-01: only on a DEFINITIVE not-found (spclient HTTP 404). A timeout / transport error (code 0), a
+        # 5xx, a 429 (also rate_limited_local), no_token or an empty 200 prove nothing about the id: guessing
+        # "episode" there would flip eventTrackUri for a real track and add a second request exactly while the
+        # service is throttling.
+        my $noSuchTrack = !($trackInfo && $trackInfo->{name})
+            && ref($err) eq 'HASH' && defined $err->{code} && $err->{code} == 404;
+        if (defined $known && !$known && $noSuchTrack) {
+            $client->pluginData(eventTrackUri => _itemUri('episode', $trackId));
+            Plugins::SpotOn::API::SpClient->getEpisode($accountId, $trackId, $onInfo);
+            return;
+        }
+
+        $onInfo->($trackInfo);
     }, { refresh => 1 });   # 79-27 D-20: a Connect track start is fetched fresh (overwrites the cached entry)
 }
 

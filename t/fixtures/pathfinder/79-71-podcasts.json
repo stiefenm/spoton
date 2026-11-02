@@ -1,0 +1,1551 @@
+{
+   "_trim" : {
+      "chapters" : "items 16 -> 3 (totalCount 16 kept)",
+      "description" : "cut to 120 characters (12 cut)",
+      "dropped_keys_at_any_depth" : [
+         "accessInfo",
+         "audio",
+         "audioPreview",
+         "availableMarkets",
+         "copyrights",
+         "htmlDescription",
+         "htmlDescriptionPlain",
+         "playedState",
+         "previewPlayback",
+         "price",
+         "rating",
+         "saved",
+         "sharingInfo",
+         "topics",
+         "transcripts",
+         "visualIdentity"
+      ],
+      "episodes_p1" : "items 50 -> 3 (totalCount 56 and pagingInfo.nextOffset 50 kept)",
+      "episodes_p2" : "all 6 items kept (nextOffset null kept)",
+      "source" : "spikes 013/014 raw replies, account state (sharingInfo, shareId, playedState, saved, rating) removed"
+   },
+   "chapter" : {
+      "data" : {
+         "episodeUnionV2" : {
+            "__typename" : "Chapter",
+            "audiobookV2" : {
+               "__typename" : "AudiobookResponseWrapper",
+               "data" : {
+                  "__typename" : "Audiobook",
+                  "coverArt" : {
+                     "sources" : [
+                        {
+                           "height" : 64,
+                           "url" : "https://i.scdn.co/image/ab6766630000703baafc952daf0a8d1249d468d1",
+                           "width" : 64
+                        },
+                        {
+                           "height" : 300,
+                           "url" : "https://i.scdn.co/image/ab6766630000db5baafc952daf0a8d1249d468d1",
+                           "width" : 300
+                        },
+                        {
+                           "height" : 640,
+                           "url" : "https://i.scdn.co/image/ab676663000022a8aafc952daf0a8d1249d468d1",
+                           "width" : 640
+                        }
+                     ]
+                  },
+                  "name" : "Wahre Verbrechen Extrem 1: Die krassesten True Crime-Fälle aus London, Wien und Budapest",
+                  "showTypes" : [],
+                  "trailerV2" : {
+                     "data" : {
+                        "__typename" : "Chapter",
+                        "uri" : "spotify:episode:77E22KTbLM7qA6yMC1oXwj"
+                     }
+                  },
+                  "uri" : "spotify:show:01DbzJA9caChG3VDgVmnFc"
+               }
+            },
+            "contentRating" : {
+               "label" : "NONE"
+            },
+            "coverArt" : {
+               "sources" : [
+                  {
+                     "height" : 64,
+                     "url" : "https://i.scdn.co/image/ab6766630000703baafc952daf0a8d1249d468d1",
+                     "width" : 64
+                  },
+                  {
+                     "height" : 300,
+                     "url" : "https://i.scdn.co/image/ab6766630000db5baafc952daf0a8d1249d468d1",
+                     "width" : 300
+                  },
+                  {
+                     "height" : 640,
+                     "url" : "https://i.scdn.co/image/ab676663000022a8aafc952daf0a8d1249d468d1",
+                     "width" : 640
+                  }
+               ]
+            },
+            "description" : "",
+            "duration" : {
+               "totalMilliseconds" : 17159
+            },
+            "id" : "73E4okoX6R2PAagxONnSWI",
+            "mediaTypes" : [
+               "AUDIO"
+            ],
+            "name" : "Track 1",
+            "playability" : {
+               "playable" : true,
+               "reason" : "PLAYABLE",
+               "unplayabilityReasons" : []
+            },
+            "restrictions" : {
+               "paywallContent" : true
+            },
+            "uri" : "spotify:episode:73E4okoX6R2PAagxONnSWI"
+         }
+      }
+   },
+   "chapters" : {
+      "data" : {
+         "podcastUnionV2" : {
+            "__typename" : "Audiobook",
+            "chaptersV2" : {
+               "__typename" : "ContextChapterPage",
+               "items" : [
+                  {
+                     "__typename" : "ContextChapterV2",
+                     "entity" : {
+                        "__typename" : "ChapterResponseWrapper",
+                        "_uri" : "spotify:episode:73E4okoX6R2PAagxONnSWI",
+                        "data" : {
+                           "__typename" : "Chapter",
+                           "audiobookV2" : {
+                              "__typename" : "AudiobookResponseWrapper",
+                              "data" : {
+                                 "__typename" : "Audiobook",
+                                 "coverArt" : {
+                                    "sources" : [
+                                       {
+                                          "height" : 64,
+                                          "url" : "https://i.scdn.co/image/ab6766630000703baafc952daf0a8d1249d468d1",
+                                          "width" : 64
+                                       },
+                                       {
+                                          "height" : 300,
+                                          "url" : "https://i.scdn.co/image/ab6766630000db5baafc952daf0a8d1249d468d1",
+                                          "width" : 300
+                                       },
+                                       {
+                                          "height" : 640,
+                                          "url" : "https://i.scdn.co/image/ab676663000022a8aafc952daf0a8d1249d468d1",
+                                          "width" : 640
+                                       }
+                                    ]
+                                 },
+                                 "name" : "Wahre Verbrechen Extrem 1: Die krassesten True Crime-Fälle aus London, Wien und Budapest",
+                                 "showTypes" : [],
+                                 "trailerV2" : {
+                                    "data" : {
+                                       "__typename" : "Chapter",
+                                       "uri" : "spotify:episode:77E22KTbLM7qA6yMC1oXwj"
+                                    }
+                                 },
+                                 "uri" : "spotify:show:01DbzJA9caChG3VDgVmnFc"
+                              }
+                           },
+                           "contentRating" : {
+                              "label" : "NONE"
+                           },
+                           "coverArt" : {
+                              "sources" : [
+                                 {
+                                    "height" : 64,
+                                    "url" : "https://i.scdn.co/image/ab6766630000703baafc952daf0a8d1249d468d1",
+                                    "width" : 64
+                                 },
+                                 {
+                                    "height" : 300,
+                                    "url" : "https://i.scdn.co/image/ab6766630000db5baafc952daf0a8d1249d468d1",
+                                    "width" : 300
+                                 },
+                                 {
+                                    "height" : 640,
+                                    "url" : "https://i.scdn.co/image/ab676663000022a8aafc952daf0a8d1249d468d1",
+                                    "width" : 640
+                                 }
+                              ]
+                           },
+                           "description" : "",
+                           "duration" : {
+                              "totalMilliseconds" : 17159
+                           },
+                           "id" : "73E4okoX6R2PAagxONnSWI",
+                           "mediaTypes" : [
+                              "AUDIO"
+                           ],
+                           "name" : "Track 1",
+                           "playability" : {
+                              "playable" : true,
+                              "reason" : "PLAYABLE",
+                              "unplayabilityReasons" : []
+                           },
+                           "restrictions" : {
+                              "paywallContent" : true
+                           },
+                           "uri" : "spotify:episode:73E4okoX6R2PAagxONnSWI"
+                        }
+                     },
+                     "uid" : "f77b19354647a4fb9f47"
+                  },
+                  {
+                     "__typename" : "ContextChapterV2",
+                     "entity" : {
+                        "__typename" : "ChapterResponseWrapper",
+                        "_uri" : "spotify:episode:7HE4p2ORiBmzsrnXI1npCJ",
+                        "data" : {
+                           "__typename" : "Chapter",
+                           "audiobookV2" : {
+                              "__typename" : "AudiobookResponseWrapper",
+                              "data" : {
+                                 "__typename" : "Audiobook",
+                                 "coverArt" : {
+                                    "sources" : [
+                                       {
+                                          "height" : 64,
+                                          "url" : "https://i.scdn.co/image/ab6766630000703baafc952daf0a8d1249d468d1",
+                                          "width" : 64
+                                       },
+                                       {
+                                          "height" : 300,
+                                          "url" : "https://i.scdn.co/image/ab6766630000db5baafc952daf0a8d1249d468d1",
+                                          "width" : 300
+                                       },
+                                       {
+                                          "height" : 640,
+                                          "url" : "https://i.scdn.co/image/ab676663000022a8aafc952daf0a8d1249d468d1",
+                                          "width" : 640
+                                       }
+                                    ]
+                                 },
+                                 "name" : "Wahre Verbrechen Extrem 1: Die krassesten True Crime-Fälle aus London, Wien und Budapest",
+                                 "showTypes" : [],
+                                 "trailerV2" : {
+                                    "data" : {
+                                       "__typename" : "Chapter",
+                                       "uri" : "spotify:episode:77E22KTbLM7qA6yMC1oXwj"
+                                    }
+                                 },
+                                 "uri" : "spotify:show:01DbzJA9caChG3VDgVmnFc"
+                              }
+                           },
+                           "contentRating" : {
+                              "label" : "NONE"
+                           },
+                           "coverArt" : {
+                              "sources" : [
+                                 {
+                                    "height" : 64,
+                                    "url" : "https://i.scdn.co/image/ab6766630000703baafc952daf0a8d1249d468d1",
+                                    "width" : 64
+                                 },
+                                 {
+                                    "height" : 300,
+                                    "url" : "https://i.scdn.co/image/ab6766630000db5baafc952daf0a8d1249d468d1",
+                                    "width" : 300
+                                 },
+                                 {
+                                    "height" : 640,
+                                    "url" : "https://i.scdn.co/image/ab676663000022a8aafc952daf0a8d1249d468d1",
+                                    "width" : 640
+                                 }
+                              ]
+                           },
+                           "description" : "",
+                           "duration" : {
+                              "totalMilliseconds" : 816684
+                           },
+                           "id" : "7HE4p2ORiBmzsrnXI1npCJ",
+                           "mediaTypes" : [
+                              "AUDIO"
+                           ],
+                           "name" : "Track 2",
+                           "playability" : {
+                              "playable" : true,
+                              "reason" : "PLAYABLE",
+                              "unplayabilityReasons" : []
+                           },
+                           "restrictions" : {
+                              "paywallContent" : true
+                           },
+                           "uri" : "spotify:episode:7HE4p2ORiBmzsrnXI1npCJ"
+                        }
+                     },
+                     "uid" : "f7e4899cdd53aa0a9d20"
+                  },
+                  {
+                     "__typename" : "ContextChapterV2",
+                     "entity" : {
+                        "__typename" : "ChapterResponseWrapper",
+                        "_uri" : "spotify:episode:6BePgOeNY4PCF4jt3FO5SI",
+                        "data" : {
+                           "__typename" : "Chapter",
+                           "audiobookV2" : {
+                              "__typename" : "AudiobookResponseWrapper",
+                              "data" : {
+                                 "__typename" : "Audiobook",
+                                 "coverArt" : {
+                                    "sources" : [
+                                       {
+                                          "height" : 64,
+                                          "url" : "https://i.scdn.co/image/ab6766630000703baafc952daf0a8d1249d468d1",
+                                          "width" : 64
+                                       },
+                                       {
+                                          "height" : 300,
+                                          "url" : "https://i.scdn.co/image/ab6766630000db5baafc952daf0a8d1249d468d1",
+                                          "width" : 300
+                                       },
+                                       {
+                                          "height" : 640,
+                                          "url" : "https://i.scdn.co/image/ab676663000022a8aafc952daf0a8d1249d468d1",
+                                          "width" : 640
+                                       }
+                                    ]
+                                 },
+                                 "name" : "Wahre Verbrechen Extrem 1: Die krassesten True Crime-Fälle aus London, Wien und Budapest",
+                                 "showTypes" : [],
+                                 "trailerV2" : {
+                                    "data" : {
+                                       "__typename" : "Chapter",
+                                       "uri" : "spotify:episode:77E22KTbLM7qA6yMC1oXwj"
+                                    }
+                                 },
+                                 "uri" : "spotify:show:01DbzJA9caChG3VDgVmnFc"
+                              }
+                           },
+                           "contentRating" : {
+                              "label" : "NONE"
+                           },
+                           "coverArt" : {
+                              "sources" : [
+                                 {
+                                    "height" : 64,
+                                    "url" : "https://i.scdn.co/image/ab6766630000703baafc952daf0a8d1249d468d1",
+                                    "width" : 64
+                                 },
+                                 {
+                                    "height" : 300,
+                                    "url" : "https://i.scdn.co/image/ab6766630000db5baafc952daf0a8d1249d468d1",
+                                    "width" : 300
+                                 },
+                                 {
+                                    "height" : 640,
+                                    "url" : "https://i.scdn.co/image/ab676663000022a8aafc952daf0a8d1249d468d1",
+                                    "width" : 640
+                                 }
+                              ]
+                           },
+                           "description" : "",
+                           "duration" : {
+                              "totalMilliseconds" : 835965
+                           },
+                           "id" : "6BePgOeNY4PCF4jt3FO5SI",
+                           "mediaTypes" : [
+                              "AUDIO"
+                           ],
+                           "name" : "Track 3",
+                           "playability" : {
+                              "playable" : true,
+                              "reason" : "PLAYABLE",
+                              "unplayabilityReasons" : []
+                           },
+                           "restrictions" : {
+                              "paywallContent" : true
+                           },
+                           "uri" : "spotify:episode:6BePgOeNY4PCF4jt3FO5SI"
+                        }
+                     },
+                     "uid" : "f50d274a7ece2e526942"
+                  }
+               ],
+               "pagingInfo" : {
+                  "nextOffset" : null
+               },
+               "totalCount" : 16
+            },
+            "id" : "01DbzJA9caChG3VDgVmnFc",
+            "name" : "Wahre Verbrechen Extrem 1: Die krassesten True Crime-Fälle aus London, Wien und Budapest",
+            "uri" : "spotify:show:01DbzJA9caChG3VDgVmnFc"
+         }
+      }
+   },
+   "episode" : {
+      "data" : {
+         "episodeUnionV2" : {
+            "__typename" : "Episode",
+            "contentInformation" : null,
+            "contentRating" : {
+               "label" : "NONE"
+            },
+            "contents" : [],
+            "coverArt" : {
+               "sources" : [
+                  {
+                     "height" : 64,
+                     "url" : "https://i.scdn.co/image/ab6765630000f68d7604af618427789013e180aa",
+                     "width" : 64
+                  },
+                  {
+                     "height" : 300,
+                     "url" : "https://i.scdn.co/image/ab67656300005f1f7604af618427789013e180aa",
+                     "width" : 300
+                  },
+                  {
+                     "height" : 640,
+                     "url" : "https://i.scdn.co/image/ab6765630000ba8a7604af618427789013e180aa",
+                     "width" : 640
+                  }
+               ]
+            },
+            "creator" : null,
+            "description" : "Es ist ein bisschen unheimlich, was hier passiert: Aus Annikas einst gegen erheblichen Widerstand durchgesetztem Mormon-",
+            "duration" : {
+               "totalMilliseconds" : 5173551
+            },
+            "gatedEntityRelations" : [],
+            "id" : "6hDIr2Ngy8ijkGk3o77Li2",
+            "mediaTypes" : [
+               "AUDIO"
+            ],
+            "name" : "Vier Engel für Cartier (SLOMW S05E04)",
+            "playability" : {
+               "playable" : true,
+               "reason" : "PLAYABLE",
+               "unplayabilityReasons" : []
+            },
+            "podcastV2" : {
+               "data" : {
+                  "__typename" : "Podcast",
+                  "coverArt" : {
+                     "sources" : [
+                        {
+                           "height" : 64,
+                           "url" : "https://i.scdn.co/image/ab6765630000f68d7604af618427789013e180aa",
+                           "width" : 64
+                        },
+                        {
+                           "height" : 300,
+                           "url" : "https://i.scdn.co/image/ab67656300005f1f7604af618427789013e180aa",
+                           "width" : 300
+                        },
+                        {
+                           "height" : 640,
+                           "url" : "https://i.scdn.co/image/ab6765630000ba8a7604af618427789013e180aa",
+                           "width" : 640
+                        }
+                     ]
+                  },
+                  "name" : "Der Bätchcast",
+                  "showTypes" : [],
+                  "trailerV2" : null,
+                  "uri" : "spotify:show:1SzqOFS7bQ61WHixnftnYH"
+               }
+            },
+            "releaseDate" : {
+               "isoString" : "2026-10-27T09:02:00Z",
+               "precision" : "MINUTE"
+            },
+            "restrictions" : {
+               "paywallContent" : false
+            },
+            "segments" : {
+               "segments" : {
+                  "totalCount" : 0
+               }
+            },
+            "type" : "PODCAST_EPISODE",
+            "uri" : "spotify:episode:6hDIr2Ngy8ijkGk3o77Li2"
+         }
+      }
+   },
+   "episodes_p1" : {
+      "data" : {
+         "podcastUnionV2" : {
+            "__typename" : "Podcast",
+            "episodesV2" : {
+               "__typename" : "ContextEpisodePage",
+               "items" : [
+                  {
+                     "entity" : {
+                        "_uri" : "spotify:episode:6hDIr2Ngy8ijkGk3o77Li2",
+                        "data" : {
+                           "__typename" : "Episode",
+                           "contentInformation" : null,
+                           "contentRating" : {
+                              "label" : "NONE"
+                           },
+                           "contents" : [],
+                           "coverArt" : {
+                              "sources" : [
+                                 {
+                                    "height" : 64,
+                                    "url" : "https://i.scdn.co/image/ab6765630000f68d7604af618427789013e180aa",
+                                    "width" : 64
+                                 },
+                                 {
+                                    "height" : 300,
+                                    "url" : "https://i.scdn.co/image/ab67656300005f1f7604af618427789013e180aa",
+                                    "width" : 300
+                                 },
+                                 {
+                                    "height" : 640,
+                                    "url" : "https://i.scdn.co/image/ab6765630000ba8a7604af618427789013e180aa",
+                                    "width" : 640
+                                 }
+                              ]
+                           },
+                           "creator" : null,
+                           "description" : "Es ist ein bisschen unheimlich, was hier passiert: Aus Annikas einst gegen erheblichen Widerstand durchgesetztem Mormon-",
+                           "duration" : {
+                              "totalMilliseconds" : 5173551
+                           },
+                           "gatedEntityRelations" : [],
+                           "id" : "6hDIr2Ngy8ijkGk3o77Li2",
+                           "mediaTypes" : [
+                              "AUDIO"
+                           ],
+                           "name" : "Vier Engel für Cartier (SLOMW S05E04)",
+                           "playability" : {
+                              "playable" : true,
+                              "reason" : "PLAYABLE",
+                              "unplayabilityReasons" : []
+                           },
+                           "podcastV2" : {
+                              "data" : {
+                                 "__typename" : "Podcast",
+                                 "coverArt" : {
+                                    "sources" : [
+                                       {
+                                          "height" : 64,
+                                          "url" : "https://i.scdn.co/image/ab6765630000f68d7604af618427789013e180aa",
+                                          "width" : 64
+                                       },
+                                       {
+                                          "height" : 300,
+                                          "url" : "https://i.scdn.co/image/ab67656300005f1f7604af618427789013e180aa",
+                                          "width" : 300
+                                       },
+                                       {
+                                          "height" : 640,
+                                          "url" : "https://i.scdn.co/image/ab6765630000ba8a7604af618427789013e180aa",
+                                          "width" : 640
+                                       }
+                                    ]
+                                 },
+                                 "name" : "Der Bätchcast",
+                                 "showTypes" : [],
+                                 "trailerV2" : null,
+                                 "uri" : "spotify:show:1SzqOFS7bQ61WHixnftnYH"
+                              }
+                           },
+                           "releaseDate" : {
+                              "isoString" : "2026-10-27T09:02:00Z",
+                              "precision" : "MINUTE"
+                           },
+                           "restrictions" : {
+                              "paywallContent" : false
+                           },
+                           "segments" : {
+                              "segments" : {
+                                 "totalCount" : 0
+                              }
+                           },
+                           "type" : "PODCAST_EPISODE",
+                           "uri" : "spotify:episode:6hDIr2Ngy8ijkGk3o77Li2"
+                        }
+                     },
+                     "uid" : "977cb21dace0745428aa"
+                  },
+                  {
+                     "entity" : {
+                        "_uri" : "spotify:episode:7j6ltZDsIkc8NwdMyKi5TZ",
+                        "data" : {
+                           "__typename" : "Episode",
+                           "contentInformation" : null,
+                           "contentRating" : {
+                              "label" : "NONE"
+                           },
+                           "contents" : [],
+                           "coverArt" : {
+                              "sources" : [
+                                 {
+                                    "height" : 64,
+                                    "url" : "https://i.scdn.co/image/ab6765630000f68d7604af618427789013e180aa",
+                                    "width" : 64
+                                 },
+                                 {
+                                    "height" : 300,
+                                    "url" : "https://i.scdn.co/image/ab67656300005f1f7604af618427789013e180aa",
+                                    "width" : 300
+                                 },
+                                 {
+                                    "height" : 640,
+                                    "url" : "https://i.scdn.co/image/ab6765630000ba8a7604af618427789013e180aa",
+                                    "width" : 640
+                                 }
+                              ]
+                           },
+                           "creator" : null,
+                           "description" : "Annika hat einen gemeinsamen Live-Show-Ausflug einmal mehr für eine verpflichtende Fortbildung in ihrem persönlichen Spe",
+                           "duration" : {
+                              "totalMilliseconds" : 5282560
+                           },
+                           "gatedEntityRelations" : [],
+                           "id" : "7j6ltZDsIkc8NwdMyKi5TZ",
+                           "mediaTypes" : [
+                              "AUDIO"
+                           ],
+                           "name" : "Pleiten, Pech und Wannen (SLOMW S05E02-03)",
+                           "playability" : {
+                              "playable" : true,
+                              "reason" : "PLAYABLE",
+                              "unplayabilityReasons" : []
+                           },
+                           "podcastV2" : {
+                              "data" : {
+                                 "__typename" : "Podcast",
+                                 "coverArt" : {
+                                    "sources" : [
+                                       {
+                                          "height" : 64,
+                                          "url" : "https://i.scdn.co/image/ab6765630000f68d7604af618427789013e180aa",
+                                          "width" : 64
+                                       },
+                                       {
+                                          "height" : 300,
+                                          "url" : "https://i.scdn.co/image/ab67656300005f1f7604af618427789013e180aa",
+                                          "width" : 300
+                                       },
+                                       {
+                                          "height" : 640,
+                                          "url" : "https://i.scdn.co/image/ab6765630000ba8a7604af618427789013e180aa",
+                                          "width" : 640
+                                       }
+                                    ]
+                                 },
+                                 "name" : "Der Bätchcast",
+                                 "showTypes" : [],
+                                 "trailerV2" : null,
+                                 "uri" : "spotify:show:1SzqOFS7bQ61WHixnftnYH"
+                              }
+                           },
+                           "releaseDate" : {
+                              "isoString" : "2026-10-20T11:48:00Z",
+                              "precision" : "MINUTE"
+                           },
+                           "restrictions" : {
+                              "paywallContent" : false
+                           },
+                           "segments" : {
+                              "segments" : {
+                                 "totalCount" : 0
+                              }
+                           },
+                           "type" : "PODCAST_EPISODE",
+                           "uri" : "spotify:episode:7j6ltZDsIkc8NwdMyKi5TZ"
+                        }
+                     },
+                     "uid" : "4c8a3e9c264a569a6956"
+                  },
+                  {
+                     "entity" : {
+                        "_uri" : "spotify:episode:4fyc3ndSx2g9zKaebGGfTB",
+                        "data" : {
+                           "__typename" : "Episode",
+                           "contentInformation" : null,
+                           "contentRating" : {
+                              "label" : "NONE"
+                           },
+                           "contents" : [],
+                           "coverArt" : {
+                              "sources" : [
+                                 {
+                                    "height" : 64,
+                                    "url" : "https://i.scdn.co/image/ab6765630000f68d7604af618427789013e180aa",
+                                    "width" : 64
+                                 },
+                                 {
+                                    "height" : 300,
+                                    "url" : "https://i.scdn.co/image/ab67656300005f1f7604af618427789013e180aa",
+                                    "width" : 300
+                                 },
+                                 {
+                                    "height" : 640,
+                                    "url" : "https://i.scdn.co/image/ab6765630000ba8a7604af618427789013e180aa",
+                                    "width" : 640
+                                 }
+                              ]
+                           },
+                           "creator" : null,
+                           "description" : "Annika und Anja wohnen dem großen Finale der Paul-Janke-Vintage-Staffel bei, das sich mit geradezu entwaffnender Ereigni",
+                           "duration" : {
+                              "totalMilliseconds" : 4444578
+                           },
+                           "gatedEntityRelations" : [],
+                           "id" : "4fyc3ndSx2g9zKaebGGfTB",
+                           "mediaTypes" : [
+                              "AUDIO"
+                           ],
+                           "name" : "BäVi: Und plötzlich hast du einen Paul (Der Bachelor S02E08)",
+                           "playability" : {
+                              "playable" : true,
+                              "reason" : "PLAYABLE",
+                              "unplayabilityReasons" : []
+                           },
+                           "podcastV2" : {
+                              "data" : {
+                                 "__typename" : "Podcast",
+                                 "coverArt" : {
+                                    "sources" : [
+                                       {
+                                          "height" : 64,
+                                          "url" : "https://i.scdn.co/image/ab6765630000f68d7604af618427789013e180aa",
+                                          "width" : 64
+                                       },
+                                       {
+                                          "height" : 300,
+                                          "url" : "https://i.scdn.co/image/ab67656300005f1f7604af618427789013e180aa",
+                                          "width" : 300
+                                       },
+                                       {
+                                          "height" : 640,
+                                          "url" : "https://i.scdn.co/image/ab6765630000ba8a7604af618427789013e180aa",
+                                          "width" : 640
+                                       }
+                                    ]
+                                 },
+                                 "name" : "Der Bätchcast",
+                                 "showTypes" : [],
+                                 "trailerV2" : null,
+                                 "uri" : "spotify:show:1SzqOFS7bQ61WHixnftnYH"
+                              }
+                           },
+                           "releaseDate" : {
+                              "isoString" : "2026-10-06T12:59:00Z",
+                              "precision" : "MINUTE"
+                           },
+                           "restrictions" : {
+                              "paywallContent" : false
+                           },
+                           "segments" : {
+                              "segments" : {
+                                 "totalCount" : 0
+                              }
+                           },
+                           "type" : "PODCAST_EPISODE",
+                           "uri" : "spotify:episode:4fyc3ndSx2g9zKaebGGfTB"
+                        }
+                     },
+                     "uid" : "9d4785f01bcf5d639039"
+                  }
+               ],
+               "pagingInfo" : {
+                  "nextOffset" : 50
+               },
+               "totalCount" : 56
+            },
+            "id" : "1SzqOFS7bQ61WHixnftnYH",
+            "name" : "Der Bätchcast",
+            "uri" : "spotify:show:1SzqOFS7bQ61WHixnftnYH"
+         }
+      }
+   },
+   "episodes_p2" : {
+      "data" : {
+         "podcastUnionV2" : {
+            "__typename" : "Podcast",
+            "episodesV2" : {
+               "__typename" : "ContextEpisodePage",
+               "items" : [
+                  {
+                     "entity" : {
+                        "_uri" : "spotify:episode:3YUlRzLXnJ5LCjp6EuThk0",
+                        "data" : {
+                           "__typename" : "Episode",
+                           "contentInformation" : null,
+                           "contentRating" : {
+                              "label" : "NONE"
+                           },
+                           "contents" : [],
+                           "coverArt" : {
+                              "sources" : [
+                                 {
+                                    "height" : 64,
+                                    "url" : "https://i.scdn.co/image/ab6765630000f68d7604af618427789013e180aa",
+                                    "width" : 64
+                                 },
+                                 {
+                                    "height" : 300,
+                                    "url" : "https://i.scdn.co/image/ab67656300005f1f7604af618427789013e180aa",
+                                    "width" : 300
+                                 },
+                                 {
+                                    "height" : 640,
+                                    "url" : "https://i.scdn.co/image/ab6765630000ba8a7604af618427789013e180aa",
+                                    "width" : 640
+                                 }
+                              ]
+                           },
+                           "creator" : null,
+                           "description" : "Zach und die Seinen sind auf ihrer internationalen Balzrundreise in London gelandet und bestrafen uns dafür mit unversch",
+                           "duration" : {
+                              "totalMilliseconds" : 7521436
+                           },
+                           "gatedEntityRelations" : [],
+                           "id" : "3YUlRzLXnJ5LCjp6EuThk0",
+                           "mediaTypes" : [
+                              "AUDIO"
+                           ],
+                           "name" : "Sick-a-Zach, ah!",
+                           "playability" : {
+                              "playable" : true,
+                              "reason" : "PLAYABLE",
+                              "unplayabilityReasons" : []
+                           },
+                           "podcastV2" : {
+                              "data" : {
+                                 "__typename" : "Podcast",
+                                 "coverArt" : {
+                                    "sources" : [
+                                       {
+                                          "height" : 64,
+                                          "url" : "https://i.scdn.co/image/ab6765630000f68d7604af618427789013e180aa",
+                                          "width" : 64
+                                       },
+                                       {
+                                          "height" : 300,
+                                          "url" : "https://i.scdn.co/image/ab67656300005f1f7604af618427789013e180aa",
+                                          "width" : 300
+                                       },
+                                       {
+                                          "height" : 640,
+                                          "url" : "https://i.scdn.co/image/ab6765630000ba8a7604af618427789013e180aa",
+                                          "width" : 640
+                                       }
+                                    ]
+                                 },
+                                 "name" : "Der Bätchcast",
+                                 "showTypes" : [],
+                                 "trailerV2" : null,
+                                 "uri" : "spotify:show:1SzqOFS7bQ61WHixnftnYH"
+                              }
+                           },
+                           "releaseDate" : {
+                              "isoString" : "2023-03-28T13:37:00Z",
+                              "precision" : "MINUTE"
+                           },
+                           "restrictions" : {
+                              "paywallContent" : false
+                           },
+                           "segments" : {
+                              "segments" : {
+                                 "totalCount" : 0
+                              }
+                           },
+                           "type" : "PODCAST_EPISODE",
+                           "uri" : "spotify:episode:3YUlRzLXnJ5LCjp6EuThk0"
+                        }
+                     },
+                     "uid" : "5c6fbe5fa4ff59e20fdf"
+                  },
+                  {
+                     "entity" : {
+                        "_uri" : "spotify:episode:0Ksy7wa7IjhIruO4m7JcFz",
+                        "data" : {
+                           "__typename" : "Episode",
+                           "contentInformation" : null,
+                           "contentRating" : {
+                              "label" : "NONE"
+                           },
+                           "contents" : [],
+                           "coverArt" : {
+                              "sources" : [
+                                 {
+                                    "height" : 64,
+                                    "url" : "https://i.scdn.co/image/ab6765630000f68d7604af618427789013e180aa",
+                                    "width" : 64
+                                 },
+                                 {
+                                    "height" : 300,
+                                    "url" : "https://i.scdn.co/image/ab67656300005f1f7604af618427789013e180aa",
+                                    "width" : 300
+                                 },
+                                 {
+                                    "height" : 640,
+                                    "url" : "https://i.scdn.co/image/ab6765630000ba8a7604af618427789013e180aa",
+                                    "width" : 640
+                                 }
+                              ]
+                           },
+                           "creator" : null,
+                           "description" : "Trigger-Warnung: emotionaler und körperlicher Missbrauch in partnerschaftlichen Beziehungen, RassimusDer internationale ",
+                           "duration" : {
+                              "totalMilliseconds" : 6988956
+                           },
+                           "gatedEntityRelations" : [],
+                           "id" : "0Ksy7wa7IjhIruO4m7JcFz",
+                           "mediaTypes" : [
+                              "AUDIO"
+                           ],
+                           "name" : "Bahama Mamas Drama",
+                           "playability" : {
+                              "playable" : true,
+                              "reason" : "PLAYABLE",
+                              "unplayabilityReasons" : []
+                           },
+                           "podcastV2" : {
+                              "data" : {
+                                 "__typename" : "Podcast",
+                                 "coverArt" : {
+                                    "sources" : [
+                                       {
+                                          "height" : 64,
+                                          "url" : "https://i.scdn.co/image/ab6765630000f68d7604af618427789013e180aa",
+                                          "width" : 64
+                                       },
+                                       {
+                                          "height" : 300,
+                                          "url" : "https://i.scdn.co/image/ab67656300005f1f7604af618427789013e180aa",
+                                          "width" : 300
+                                       },
+                                       {
+                                          "height" : 640,
+                                          "url" : "https://i.scdn.co/image/ab6765630000ba8a7604af618427789013e180aa",
+                                          "width" : 640
+                                       }
+                                    ]
+                                 },
+                                 "name" : "Der Bätchcast",
+                                 "showTypes" : [],
+                                 "trailerV2" : null,
+                                 "uri" : "spotify:show:1SzqOFS7bQ61WHixnftnYH"
+                              }
+                           },
+                           "releaseDate" : {
+                              "isoString" : "2023-03-16T21:16:00Z",
+                              "precision" : "MINUTE"
+                           },
+                           "restrictions" : {
+                              "paywallContent" : false
+                           },
+                           "segments" : {
+                              "segments" : {
+                                 "totalCount" : 0
+                              }
+                           },
+                           "type" : "PODCAST_EPISODE",
+                           "uri" : "spotify:episode:0Ksy7wa7IjhIruO4m7JcFz"
+                        }
+                     },
+                     "uid" : "9d8f4e5200881d8ba59b"
+                  },
+                  {
+                     "entity" : {
+                        "_uri" : "spotify:episode:7mc3ZcPGZG5Ys2QpzhS7M0",
+                        "data" : {
+                           "__typename" : "Episode",
+                           "contentInformation" : null,
+                           "contentRating" : {
+                              "label" : "NONE"
+                           },
+                           "contents" : [],
+                           "coverArt" : {
+                              "sources" : [
+                                 {
+                                    "height" : 64,
+                                    "url" : "https://i.scdn.co/image/ab6765630000f68d7604af618427789013e180aa",
+                                    "width" : 64
+                                 },
+                                 {
+                                    "height" : 300,
+                                    "url" : "https://i.scdn.co/image/ab67656300005f1f7604af618427789013e180aa",
+                                    "width" : 300
+                                 },
+                                 {
+                                    "height" : 640,
+                                    "url" : "https://i.scdn.co/image/ab6765630000ba8a7604af618427789013e180aa",
+                                    "width" : 640
+                                 }
+                              ]
+                           },
+                           "creator" : null,
+                           "description" : "Nachdem ein spektakulärer Infekt Annika erwischt hatte, sind wir wieder da - die Stimme kiekst und raspelt zwar noch, ab",
+                           "duration" : {
+                              "totalMilliseconds" : 7511797
+                           },
+                           "gatedEntityRelations" : [],
+                           "id" : "7mc3ZcPGZG5Ys2QpzhS7M0",
+                           "mediaTypes" : [
+                              "AUDIO"
+                           ],
+                           "name" : "We're back, Zach!",
+                           "playability" : {
+                              "playable" : true,
+                              "reason" : "PLAYABLE",
+                              "unplayabilityReasons" : []
+                           },
+                           "podcastV2" : {
+                              "data" : {
+                                 "__typename" : "Podcast",
+                                 "coverArt" : {
+                                    "sources" : [
+                                       {
+                                          "height" : 64,
+                                          "url" : "https://i.scdn.co/image/ab6765630000f68d7604af618427789013e180aa",
+                                          "width" : 64
+                                       },
+                                       {
+                                          "height" : 300,
+                                          "url" : "https://i.scdn.co/image/ab67656300005f1f7604af618427789013e180aa",
+                                          "width" : 300
+                                       },
+                                       {
+                                          "height" : 640,
+                                          "url" : "https://i.scdn.co/image/ab6765630000ba8a7604af618427789013e180aa",
+                                          "width" : 640
+                                       }
+                                    ]
+                                 },
+                                 "name" : "Der Bätchcast",
+                                 "showTypes" : [],
+                                 "trailerV2" : null,
+                                 "uri" : "spotify:show:1SzqOFS7bQ61WHixnftnYH"
+                              }
+                           },
+                           "releaseDate" : {
+                              "isoString" : "2023-03-11T20:38:00Z",
+                              "precision" : "MINUTE"
+                           },
+                           "restrictions" : {
+                              "paywallContent" : false
+                           },
+                           "segments" : {
+                              "segments" : {
+                                 "totalCount" : 0
+                              }
+                           },
+                           "type" : "PODCAST_EPISODE",
+                           "uri" : "spotify:episode:7mc3ZcPGZG5Ys2QpzhS7M0"
+                        }
+                     },
+                     "uid" : "82992ac2d67ed955c804"
+                  },
+                  {
+                     "entity" : {
+                        "_uri" : "spotify:episode:3D3VO96TcmxCa6a6v3I4Pe",
+                        "data" : {
+                           "__typename" : "Episode",
+                           "contentInformation" : null,
+                           "contentRating" : {
+                              "label" : "NONE"
+                           },
+                           "contents" : [],
+                           "coverArt" : {
+                              "sources" : [
+                                 {
+                                    "height" : 64,
+                                    "url" : "https://i.scdn.co/image/ab6765630000f68d7604af618427789013e180aa",
+                                    "width" : 64
+                                 },
+                                 {
+                                    "height" : 300,
+                                    "url" : "https://i.scdn.co/image/ab67656300005f1f7604af618427789013e180aa",
+                                    "width" : 300
+                                 },
+                                 {
+                                    "height" : 640,
+                                    "url" : "https://i.scdn.co/image/ab6765630000ba8a7604af618427789013e180aa",
+                                    "width" : 640
+                                 }
+                              ]
+                           },
+                           "creator" : null,
+                           "description" : "Anja Rützel und Annika Brockschmidt verarbeiten gemeinsam Episode 2 der 27. Staffel des Bachelors. Die Kandidatinnen müs",
+                           "duration" : {
+                              "totalMilliseconds" : 7178449
+                           },
+                           "gatedEntityRelations" : [],
+                           "id" : "3D3VO96TcmxCa6a6v3I4Pe",
+                           "mediaTypes" : [
+                              "AUDIO"
+                           ],
+                           "name" : "Bad Bätch Energy",
+                           "playability" : {
+                              "playable" : true,
+                              "reason" : "PLAYABLE",
+                              "unplayabilityReasons" : []
+                           },
+                           "podcastV2" : {
+                              "data" : {
+                                 "__typename" : "Podcast",
+                                 "coverArt" : {
+                                    "sources" : [
+                                       {
+                                          "height" : 64,
+                                          "url" : "https://i.scdn.co/image/ab6765630000f68d7604af618427789013e180aa",
+                                          "width" : 64
+                                       },
+                                       {
+                                          "height" : 300,
+                                          "url" : "https://i.scdn.co/image/ab67656300005f1f7604af618427789013e180aa",
+                                          "width" : 300
+                                       },
+                                       {
+                                          "height" : 640,
+                                          "url" : "https://i.scdn.co/image/ab6765630000ba8a7604af618427789013e180aa",
+                                          "width" : 640
+                                       }
+                                    ]
+                                 },
+                                 "name" : "Der Bätchcast",
+                                 "showTypes" : [],
+                                 "trailerV2" : null,
+                                 "uri" : "spotify:show:1SzqOFS7bQ61WHixnftnYH"
+                              }
+                           },
+                           "releaseDate" : {
+                              "isoString" : "2023-02-17T20:00:00Z",
+                              "precision" : "MINUTE"
+                           },
+                           "restrictions" : {
+                              "paywallContent" : false
+                           },
+                           "segments" : {
+                              "segments" : {
+                                 "totalCount" : 0
+                              }
+                           },
+                           "type" : "PODCAST_EPISODE",
+                           "uri" : "spotify:episode:3D3VO96TcmxCa6a6v3I4Pe"
+                        }
+                     },
+                     "uid" : "090a8f8e3a62c45a39a6"
+                  },
+                  {
+                     "entity" : {
+                        "_uri" : "spotify:episode:6tFk7VD304I7fQCu7rFmZA",
+                        "data" : {
+                           "__typename" : "Episode",
+                           "contentInformation" : null,
+                           "contentRating" : {
+                              "label" : "NONE"
+                           },
+                           "contents" : [],
+                           "coverArt" : {
+                              "sources" : [
+                                 {
+                                    "height" : 64,
+                                    "url" : "https://i.scdn.co/image/ab6765630000f68d7604af618427789013e180aa",
+                                    "width" : 64
+                                 },
+                                 {
+                                    "height" : 300,
+                                    "url" : "https://i.scdn.co/image/ab67656300005f1f7604af618427789013e180aa",
+                                    "width" : 300
+                                 },
+                                 {
+                                    "height" : 640,
+                                    "url" : "https://i.scdn.co/image/ab6765630000ba8a7604af618427789013e180aa",
+                                    "width" : 640
+                                 }
+                              ]
+                           },
+                           "creator" : null,
+                           "description" : "Es geht los! Staffel 27 hat begonnen, und der Preis ist ein unheimlich langweiliger Weißer Mann. The bar is in hell, wie",
+                           "duration" : {
+                              "totalMilliseconds" : 6393443
+                           },
+                           "gatedEntityRelations" : [],
+                           "id" : "6tFk7VD304I7fQCu7rFmZA",
+                           "mediaTypes" : [
+                              "AUDIO"
+                           ],
+                           "name" : "Zach the Snack",
+                           "playability" : {
+                              "playable" : true,
+                              "reason" : "PLAYABLE",
+                              "unplayabilityReasons" : []
+                           },
+                           "podcastV2" : {
+                              "data" : {
+                                 "__typename" : "Podcast",
+                                 "coverArt" : {
+                                    "sources" : [
+                                       {
+                                          "height" : 64,
+                                          "url" : "https://i.scdn.co/image/ab6765630000f68d7604af618427789013e180aa",
+                                          "width" : 64
+                                       },
+                                       {
+                                          "height" : 300,
+                                          "url" : "https://i.scdn.co/image/ab67656300005f1f7604af618427789013e180aa",
+                                          "width" : 300
+                                       },
+                                       {
+                                          "height" : 640,
+                                          "url" : "https://i.scdn.co/image/ab6765630000ba8a7604af618427789013e180aa",
+                                          "width" : 640
+                                       }
+                                    ]
+                                 },
+                                 "name" : "Der Bätchcast",
+                                 "showTypes" : [],
+                                 "trailerV2" : null,
+                                 "uri" : "spotify:show:1SzqOFS7bQ61WHixnftnYH"
+                              }
+                           },
+                           "releaseDate" : {
+                              "isoString" : "2023-02-09T21:36:00Z",
+                              "precision" : "MINUTE"
+                           },
+                           "restrictions" : {
+                              "paywallContent" : false
+                           },
+                           "segments" : {
+                              "segments" : {
+                                 "totalCount" : 0
+                              }
+                           },
+                           "type" : "PODCAST_EPISODE",
+                           "uri" : "spotify:episode:6tFk7VD304I7fQCu7rFmZA"
+                        }
+                     },
+                     "uid" : "8604609b4f9dd6ef7a67"
+                  },
+                  {
+                     "entity" : {
+                        "_uri" : "spotify:episode:4Qm6KWJjbB6Qj0WZIa803W",
+                        "data" : {
+                           "__typename" : "Episode",
+                           "contentInformation" : null,
+                           "contentRating" : {
+                              "label" : "NONE"
+                           },
+                           "contents" : [],
+                           "coverArt" : {
+                              "sources" : [
+                                 {
+                                    "height" : 64,
+                                    "url" : "https://i.scdn.co/image/ab6765630000f68d665f8d82ef8f44a986425468",
+                                    "width" : 64
+                                 },
+                                 {
+                                    "height" : 300,
+                                    "url" : "https://i.scdn.co/image/ab67656300005f1f665f8d82ef8f44a986425468",
+                                    "width" : 300
+                                 },
+                                 {
+                                    "height" : 640,
+                                    "url" : "https://i.scdn.co/image/ab6765630000ba8a665f8d82ef8f44a986425468",
+                                    "width" : 640
+                                 }
+                              ]
+                           },
+                           "creator" : null,
+                           "description" : "Willkommen beim Bätchcast - dem Podcast, in dem wir den Bachelor schauen, damit ihr es nicht müsst! Anja Rützel und Anni",
+                           "duration" : {
+                              "totalMilliseconds" : 3572401
+                           },
+                           "gatedEntityRelations" : [],
+                           "id" : "4Qm6KWJjbB6Qj0WZIa803W",
+                           "mediaTypes" : [
+                              "AUDIO"
+                           ],
+                           "name" : "Bachelor 101",
+                           "playability" : {
+                              "playable" : true,
+                              "reason" : "PLAYABLE",
+                              "unplayabilityReasons" : []
+                           },
+                           "podcastV2" : {
+                              "data" : {
+                                 "__typename" : "Podcast",
+                                 "coverArt" : {
+                                    "sources" : [
+                                       {
+                                          "height" : 64,
+                                          "url" : "https://i.scdn.co/image/ab6765630000f68d7604af618427789013e180aa",
+                                          "width" : 64
+                                       },
+                                       {
+                                          "height" : 300,
+                                          "url" : "https://i.scdn.co/image/ab67656300005f1f7604af618427789013e180aa",
+                                          "width" : 300
+                                       },
+                                       {
+                                          "height" : 640,
+                                          "url" : "https://i.scdn.co/image/ab6765630000ba8a7604af618427789013e180aa",
+                                          "width" : 640
+                                       }
+                                    ]
+                                 },
+                                 "name" : "Der Bätchcast",
+                                 "showTypes" : [],
+                                 "trailerV2" : null,
+                                 "uri" : "spotify:show:1SzqOFS7bQ61WHixnftnYH"
+                              }
+                           },
+                           "releaseDate" : {
+                              "isoString" : "2023-02-02T23:03:00Z",
+                              "precision" : "MINUTE"
+                           },
+                           "restrictions" : {
+                              "paywallContent" : false
+                           },
+                           "segments" : {
+                              "segments" : {
+                                 "totalCount" : 0
+                              }
+                           },
+                           "type" : "PODCAST_EPISODE",
+                           "uri" : "spotify:episode:4Qm6KWJjbB6Qj0WZIa803W"
+                        }
+                     },
+                     "uid" : "a05ab18f58ce753fb044"
+                  }
+               ],
+               "pagingInfo" : {
+                  "nextOffset" : null
+               },
+               "totalCount" : 56
+            },
+            "id" : "1SzqOFS7bQ61WHixnftnYH",
+            "name" : "Der Bätchcast",
+            "uri" : "spotify:show:1SzqOFS7bQ61WHixnftnYH"
+         }
+      }
+   },
+   "notfound" : {
+      "data" : {
+         "episodeUnionV2" : {
+            "__typename" : "NotFound"
+         }
+      }
+   },
+   "show_audiobook" : {
+      "data" : {
+         "podcastUnionV2" : {
+            "__typename" : "Audiobook",
+            "authorsV2" : [
+               {
+                  "name" : "Alexander Dragone",
+                  "uri" : "spotify:author:2FJOEAcELe0BWUiX3Bv9Bf"
+               }
+            ],
+            "contentRatingV2" : null,
+            "coverArt" : {
+               "sources" : [
+                  {
+                     "height" : 64,
+                     "url" : "https://i.scdn.co/image/ab6766630000703baafc952daf0a8d1249d468d1",
+                     "width" : 64
+                  },
+                  {
+                     "height" : 300,
+                     "url" : "https://i.scdn.co/image/ab6766630000db5baafc952daf0a8d1249d468d1",
+                     "width" : 300
+                  },
+                  {
+                     "height" : 640,
+                     "url" : "https://i.scdn.co/image/ab676663000022a8aafc952daf0a8d1249d468d1",
+                     "width" : 640
+                  }
+               ]
+            },
+            "description" : "Author(s): Alexander Dragone\nNarrator(s): Ernst-Marcus Thomas\n\nTrue Crime Extrem: 13 schockierende Kriminalfälle aus all",
+            "duration" : {
+               "totalMilliseconds" : 8926567
+            },
+            "genres" : [
+               {
+                  "contextualName" : "True Crime",
+                  "depth" : 1,
+                  "destinationUri" : "",
+                  "id" : "a1a2ec20336a45e4ae7235638d111f2e",
+                  "parentId" : "",
+                  "shortName" : "True Crime"
+               }
+            ],
+            "id" : "01DbzJA9caChG3VDgVmnFc",
+            "isPreRelease" : false,
+            "mediaType" : "AUDIO",
+            "name" : "Wahre Verbrechen Extrem 1: Die krassesten True Crime-Fälle aus London, Wien und Budapest",
+            "narrators" : [
+               {
+                  "name" : "Ernst-Marcus Thomas"
+               }
+            ],
+            "playability" : {
+               "playable" : true,
+               "reason" : "PLAYABLE",
+               "unplayabilityReasons" : []
+            },
+            "preReleaseEndDateTime" : {
+               "isoString" : "2026-04-16T09:59:32Z"
+            },
+            "publishDate" : {
+               "isoString" : "2026-04-15T00:00:00Z"
+            },
+            "publisher" : {
+               "name" : "Alexander Dragone"
+            },
+            "showTypes" : [],
+            "trailerV2" : {
+               "_uri" : "spotify:episode:77E22KTbLM7qA6yMC1oXwj",
+               "data" : {
+                  "__typename" : "Chapter",
+                  "audiobookV2" : {
+                     "__typename" : "AudiobookResponseWrapper",
+                     "data" : {
+                        "__typename" : "Audiobook",
+                        "coverArt" : {
+                           "sources" : [
+                              {
+                                 "height" : 64,
+                                 "url" : "https://i.scdn.co/image/ab6766630000703baafc952daf0a8d1249d468d1",
+                                 "width" : 64
+                              },
+                              {
+                                 "height" : 300,
+                                 "url" : "https://i.scdn.co/image/ab6766630000db5baafc952daf0a8d1249d468d1",
+                                 "width" : 300
+                              },
+                              {
+                                 "height" : 640,
+                                 "url" : "https://i.scdn.co/image/ab676663000022a8aafc952daf0a8d1249d468d1",
+                                 "width" : 640
+                              }
+                           ]
+                        },
+                        "name" : "Wahre Verbrechen Extrem 1: Die krassesten True Crime-Fälle aus London, Wien und Budapest",
+                        "showTypes" : [],
+                        "trailerV2" : {
+                           "data" : {
+                              "__typename" : "Chapter",
+                              "uri" : "spotify:episode:77E22KTbLM7qA6yMC1oXwj"
+                           }
+                        },
+                        "uri" : "spotify:show:01DbzJA9caChG3VDgVmnFc"
+                     }
+                  },
+                  "contentRating" : {
+                     "label" : "NONE"
+                  },
+                  "coverArt" : {
+                     "sources" : [
+                        {
+                           "height" : 64,
+                           "url" : "https://i.scdn.co/image/ab6766630000703baafc952daf0a8d1249d468d1",
+                           "width" : 64
+                        },
+                        {
+                           "height" : 300,
+                           "url" : "https://i.scdn.co/image/ab6766630000db5baafc952daf0a8d1249d468d1",
+                           "width" : 300
+                        },
+                        {
+                           "height" : 640,
+                           "url" : "https://i.scdn.co/image/ab676663000022a8aafc952daf0a8d1249d468d1",
+                           "width" : 640
+                        }
+                     ]
+                  },
+                  "description" : "",
+                  "duration" : {
+                     "totalMilliseconds" : 300000
+                  },
+                  "id" : "77E22KTbLM7qA6yMC1oXwj",
+                  "mediaTypes" : [
+                     "AUDIO"
+                  ],
+                  "name" : "Wahre Verbrechen Extrem 1",
+                  "playability" : {
+                     "playable" : true,
+                     "reason" : "PLAYABLE",
+                     "unplayabilityReasons" : []
+                  },
+                  "restrictions" : {
+                     "paywallContent" : false
+                  },
+                  "uri" : "spotify:episode:77E22KTbLM7qA6yMC1oXwj"
+               }
+            },
+            "uri" : "spotify:show:01DbzJA9caChG3VDgVmnFc"
+         }
+      }
+   },
+   "show_podcast" : {
+      "data" : {
+         "podcastUnionV2" : {
+            "__typename" : "Podcast",
+            "consumptionOrderV2" : "EPISODIC",
+            "contentRatingV2" : {
+               "labels" : [
+                  "EXPLICIT"
+               ]
+            },
+            "contentType" : "CONTENT_TYPE_PODCAST",
+            "coverArt" : {
+               "sources" : [
+                  {
+                     "height" : 64,
+                     "url" : "https://i.scdn.co/image/ab6765630000f68d7604af618427789013e180aa",
+                     "width" : 64
+                  },
+                  {
+                     "height" : 300,
+                     "url" : "https://i.scdn.co/image/ab67656300005f1f7604af618427789013e180aa",
+                     "width" : 300
+                  },
+                  {
+                     "height" : 640,
+                     "url" : "https://i.scdn.co/image/ab6765630000ba8a7604af618427789013e180aa",
+                     "width" : 640
+                  }
+               ]
+            },
+            "description" : "Anja Rützel und Annika Brockschmidt schauen den (amerikanischen) \"Bachelor\", damit ihr es nicht müsst! Sie erklären dabe",
+            "episodesV2" : {
+               "__typename" : "ContextEpisodePage",
+               "items" : [
+                  {
+                     "entity" : {
+                        "__typename" : "EpisodeResponseWrapper",
+                        "data" : {
+                           "__typename" : "Episode",
+                           "creator" : null,
+                           "uri" : "spotify:episode:6hDIr2Ngy8ijkGk3o77Li2"
+                        }
+                     }
+                  }
+               ]
+            },
+            "gatedEntityRelations" : [],
+            "id" : "1SzqOFS7bQ61WHixnftnYH",
+            "mediaType" : "AUDIO",
+            "name" : "Der Bätchcast",
+            "playability" : {
+               "playable" : true,
+               "reason" : "PLAYABLE",
+               "unplayabilityReasons" : []
+            },
+            "publisher" : {
+               "name" : "Annika Brockschmidt und Anja Rützel"
+            },
+            "showTypes" : [],
+            "trailerV2" : null,
+            "uri" : "spotify:show:1SzqOFS7bQ61WHixnftnYH"
+         }
+      }
+   }
+}

@@ -5,6 +5,26 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.0.0-beta.4] - 2026-11-02
+
+**Installing this beta.** Same beta repository URL as before (`https://stiefenm.github.io/spoton/beta/repo.xml`); the Plugins page offers SpotOn 4.0.0beta4 as an update over 4.0.0beta3. Restart LMS after the update.
+
+### Fixed
+
+- Soloist: podcast episodes and audiobook chapters started from the Spotify app now play and show their title, show and cover. ([#167](https://github.com/stiefenm/spoton/issues/167))
+- Podcasts in the SpotOn menus show their names again: "My Podcasts" lists your followed shows by name, a show lists its episodes and pages through all of them, and an episode started from the menus, from Favorites or by URL shows its title, show and cover instead of "Loading...". An audiobook chapter opened by URL plays and shows its title, book and cover too; there is no audiobook menu in SpotOn yet. ([#167](https://github.com/stiefenm/spoton/issues/167))
+- Switching a player off after Spotify Connect no longer stops working after the first session since the server start. ([#151](https://github.com/stiefenm/spoton/issues/151))
+
+### Added
+
+- New player setting "Switch off after Connect": a player that was off before a Spotify Connect session switches off again about 30 seconds after the session ends. Off by default, set per player on the SpotOn Player settings page. ([#151](https://github.com/stiefenm/spoton/issues/151))
+
+### Changed
+
+- The power-off after Spotify Connect from 4.0.0-beta.1 ("Player power state restored after a Connect session ends") now needs the new setting; without it the player stays on. ([#151](https://github.com/stiefenm/spoton/issues/151))
+
+Everything else is as in 4.0.0-beta.3 below.
+
 ## [4.0.0-beta.3] - 2026-11-01
 
 **Installing this beta.** Same beta repository URL as before (`https://stiefenm.github.io/spoton/beta/repo.xml`); the Plugins page offers SpotOn 4.0.0beta3 as an update over 4.0.0beta2.2. Restart LMS after the update.

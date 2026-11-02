@@ -626,6 +626,19 @@ sub shutdown {
     delete $_byMac{ $self->mac } if defined $self->mac;
     $self->_shutDown(1);
 
+    # 79-70 BR4-03 (GH #151): a Connect session torn down with the daemon (crash/respawn, stop, backend switch,
+    # LMS shutdown) never sends `stop inactive`: the saved pre-Connect power state would survive into a later
+    # session of this player. Connect drops it (and any armed wait) without powering anything off. Only in connect
+    # mode: after a normal end (mode idle) the wait owns the state and may still run.
+    if ($self->mode eq 'connect') {
+        eval {
+            require Plugins::SpotOn::Connect;
+            my $pwClient = Slim::Player::Client::getClient($self->mac);
+            Plugins::SpotOn::Connect->discardPowerState($pwClient, 'daemon shutdown') if $pwClient;
+            1;
+        };
+    }
+
     # D-34: the player leaves Soloist (backend switch, sync-group stop, LMS
     # shutdown) -- the shim's browse flag must not outlive the session.
     $self->_browseKeepClear('shutdown');
@@ -3683,6 +3696,32 @@ sub _trackIdOf {
     return $id;
 }
 
+# _noteItemKind($self, $uri) -- 79-68 (GH #167, D-35): remember whether the
+# bare id behind a daemon uri is a track or an episode (a podcast episode or
+# an audiobook chapter, which the daemon reports as spotify:episode:<id>).
+# Control keeps every id bare internally; the kind is applied once, at the
+# `_emit` wire build, so Connect.pm can build spoton://episode:<id>. Bounded
+# to ITEM_KIND_MAX ids in insertion order, the oldest dropped.
+use constant ITEM_KIND_MAX => 32;
+sub _noteItemKind {
+    my ($self, $uri) = @_;
+    return unless defined $uri;
+    my ($kind, $id) = $uri =~ /^spotify:(track|episode):([A-Za-z0-9]+)$/ or return;
+    my $obs = $self->observed;
+    return unless ref($obs) eq 'HASH';
+    my $map   = $obs->{itemKind} ||= {};
+    my $order = $obs->{itemKindOrder} ||= [];
+    if (!exists $map->{$id}) {
+        push @$order, $id;
+        while (@$order > ITEM_KIND_MAX) {
+            my $old = shift @$order;
+            delete $map->{$old};
+        }
+    }
+    $map->{$id} = $kind;
+    return;
+}
+
 # _anchorPosSec($anchor) -- D-01 duplicate fold: the anchor-to-seconds
 # formatting repeated in playback_changed's resume block and
 # device_changed's reactivation block (`$posSec`).
@@ -4875,6 +4914,7 @@ sub _onFrameTrackChanged {
             # `add_to_queue(k+1)` erst wirksam, weil D-02 dem Wachhund das
             # Ueberschreiben genommen hat -- ohne D-02 waere Prefetch totes
             # Gewicht gewesen (81-DECISIONS Section D-C).
+            $self->_noteItemKind($uri);    # 79-68
             $self->observed->{track}  = $uri;
             delete $self->observed->{reloadArm};    # 79-52: a title change retires the re-load arm
             $self->_clearAutoplayPausedUnless($uri);    # 84-26 R2 clear (b)
@@ -5023,6 +5063,7 @@ sub _onFrameTrackChanged {
             && $expectEcho->{until} > Time::HiRes::time())
         {
             delete $self->observed->{expectEcho};
+            $self->_noteItemKind($uri);    # 79-68
             $self->observed->{track}  = $uri;
             delete $self->observed->{reloadArm};    # 79-52: a title change retires the re-load arm
             $self->_clearAutoplayPausedUnless($uri);    # 84-26 R2 clear (b)
@@ -5247,6 +5288,7 @@ sub _onFrameTrackChanged {
         # its end -- the app's next. LMS moves within its own list.
         $self->_forwardBrowseNext($uri, $prev, $queuedByUsMatch) if $self->mode eq 'browse';
 
+        $self->_noteItemKind($uri);    # 79-68
         $self->observed->{track}  = $uri;
         delete $self->observed->{reloadArm};    # 79-52: a title change retires the re-load arm
         $self->_clearAutoplayPausedUnless($uri);    # 84-26 R2 clear (b): another uri's marker dies here
@@ -5475,6 +5517,7 @@ sub _onFramePlaybackState {
             my $prev  = $self->observed->{track};
 
             $self->_noteCurrentItem($item);    # 85-07 D-09
+            $self->_noteItemKind($uri);        # 79-68: before any emission below (the writer further down runs after it)
 
             # D-34 R2 (79-50): decided HERE, before observed.track is overwritten below
             # -- the keep needs the title as it was before this frame.
@@ -5503,6 +5546,7 @@ sub _onFramePlaybackState {
                 }
             }
 
+            $self->_noteItemKind($uri);    # 79-68
             $self->observed->{track} = $uri;
             $self->_clearAutoplayPausedUnless($uri);    # 84-26 R2 clear (b)
 
@@ -7918,8 +7962,24 @@ sub _emit {
     my $client = Slim::Player::Client::getClient($self->mac);
     return unless $client;
 
+    # 79-68 (GH #167, D-35): the item kind is added at the wire only, as ONE extra TAGGED token `kind:episode` after
+    # every positional argument. A podcast episode or audiobook chapter carries it on start/change/resume; a track
+    # sends nothing extra (byte-identical to before). The kind must NOT travel inside p2 as `spotify:episode:<id>`:
+    # LMS's Request parser (Slim::Control::Request->new, hasTags) turns every token matching `name:value` into a NAMED
+    # parameter, so such a p2 would never reach Connect as `_p2` (measured live 2026-11-02: `start ... track=none`).
+    # A tagged token does not shift the positional numbering. p2/p3 and every id inside Control stay bare. Applied
+    # after every early return and after the pendingChange queueing, so a re-emitted queued verb is converted once.
+    my $kindTag;
+    if (($cmd eq 'start' || $cmd eq 'change' || $cmd eq 'resume')
+        && defined $p2 && $p2 =~ /^[A-Za-z0-9]+$/)
+    {
+        my $kinds = $self->observed->{itemKind};
+        $kindTag = 'kind:episode' if ref($kinds) eq 'HASH' && ($kinds->{$p2} // '') eq 'episode';
+    }
+
     my @wire = ('spottyconnect', $cmd, $p2 // '', $p3 // '');
     push @wire, $p4 if defined $p4;
+    push @wire, $kindTag if defined $kindTag;
     $client->execute(\@wire);
 }
 

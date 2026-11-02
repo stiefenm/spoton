@@ -132,9 +132,11 @@ END
 # the newTrack fallback.
 write_stub($stub_dir, 'Slim::Utils::Timers', <<'END');
 package Slim::Utils::Timers;
-our (@SET, @KILL);
-sub killTimers { push @KILL, [@_]; }
-sub setTimer   { push @SET,  [@_]; }
+our (@SET, @KILL, @TIMERS);
+# 79-69: @TIMERS is the live view (setTimer adds, killTimers removes) the
+# power-off wait cells fire from; @SET / @KILL stay the call recorders.
+sub killTimers { push @KILL, [@_]; my ($o, $cb) = @_; @TIMERS = grep { !($_->[0] == $o && $_->[2] == $cb) } @TIMERS; }
+sub setTimer   { push @SET,  [@_]; push @TIMERS, [@_]; }
 1;
 END
 
@@ -363,7 +365,9 @@ my @FETCH;
     sub pluginData {
         my $s = shift;
         return $s->{data}{ $_[0] } if @_ == 1;
-        while (@_) { my ($k, $v) = splice(@_, 0, 2); $s->{data}{$k} = $v; }
+        # 79-69 (GH #151): LMS's real rule, Slim/Player/Client.pm:1253 -
+        # `if ( defined $value )`: an undef value does NOT write.
+        while (@_) { my ($k, $v) = splice(@_, 0, 2); $s->{data}{$k} = $v if defined $v; }
         return;
     }
 
@@ -406,6 +410,7 @@ sub fresh {
     %Plugins::SpotOn::Status::HAS      = ();
     @Slim::Utils::Timers::SET = ();
     @Slim::Utils::Timers::KILL = ();
+    @Slim::Utils::Timers::TIMERS = ();
     @FETCH = ();
     %Slim::Utils::Cache::STORE = ();
     %Slim::Utils::Prefs::CLIENT = ();
@@ -420,6 +425,26 @@ sub fresh {
 sub sent  { return @Slim::Control::Request::SENT; }
 sub posts { return @Slim::Networking::SimpleAsyncHTTP::POSTS; }
 sub cmds  { return map { join(' ', @{ $_->{args} }) } sent(); }
+
+# 79-69: the saved pre-Connect power state through Connect.pm's reader (a
+# cleared state is a sentinel); at RED the sub is absent and the raw value is read.
+sub prev_power {
+    my ($client) = @_;
+    my $f = Plugins::SpotOn::Connect->can('_prevPowerGet');
+    return $f ? $f->($client) : $client->pluginData('connectPrevPower');
+}
+
+# 79-69: fire the due _powerOffDue timers of the client at (now + $after_s)
+sub fire_power_off {
+    my ($client, $after_s) = @_;
+    my $now = Time::HiRes::time() + $after_s;
+    my $cb  = \&Plugins::SpotOn::Connect::_powerOffDue;
+    my @due = grep { $_->[2] == $cb && $_->[0] == $client && $_->[1] <= $now } @Slim::Utils::Timers::TIMERS;
+    my %gone = map { ("$_" => 1) } @due;
+    @Slim::Utils::Timers::TIMERS = grep { !$gone{"$_"} } @Slim::Utils::Timers::TIMERS;
+    for my $t (@due) { my ($obj, undef, $f, @extra) = @$t; $f->($obj, @extra); }
+    return scalar(@due);
+}
 
 my $CONNECT_SRC = 'Plugins::SpotOn::Connect';
 
@@ -436,13 +461,15 @@ is($dispatch[0][1][3], \&Plugins::SpotOn::Connect::_connectEvent, 'dispatch hand
 my $DISPATCH_CB = $dispatch[0][1][3];
 
 # 84.2-02: the eighth subscriber is _onLmsPlaylistChanged (CAUSE-2 prefetch wish).
-is(scalar(@Slim::Control::Request::SUBSCRIBED), 8, 'initConnectHandlers subscribes eight LMS-side handlers (incl. _onLmsPlaylistChanged)');
+# 79-70 BR4-02: the ninth is _onPower (a manual power-on inside the power-off wait cancels it).
+is(scalar(@Slim::Control::Request::SUBSCRIBED), 9, 'initConnectHandlers subscribes nine LMS-side handlers (incl. _onLmsPlaylistChanged, _onPower)');
 is_deeply([ sort { $a cmp $b } map { $_->[0] } @Slim::Control::Request::SUBSCRIBED ],
           [ sort { $a cmp $b } (\&Plugins::SpotOn::Connect::_onNewSong, \&Plugins::SpotOn::Connect::_onPause,
                   \&Plugins::SpotOn::Connect::_onVolume,  \&Plugins::SpotOn::Connect::_onSeek,
                   \&Plugins::SpotOn::Connect::_onPlaylistJump, \&Plugins::SpotOn::Connect::_onLmsStop,
-                  \&Plugins::SpotOn::Connect::_onLmsClear, \&Plugins::SpotOn::Connect::_onLmsPlaylistChanged) ],
-          'the eight subscribers are _onNewSong/_onPause/_onVolume/_onSeek/_onPlaylistJump/_onLmsStop/_onLmsClear/_onLmsPlaylistChanged');
+                  \&Plugins::SpotOn::Connect::_onLmsClear, \&Plugins::SpotOn::Connect::_onLmsPlaylistChanged,
+                  \&Plugins::SpotOn::Connect::_onPower) ],
+          'the nine subscribers are _onNewSong/_onPause/_onVolume/_onSeek/_onPlaylistJump/_onLmsStop/_onLmsClear/_onLmsPlaylistChanged/_onPower');
 
 # Drive one spottyconnect verb through the registered dispatch coderef.
 sub ev {
@@ -476,7 +503,7 @@ sub ev {
     is($C->pluginData('pendingConnect'), 0, 'start: pendingConnect is cleared after the play request');
     is($C->pluginData('eventTrackUri'), 'spotify:track:TRK111', 'start: eventTrackUri carries the announced track');
     is_deeply(\@FETCH, [['TRK111']], 'start: metadata is fetched for the announced track');
-    is($C->pluginData('connectPrevPower'), 0, 'start: the pre-Connect power state is saved (GH #151)');
+    is(prev_power($C), 0, 'start: the pre-Connect power state is saved (GH #151)');
     is($C->pluginData('newTrack'), 1, 'start: newTrack is set (suppresses the transitional stop)');
 }
 
@@ -652,9 +679,25 @@ sub ev {
     $C->pluginData(connectPrevPower => 0);
     $C->pluginData(connectSessionPaused => 1);
     ev('stop', 'inactive');
-    is_deeply([ cmds() ], ['pause 1', 'power 0'], "stop 'inactive' (session end): pause, then restore the saved power-off (GH #151)");
+    # 79-69 (D-36): the power-off is an opt-in with a 30 s wait; the default sends only the pause
+    is_deeply([ cmds() ], ['pause 1'], "stop 'inactive' (session end): the default (setting off) only pauses (GH #151, D-36)");
     is($C->pluginData('connectSessionPaused'), 0, "stop 'inactive': the remembered pause state is dropped");
-    is($C->pluginData('connectPrevPower'), undef, "stop 'inactive': the saved power state is consumed");
+    is(prev_power($C), undef, "stop 'inactive': the saved power state is consumed");
+}
+
+# 79-69 T1 i: the setting on - pause now, power 0 from the timer callback after the wait
+{
+    fresh(playing => 1, song => MockSong->new(url => 'spoton://connect-9', info => 1));
+    $Slim::Utils::Prefs::CLIENT{connectPowerOff} = 1;
+    $CONNECT->bindConnectClaim($C, 'test');
+    $C->pluginData(connectPrevPower => 0);
+    ev('stop', 'inactive');
+    is_deeply([ cmds() ], ['pause 1'], "79-69 T1 i: stop 'inactive' with the setting on - pause 1 now, no power 0 yet");
+    fire_power_off($C, 29);
+    is_deeply([ cmds() ], ['pause 1'], '79-69 T1 i: no power 0 at +29 s');
+    fire_power_off($C, 31);
+    is_deeply([ cmds() ], ['pause 1', 'power 0'], '79-69 T1 i: power 0 from the timer callback after the wait');
+    is(prev_power($C), undef, '79-69 T1 i: the saved power state is consumed after the wait');
 }
 
 # ============================================================

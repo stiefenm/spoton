@@ -410,6 +410,13 @@ sub releaseConnectClaim {
     my ($class, $client, $source) = @_;
     push @CLAIMS, [ 'release', ($client ? $client->id : undef), $source, scalar(@Slim::Player::Client::EXECUTED) ];
 }
+# 79-70 BR4-03: Control::shutdown of a Connect session (daemon gone / restart / backend switch) tells Connect to
+# drop the saved pre-Connect power state; the stub records [ $mac, $reason ].
+our @POWER_DISCARDS;
+sub discardPowerState {
+    my ($class, $client, $reason) = @_;
+    push @POWER_DISCARDS, [ ($client ? $client->id : undef), $reason ];
+}
 sub isSpotifyConnect { return 0; }
 1;
 END
@@ -2068,6 +2075,24 @@ sub s1_rec {
     is(Plugins::SpotOn::Soloist::Control->for_client('cc:33:cc:33:cc:33'), undef,
         "shutdown: registry entry removed");
     ok(!(grep { $_->[0] == $ctl } @Slim::Utils::Timers::TIMERS), "shutdown: no timers left for this instance");
+}
+
+# --- 79-70 BR4-03: shutdown in connect mode discards the saved pre-Connect power state, any other mode does not ---
+{
+    for my $mode ('connect', 'browse', 'idle') {
+        my ($ctl) = fresh_control(mac => 'cc:70:03:70:03:70', observed => { wsConnected => 1, meta => {} });
+        $ctl->mode($mode);
+        @Plugins::SpotOn::Connect::POWER_DISCARDS = ();
+        $ctl->shutdown;
+        if ($mode eq 'connect') {
+            is(scalar(@Plugins::SpotOn::Connect::POWER_DISCARDS), 1, "79-70 BR4-03 shutdown (connect): Connect is told once to drop the saved power state");
+            is($Plugins::SpotOn::Connect::POWER_DISCARDS[0][0], 'cc:70:03:70:03:70', "79-70 BR4-03 shutdown (connect): for this player");
+            like($Plugins::SpotOn::Connect::POWER_DISCARDS[0][1] // '', qr/shutdown/, "79-70 BR4-03 shutdown (connect): with a shutdown reason");
+        }
+        else {
+            is(scalar(@Plugins::SpotOn::Connect::POWER_DISCARDS), 0, "79-70 BR4-03 shutdown ($mode): no discard (the session ended by its own path, or none ran)");
+        }
+    }
 }
 
 # ============================================================
@@ -13999,6 +14024,136 @@ my $TID_SPOTON = 'spoton://track:' . ($TID =~ s/^spotify:track://r);
         is($f ? $f->(undef, $MAC66) : undef, "Control: command_result -- command=- ($MAC66)",
             '79-66 R8: an unnamed command renders as -');
     }
+}
+
+# ---------------------------------------------------------------------------
+# 79-68 T1 (GH #167, D-35): the item kind travels on the Connect wire. An episode (podcast episode or audiobook chapter)
+# is marked with ONE extra TAGGED token `kind:episode` after the positional arguments; a track sends nothing extra
+# (byte-identical to before). It must not travel inside p2 as `spotify:episode:<id>`: LMS's Request parser turns every
+# `name:value` token into a NAMED parameter (Slim/Control/Request.pm:1051), so such a p2 would never reach Connect as
+# `_p2` (found live 2026-11-02, `start ... track=none`). lms_parse() below is that parser, index for index.
+# ---------------------------------------------------------------------------
+sub lms_parse {
+    my ($wire) = @_;      # [ 'spottyconnect', '_cmd', ... ] -> { _cmd => .., _p2 => .., kind => .. } as Slim::Control::Request builds it
+    my %params;
+    my @line = @$wire;
+    $params{_cmd} = $line[1];
+    for (my $i = 2; $i < @line; $i++) {
+        if ($line[$i] && $line[$i] =~ /([^:]+):(.*)/) { $params{$1} = $2 }       # tagged param (hasTags)
+        else                                           { $params{"_p$i"} = $line[$i] }   # positional param
+    }
+    return \%params;
+}
+{
+    my $EP79   = '6hDIr2Ngy8ijkGk3o77Li2';
+    my $CH79   = '73E4okoX6R2PAagxONnSWI';
+    my $mk = sub {
+        my ($mac, $kind) = @_;
+        @Slim::Player::Client::EXECUTED = ();
+        @Slim::Utils::Timers::TIMERS    = ();
+        my ($ctl, $daemon, $ws) = fresh_control(mac => $mac, mode => 'idle',
+            observed => { wsConnected => 1, meta => {} });
+        $ctl->onEvent({ type => 'track_changed', item => { uri => "spotify:$kind:$EP79" } });
+        return ($ctl, $daemon, $ws);
+    };
+
+    # a: transfer-in of an episode -> the wire carries the kind tag, p2 stays the bare id
+    {
+        my ($ctl) = $mk->('aa:79:68:00:00:01', 'episode');
+        $ctl->onEvent({ type => 'device_changed', is_active => 1, device_name => 'lavender-UAT' });
+        is($ctl->mode, 'connect', '79-68 T1 a setup: the transfer-in enters connect');
+        my @st = grep { $_->[1] eq 'start' } @Slim::Player::Client::EXECUTED;
+        is_deeply(\@st, [ [ 'spottyconnect', 'start', $EP79, '', 'kind:episode' ] ],
+            '79-68 T1 a: a transfer-in of an episode sends `spottyconnect start <id> <pos> kind:episode`');
+        my $parsed = lms_parse($st[0]);
+        is($parsed->{_p2}, $EP79, '79-68 T1 a: LMS hands Connect the bare id as _p2');
+        is($parsed->{kind}, 'episode', '79-68 T1 a: ... and the kind as the named parameter `kind`');
+    }
+
+    # b: the same sequence with a track keeps the bare id and adds nothing
+    {
+        my ($ctl) = $mk->('aa:79:68:00:00:02', 'track');
+        $ctl->onEvent({ type => 'device_changed', is_active => 1, device_name => 'lavender-UAT' });
+        my @st = grep { $_->[1] eq 'start' } @Slim::Player::Client::EXECUTED;
+        is_deeply(\@st, [ [ 'spottyconnect', 'start', $EP79, '' ] ],
+            '79-68 T1 b: a transfer-in of a track sends the bare id and no kind token (byte-identical to before)');
+    }
+
+    # c: the kind map is bounded to 32 ids, oldest dropped
+    {
+        my ($ctl) = fresh_control(mac => 'aa:79:68:00:00:03', mode => 'idle', observed => { wsConnected => 1 });
+        my $note = Plugins::SpotOn::Soloist::Control->can('_noteItemKind');
+        ok($note, '79-68 T1 c: Control has _noteItemKind');
+        if ($note) {
+            $note->($ctl, sprintf('spotify:episode:79681%017d', $_)) for 1 .. 40;
+            my $k = $ctl->observed->{itemKind} // {};
+            is(scalar(keys %$k), 32, '79-68 T1 c: the kind map keeps at most 32 ids');
+            ok(!exists $k->{sprintf('79681%017d', 1)}, '79-68 T1 c: the oldest id is dropped');
+            is($k->{sprintf('79681%017d', 40)}, 'episode', '79-68 T1 c: the newest id is kept with its kind');
+            $note->($ctl, 'spotify:album:79681xxxxxxxxxxxxxxxxxx');
+            is(scalar(keys %{ $ctl->observed->{itemKind} }), 32, '79-68 T1 c: a non track/episode uri is not recorded');
+        }
+    }
+
+    # d: the chapter advance is a `change`: p2 and p3 stay bare, the kind tag is the last token
+    {
+        my ($ctl) = $mk->('aa:79:68:00:00:04', 'episode');
+        $ctl->onEvent({ type => 'device_changed', is_active => 1, device_name => 'lavender-UAT' });
+        @Slim::Player::Client::EXECUTED = ();
+        $ctl->onEvent({ type => 'track_changed', item => { uri => "spotify:episode:$CH79" } });
+        my @ch = grep { $_->[1] eq 'change' } @Slim::Player::Client::EXECUTED;
+        is(scalar(@ch), 1, '79-68 T1 d setup: the chapter advance emits one change');
+        is_deeply($ch[0], [ 'spottyconnect', 'change', $CH79, $EP79, 'kind:episode' ],
+            '79-68 T1 d: change <new> <prev> kind:episode (both ids bare)');
+        my $parsed = lms_parse($ch[0] // []);
+        is($parsed->{_p2}, $CH79, '79-68 T1 d: LMS hands Connect the new id as _p2');
+        is($parsed->{_p3}, $EP79, '79-68 T1 d: ... and the previous id as _p3');
+        is($parsed->{kind}, 'episode', '79-68 T1 d: ... and kind=episode');
+    }
+
+    # e: paused-to-playing resume on the episode
+    {
+        my ($ctl) = $mk->('aa:79:68:00:00:05', 'episode');
+        $ctl->onEvent({ type => 'device_changed', is_active => 1, device_name => 'lavender-UAT' });
+        $ctl->onEvent({ type => 'playback_changed', status => 'paused' });
+        @Slim::Player::Client::EXECUTED = ();
+        $ctl->onEvent({ type => 'playback_changed', status => 'playing' });
+        $ctl->onEvent({ type => 'playback_state', status => 'playing',
+            item => { uri => "spotify:episode:$EP79" },
+            position => { position_ms => 12000, timestamp_ms => 1, speed => 1 } });
+        my @rs = grep { $_->[1] eq 'resume' } @Slim::Player::Client::EXECUTED;
+        is(scalar(@rs), 1, '79-68 T1 e setup: one resume is emitted');
+        is($rs[0] ? $rs[0][2] : undef, $EP79, '79-68 T1 e: resume p2 is the bare id');
+        is($rs[0] ? $rs[0][-1] : undef, 'kind:episode', '79-68 T1 e: resume carries the kind tag as its last token');
+        is(lms_parse($rs[0] // [])->{kind}, 'episode', '79-68 T1 e: LMS hands Connect kind=episode');
+    }
+
+    # f: the old p2 form is exactly what LMS would swallow (documents why the kind is a tagged token)
+    {
+        my $bad = lms_parse([ 'spottyconnect', 'start', "spotify:episode:$EP79", '' ]);
+        ok(!defined $bad->{_p2}, '79-68 T1 f: `spotify:episode:<id>` as p2 would reach Connect as NO _p2 (a named parameter instead)');
+        is($bad->{spotify}, "episode:$EP79", '79-68 T1 f: ... LMS files it under the name `spotify`');
+    }
+}
+
+# 79-68 T3 item-bridge f (D-35a): the REAL spike-015 track_changed items (episode, chapter) end up in Control's
+# observed->{currentItem} in the shape ProtocolHandler's bridge reads: name, the show in album.name, no artists, covers.
+# (Regression pin on the join between the fixtures of Task 2 and the bridge; passes on the base too.)
+for my $row ([ 'episode', '79-68-track_changed-episode.jsonl', '6hDIr2Ngy8ijkGk3o77Li2' ],
+             [ 'chapter', '79-68-track_changed-chapter.jsonl', '73E4okoX6R2PAagxONnSWI' ]) {
+    my ($label, $file, $id) = @$row;
+    my ($line) = load_fixture($file);
+    my $rec = decode_frame($line);                              # the recorder line (UTF-8 bytes on disk)
+    my $frame = JSON::PP->new->decode($rec->{frame});           # its frame field is already a character string
+    my ($ctl) = fresh_control(mac => 'aa:79:68:00:0f:01', mode => 'idle', observed => { wsConnected => 1, meta => {} });
+    $ctl->onEvent($frame);
+    my $ci = $ctl->observed->{currentItem} // {};
+    is($ci->{uri}, "spotify:episode:$id", "79-68 T3 item-bridge f ($label): currentItem.uri is the spotify:episode: uri");
+    ok(length($ci->{name} // ''), "79-68 T3 item-bridge f ($label): currentItem.name is the item name");
+    ok(length(($ci->{album} || {})->{name} // ''), "79-68 T3 item-bridge f ($label): album.name carries the show (the parent name)");
+    is(scalar(@{ $ci->{artists} || [] }), 0, "79-68 T3 item-bridge f ($label): no creators -> no artists (the 'by N/A' case)");
+    is(scalar(@{ ($ci->{album} || {})->{images} || [] }), 4, "79-68 T3 item-bridge f ($label): the four covers are kept");
+    ok(($ci->{duration_ms} // 0) > 0, "79-68 T3 item-bridge f ($label): duration_ms is kept");
 }
 
 done_testing();

@@ -1987,6 +1987,45 @@ PLUGIN_SPOTON_CONNECT_ENABLED_LABEL
 	PL	Włącz Spotify Connect
 	SV	Aktivera Spotify Connect
 
+PLUGIN_SPOTON_CONNECT_POWER_OFF
+	CS	Po Connectu vypnout
+	DA	Sluk efter Connect
+	DE	Nach Connect ausschalten
+	EN	Switch off after Connect
+	ES	Apagar tras Connect
+	FR	Éteindre après Connect
+	IT	Spegni dopo Connect
+	NL	Uitschakelen na Connect
+	NO	Slå av etter Connect
+	PL	Wyłącz po Connect
+	SV	Stäng av efter Connect
+
+PLUGIN_SPOTON_CONNECT_POWER_OFF_DESC
+	CS	Když v aplikaci Spotify vyberete jiné zařízení, tento přehrávač se asi o 30 sekund později znovu vypne - jen pokud byl před relací Connect vypnutý a nehraje nic jiného. Ve výchozím nastavení vypnuto.
+	DA	Når du vælger en anden enhed i Spotify-appen, slukker denne afspiller igen cirka 30 sekunder senere - kun hvis den var slukket før Connect-sessionen, og intet andet afspilles. Slået fra som standard.
+	DE	Wählst du in der Spotify-App ein anderes Gerät, schaltet sich dieser Player etwa 30 Sekunden später wieder aus - nur wenn er vor der Connect-Sitzung aus war und nichts anderes läuft. Standardmäßig aus.
+	EN	When you choose another device in the Spotify app, this player switches off again about 30 seconds later - only if it was off before the Connect session and nothing else is playing. Off by default.
+	ES	Cuando eliges otro dispositivo en la app de Spotify, este reproductor se apaga de nuevo unos 30 segundos después - solo si estaba apagado antes de la sesión de Connect y no se reproduce nada más. Desactivado por defecto.
+	FR	Lorsque vous choisissez un autre appareil dans l'application Spotify, ce lecteur s'éteint de nouveau environ 30 secondes plus tard - uniquement s'il était éteint avant la session Connect et que rien d'autre n'est en cours de lecture. Désactivé par défaut.
+	IT	Quando scegli un altro dispositivo nell'app Spotify, questo player si spegne di nuovo circa 30 secondi dopo - solo se era spento prima della sessione Connect e non è in riproduzione nient'altro. Disattivato per impostazione predefinita.
+	NL	Als je in de Spotify-app een ander apparaat kiest, schakelt deze speler ongeveer 30 seconden later weer uit - alleen als hij vóór de Connect-sessie uit stond en er niets anders wordt afgespeeld. Standaard uit.
+	NO	Når du velger en annen enhet i Spotify-appen, slår denne spilleren seg av igjen omtrent 30 sekunder senere - bare hvis den var av før Connect-økten og ingenting annet spilles. Av som standard.
+	PL	Gdy w aplikacji Spotify wybierzesz inne urządzenie, ten odtwarzacz wyłączy się ponownie po około 30 sekundach - tylko jeśli był wyłączony przed sesją Connect i nic innego nie jest odtwarzane. Domyślnie wyłączone.
+	SV	När du väljer en annan enhet i Spotify-appen stängs den här spelaren av igen cirka 30 sekunder senare - bara om den var avstängd före Connect-sessionen och inget annat spelas. Avstängt som standard.
+
+PLUGIN_SPOTON_CONNECT_POWER_OFF_LABEL
+	CS	Tento přehrávač po skončení Spotify Connect znovu vypnout
+	DA	Sluk denne afspiller igen, når Spotify Connect slutter
+	DE	Diesen Player wieder ausschalten, wenn Spotify Connect endet
+	EN	Switch this player off again when Spotify Connect ends
+	ES	Volver a apagar este reproductor cuando termine Spotify Connect
+	FR	Éteindre de nouveau ce lecteur à la fin de Spotify Connect
+	IT	Spegni di nuovo questo player quando Spotify Connect termina
+	NL	Deze speler weer uitschakelen wanneer Spotify Connect eindigt
+	NO	Slå av denne spilleren igjen når Spotify Connect avsluttes
+	PL	Wyłącz ten odtwarzacz ponownie, gdy Spotify Connect się zakończy
+	SV	Stäng av den här spelaren igen när Spotify Connect avslutas
+
 PLUGIN_SPOTON_AUTOPLAY_ENABLED
 	CS	Automatické přehrávání (Autoplay)
 	DA	Automatisk afspilning (Autoplay)
