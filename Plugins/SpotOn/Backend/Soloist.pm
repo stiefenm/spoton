@@ -706,6 +706,14 @@ sub notify {
     return 'ok';
 }
 
+# _copyItem($data) -- a deep copy of a plain hash/array/scalar tree (query('currentItem') hands out copies).
+sub _copyItem {
+    my ($d) = @_;
+    return [ map { _copyItem($_) } @$d ] if ref($d) eq 'ARRAY';
+    return { map { $_ => _copyItem($d->{$_}) } keys %$d } if ref($d) eq 'HASH';
+    return $d;
+}
+
 # query($what, %args) -> scalar | undef
 # 84-07 Task 2: wantedPositionMs (Connect.pm _onSeek's browse observer
 # line). 84-08 Task 2: seekable (getSeekData / canDoAction('rew'), 1|0)
@@ -727,6 +735,16 @@ sub query {
             current  => (ref($snap) eq 'HASH' && ref($snap->{current}) eq 'HASH' ? { %{ $snap->{current} } } : undef),
             upcoming => (ref($snap) eq 'HASH' && ref($snap->{upcoming}) eq 'ARRAY' ? [ map { ref($_) eq 'HASH' ? { %$_ } : $_ } @{ $snap->{upcoming} } ] : []),
         };
+    }
+    # 79-68 (GH #167, D-35a): 'currentItem' -> a copy of the daemon's own item of the playing title, as Control
+    # normalized it (_normalizeQueueItem: uri, name, artists, album {name = the show/parent, images}, duration_ms),
+    # or undef. Unlike 'queue' it never asks the helper for anything (no get_queue): it only reads what the last
+    # track_changed already left in observed->{currentItem}.
+    if ($what eq 'currentItem') {
+        my $ctl = $self->_ctl or return undef;
+        my $obs = $ctl->observed;
+        my $item = ref($obs) eq 'HASH' ? $obs->{currentItem} : undef;
+        return ref($item) eq 'HASH' ? _copyItem($item) : undef;
     }
     if ($what eq 'wantedPositionMs') {
         my $ctl = $self->_ctl or return undef;

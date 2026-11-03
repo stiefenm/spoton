@@ -71,7 +71,7 @@ if ($suppress_block) {
 # Task 2: GH #151 power save/restore
 # ------------------------------------------------------------
 
-my @save_sites = $connect =~ /(connectPrevPower => \(\$client->power \? 1 : 0\))/g;
+my @save_sites = $connect =~ /(_prevPowerSet\(\$client, \$client->power \? 1 : 0\))/g;   # 79-69 TEXTGATE69: was connectPrevPower => (\$client->power ? 1 : 0)
 cmp_ok(scalar(@save_sites), '>=', 2,
     'GH #151: at least two save sites (start handler + resume re-entry)');
 
@@ -81,12 +81,18 @@ like($connect, qr/sub _restorePowerAfterConnect/,
 my ($restore_block) = $connect =~ /(sub _restorePowerAfterConnect \{.*?\n\})/s;
 ok($restore_block, 'GH #151: restore helper block parseable');
 if ($restore_block) {
-    like($restore_block, qr/\['power',\s*0\]/,
+    # 79-69 TEXTGATE69: the power-off request moved into the wait's timer callback _powerOffDue
+    # (D-36: 30 s after the session end); the restore block arms it. Same property, one sub on.
+    my ($due_block) = $connect =~ /(sub _powerOffDue \{.*?\n\})/s;
+    ok($due_block, 'GH #151: power-off wait callback parseable');
+    like($due_block // '', qr/\['power',\s*0\]/,
         'GH #151: restore dispatches a power-off request');
-    like($restore_block, qr/source\(__PACKAGE__\)/,
+    like($due_block // '', qr/source\(__PACKAGE__\)/,
         'GH #151: power-off request is source-marked (no event echo)');
-    like($restore_block, qr/connectPrevPower => undef/,
+    like($restore_block, qr/_prevPowerClear\(\$client\)/,
         'GH #151: saved state is always cleared');
+    like($restore_block, qr/setTimer\(\$client,.*?CONNECT_POWER_OFF_DELAY_S.*?\\&_powerOffDue/s,
+        'GH #151 (D-36): the restore arms the wait timer');
 }
 
 # The restore call must live in the session-end ('inactive'-marked stop)
@@ -135,12 +141,12 @@ my ($play_url_for) = $connect =~ /(sub _playUrlFor \{.*?\n\})/s;
 ok($play_url_for, '84-08: _playUrlFor block parseable');
 if ($start_d04_block) {
     like($start_d04_block,
-        qr/my \$startPlayUrl = _playUrlFor\(\$client, \$trackId\);.*?\$startPlayUrl =~ m\{\^spoton:\/\/track:\}/s,
+        qr/my \$startPlayUrl = _playUrlFor\(\$client, \$trackId, \$kind\);.*?\$startPlayUrl =~ m\{\^spoton:\/\/\(\?:track\|episode\):\}/s,
         'D-04 start: the per-track (spoton://track:) URL comes from _playUrlFor (84-08)');
 }
 if ($play_url_for) {
     like($play_url_for,
-        qr/"spoton:\/\/track:\$trackId"\s*\n\s*if \$trackId && \(_liveCaps\(\$client\)->\{connectEntry\} \/\/ ''\) eq 'pertrack';/,
+        qr/_itemUrl\(\$kind \|\| 'track', \$trackId\)\s*\n\s*if \$trackId && \(_liveCaps\(\$client\)->\{connectEntry\} \/\/ ''\) eq 'pertrack';/,
         "D-04 (84-08): _playUrlFor gives spoton://track:<id> only for connectEntry 'pertrack' with a track id");
     like($play_url_for,
         qr/spoton:\/\/connect-%u/,
@@ -153,10 +159,10 @@ my ($change_d04_block) = $connect =~ /(# -+\n\s+# Change:.*?)(?=# -+\n\s+# Stop:
 ok($change_d04_block, 'D-04 change: handler block parseable');
 if ($change_d04_block) {
     like($change_d04_block,
-        qr/\(_liveCaps\(\$client\)->\{connectEntry\} \/\/ ''\) eq 'pertrack' && \$newTrackId\) \{.*?spoton:\/\/track:/s,
+        qr/\(_liveCaps\(\$client\)->\{connectEntry\} \/\/ ''\) eq 'pertrack' && \$newTrackId\) \{.*?_itemUrl\(\$kind, \$newTrackId\)/s,
         'D-04 change: the per-track (connectEntry pertrack) branch dispatches spoton://track: URL (84-08)');
     like($change_d04_block,
-        qr/_fetchTrackMetadata\(\$client,\s*\$newTrackId\)/,
+        qr/_fetchTrackMetadata\(\$client,\s*\$newTrackId,\s*\$kind,\s*\$kindKnown\)/,
         'D-04 change: librespot branch still fetches metadata for the new track');
     # 82-05: the ONLY spoton://connect-%u construction that used to live in
     # this block was inside the 260827-of9 skipInitiated reconnect
@@ -173,7 +179,7 @@ if ($change_d04_block) {
     # Soloist branch does not USE skipInitiated in code (comments mentioning
     # it for rationale are fine -- strip comments before checking).
     my ($soloist_change) = $change_d04_block =~
-        /(eq 'pertrack' && \$newTrackId\) \{.*?spoton:\/\/track:.*?return;)/s;
+        /(eq 'pertrack' && \$newTrackId\) \{.*?_itemUrl\(\$kind, \$newTrackId\).*?return;)/s;
     if ($soloist_change) {
         # Strip comment lines for the assertion: we care about code, not docs.
         (my $soloist_code = $soloist_change) =~ s/^\s*#.*$//gm;
@@ -580,7 +586,8 @@ if ($on_jump_block_04) {
     sub new        { return bless { id => $_[1], pd => {} }, $_[0]; }
     sub master     { return $_[0]; }
     sub id         { return $_[0]->{id}; }
-    sub pluginData { my ($s, $k, $v) = @_; $s->{pd}{$k} = $v if @_ > 2; return $s->{pd}{$k}; }
+    # 79-69: LMS's real rule (Slim/Player/Client.pm:1253, `if ( defined $value )`): an undef value does not write.
+    sub pluginData { my ($s, $k, $v) = @_; $s->{pd}{$k} = $v if @_ > 2 && defined $v; return $s->{pd}{$k}; }
     sub playingSong { return undef; }
 
     package Test::JumpRequest;
@@ -865,10 +872,13 @@ if ($on_new_song) {
         "84.1-07 G4: leaveConnect runs BEFORE the CON-17 early-return block "
         . "(which returns early while mode is connect -- why D-16 never fired pre-fix)");
 
-    my $discard_idx = index($on_new_song, 'connectPrevPower => undef');
+    # 79-69 TEXTGATE69: was index($on_new_song, 'connectPrevPower => undef'). The generic power-off-wait
+    # cancel (_powerOffCancel + _prevPowerClear for an armed wait) sits earlier, so the discard is looked
+    # up from the leaveConnect call on - same property.
+    my $discard_idx = index($on_new_song, '_prevPowerClear($client);', $leave_idx);
     ok(($discard_idx >= 0 && $leave_idx >= 0 && $con17_idx >= 0
             && $discard_idx > $leave_idx && $discard_idx < $con17_idx),
-        "84.1-07 G5: the GH #151 discard (connectPrevPower => undef) sits between the leaveConnect call and CON-17");
+        "84.1-07 G5: the GH #151 discard (_prevPowerClear) sits between the leaveConnect call and CON-17");
 }
 
 
@@ -1138,7 +1148,8 @@ if ($role_compiled) {
     sub new        { my ($c, $id, %a) = @_; return bless { id => $id, pd => {}, executed => [], %a }, $c; }
     sub id         { return $_[0]->{id}; }
     sub master     { return $_[0]; }
-    sub pluginData { my ($s, $k, $v) = @_; $s->{pd}{$k} = $v if @_ > 2; return $s->{pd}{$k}; }
+    # 79-69: LMS's real rule (Slim/Player/Client.pm:1253, `if ( defined $value )`): an undef value does not write.
+    sub pluginData { my ($s, $k, $v) = @_; $s->{pd}{$k} = $v if @_ > 2 && defined $v; return $s->{pd}{$k}; }
     sub playingSong { return $_[0]->{song}; }
     sub execute    { my ($s, $cmd) = @_; push @{ $s->{executed} }, [ @$cmd ]; }
 
@@ -1158,7 +1169,7 @@ if ($role_compiled) {
 $INC{'Plugins/SpotOn/Connect.pm'} = __FILE__;
 
 my %src3;
-for my $name (qw(_liveCaps _playUrlFor bindConnectClaim _onLmsPlaylistChanged _holdCaps _holdCap _holdRecheck _holdMax _holdClose)) {
+for my $name (qw(_liveCaps _itemUri _itemUrl _playUrlFor bindConnectClaim _onLmsPlaylistChanged _holdCaps _holdCap _holdRecheck _holdMax _holdClose)) {
     ($src3{$name}) = $connect =~ /(sub \Q$name\E \{.*?\n\})\n/s;
     ($src3{$name}) = $connect =~ /^(sub \Q$name\E .*?\})$/m unless $src3{$name};
 }

@@ -85,3 +85,11 @@ Vorbild: `t/13_status_page.t:612-615` („serialized status payload never leaks 
 credential value"). Jede Datei, die aus einem Live-Mitschnitt entsteht, läuft vor dem
 Commit durch einen Redaktions-Grep auf die beiden oben genannten Muster — muss `0`
 Treffer liefern (siehe `81-SPIKES.md` Verify-Gate, T-81-06).
+
+## 79-68 (GH #167): track_changed-Items einer Folge und eines Kapitels
+
+`79-68-track_changed-episode.jsonl` (Folge `6hDIr2Ngy8ijkGk3o77Li2`) und `79-68-track_changed-chapter.jsonl`
+(Hoerbuch-Kapitel `73E4okoX6R2PAagxONnSWI`): je EINE Recorder-Zeile (`{"frame": "<roher Frame>", ...}`), Byte fuer Byte
+aus Zeile 10 von `spike-015/item-<id>/rec-copy.jsonl` (Spike 015, Soloist 1.3.7.489, 2026-11-02) uebernommen.
+Oeffentliche Inhalte, kein `auth_state`-Frame, keine Geraete-ID. Gelesen von `runners/gaps-76.sh item-frame` und seinen
+Selbsttest-Faellen `itemframe_*`; von `t/core/47_instrument_probe.t` ausgenommen (Muster `79-68-`), weil sie kein Positionsframe tragen.

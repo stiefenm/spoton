@@ -1107,4 +1107,34 @@ like($control_src, qr/\('spottyconnect', \$cmd/, "events: Control's _emit dispat
     is(eval { $S->authHealthListsPlayers }, 1, 'R1 CR-01: soloist authHealthListsPlayers -> 1');
 }
 
+# 79-68 T3 item-bridge e (D-35a): query('currentItem') -> a copy of Control's observed->{currentItem}; it never asks the
+# helper for a queue (no get_queue); without a Control instance -> undef; the librespot role has no opinion.
+{
+    present();
+    my $item = { uri => 'spotify:episode:6hDIr2Ngy8ijkGk3o77Li2', name => 'Vier Engel', artists => [], album => { name => 'Show', images => [ { url => 'https://i.scdn.co/a.jpg', width => 640 } ] }, duration_ms => 5174000 };
+    $Plugins::SpotOn::Soloist::Control::CTL->{observed}{currentItem} = $item;
+    @Plugins::SpotOn::Soloist::Control::CALLS = ();
+    my $got = $S->new($MAC)->query('currentItem');
+    is_deeply($got, $item, "79-68 T3 item-bridge e: soloist query('currentItem') -> Control observed currentItem");
+    isnt($got, $item, "79-68 T3 item-bridge e: query('currentItem') returns a copy, not Control's own hash");
+    isnt($got && $got->{album}, $item->{album}, "79-68 T3 item-bridge e: the nested album is a copy too");
+    is_deeply([ map { $_->[0] } @Plugins::SpotOn::Soloist::Control::CALLS ], [],
+        "79-68 T3 item-bridge e: query('currentItem') asks the helper for nothing (no requestQueue, no get_queue)");
+    delete $Plugins::SpotOn::Soloist::Control::CTL->{observed}{currentItem};
+    is($S->new($MAC)->query('currentItem'), undef, "79-68 T3 item-bridge e: no current item -> undef");
+    absent();
+    is($S->new($MAC)->query('currentItem'), undef, "79-68 T3 item-bridge e: without a Control instance -> undef");
+    present();
+    # The librespot role belongs to the other backend side: in CI leg "Amputation librespot" the file is gone, so an
+    # unguarded require kills this whole file (exit 2 after 330 subtests). The assertion runs when the role is on disk;
+    # without it the leg check pins that the failure is the missing FILE (not a compile error hiding in the role).
+    if (eval { require Plugins::SpotOn::Backend::Librespot; 1 }) {
+        is(Plugins::SpotOn::Backend::Librespot->new($MAC)->query('currentItem'), undef, "79-68 T3 item-bridge e: the librespot role answers undef");
+    }
+    else {
+        like($@, qr{^Can't locate Plugins/SpotOn/Backend/Librespot\.pm},
+            "79-68 T3 item-bridge e: librespot side amputated: Backend::Librespot does not load (leg check)");
+    }
+}
+
 done_testing();

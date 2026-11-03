@@ -612,6 +612,61 @@ subtest 'COMPAT-01: global streamingMode enum regex (direct|proxy)' => sub {
 }
 
 # ============================================================
+# 79-69 T2 (GH #151, D-36): the per-player setting connectPowerOff (switch the
+# player off again after Spotify Connect, off by default) is a checkbox in the
+# General section of the SpotOn Player page and follows the 84-21 D-31(2) rule:
+# written ONLY with its has_connectPowerOff presence marker.
+# ============================================================
+{
+    require Plugins::SpotOn::Settings::Player;
+    my $post = sub { my ($c, $p) = @_; Plugins::SpotOn::Settings::Player->handler($c, $p, sub { }, undef, undef); };
+
+    # a: a one-field POST (no marker) leaves the pref as it was - set stays set, unset stays unset
+    my $ca = MockClient->new('t69a1');
+    $prefs->client($ca)->set('connectPowerOff', 1);
+    $post->($ca, { saveSettings => 1, pref_soloistQuality => 'global' });
+    is($prefs->client($ca)->get('connectPowerOff'), 1, '79-69 T2 a: a one-field POST leaves connectPowerOff = 1 as it was');
+    my $ca2 = MockClient->new('t69a2');
+    $post->($ca2, { saveSettings => 1, pref_soloistQuality => 'global' });
+    is($prefs->client($ca2)->get('connectPowerOff'), undef, '79-69 T2 a: a one-field POST leaves an unset connectPowerOff unset');
+
+    # b: marker + checked stores 1; marker without the pref_ field stores 0
+    my $cb = MockClient->new('t69b');
+    $post->($cb, { saveSettings => 1, has_connectPowerOff => 1, pref_connectPowerOff => 1 });
+    is($prefs->client($cb)->get('connectPowerOff'), 1, '79-69 T2 b: has_connectPowerOff with pref_connectPowerOff=1 stores 1');
+    $post->($cb, { saveSettings => 1, has_connectPowerOff => 1 });
+    is($prefs->client($cb)->get('connectPowerOff'), 0, '79-69 T2 b: the marker without the pref_ field stores 0');
+
+    # c: render - 0 for an unset pref, 1 after it was stored
+    my $cc = MockClient->new('t69c');
+    my $pc = { };
+    $post->($cc, $pc);
+    is($pc->{connectPowerOff}, 0, '79-69 T2 c: render gives connectPowerOff 0 for an unset pref');
+    $prefs->client($cc)->set('connectPowerOff', 1);
+    my $pc2 = { };
+    $post->($cc, $pc2);
+    is($pc2->{connectPowerOff}, 1, '79-69 T2 c: render gives connectPowerOff 1 after it was stored');
+
+    # d: template - hidden marker plus checkbox in the General section, after the Connect box, before the first backend block
+    my $tpl  = "$project_dir/Plugins/SpotOn/HTML/EN/plugins/SpotOn/settings/player.html";
+    my $html = do { open(my $fh, '<', $tpl) or die "$tpl: $!"; local $/; <$fh> };
+    like($html, qr/<input type="hidden" name="has_connectPowerOff" value="1"\s*\/?>/,
+        '79-69 T2 d: player.html carries the hidden has_connectPowerOff input');
+    my $connect_box = index($html, 'name="pref_enableSpotifyConnect"');
+    my $power_box   = index($html, 'name="pref_connectPowerOff"');
+    my $marker      = index($html, 'name="has_connectPowerOff"');
+    my $backend_if  = index($html, q{[% IF backend == 'soloist' %]});
+    ok($connect_box >= 0 && $power_box > $connect_box && $marker > $connect_box,
+        '79-69 T2 d: the connectPowerOff checkbox and its marker sit after the Connect checkbox');
+    ok($power_box >= 0 && $marker >= 0 && ($backend_if < 0 || ($power_box < $backend_if && $marker < $backend_if)),
+        "79-69 T2 d: the checkbox and its marker sit before the first `[% IF backend == 'soloist' %]` block (General section, both backends)");
+    my $wrap = index($html, 'WRAPPER setting title="PLUGIN_SPOTON_CONNECT_POWER_OFF" desc="PLUGIN_SPOTON_CONNECT_POWER_OFF_DESC"');
+    ok($wrap > $connect_box && $wrap < $power_box,
+        '79-69 T2 d: the setting WRAPPER carries the title and desc tokens');
+    like($html, qr/PLUGIN_SPOTON_CONNECT_POWER_OFF_LABEL/, '79-69 T2 d: the checkbox label token is used');
+}
+
+# ============================================================
 # Group C: i18n coverage — all 7 PLUGIN_SPOTON_STREAMING_MODE* keys exist
 # with exactly the 11 required locale lines before the next blank line.
 # ============================================================

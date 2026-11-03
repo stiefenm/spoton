@@ -1054,6 +1054,148 @@ sub search {
     return;
 }
 
+# ============================================================
+# Episodes, chapters, shows and their lists (79-71, GH #167 Browse half, D-38; spikes 013/014)
+# ============================================================
+#
+# getEpisodeOrChapter (vars { uri }), queryShowMetadataV2 (vars { uri }), queryPodcastEpisodes and queryBookChapters
+# (vars { uri, offset, limit }) run on query() like every other op: the FIFO queue, PF_MAX_CONCURRENT, the isolated
+# 429 key and the hash cache with one re-scrape on a rotated hash. A Spotify "this id does not exist" is HTTP 200 with
+# __typename NotFound and calls back { error => 'not_found' } (no code) -- the ONLY definitive answer; every transport,
+# hash or GraphQL failure keeps its own error from query(), and the SpClient facades keep the two apart.
+
+# episodeOrChapter($class, $accountId, $episodeId, $cb)
+# $cb->(\%episode) in the Web-API episode shape (_mapEpisode: id, uri, name, duration_ms, images, show, ...) or
+# $cb->(undef, \%err). Serves an Episode (podcast) and a Chapter (audiobook) alike.
+sub episodeOrChapter {
+    my ($class, $accountId, $episodeId, $cb) = @_;
+
+    unless (defined $episodeId && !ref($episodeId) && $episodeId =~ /\A[A-Za-z0-9]{1,40}\z/) {
+        $cb->(undef, { error => 'invalid_id' });
+        return;
+    }
+
+    $class->query($accountId, 'getEpisodeOrChapter', { uri => "spotify:episode:$episodeId" }, sub {
+        my ($result, $err) = @_;
+        if ($err) {
+            $cb->(undef, $err);
+            return;
+        }
+        my $u = (ref($result->{data}) eq 'HASH') ? $result->{data}{episodeUnionV2} : undef;
+        unless (ref($u) eq 'HASH') {
+            $log->warn('Pathfinder: getEpisodeOrChapter response has no data.episodeUnionV2 -- unknown shape');
+            $cb->(undef, { error => 'unknown_shape' });
+            return;
+        }
+        my $type = _str($u->{__typename});
+        if ($type eq 'NotFound') {
+            $cb->(undef, { error => 'not_found' });
+            return;
+        }
+        my $ep = ($type eq 'Episode' || $type eq 'Chapter') ? _mapEpisode({ data => $u }) : undef;
+        unless ($ep) {
+            $log->warn("Pathfinder: getEpisodeOrChapter answered __typename '$type' without a mappable item -- unknown shape");
+            $cb->(undef, { error => 'unknown_shape' });
+            return;
+        }
+        $cb->($ep);
+    });
+    return;
+}
+
+# showMetadata($class, $accountId, $showId, $cb)
+# $cb->({ id, uri, name, publisher, images, description, kind => 'podcast'|'audiobook' }) or $cb->(undef, \%err).
+sub showMetadata {
+    my ($class, $accountId, $showId, $cb) = @_;
+
+    unless (defined $showId && !ref($showId) && $showId =~ /\A[A-Za-z0-9]{1,40}\z/) {
+        $cb->(undef, { error => 'invalid_id' });
+        return;
+    }
+
+    $class->query($accountId, 'queryShowMetadataV2', { uri => "spotify:show:$showId" }, sub {
+        my ($result, $err) = @_;
+        if ($err) {
+            $cb->(undef, $err);
+            return;
+        }
+        my $u = (ref($result->{data}) eq 'HASH') ? $result->{data}{podcastUnionV2} : undef;
+        unless (ref($u) eq 'HASH') {
+            $log->warn('Pathfinder: queryShowMetadataV2 response has no data.podcastUnionV2 -- unknown shape');
+            $cb->(undef, { error => 'unknown_shape' });
+            return;
+        }
+        my $type = _str($u->{__typename});
+        if ($type eq 'NotFound') {
+            $cb->(undef, { error => 'not_found' });
+            return;
+        }
+        my $kind = ($type eq 'Podcast') ? 'podcast' : ($type eq 'Audiobook') ? 'audiobook' : undef;
+        my $show = $kind ? _mapShow({ data => $u }) : undef;
+        unless ($show) {
+            $log->warn("Pathfinder: queryShowMetadataV2 answered __typename '$type' without a mappable show -- unknown shape");
+            $cb->(undef, { error => 'unknown_shape' });
+            return;
+        }
+        $show->{description} = _str($u->{description});
+        $show->{kind}        = $kind;
+        $cb->($show);
+    });
+    return;
+}
+
+# showEpisodes($class, $accountId, $showId, $kind, $params, $cb)
+# One page of a show's episodes (kind 'podcast': queryPodcastEpisodes, episodesV2) or an audiobook's chapters
+# (kind 'audiobook': queryBookChapters, chaptersV2). $params: offset, limit (capped at 50).
+# $cb->({ items => [episode...], total, offset, limit }) or $cb->(undef, \%err). Every list entry keeps its slot: one
+# that cannot be mapped becomes { id, uri, name => undef }, so the returned count is the page's count and a caller
+# that advances by it reaches total (SpClient._enrichMeta slot discipline).
+sub showEpisodes {
+    my ($class, $accountId, $showId, $kind, $params, $cb) = @_;
+    $params ||= {};
+
+    unless (defined $showId && !ref($showId) && $showId =~ /\A[A-Za-z0-9]{1,40}\z/) {
+        $cb->(undef, { error => 'invalid_id' });
+        return;
+    }
+
+    my $book   = (defined $kind && $kind eq 'audiobook') ? 1 : 0;
+    my $op     = $book ? 'queryBookChapters' : 'queryPodcastEpisodes';
+    my $listK  = $book ? 'chaptersV2'        : 'episodesV2';
+    my $limit  = _clamp($params->{limit}, 1, 50, 50);
+    my $offset = _clamp($params->{offset}, 0, 100000, 0);
+
+    $class->query($accountId, $op, { uri => "spotify:show:$showId", offset => $offset + 0, limit => $limit + 0 }, sub {
+        my ($result, $err) = @_;
+        if ($err) {
+            $cb->(undef, $err);
+            return;
+        }
+        my $u = (ref($result->{data}) eq 'HASH') ? $result->{data}{podcastUnionV2} : undef;
+        if (ref($u) eq 'HASH' && _str($u->{__typename}) eq 'NotFound') {
+            $cb->(undef, { error => 'not_found' });
+            return;
+        }
+        my $page = (ref($u) eq 'HASH') ? $u->{$listK} : undef;
+        unless (ref($page) eq 'HASH' && ref($page->{items}) eq 'ARRAY') {
+            $log->warn("Pathfinder: $op response has no podcastUnionV2.$listK.items -- unknown shape");
+            $cb->(undef, { error => 'unknown_shape' });
+            return;
+        }
+        my @items;
+        for my $it (@{ $page->{items} }) {
+            my $ent  = (ref($it) eq 'HASH' && ref($it->{entity}) eq 'HASH') ? $it->{entity} : {};
+            my $uri  = _str($ent->{_uri});
+            my $ep   = (ref($ent->{data}) eq 'HASH') ? _mapEpisode({ data => $ent->{data} }) : undef;
+            my $id   = _idOf($uri, 'episode');
+            push @items, $ep || { id => $id, uri => (defined $id ? $uri : ''), name => undef };
+        }
+        my $total = (defined $page->{totalCount} && $page->{totalCount} =~ /\A\d+\z/) ? $page->{totalCount} + 0 : $offset + scalar(@items);
+        $cb->({ items => \@items, total => $total, offset => $offset, limit => $limit });
+    });
+    return;
+}
+
 # ------------------------------------------------------------
 # Item mappers (85-04-TOP-SEARCH-SPIKE.md:138-151): Pathfinder -> Web-API shape.
 # Type-checked at every level; GenericError items and anything without a
@@ -1190,7 +1332,9 @@ sub _mapShow {
     };
 }
 
-# episode: name, uri, duration, releaseDate.isoString, coverArt, podcastV2.data
+# episode / chapter: name, uri, duration, releaseDate.isoString, coverArt and the show it belongs to:
+# podcastV2.data for an Episode, audiobookV2.data for a Chapter (79-71, spike 013). The images are the item's
+# own coverArt, else the show's (the chapter's own cover is empty on some books).
 sub _mapEpisode {
     my ($item) = @_;
     my $d = _unwrap($item) or return undef;
@@ -1199,15 +1343,21 @@ sub _mapEpisode {
     my $dur = (ref($d->{duration}) eq 'HASH' && defined $d->{duration}{totalMilliseconds}
                && $d->{duration}{totalMilliseconds} =~ /\A\d+\z/) ? $d->{duration}{totalMilliseconds} + 0 : 0;
     my ($date) = (ref($d->{releaseDate}) eq 'HASH' ? _str($d->{releaseDate}{isoString}) : '') =~ /\A(\d{4}-\d{2}-\d{2})/;
-    my $show = (ref($d->{podcastV2}) eq 'HASH') ? _mapShow($d->{podcastV2}) : undef;
+    my $show = (ref($d->{podcastV2}) eq 'HASH')   ? _mapShow($d->{podcastV2})
+             : (ref($d->{audiobookV2}) eq 'HASH') ? _mapShow($d->{audiobookV2})
+             :                                      undef;
+    my $images = _coverImages($d->{coverArt});
+    $images = $show->{images} if !@$images && $show && ref($show->{images}) eq 'ARRAY';
+    my $explicit = (ref($d->{contentRating}) eq 'HASH' && uc(_str($d->{contentRating}{label})) eq 'EXPLICIT') ? 1 : 0;
     return {
         id           => $id,
         uri          => $uri,
         name         => _str($d->{name}),
         description  => _str($d->{description}),
         duration_ms  => $dur,
+        explicit     => $explicit,
         release_date => ($date // ''),
-        images       => _coverImages($d->{coverArt}),
+        images       => $images,
         ($show ? (show => $show) : ()),
     };
 }

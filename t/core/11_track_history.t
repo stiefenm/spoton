@@ -762,4 +762,158 @@ subtest 'D-07: HTTP /stream URL is not canonicalized, returns placeholder' => su
         'D-07: /stream URL is not canonicalized to a track cache key — falls to placeholder');
 };
 
+# ============================================================
+# 79-68 T3 item-bridge (GH #167, D-35a): the refetch of a spoton://episode:<id> entry builds the display from the
+# Soloist role's current item (the daemon's own track_changed item, no request); getEpisode stays the fallback.
+# ============================================================
+subtest '79-68 T3 item-bridge' => sub {
+    use Digest::MD5 qw(md5_hex);
+    no warnings qw(redefine once);
+    # the real DaemonManager does not load in this harness (a failed load leaves an undef %INC marker): replace the marker
+    delete $INC{'Plugins/SpotOn/Unified/DaemonManager.pm'};
+    local $INC{'Plugins/SpotOn/Unified/DaemonManager.pm'} = 'faked-79-68';
+    my $EP  = '6hDIr2Ngy8ijkGk3o77Li2';
+    my $URL = "spoton://episode:$EP";
+    my $KEY = 'spoton_meta_' . md5_hex($URL);
+
+    { package Test::Role7968; sub new { bless { item => $_[1], asked => [] }, $_[0] }
+      sub query { my ($s, $what) = @_; push @{ $s->{asked} }, $what; return $what eq 'currentItem' ? $s->{item} : undef }
+      sub notify { 'ok' } }
+    my $role;
+    local *Plugins::SpotOn::Unified::DaemonManager::backendFor = sub { $role };
+
+    my @ep_calls;
+    my $ep_reply = { uri => "spotify:episode:$EP", name => 'Fallback Title', duration_ms => 1000, images => [ { url => 'https://i.scdn.co/fb.jpg', width => 300 } ], show => { name => 'Fallback Show' } };
+    local *Plugins::SpotOn::API::SpClient::getEpisode = sub { my ($c, $acct, $id, $cb) = @_; push @ep_calls, $id; $cb->($ep_reply); };
+    my @track_calls;
+    local *Plugins::SpotOn::API::SpClient::getTrack = sub { my ($c, $acct, $id, $cb) = @_; push @track_calls, $id; $cb->({ name => 'T', artists => [ { name => 'A' } ], album => { name => 'AL', images => [] }, duration_ms => 1 }); };
+
+    my $mkitem = sub {
+        my (%o) = @_;
+        return {
+            uri => ($o{uri} // "spotify:episode:$EP"), name => ($o{name} // 'Vier Engel'),
+            artists => ($o{artists} // []), album => { name => ($o{show} // 'Der Show'), images => [
+                { url => 'https://i.scdn.co/small.jpg', width => 64 }, { url => 'https://i.scdn.co/def.jpg', width => 300 }, { url => 'https://i.scdn.co/large.jpg', width => 640 } ] },
+            duration_ms => 5174000,
+        };
+    };
+    my $go = sub {
+        Slim::Utils::Cache->new->clear();
+        %Plugins::SpotOn::ProtocolHandler::_pendingRefetch = ();
+        @ep_calls = (); @track_calls = ();
+        Plugins::SpotOn::ProtocolHandler->getMetadataFor(MockClient->new('p7968'), $_[0] // $URL);
+        return Slim::Utils::Cache->new->get($KEY);
+    };
+
+    # a: the item serves the display, no request (episode and chapter use the same path)
+    $role = Test::Role7968->new($mkitem->());
+    my $m = $go->();
+    is(scalar(@ep_calls), 0, '79-68 T3 item-bridge a: the item serves the display - no getEpisode call');
+    is($m && $m->{title}, 'Vier Engel', '79-68 T3 item-bridge a: title = the item name');
+    is($m && $m->{artist}, 'Der Show', '79-68 T3 item-bridge a: artist = the show');
+    is($m && $m->{album}, 'Der Show', '79-68 T3 item-bridge a: album = the show');
+    is($m && $m->{cover}, 'https://i.scdn.co/large.jpg', '79-68 T3 item-bridge a: cover = the item\'s largest image');
+    is($m && $m->{duration}, 5174, '79-68 T3 item-bridge a: duration from the item');
+    my $CH = '73E4okoX6R2PAagxONnSWI';
+    $role = Test::Role7968->new($mkitem->(uri => "spotify:episode:$CH", name => 'Track 1', show => 'Ein Hoerbuch'));
+    Slim::Utils::Cache->new->clear();
+    Plugins::SpotOn::ProtocolHandler->getMetadataFor(MockClient->new('p7968'), "spoton://episode:$CH");
+    my $mc = Slim::Utils::Cache->new->get('spoton_meta_' . md5_hex("spoton://episode:$CH"));
+    is($mc && $mc->{title}, 'Track 1', '79-68 T3 item-bridge a: a chapter (also spotify:episode:) is served the same way');
+    is($mc && $mc->{artist}, 'Ein Hoerbuch', '79-68 T3 item-bridge a: ... with the book as the show line');
+
+    # b: no item / an item for another uri -> exactly one getEpisode (the fallback)
+    $role = Test::Role7968->new(undef);
+    $m = $go->();
+    is_deeply(\@ep_calls, [ $EP ], '79-68 T3 item-bridge b: no current item -> exactly one getEpisode call');
+    is($m && $m->{title}, 'Fallback Title', '79-68 T3 item-bridge b: ... and the fallback answer is shown');
+    $role = Test::Role7968->new($mkitem->(uri => 'spotify:episode:AAAAAAAAAAAAAAAAAAAAAA'));
+    $m = $go->();
+    is_deeply(\@ep_calls, [ $EP ], '79-68 T3 item-bridge b: an item for another uri -> exactly one getEpisode call');
+    $role = Test::Role7968->new($mkitem->(name => ''));
+    $m = $go->();
+    is(scalar(@ep_calls), 1, '79-68 T3 item-bridge b: an item without a name is no display source -> getEpisode');
+
+    # c: the "by N/A" case - the artist line
+    $role = Test::Role7968->new($mkitem->(show => 'Show X', artists => []));
+    $m = $go->();
+    is($m && $m->{artist}, 'Show X', '79-68 T3 item-bridge c: empty artists -> the artist line is the show (parent)');
+    is($m && $m->{album},  'Show X', '79-68 T3 item-bridge c: ... and the album is the show');
+    $role = Test::Role7968->new($mkitem->(show => 'Show X', artists => [ { name => 'Host A' }, { name => 'Host B' } ]));
+    $m = $go->();
+    is($m && $m->{artist}, 'Host A, Host B', '79-68 T3 item-bridge c: artists present -> the artist line is the joined artists');
+    is($m && $m->{album},  'Show X', '79-68 T3 item-bridge c: ... and the album stays the parent');
+
+    # d: a track refetch never asks the role and calls getTrack once, as before
+    $role = Test::Role7968->new($mkitem->());
+    $go->('spoton://track:TRACKD0000000000000000');
+    is_deeply(\@track_calls, [ 'TRACKD0000000000000000' ], '79-68 T3 item-bridge d: a spoton://track refetch calls getTrack once');
+    is(scalar(@ep_calls), 0, '79-68 T3 item-bridge d: ... and never getEpisode');
+    is_deeply($role->{asked}, [], '79-68 T3 item-bridge d: ... and never asks the role for its item');
+};
+
+# ============================================================
+# 79-71 T1 (GH #167, D-38): the refetch of a spoton://episode:<id> entry on the Pathfinder-backed getEpisode.
+# A NotFound (code 404) keeps the definitive path (60 s, noteMetadataMissing); a Pathfinder transport, hash or GraphQL
+# failure (pathfinder_unavailable, no code) is transient (15 s) and never marks the item missing. The success entry
+# is built from the facade shape of the trimmed real spike-013 episode (t/fixtures/pathfinder/79-71-podcasts.json).
+# ============================================================
+subtest '79-71 T1 refetch' => sub {
+    use Digest::MD5 qw(md5_hex);
+    no warnings qw(redefine once);
+    delete $INC{'Plugins/SpotOn/Unified/DaemonManager.pm'};
+    local $INC{'Plugins/SpotOn/Unified/DaemonManager.pm'} = 'faked-79-71';
+    my $EP  = '6hDIr2Ngy8ijkGk3o77Li2';
+    my $URL = "spoton://episode:$EP";
+
+    { package Test::Role7971; sub new { bless { notes => [] }, $_[0] }
+      sub query { undef }
+      sub notify { my ($s, @a) = @_; push @{ $s->{notes} }, [@a]; 'ok' } }
+    my $role;
+    local *Plugins::SpotOn::Unified::DaemonManager::backendFor = sub { $role };
+
+    my $fx = do {
+        require JSON::PP;
+        my $f = "$project_dir/t/fixtures/pathfinder/79-71-podcasts.json";
+        open(my $fh, '<:raw', $f) or BAIL_OUT("cannot read fixture $f: $!");
+        local $/; JSON::PP->new->utf8->decode(<$fh>);
+    };
+    my $u = $fx->{episode}{data}{episodeUnionV2};
+    my $imgs = sub { [ map { { url => $_->{url}, width => $_->{width}, height => $_->{height} } } @{ $_[0]{sources} || [] } ] };
+    # the facade shape (Pathfinder _mapEpisode), as t/core/20 and t/core/36 pin it
+    my $mapped = {
+        id => $EP, uri => $u->{uri}, name => $u->{name}, duration_ms => $u->{duration}{totalMilliseconds},
+        images => $imgs->($u->{coverArt}),
+        show => { id => '1SzqOFS7bQ61WHixnftnYH', uri => $u->{podcastV2}{data}{uri}, name => $u->{podcastV2}{data}{name}, images => $imgs->($u->{podcastV2}{data}{coverArt}) },
+    };
+
+    my $answer;
+    local *Plugins::SpotOn::API::SpClient::getEpisode = sub { my ($c, $acct, $id, $cb) = @_; $cb->(@$answer); };
+    my $go = sub {
+        Slim::Utils::Cache->new->clear();
+        %Plugins::SpotOn::ProtocolHandler::_pendingRefetch = ();
+        $role = Test::Role7971->new;
+        Plugins::SpotOn::ProtocolHandler->getMetadataFor(MockClient->new('p7971'), $URL);
+    };
+    my $NEG = 'spoton_meta_neg_' . md5_hex($URL);
+
+    $answer = [ undef, { error => 'pathfinder_unavailable', pf_error => 'graphql_error' } ];
+    $go->();
+    is(Slim::Utils::Cache->new->ttl($NEG), 15, '79-71 T1 refetch-transient: pathfinder_unavailable sets the negative cache with the transient 15 s');
+    is(scalar(@{ $role->{notes} }), 0, '79-71 T1 refetch-transient: ... and never calls noteMetadataMissing');
+
+    $answer = [ undef, { error => 'not_found', code => 404 } ];
+    $go->();
+    is(Slim::Utils::Cache->new->ttl($NEG), 60, '79-71 T1 refetch-transient: not_found (code 404) keeps the definitive 60 s');
+    is(join('|', map { $_->[0] } @{ $role->{notes} }), 'noteMetadataMissing', '79-71 T1 refetch-transient: ... and calls noteMetadataMissing once');
+
+    $answer = [ $mapped, undef ];
+    $go->();
+    my $m = Slim::Utils::Cache->new->get('spoton_meta_' . md5_hex($URL)) || {};
+    is($m->{title}, "Vier Engel f\x{fc}r Cartier (SLOMW S05E04)", '79-71 T1 refetch-entry: title');
+    is(join('|', ($m->{artist} // '?'), ($m->{album} // '?')), "Der B\x{e4}tchcast|Der B\x{e4}tchcast", '79-71 T1 refetch-entry: artist = album = the show');
+    ok(($m->{cover} // '') =~ m{^https://i\.scdn\.co/image/} && $m->{cover} ne '/html/images/cover.png', '79-71 T1 refetch-entry: a real cover, not /html/images/cover.png');
+    is($m->{duration}, 5173.551, '79-71 T1 refetch-entry: duration in seconds');
+};
+
 done_testing();

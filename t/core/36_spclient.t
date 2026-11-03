@@ -577,6 +577,17 @@ sub reset_all {
     $Plugins::SpotOn::API::Credentials::mock_creds  = { username => 'testuser', auth_data => 'ZGF0YQ==' };
 }
 
+# 79-71: the trimmed real spike-013/014 replies (episode, chapter, NotFound, shows, lists) and the ids they carry
+my $F71 = do {
+    require JSON::PP;
+    my $f = "$project_dir/t/fixtures/pathfinder/79-71-podcasts.json";
+    open(my $fh, '<:raw', $f) or BAIL_OUT("cannot read fixture $f: $!");
+    local $/; JSON::PP->new->utf8->decode(<$fh>);
+};
+my $EP71 = '6hDIr2Ngy8ijkGk3o77Li2';
+my $CH71 = '73E4okoX6R2PAagxONnSWI';
+my $SHOW71_POD  = '1SzqOFS7bQ61WHixnftnYH';
+my $SHOW71_BOOK = '01DbzJA9caChG3VDgVmnFc';
 # ============================================================
 # (a) idToHex / hexToId roundtrip + validation
 # ============================================================
@@ -1153,82 +1164,11 @@ sub context_resolve_mixed_fixture {
 }
 
 # WR-01 (gap closure 75-07 Task 2): empty-body 200 -> parse_error (85-15: no
-# Client.pm delegation), no die, no hang, cb fires exactly once.
+# Client.pm delegation), no die, no hang, cb fires exactly once. 79-71: the body is Pathfinder's.
 {
     reset_all();
-    $Slim::Networking::SimpleAsyncHTTP::auto_response_content = '';
-
-    my $cbCalls = 0;
-    my ($result, $err);
-    $SP->getArtistAlbums('acct18', '4iV5W9uYEdYUVa79Axb7Rh', {}, sub { $cbCalls++; ($result, $err) = @_ });
-
-    is($cbCalls, 1, 'WR-01 getArtistAlbums: cb fires exactly once on an empty-body 200 (no double-callback)');
-    is(scalar(@Plugins::SpotOn::API::Client::getArtistAlbums_calls), 0,
-        'WR-01 getArtistAlbums: empty-body $meta never reaches Client.pm (85-15), no die');
-    is(ref($err) eq 'HASH' ? $err->{error} : undef, 'parse_error',
-        'WR-01 getArtistAlbums: empty-body $meta answers (undef, {error=>parse_error})');
-
-    $Slim::Networking::SimpleAsyncHTTP::auto_response_content = '{}';
-}
-
-# ============================================================
-# Task 2: Show + episode endpoints with D-07 safety net
-# ============================================================
-
-# getShow: normalized shape.
-{
-    reset_all();
-    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/metadata/4/show/}, show_fixture());
-
-    my ($result, $err);
-    $SP->getShow('acct20', '4iV5W9uYEdYUVa79Axb7Rh', sub { ($result, $err) = @_ });
-
-    ok($result, 'getShow: result returned');
-    is($result->{name}, 'Test Show', 'getShow: name mapped');
-    is($result->{publisher}, 'Test Publisher', 'getShow: publisher mapped');
-    is($result->{total_episodes}, 2, 'getShow: total_episodes counted from embedded episode gid list');
-    like($result->{images}[0]{url}, qr{^https://i\.scdn\.co/image/showcoverfileid}, 'getShow: cover_image mapped');
-}
-
-# getShow: forced 404 (spike-unverified endpoint) -> exactly one spclient
-# attempt, the 404 reaches the caller (85-15: the D-07 Client.pm safety net is gone).
-{
-    reset_all();
-    $Slim::Networking::SimpleAsyncHTTP::auto_mode = 'error_404';
-
-    my ($result, $err);
-    $SP->getShow('acct21', '4iV5W9uYEdYUVa79Axb7Rh', sub { ($result, $err) = @_ });
-
-    my @nonApresolve = Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests();
-    is(scalar(@nonApresolve), 1, 'getShow 404: exactly one spclient attempt (spike-unverified endpoint, D-07 safety net)');
-    is(scalar(@Plugins::SpotOn::API::Client::getShow_calls), 0, 'getShow 404: never reaches Client.pm (85-15)');
-    ok(!$result && ref($err) eq 'HASH' && $err->{code} == 404, 'getShow 404: the 404 reaches the caller unchanged as (undef, {code=>404})');
-
-    $Slim::Networking::SimpleAsyncHTTP::auto_mode = 'success';
-}
-
-# getShowEpisodes: slice + per-episode enrichment.
-{
-    reset_all();
-    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/metadata/4/show/}, show_fixture());
-    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/metadata/4/episode/}, episode_fixture());
-
-    my ($result, $err);
-    $SP->getShowEpisodes('acct22', '4iV5W9uYEdYUVa79Axb7Rh', { offset => 0, limit => 50 }, sub { ($result, $err) = @_ });
-
-    ok($result, 'getShowEpisodes: result returned');
-    is($result->{total}, 2, 'getShowEpisodes: total reflects embedded episode gid count');
-    is(scalar(@{ $result->{items} }), 2, 'getShowEpisodes: both episodes enriched (within limit)');
-    is($result->{items}[0]{name}, 'Test Episode', 'getShowEpisodes: enriched episode carries name');
-    is($result->{items}[0]{duration_ms}, 1800000, 'getShowEpisodes: normalized episode contains duration_ms');
-    is($result->{items}[0]{release_date}, '2021-03-10', 'getShowEpisodes: normalized episode contains release_date');
-}
-
-# WR-01 (gap closure 75-07 Task 2): empty-body 200 -> parse_error (85-15: no
-# Client.pm delegation), no die, no hang, cb fires exactly once.
-{
-    reset_all();
-    $Slim::Networking::SimpleAsyncHTTP::auto_response_content = '';
+    Slim::Utils::Cache->new()->set("spoton_pf_hash_$_", 'a' x 64) for qw(queryShowMetadataV2 queryPodcastEpisodes);
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{pathfinder/v2/query}, '');
 
     my $cbCalls = 0;
     my ($result, $err);
@@ -1236,26 +1176,16 @@ sub context_resolve_mixed_fixture {
 
     is($cbCalls, 1, 'WR-01 getShowEpisodes: cb fires exactly once on an empty-body 200 (no double-callback)');
     is(scalar(@Plugins::SpotOn::API::Client::getShowEpisodes_calls), 0,
-        'WR-01 getShowEpisodes: empty-body $meta never reaches Client.pm (85-15), no die');
-    is(ref($err) eq 'HASH' ? $err->{error} : undef, 'parse_error',
-        'WR-01 getShowEpisodes: empty-body $meta answers (undef, {error=>parse_error})');
+        'WR-01 getShowEpisodes: an empty body never reaches Client.pm (85-15), no die');
+    ok(ref($err) eq 'HASH' && $err->{error} eq 'pathfinder_unavailable' && ($err->{pf_error} // '') eq 'parse_error' && !exists $err->{code},
+        'WR-01 getShowEpisodes: an empty body answers (undef, {error=>pathfinder_unavailable, pf_error=>parse_error})');
 
     $Slim::Networking::SimpleAsyncHTTP::auto_response_content = '{}';
 }
 
-# getEpisode: single-object fetch.
-{
-    reset_all();
-    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/metadata/4/episode/}, episode_fixture());
-
-    my ($result, $err);
-    $SP->getEpisode('acct23', '4iV5W9uYEdYUVa79Axb7Rh', sub { ($result, $err) = @_ });
-
-    ok($result, 'getEpisode: result returned');
-    is($result->{name}, 'Test Episode', 'getEpisode: name mapped');
-    is($result->{duration_ms}, 1800000, 'getEpisode: duration_ms mapped');
-    is($result->{release_date}, '2021-03-10', 'getEpisode: release_date mapped');
-}
+# getEpisode: single-object fetch. 79-71 (GH #167, D-38): the facade runs on Pathfinder (getEpisodeOrChapter), no
+# spclient metadata/4/episode request; the cells on the real spike-013 replies are in the 79-71 section at the end of
+# this file (one-request, notfound, transport) and in t/core/20 (the mappers).
 
 # ============================================================
 # 85-08 Task 3 -- search on Pathfinder (decision-SEARCH pathfinder-search):
@@ -1646,16 +1576,18 @@ sub encode_page_response {
     $Plugins::SpotOn::API::Credentials::mock_creds = { username => 'testuser', auth_data => 'ZGF0YQ==' };
 }
 
-# getSavedShows: items nest under a show key (Web-API shape).
+# getSavedShows: items nest under a show key (Web-API shape). 79-71: the names come from Pathfinder (getShow).
 {
     reset_all();
+    Slim::Utils::Cache->new()->set("spoton_pf_hash_$_", 'a' x 64) for qw(queryShowMetadataV2);
     Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/collection/v2/paging}, encode_page_response(
         items => [
             { uri => 'spotify:show:' . b62id(1), added_at => 5 },
             { uri => 'spotify:show:' . b62id(2), added_at => 6 },
         ],
     ));
-    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/metadata/4/show/}, show_fixture());
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{pathfinder/v2/query},
+        JSON::PP->new->utf8->encode($F71->{show_podcast}));
 
     my ($result, $err);
     $SP->getSavedShows('acct72', { offset => 0, limit => 50 }, sub { ($result, $err) = @_ });
@@ -1663,27 +1595,28 @@ sub encode_page_response {
     ok($result, 'getSavedShows: result returned');
     is($result->{total}, 2, 'getSavedShows: total reflects both collection items');
     is(scalar(@{ $result->{items} }), 2, 'getSavedShows: both items enriched');
-    is($result->{items}[0]{show}{name}, 'Test Show', 'getSavedShows: item nests the normalized show under a "show" key (Web-API shape)');
+    is($result->{items}[0]{show}{name}, "Der B\x{e4}tchcast", 'getSavedShows: item nests the show under a "show" key (Web-API shape)');
     ok(exists $result->{items}[0]{added_at}, 'getSavedShows: item carries added_at from the collection entry');
 }
 
-# getSavedShows: a failing metadata/4/show (85-15: no probe, no Client.pm hand-over)
+# getSavedShows: a failing show request (85-15: no probe, no Client.pm hand-over)
 # keeps every slot as a minimal id/uri stub -- one request per show, one result.
 {
     reset_all();
+    Slim::Utils::Cache->new()->set("spoton_pf_hash_$_", 'a' x 64) for qw(queryShowMetadataV2);
     Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/collection/v2/paging}, encode_page_response(
         items => [
             { uri => 'spotify:show:' . b62id(1), added_at => 5 },
             { uri => 'spotify:show:' . b62id(2), added_at => 6 },
         ],
     ));
-    Slim::Networking::SimpleAsyncHTTP::set_error_for(qr{/metadata/4/show/}, 404);
+    Slim::Networking::SimpleAsyncHTTP::set_error_for(qr{pathfinder/v2/query}, 404);
 
     my ($result, $err);
     $SP->getSavedShows('acct73', { offset => 0, limit => 50 }, sub { ($result, $err) = @_ });
 
-    my @showMetaReqs = grep { $_->{url} =~ m{/metadata/4/show/} } Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests();
-    is(scalar(@showMetaReqs), 2, 'getSavedShows 404: one metadata/4/show request per slice item (no probe, no whole-call hand-over)');
+    my @showReqs = grep { $_->{url} =~ m{pathfinder/v2/query} } Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests();
+    is(scalar(@showReqs), 2, 'getSavedShows 404: one show request per slice item (no probe, no whole-call hand-over)');
     is(scalar(@Plugins::SpotOn::API::Client::getSavedShows_calls), 0, 'getSavedShows 404: never reaches Client.pm (85-15)');
     is(ref($result) eq 'HASH' ? scalar(@{ $result->{items} || [] }) : -1, 2, 'getSavedShows 404: both slots survive as id/uri stubs (CR-01), no error');
 }
@@ -3503,6 +3436,204 @@ sub capture43 {
     $SP->getTrack('acct1', '7961ffffffffffffffffff', sub { $err = $_[1] });
     is(($err && $err->{error}) // '', 'rate_limited_local', '79-61 WR-03 gate: _request is short-circuited by a 429 a gated caller recorded');
     $cache->remove(Plugins::SpotOn::API::SpClient::SPCLIENT_RATE_LIMIT_KEY());
+}
+
+# ============================================================
+# 79-71 (GH #167, D-38): getEpisode / getShow / getShowEpisodes / getSavedShows names on Pathfinder
+# (getEpisodeOrChapter, queryShowMetadataV2, queryPodcastEpisodes, queryBookChapters), on the trimmed real
+# spike-013/014 replies. No spclient metadata/4/show or /episode request.
+# ============================================================
+sub pf71_seed {
+    Slim::Utils::Cache->new()->set("spoton_pf_hash_$_", 'a' x 64)
+        for qw(getEpisodeOrChapter queryShowMetadataV2 queryPodcastEpisodes queryBookChapters);
+}
+# answers by operationName: a fixture key (encoded), a raw string, or a code ref ($vars, $opName) returning either
+sub pf71_serve {
+    my (%by_op) = @_;
+    my $enc = JSON::PP->new->utf8;
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{pathfinder/v2/query}, sub {
+        my $req = JSON::PP::decode_json($_[0]);
+        my $r = $by_op{ $req->{operationName} };
+        $r = $r->($req->{variables}, $req->{operationName}) if ref($r) eq 'CODE';
+        return '{"data":{}}' unless defined $r;
+        return ref($r) ? $enc->encode($r) : $r;
+    });
+}
+sub pf71_nonpf { return grep { $_->{url} !~ m{api-partner\.spotify\.com/pathfinder} } Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests() }
+
+# 79-71 T1: one request, the facade shape, no spclient request
+{
+    reset_all(); pf71_seed(); pf71_serve(getEpisodeOrChapter => $F71->{episode});
+    my ($result, $err);
+    $SP->getEpisode('acct71a', $EP71, sub { ($result, $err) = @_ });
+    my @q = pf_reqs();
+    is(scalar(@q), 1, '79-71 T1 one-request: getEpisode sends exactly one Pathfinder request');
+    my $b = @q ? pf_vars($q[0]) : {};
+    is(join('|', ($b->{operationName} // '?'), ($b->{variables}{uri} // '?')), "getEpisodeOrChapter|spotify:episode:$EP71",
+        '79-71 T1 one-request: operationName getEpisodeOrChapter, variable uri spotify:episode:<id>');
+    is(scalar(pf71_nonpf()), 0, '79-71 T1 one-request: no spclient (non-Pathfinder) request');
+    ok($result && !$err && $result->{name} eq "Vier Engel f\x{fc}r Cartier (SLOMW S05E04)" && $result->{show}{name} eq "Der B\x{e4}tchcast",
+        '79-71 T1 one-request: the facade answers the mapped episode with its show');
+    is(join('|', map { $result->{$_} // '?' } qw(id duration_ms release_date)), "$EP71|5173551|2026-10-27",
+        '79-71 T1 one-request: id, duration_ms and release_date mapped (the shape the callers read)');
+}
+
+# 79-71 T1: NotFound is the item's own not-found
+{
+    reset_all(); pf71_seed(); pf71_serve(getEpisodeOrChapter => $F71->{notfound});
+    my ($result, $err, $n) = (undef, undef, 0);
+    $SP->getEpisode('acct71b', $EP71, sub { $n++; ($result, $err) = @_ });
+    ok($n == 1 && !$result && ref($err) eq 'HASH' && ($err->{error} // '') eq 'not_found' && ($err->{code} // 0) == 404,
+        '79-71 T1 notfound: __typename NotFound calls back (undef, { error => not_found, code => 404 }) once');
+}
+
+# 79-71 T1: a transport, hash or GraphQL failure is transient - never a code
+{
+    reset_all(); pf71_seed(); pf71_serve(getEpisodeOrChapter => '{"errors":[{"message":"boom"}],"data":null}');
+    my ($result, $err);
+    $SP->getEpisode('acct71c', $EP71, sub { ($result, $err) = @_ });
+    ok(!$result && ref($err) eq 'HASH' && ($err->{error} // '') eq 'pathfinder_unavailable' && ($err->{pf_error} // '') eq 'graphql_error' && !exists $err->{code},
+        '79-71 T1 transport: a Pathfinder graphql_error calls back pathfinder_unavailable (pf_error graphql_error), no code');
+
+    reset_all(); pf71_seed();
+    Slim::Networking::SimpleAsyncHTTP::set_error_for(qr{pathfinder/v2/query}, 404);
+    ($result, $err) = ();
+    $SP->getEpisode('acct71d', $EP71, sub { ($result, $err) = @_ });
+    ok(!$result && ref($err) eq 'HASH' && ($err->{error} // '') eq 'pathfinder_unavailable' && length($err->{pf_error} // '') && !exists $err->{code},
+        '79-71 T1 transport: an HTTP 404 of the Pathfinder endpoint is pathfinder_unavailable, no code (never the item\'s not-found)');
+}
+
+# ------------------------------------------------------------
+# 79-71 Task 2: shows, episode and chapter lists, "Meine Podcasts" names
+# ------------------------------------------------------------
+# queryShowMetadataV2 answers the podcast or the audiobook show by the requested uri, the lists by operation and offset
+sub pf71_serve_shows {
+    pf71_serve(
+        queryShowMetadataV2  => sub { my ($v) = @_; return $v->{uri} =~ /\Q$SHOW71_BOOK\E/ ? $F71->{show_audiobook} : $F71->{show_podcast} },
+        queryPodcastEpisodes => sub { my ($v) = @_; return ($v->{offset} // 0) >= 50 ? $F71->{episodes_p2} : $F71->{episodes_p1} },
+        queryBookChapters    => $F71->{chapters},
+    );
+}
+sub pf71_ops { return map { pf_vars($_)->{operationName} } pf_reqs() }
+
+# show-podcast / show-audiobook: the show shape and the kind
+{
+    reset_all(); pf71_seed(); pf71_serve_shows();
+    my ($r, $e);
+    $SP->getShow('acct71e', $SHOW71_POD, sub { ($r, $e) = @_ });
+    ok($r && !$e, '79-71 T2 show-podcast: getShow answers a show');
+    is(join('|', map { $r->{$_} // '?' } qw(id uri name publisher)),
+        "$SHOW71_POD|spotify:show:$SHOW71_POD|Der B\x{e4}tchcast|Annika Brockschmidt und Anja R\x{fc}tzel", '79-71 T2 show-podcast: id, uri, name, publisher');
+    is(scalar(@{ $r->{images} || [] }), 3, '79-71 T2 show-podcast: three cover sizes');
+    is(Slim::Utils::Cache->new()->get("spoton_pf_showkind_$SHOW71_POD") // '?', 'podcast', '79-71 T2 show-podcast: the kind (podcast) is recorded');
+    is(join(',', pf71_ops()), 'queryShowMetadataV2', '79-71 T2 show-podcast: one queryShowMetadataV2 request');
+    is(scalar(pf71_nonpf()), 0, '79-71 T2 show-podcast: no spclient metadata/4/show request');
+
+    reset_all(); pf71_seed(); pf71_serve_shows();
+    ($r, $e) = ();
+    $SP->getShow('acct71e', $SHOW71_BOOK, sub { ($r, $e) = @_ });
+    ok($r && ($r->{name} // '') =~ /\AWahre Verbrechen Extrem 1: /, '79-71 T2 show-audiobook: getShow answers the book with its name');
+    is(Slim::Utils::Cache->new()->get("spoton_pf_showkind_$SHOW71_BOOK") // '?', 'audiobook', '79-71 T2 show-audiobook: the kind (audiobook) is recorded');
+}
+
+# episodes-p1 / episodes-p2: paging reaches the end by the returned count
+{
+    reset_all(); pf71_seed(); pf71_serve_shows();
+    my ($r, $e);
+    $SP->getShowEpisodes('acct71f', $SHOW71_POD, { offset => 0, limit => 50 }, sub { ($r, $e) = @_ });
+    my @ops = pf71_ops();
+    is(scalar(grep { $_ eq 'queryPodcastEpisodes' } @ops), 1, '79-71 T2 episodes-p1: exactly one queryPodcastEpisodes request');
+    my ($lq) = grep { pf_vars($_)->{operationName} eq 'queryPodcastEpisodes' } pf_reqs();
+    my $v = $lq ? pf_vars($lq)->{variables} : {};
+    is(join('|', ($v->{uri} // '?'), ($v->{offset} // '?'), ($v->{limit} // '?')), "spotify:show:$SHOW71_POD|0|50", '79-71 T2 episodes-p1: uri, offset and limit travel in the variables');
+    ok($r && !$e && $r->{total} == 56 && $r->{offset} == 0 && $r->{limit} == 50, '79-71 T2 episodes-p1: { total 56, offset 0, limit 50 }');
+    is(scalar(@{ $r->{items} || [] }), 3, '79-71 T2 episodes-p1: the three episodes of the trimmed fixture');
+    is(scalar(grep { defined $_->{name} && length $_->{name} && ($_->{uri} // '') =~ /\Aspotify:episode:/ } @{ $r->{items} || [] }), 3, '79-71 T2 episodes-p1: every item named, with an episode uri');
+    is(scalar(pf71_nonpf()), 0, '79-71 T2 episodes-p1: no spclient request');
+
+    reset_all(); pf71_seed(); pf71_serve_shows();
+    ($r, $e) = ();
+    $SP->getShowEpisodes('acct71f', $SHOW71_POD, { offset => 50, limit => 50 }, sub { ($r, $e) = @_ });
+    ($lq) = grep { pf_vars($_)->{operationName} eq 'queryPodcastEpisodes' } pf_reqs();
+    is($lq ? pf_vars($lq)->{variables}{offset} : '?', 50, '79-71 T2 episodes-p2: offset 50 travels in the variables');
+    is(scalar(@{ $r->{items} || [] }), 6, '79-71 T2 episodes-p2: the six page-2 items');
+    is($r->{total}, 56, '79-71 T2 episodes-p2: total 56');
+    is(50 + scalar(@{ $r->{items} || [] }), $r->{total}, '79-71 T2 episodes-p2: offset + returned count == total, so a caller that advances by the count stops');
+    is(scalar(grep { defined $_->{name} && length $_->{name} } @{ $r->{items} || [] }), 6, '79-71 T2 episodes-p2: all six named');
+}
+
+# chapters: an audiobook lists its chapters (never queryPodcastEpisodes)
+{
+    reset_all(); pf71_seed(); pf71_serve_shows();
+    my ($r, $e);
+    $SP->getShowEpisodes('acct71g', $SHOW71_BOOK, { offset => 0, limit => 50 }, sub { ($r, $e) = @_ });
+    my @ops = pf71_ops();
+    is(scalar(grep { $_ eq 'queryBookChapters' } @ops) . '/' . scalar(grep { $_ eq 'queryPodcastEpisodes' } @ops), '1/0', '79-71 T2 chapters: queryBookChapters once, queryPodcastEpisodes never');
+    ok($r && !$e && $r->{total} == 16, '79-71 T2 chapters: total 16');
+    is(scalar(grep { defined $_->{name} && length $_->{name} && ($_->{uri} // '') =~ /\Aspotify:episode:/ } @{ $r->{items} || [] }), scalar(@{ $r->{items} || [] }) || -1,
+        '79-71 T2 chapters: every chapter named, with a spotify:episode: uri');
+    is($r->{items}[0]{uri} // '?', "spotify:episode:$CH71", '79-71 T2 chapters: the first chapter is 73E4okoX6R2PAagxONnSWI');
+}
+
+# kind-cache: a second page of the same show costs only the list request
+{
+    reset_all(); pf71_seed(); pf71_serve_shows();
+    my ($r1, $r2, $e);
+    $SP->getShowEpisodes('acct71h', $SHOW71_POD, { offset => 0, limit => 50 }, sub { $r1 = $_[0] });
+    $SP->getShowEpisodes('acct71h', $SHOW71_POD, { offset => 50, limit => 50 }, sub { $r2 = $_[0] });
+    my @ops = pf71_ops();
+    is(join(',', @ops), 'queryShowMetadataV2,queryPodcastEpisodes,queryPodcastEpisodes', '79-71 T2 kind-cache: the kind is read once, the second page sends only the list request');
+    ok($r1 && $r2, '79-71 T2 kind-cache: both pages answered');
+}
+
+# notfound-show: only NotFound is not_found; a transport error is transient
+{
+    my $nf = { data => { podcastUnionV2 => { __typename => 'NotFound' } } };
+    reset_all(); pf71_seed(); pf71_serve(queryShowMetadataV2 => $nf);
+    my ($r, $e, $n) = (undef, undef, 0);
+    $SP->getShow('acct71i', $SHOW71_POD, sub { $n++; ($r, $e) = @_ });
+    ok($n == 1 && !$r && ($e->{error} // '') eq 'not_found' && ($e->{code} // 0) == 404, '79-71 T2 notfound-show: getShow on NotFound calls back (undef, { not_found, code 404 }) once');
+    ($r, $e) = ();
+    $SP->getShowEpisodes('acct71i', $SHOW71_POD, { offset => 0, limit => 50 }, sub { ($r, $e) = @_ });
+    ok(!$r && ($e->{error} // '') eq 'not_found' && ($e->{code} // 0) == 404, '79-71 T2 notfound-show: getShowEpisodes on NotFound likewise');
+
+    reset_all(); pf71_seed();
+    Slim::Networking::SimpleAsyncHTTP::set_error_for(qr{pathfinder/v2/query}, 500);
+    ($r, $e) = ();
+    $SP->getShow('acct71j', $SHOW71_POD, sub { ($r, $e) = @_ });
+    ok(!$r && ($e->{error} // '') eq 'pathfinder_unavailable' && !exists $e->{code}, '79-71 T2 notfound-show: a transport error is pathfinder_unavailable without a code (getShow)');
+    ($r, $e) = ();
+    $SP->getShowEpisodes('acct71j', $SHOW71_POD, { offset => 0, limit => 50 }, sub { ($r, $e) = @_ });
+    ok(!$r && ($e->{error} // '') eq 'pathfinder_unavailable' && !exists $e->{code}, '79-71 T2 notfound-show: ... and for getShowEpisodes');
+}
+
+# saved-names: "Meine Podcasts" - every saved show carries its name, from getShow (Pathfinder)
+{
+    reset_all(); pf71_seed(); pf71_serve_shows();
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/collection/v2/paging}, encode_page_response(
+        items => [
+            { uri => "spotify:show:$SHOW71_POD",  added_at => 5 },
+            { uri => "spotify:show:$SHOW71_BOOK", added_at => 6 },
+        ],
+    ));
+    my ($r, $e);
+    $SP->getSavedShows('acct71k', { offset => 0, limit => 50 }, sub { ($r, $e) = @_ });
+    ok($r && !$e && $r->{total} == 2 && scalar(@{ $r->{items} }) == 2, '79-71 T2 saved-names: both saved shows returned');
+    is(scalar(grep { !defined $_->{show}{name} || !length $_->{show}{name} } @{ $r->{items} || [] }), 0, '79-71 T2 saved-names: 0 nameless entries');
+    is(join('|', map { $_->{show}{name} =~ /\A(\S+)/ ? $1 : '?' } @{ $r->{items} || [] }), 'Der|Wahre', '79-71 T2 saved-names: each name is its own show\'s');
+    ok(exists $r->{items}[0]{added_at}, '79-71 T2 saved-names: added_at of the collection entry kept');
+    is(scalar(grep { $_->{url} =~ m{/metadata/4/show/} } Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests()), 0, '79-71 T2 saved-names: no spclient metadata/4/show request');
+    is(scalar(grep { $_ eq 'queryShowMetadataV2' } pf71_ops()), 2, '79-71 T2 saved-names: one show request per show');
+
+    # a failing show keeps its slot as an id/uri stub (the CR-01 slot discipline)
+    reset_all(); pf71_seed();
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/collection/v2/paging}, encode_page_response(
+        items => [ { uri => "spotify:show:$SHOW71_POD", added_at => 5 }, { uri => "spotify:show:$SHOW71_BOOK", added_at => 6 } ],
+    ));
+    Slim::Networking::SimpleAsyncHTTP::set_error_for(qr{pathfinder/v2/query}, 500);
+    ($r, $e) = ();
+    $SP->getSavedShows('acct71l', { offset => 0, limit => 50 }, sub { ($r, $e) = @_ });
+    is(ref($r) eq 'HASH' ? scalar(@{ $r->{items} || [] }) : -1, 2, '79-71 T2 saved-names: when every show request fails both slots survive as stubs, no error');
 }
 
 done_testing();

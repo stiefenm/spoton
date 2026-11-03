@@ -38,6 +38,9 @@ SKIP: {
         PLUGIN_SPOTON_ACCOUNT_REMOVE
         PLUGIN_SPOTON_AUTH_ERROR
         PLUGIN_SPOTON_ADD_ANOTHER
+        PLUGIN_SPOTON_CONNECT_POWER_OFF
+        PLUGIN_SPOTON_CONNECT_POWER_OFF_DESC
+        PLUGIN_SPOTON_CONNECT_POWER_OFF_LABEL
         PLUGIN_SPOTON_CONNECTED_AS
         PLUGIN_SPOTON_ACCOUNT_REMOVE_CONFIRM
         PLUGIN_SPOTON_STEP1_TITLE
@@ -349,6 +352,17 @@ SKIP: {
         for my $lang (qw(CS DA DE EN ES FR IT NL NO PL SV)) {
             ok(defined $langs_of{$key}{$lang} && length $langs_of{$key}{$lang}, "$key has a $lang translation");
         }
+    }
+
+    # 79-69 T2 (GH #151, D-36): the three tokens of the power-off-after-Connect setting exist in
+    # all eleven languages, and no value carries an em or en dash (plain "-" only).
+    for my $key (qw(PLUGIN_SPOTON_CONNECT_POWER_OFF PLUGIN_SPOTON_CONNECT_POWER_OFF_DESC PLUGIN_SPOTON_CONNECT_POWER_OFF_LABEL)) {
+        for my $lang (qw(CS DA DE EN ES FR IT NL NO PL SV)) {
+            ok(defined $langs_of{$key}{$lang} && length $langs_of{$key}{$lang}, "79-69 T2 e: $key has a $lang translation");
+        }
+        is(scalar(keys %{ $langs_of{$key} || {} }), 11, "79-69 T2 e: $key has exactly the eleven shipped languages");
+        my @dash = grep { $langs_of{$key}{$_} =~ /[\x{2013}\x{2014}]/ } keys %{ $langs_of{$key} || {} };
+        is(scalar(@dash), 0, "79-69 T2 e: $key carries no em or en dash");
     }
 
     # 85-11 (D-24, D-02, D-23): the two-step settings page and the __DISCOVER__ notices exist

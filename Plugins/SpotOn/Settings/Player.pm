@@ -47,6 +47,13 @@ sub handler {
             $prefs->client($client)->set('enableSpotifyConnect', $enableConnect);
         }
 
+        # 79-69 (GH #151, D-36): switch the player off again after a Connect session
+        # (30 s wait, off by default). Same presence-marker rule as the box above.
+        if (defined $paramRef->{'has_connectPowerOff'}) {
+            my $powerOff = $paramRef->{'pref_connectPowerOff'} ? 1 : 0;
+            $prefs->client($client)->set('connectPowerOff', $powerOff);
+        }
+
         if (defined $paramRef->{'pref_connectOggOverride'}) {
             my $override = $paramRef->{'pref_connectOggOverride'};
             $override = 'auto' unless $override =~ /^(?:auto|ogg|pcm)$/;
@@ -129,6 +136,7 @@ sub handler {
     if ($client) {
         $paramRef->{connectEnabled}     = $prefs->client($client)->get('enableSpotifyConnect') // 1;
         $paramRef->{connectOggOverride} = $prefs->client($client)->get('connectOggOverride') || 'auto';
+        $paramRef->{connectPowerOff}    = $prefs->client($client)->get('connectPowerOff') ? 1 : 0;   # 79-69: default off
         $paramRef->{discoveryEnabled}     = $prefs->client($client)->get('disableDiscovery') ? 0 : 1;
         $paramRef->{discoveryByCrashLoop} = $prefs->client($client)->get('discoveryDisabledByCrashLoop') || 0;
         $paramRef->{bitrateOverride} = $prefs->client($client)->get('bitrateOverride') || '';

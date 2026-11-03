@@ -1534,15 +1534,66 @@ sub getArtistAlbums {
 
 # ============================================================
 # getShow / getShowEpisodes / getEpisode facades (D-06/D-07)
-# NOTE: metadata/4/show and metadata/4/episode were NOT exercised in Spike
-# 009 (S-04..S-11 cover track/album/artist/context-resolve/collection/
-# recently-played/playlists only) -- shapes below are the best-effort mirror
-# of the verified album/track pattern (show ~ album, episode ~ track,
-# getShowEpisodes ~ getAlbumTracks). D-07 means ANY 4xx/5xx degrades
-# is reported to the caller as an error; live verification is mandatory phase UAT.
+# 79-71 (GH #167, D-38): all three run on Pathfinder (API/Pathfinder.pm: queryShowMetadataV2, queryPodcastEpisodes /
+# queryBookChapters, getEpisodeOrChapter). spclient metadata/4/show and metadata/4/episode answer 404 (triage
+# retest-4.0, spikes 013/014), so no such request is made any more. Signatures and result shapes are unchanged:
+# getShow -> { id, uri, name, publisher, images, description, kind }, getShowEpisodes -> { items, total, offset, limit }
+# (as getAlbumTracks), getEpisode -> the episode hash. The show metadata is cached 24 h (spoton_pf_show_<id>) and the
+# show kind 30 d (spoton_pf_showkind_<id>), so a second list page costs only the list request.
 # ============================================================
 
+use constant PF_SHOW_TTL     => 24 * 3600;
+use constant PF_SHOWKIND_TTL => 30 * 86400;
+
+# _pfFacadeError($class, $err)
+# 79-71 (D-38): the error mapping of the Pathfinder-backed facades (getEpisode, getShow, getShowEpisodes). ONLY a
+# Pathfinder `__typename: NotFound` is SpotOn's not-found ({ error => 'not_found', code => 404 }: the definitive case
+# ProtocolHandler's refetch locks the item for). Every other Pathfinder failure (graphql_error, parse_error, http_error
+# with any code incl. a 404 of the endpoint, rate_limited, unauthorized, ua_gate, hash_broken, op_missing,
+# internal_error, unknown_shape, no_token) is transient: { error => 'pathfinder_unavailable', pf_error => <original> }
+# WITHOUT a code, so the refetch takes its short transient TTL and never marks the item missing (T-79-304).
+sub _pfFacadeError {
+    my ($class, $err) = @_;
+    my $e = (ref($err) eq 'HASH' && defined $err->{error} && !ref $err->{error}) ? $err->{error} : '';
+    return { error => 'not_found', code => 404 } if $e eq 'not_found';
+    return { error => 'invalid_id' }             if $e eq 'invalid_id';
+    my %out = ( error => 'pathfinder_unavailable', pf_error => (length $e ? $e : 'unknown') );
+    $out{pf_code} = $err->{code} if ref($err) eq 'HASH' && defined $err->{code} && !ref $err->{code};
+    return \%out;
+}
+
+# getEpisode($class, $accountId, $episodeId, $cb)
+# 79-71 (GH #167, D-38): on Pathfinder (getEpisodeOrChapter) -- spclient metadata/4/episode answers 404. $cb->(\%episode)
+# with id, uri, name, duration_ms, explicit, release_date, images and show { id, uri, name, images } (an audiobook
+# chapter carries its book as the show), or $cb->(undef, \%err) per _pfFacadeError.
+sub getEpisode {
+    my ($class, $accountId, $episodeId, $cb) = @_;
+
+    unless ($class->_hasLogin5Creds($accountId)) {
+        main::INFOLOG && $log->info('SpClient: getEpisode without stored credentials');
+        $cb->(undef, { error => 'no_credentials' });
+        return;
+    }
+
+    unless ($class->idToHex($episodeId)) {
+        $cb->(undef, { error => 'invalid_id' });
+        return;
+    }
+
+    require Plugins::SpotOn::API::Pathfinder;
+    Plugins::SpotOn::API::Pathfinder->episodeOrChapter($accountId, $episodeId, sub {
+        my ($episode, $err) = @_;
+        if ($episode) {
+            $cb->($episode);
+            return;
+        }
+        $cb->(undef, $class->_pfFacadeError($err));
+    });
+}
+
 # getShow($class, $accountId, $showId, $cb)
+# $cb->(\%show) or $cb->(undef, \%err) per _pfFacadeError. The kind ('podcast' | 'audiobook') rides in the hash and is
+# cached separately for getShowEpisodes.
 sub getShow {
     my ($class, $accountId, $showId, $cb) = @_;
 
@@ -1552,47 +1603,33 @@ sub getShow {
         return;
     }
 
-    my $hexId = $class->idToHex($showId);
-    unless ($hexId) {
+    unless ($class->idToHex($showId)) {
         $cb->(undef, { error => 'invalid_id' });
         return;
     }
 
-    $class->_spFacade(
-        "metadata/4/show/$hexId",
-        { _accountId => $accountId, _accept => 'application/json' },
-        sub {
-            my ($meta, $fcb) = @_;
-            $fcb->($class->_normalizeShow($meta));
-        },
-        $cb,
-    );
-}
+    my $showKey = "spoton_pf_show_$showId";
+    if (my $cached = $cache->get($showKey)) {
+        $cb->($cached);
+        return;
+    }
 
-# _normalizeShow($class, $meta)
-# publisher is best-effort (spike-unverified field name) -- callers already
-# guard optional fields (Plugin.pm's _showItem defaults publisher to '').
-sub _normalizeShow {
-    my ($class, $meta) = @_;
-    return undef unless $meta && ref($meta) eq 'HASH';
-
-    my $id = $meta->{gid} ? $class->hexToId($meta->{gid}) : undef;
-
-    return {
-        id             => $id,
-        uri            => $id ? "spotify:show:$id" : undef,
-        name           => $meta->{name},
-        description    => $meta->{description},
-        publisher      => $meta->{publisher},
-        images         => $class->_imagesFromGroup($meta->{cover_image} || $meta->{cover_group}),
-        total_episodes => scalar(@{ $meta->{episode} || [] }),
-    };
+    require Plugins::SpotOn::API::Pathfinder;
+    Plugins::SpotOn::API::Pathfinder->showMetadata($accountId, $showId, sub {
+        my ($show, $err) = @_;
+        unless ($show) {
+            $cb->(undef, $class->_pfFacadeError($err));
+            return;
+        }
+        $cache->set($showKey, $show, PF_SHOW_TTL);
+        $cache->set("spoton_pf_showkind_$showId", $show->{kind}, PF_SHOWKIND_TTL) if $show->{kind};
+        $cb->($show);
+    });
 }
 
 # getShowEpisodes($class, $accountId, $showId, $params, $cb)
-# Mirrors getAlbumTracks: flattens the show metadata's embedded episode gid
-# list, slices per offset/limit, enriches ONLY the slice via
-# metadata/4/episode/{hex} (lazy, D-09).
+# One page { items, total, offset, limit } of a show's episodes, or of an audiobook's chapters (the kind decides the
+# Pathfinder operation). The kind comes from the cache; the first page of a show not seen yet asks getShow first.
 sub getShowEpisodes {
     my ($class, $accountId, $showId, $params, $cb) = @_;
     $params ||= {};
@@ -1605,83 +1642,36 @@ sub getShowEpisodes {
         return;
     }
 
-    my $hexId = $class->idToHex($showId);
-    unless ($hexId) {
+    unless ($class->idToHex($showId)) {
         $cb->(undef, { error => 'invalid_id' });
         return;
     }
 
-    $class->_spFacade(
-        "metadata/4/show/$hexId",
-        { _accountId => $accountId, _accept => 'application/json' },
-        sub {
-            my ($meta, $fcb) = @_;
-            unless ($meta && ref($meta) eq 'HASH') {
-                $fcb->(undef, { error => 'parse_error' });
+    require Plugins::SpotOn::API::Pathfinder;
+    my $list = sub {
+        my ($kind) = @_;
+        Plugins::SpotOn::API::Pathfinder->showEpisodes($accountId, $showId, $kind, { offset => $offset, limit => $limit }, sub {
+            my ($page, $err) = @_;
+            unless ($page) {
+                $cb->(undef, $class->_pfFacadeError($err));
                 return;
             }
-
-            my @gids = map { $_->{gid} } grep { $_->{gid} } @{ $meta->{episode} || [] };
-
-            my ($sliceGids, $total) = $class->_sliceAsPage(\@gids, $offset, $limit);
-            my @sliceIds = map { $class->hexToId($_) } @$sliceGids;
-
-            $class->_enrichMeta($accountId, \@sliceIds, 'episode', '_normalizeEpisode', sub {
-                my ($episodes) = @_;
-                $fcb->({ items => $episodes, total => $total, offset => $offset, limit => $limit });
-            });
-        },
-        $cb,
-    );
-}
-
-# getEpisode($class, $accountId, $episodeId, $cb)
-sub getEpisode {
-    my ($class, $accountId, $episodeId, $cb) = @_;
-
-    unless ($class->_hasLogin5Creds($accountId)) {
-        main::INFOLOG && $log->info('SpClient: getEpisode without stored credentials');
-        $cb->(undef, { error => 'no_credentials' });
-        return;
-    }
-
-    my $hexId = $class->idToHex($episodeId);
-    unless ($hexId) {
-        $cb->(undef, { error => 'invalid_id' });
-        return;
-    }
-
-    $class->_spFacade(
-        "metadata/4/episode/$hexId",
-        { _accountId => $accountId, _accept => 'application/json' },
-        sub {
-            my ($meta, $fcb) = @_;
-            $fcb->($class->_normalizeEpisode($meta));
-        },
-        $cb,
-    );
-}
-
-# _normalizeEpisode($class, $meta)
-# Mirrors _normalizeTrack's shape (duration_ms, explicit, images) plus
-# release_date. resume_point/show are not present in spclient episode
-# metadata -- normalized to undef (callers already guard these as optional,
-# per _episodeInfoFeed/_episodeItem's existing undef-tolerant handling).
-sub _normalizeEpisode {
-    my ($class, $meta) = @_;
-    return undef unless $meta && ref($meta) eq 'HASH';
-
-    my $id = $meta->{gid} ? $class->hexToId($meta->{gid}) : undef;
-
-    return {
-        id           => $id,
-        uri          => $id ? "spotify:episode:$id" : undef,
-        name         => $meta->{name},
-        duration_ms  => $meta->{duration},
-        explicit     => $meta->{explicit} ? 1 : 0,
-        release_date => $class->_formatDate($meta->{date}),
-        images       => $class->_imagesFromGroup($meta->{cover_group}),
+            $cb->($page);
+        });
     };
+
+    if (my $kind = $cache->get("spoton_pf_showkind_$showId")) {
+        $list->($kind);
+        return;
+    }
+    $class->getShow($accountId, $showId, sub {
+        my ($show, $err) = @_;
+        unless ($show) {
+            $cb->(undef, $err);
+            return;
+        }
+        $list->($show->{kind});
+    });
 }
 
 # ============================================================
@@ -2151,11 +2141,12 @@ sub getFollowedArtists {
 
 # getSavedShows($class, $accountId, $params, $cb)
 # Same offset/limit contract as the other saved-collection feeds. Saved Shows
-# live under the collection/v2 set 'show' (S-07). The requested slice is
-# enriched with metadata/4/show per item through _enrichCollectionSlice; an
-# item whose metadata fetch fails keeps its slot as a minimal id/uri stub
-# (CR-01), so one broken show never hides the others and there is no second
-# transport to hand the whole call to (85-15, D-01).
+# live under the collection/v2 set 'show' (S-07). The collection holds only the
+# show uris, so the requested slice is named through getShow (Pathfinder, 79-71):
+# the 24 h show cache keeps repeats free and Pathfinder's queue throttles the
+# rest. A show whose request fails keeps its slot as a minimal id/uri stub
+# (CR-01), so one broken show never hides the others and the slot count
+# survives (85-15, D-01).
 sub getSavedShows {
     my ($class, $accountId, $params, $cb) = @_;
     $params ||= {};
@@ -2187,10 +2178,24 @@ sub getSavedShows {
             return;
         }
 
-        $class->_enrichCollectionSlice($accountId, $slice, 'show', '_normalizeShow', 'show', sub {
-            my ($items) = @_;
-            $cb->({ items => $items, total => $total, offset => $offset, limit => $limit });
-        });
+        my @results   = (undef) x scalar(@$slice);
+        my $remaining = scalar @$slice;
+        for my $i (0 .. $#$slice) {
+            my $entry = $slice->[$i];
+            my ($id)  = ($entry->{uri} // '') =~ /^spotify:show:(.+)$/;
+            my $stub  = { id => $id, uri => ($entry->{uri} // 'spotify:show:'), name => undef };
+            my $finish = sub {
+                my ($show) = @_;
+                $results[$i] = { added_at => $entry->{added_at}, show => ($show || $stub) };
+                $cb->({ items => \@results, total => $total, offset => $offset, limit => $limit })
+                    if --$remaining == 0;
+            };
+            unless ($id && $class->idToHex($id)) {
+                $finish->(undef);
+                next;
+            }
+            $class->getShow($accountId, $id, sub { $finish->($_[0]) });
+        }
     }, $params->{_noCache});
 }
 

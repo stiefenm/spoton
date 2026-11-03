@@ -301,7 +301,10 @@ EOT
     like($o3, qr/^BACKSTOP=FAIL reason=beta /m, 'WR-06 url names another tag: BACKSTOP=FAIL reason=beta');
 
     # MUST-FAIL: the descriptor offers a newer version than the candidate ships
-    (my $inst_old = $real_inst) =~ s{<version>(\d+\.\d+\.\d+)beta(\d+)(?:\.\d+)?</version>}{"<version>$1beta" . ($2 > 1 ? $2 - 1 : 0) . "</version>"}e;
+    # The mutant ships beta0: strictly older than any real descriptor, whether install.xml is one beta
+    # ahead of the descriptor (release candidate, state=pending) or equal to it (after publication).
+    # "One beta lower" read equal to a descriptor one step behind install.xml and passed the backstop (79-70).
+    (my $inst_old = $real_inst) =~ s{<version>(\d+\.\d+\.\d+)beta(\d+)(?:\.\d+)?</version>}{<version>${1}beta0</version>};
     isnt($inst_old, $real_inst, 'WR-06 mutant: the older install.xml copy differs from the real one');
     my ($o4, $rc4) = $candidate->($real_repo, $inst_old);
     is($rc4, 1, 'WR-06 descriptor ahead of install.xml: backstop exits 1');

@@ -487,4 +487,46 @@ SKIP: {
     ok(defined $mfy && $mfy =~ /\[A-Za-z0-9\]\{1,40\}/, 'source: getMadeForYou validates every playlist id against the strict regex');
 }
 
+# ============================================================
+# 79-71 Task 1 (GH #167, D-38): the episode and chapter mappers on the trimmed real spike-013 replies
+# (fixture t/fixtures/pathfinder/79-71-podcasts.json). Episode = podcastV2, chapter = audiobookV2.
+# ============================================================
+SKIP: {
+    skip "Pathfinder.pm not yet created", 15 unless -f $pf_module;
+    my $FX71 = do {
+        my $f = "$project_dir/t/fixtures/pathfinder/79-71-podcasts.json";
+        open(my $fh, '<:raw', $f) or BAIL_OUT("cannot read fixture $f: $!");
+        local $/; JSON::PP->new->utf8->decode(<$fh>);
+    };
+    my $mapEp = \&Plugins::SpotOn::API::Pathfinder::_mapEpisode;
+
+    my $ep = $mapEp->({ data => $FX71->{episode}{data}{episodeUnionV2} }) || {};
+    is($ep->{id}, '6hDIr2Ngy8ijkGk3o77Li2', '79-71 T1 map-episode: id from the uri');
+    is($ep->{name}, "Vier Engel f\x{fc}r Cartier (SLOMW S05E04)", '79-71 T1 map-episode: name (UTF-8 byte for byte)');
+    is($ep->{duration_ms}, 5173551, '79-71 T1 map-episode: duration_ms');
+    is(scalar(@{ $ep->{images} || [] }), 3, '79-71 T1 map-episode: three cover sizes');
+    is(join('|', ($ep->{show}{name} // '?'), ($ep->{show}{uri} // '?')), "Der B\x{e4}tchcast|spotify:show:1SzqOFS7bQ61WHixnftnYH",
+        '79-71 T1 map-episode: show name and uri from podcastV2.data');
+
+    my $chu = $FX71->{chapter}{data}{episodeUnionV2};
+    my $ch  = $mapEp->({ data => $chu }) || {};
+    is($ch->{id}, '73E4okoX6R2PAagxONnSWI', '79-71 T1 map-chapter: id from the uri');
+    is($ch->{name}, 'Track 1', '79-71 T1 map-chapter: name');
+    is($ch->{duration_ms}, 17159, '79-71 T1 map-chapter: duration_ms');
+    like($ch->{show}{name} // '', qr/\AWahre Verbrechen Extrem 1: /, '79-71 T1 map-chapter: the show is the book (audiobookV2.data), name');
+    is($ch->{show}{uri} // '', 'spotify:show:01DbzJA9caChG3VDgVmnFc', '79-71 T1 map-chapter: ... and its uri');
+    is(scalar(@{ $ch->{images} || [] }), 3, '79-71 T1 map-chapter: the images are the chapter\'s own coverArt');
+    {
+        require Storable;
+        my $copy = Storable::dclone($chu);
+        $copy->{coverArt} = { sources => [] };
+        my $c2 = $mapEp->({ data => $copy }) || {};
+        is(join('|', map { $_->{url} } @{ $c2->{images} || [] }), join('|', map { $_->{url} } @{ $ch->{show}{images} || [] }),
+            '79-71 T1 map-chapter: with the own coverArt emptied the images are the book\'s');
+        ok(@{ $c2->{images} || [] } > 0, '79-71 T1 map-chapter: ... and not empty');
+    }
+    ok(defined &Plugins::SpotOn::API::Pathfinder::episodeOrChapter, '79-71 T1 Pathfinder->episodeOrChapter exists');
+    is(ref($mapEp->({ data => { %$chu, uri => 'spotify:track:AAAAAAAAAAAAAAAAAAAAAA' } })) || 'undef', 'undef', '79-71 T1 map-chapter: a non-episode uri maps to undef');
+}
+
 done_testing();

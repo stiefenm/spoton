@@ -145,7 +145,7 @@ sub amputation_optional {
 
     my @helper = _grep_file($connect_file, qr{^\s*return sprintf\("spoton://connect-%u"});
     is(scalar @helper, 1, 'PROTO-04 (84-08): _playUrlFor builds the repeating URL with the spoton://connect- prefix');
-    my @calls = _grep_file($connect_file, qr{= _playUrlFor\(\$client, \$trackId\);});
+    my @calls = _grep_file($connect_file, qr{= _playUrlFor\(\$client, \$trackId, \$kind\);});
     is(scalar @calls, 2, 'PROTO-04 (84-08): the start and resume entries take their URL from _playUrlFor');
 }
 
