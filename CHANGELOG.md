@@ -5,6 +5,21 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.0.0-beta.5] - 2026-11-04
+
+**Installing this beta.** Same beta repository URL as before (`https://stiefenm.github.io/spoton/beta/repo.xml`); the Plugins page offers SpotOn 4.0.0beta5 as an update over 4.0.0beta4. Restart LMS after the update.
+
+### Fixed
+
+- Soloist: skipping to the next track from the SpotOn menus no longer waits about 3 seconds before the next track starts.
+
+### Changed
+
+- Diagnostic report: the download in SpotOn Settings works without enabling diagnostic mode; the switch only turns on detailed logging. The report now also covers the host environment, transcoding rules, player details, the status page's error list and a wider server.log extract, and it replaces player and network addresses, device ids and the Spotify display name by placeholders. The settings page explains what the report contains and what is redacted; open the file before attaching it to an issue.
+- Troubleshooting: a Windows Server checklist for a player the Spotify app cannot find, and the Windows command for the `__DISCOVER__` pairing fallback. ([#174](https://github.com/stiefenm/spoton/issues/174))
+
+Everything else is as in 4.0.0-beta.4 below.
+
 ## [4.0.0-beta.4] - 2026-11-02
 
 **Installing this beta.** Same beta repository URL as before (`https://stiefenm.github.io/spoton/beta/repo.xml`); the Plugins page offers SpotOn 4.0.0beta4 as an update over 4.0.0beta3. Restart LMS after the update.

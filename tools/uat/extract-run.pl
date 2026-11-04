@@ -611,6 +611,15 @@ my @DMN_CATS = (
     # gefunden im Fenster", never "no discard".
     { name => 'Daemon-Log: boundary discarded (stale generation / orphan at attach; 79-51 runaway D2)',
       pat  => qr/\] boundary_discarded: /, count => 1 },
+    # debug skip-seek-arm-nach-flush (2026-11-03): the shim writes `seek_arm: consumed by pending flush-disconnect via=<..>
+    # armed=<n>` (0cb0837: a queued arm found at an unarmed flush-disconnect) and, since this session, `seek_arm: consumed by
+    # browse-keep flush via=<..> armed=<n>` (an arm still unread when a browse-kept flush landed: the live skip, whose arm was
+    # sent 12 ms BEFORE the flush and read 12 ms after it, then held the new title for the 3 s arm TTL). Both are the shim saying
+    # "this arm belonged to the flush that already happened"; the category above (`seek_arm: armed=` / `seek_arm_expired`) has
+    # the opposite outcome. Before this entry they were only counted, never printed (rule 4). Absence reads "nicht gefunden
+    # im Fenster", never "no arm was consumed".
+    { name => 'Daemon-Log: seek-arm consumed by an already-happened flush (browse-keep flush / pending flush-disconnect)',
+      pat  => qr/\] seek_arm: consumed by (?:browse-keep flush|pending flush-disconnect) /, count => 1 },
 );
 
 # Rauschkategorien des Daemon-Logs: eigene Behandlung, aber sie zaehlen als

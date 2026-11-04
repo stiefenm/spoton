@@ -2716,17 +2716,17 @@ PLUGIN_SPOTON_DIAG_MODE
 	SV	Diagnostikläge
 
 PLUGIN_SPOTON_DIAG_MODE_DESC
-	CS	Povolí podrobné protokolování načasování pro události Connect. Diagnostické záznamy se zapisují s prefixem [DIAG] pro snadné filtrování.
-	DA	Aktiverer detaljeret tidslogning for Connect-hændelser. Diagnostiske logfiler skrives med [DIAG]-præfiks for nem filtrering.
-	DE	Aktiviert detailliertes Timing-Logging für Connect-Ereignisse. Diagnoseeinträge werden mit [DIAG]-Präfix geschrieben und sind leicht filterbar.
-	EN	Enables detailed timing logs for Connect events. Diagnostic entries are written with a [DIAG] prefix for easy filtering.
-	ES	Activa registros de tiempos detallados para eventos Connect. Las entradas de diagnóstico se escriben con el prefijo [DIAG] para facilitar el filtrado.
-	FR	Active les journaux de temporisation détaillés pour les événements Connect. Les entrées de diagnostic sont écrites avec le préfixe [DIAG] pour un filtrage facile.
-	IT	Attiva la registrazione dettagliata dei tempi per gli eventi Connect. Le voci diagnostiche vengono scritte con il prefisso [DIAG] per un filtraggio semplice.
-	NL	Schakelt gedetailleerde tijdregistratie in voor Connect-gebeurtenissen. Diagnostische vermeldingen worden geschreven met een [DIAG]-prefix voor eenvoudig filteren.
-	NO	Aktiverer detaljert tidslogging for Connect-hendelser. Diagnostiske oppføringer skrives med [DIAG]-prefiks for enkel filtrering.
-	PL	Włącza szczegółowe dzienniki czasowe dla zdarzeń Connect. Wpisy diagnostyczne są zapisywane z prefiksem [DIAG] w celu łatwego filtrowania.
-	SV	Aktiverar detaljerad tidsloggning för Connect-händelser. Diagnostikposter skrivs med [DIAG]-prefix för enkel filtrering.
+	CS	Zapne podrobné protokolování. Všichni démoni SpotOn se restartují, librespot zapisuje na úrovni debug, Soloist běží v podrobném režimu a události Connect dostanou řádky s časováním [DIAG]. Stažení diagnostické zprávy tento přepínač nevyžaduje.
+	DA	Slår detaljeret logning til. Alle SpotOn-dæmoner genstarter, librespot logger på debug-niveau, Soloist kører i udførlig tilstand, og Connect-hændelser får [DIAG]-tidslinjer. Download af diagnoserapporten kræver ikke denne kontakt.
+	DE	Aktiviert detailliertes Logging. Alle SpotOn-Daemons starten neu, librespot loggt auf Debug-Stufe, Soloist läuft im ausführlichen Modus und Connect-Ereignisse erhalten [DIAG]-Zeitzeilen. Für den Download des Diagnoseberichts wird dieser Schalter nicht benötigt.
+	EN	Turns on detailed logging. All SpotOn daemons restart, librespot logs at debug level, Soloist runs in verbose mode and Connect events get [DIAG] timing lines. Downloading the diagnostic report does not need this switch.
+	ES	Activa el registro detallado. Todos los demonios de SpotOn se reinician, librespot registra a nivel debug, Soloist se ejecuta en modo detallado y los eventos Connect reciben líneas de tiempos [DIAG]. Descargar el informe de diagnóstico no necesita este interruptor.
+	FR	Active la journalisation détaillée. Tous les démons SpotOn redémarrent, librespot journalise au niveau debug, Soloist tourne en mode verbeux et les événements Connect reçoivent des lignes de temps [DIAG]. Le téléchargement du rapport de diagnostic n'a pas besoin de cet interrupteur.
+	IT	Attiva la registrazione dettagliata. Tutti i daemon SpotOn si riavviano, librespot registra a livello debug, Soloist gira in modalità dettagliata e gli eventi Connect ricevono righe di tempi [DIAG]. Per scaricare il rapporto diagnostico non serve questo interruttore.
+	NL	Zet gedetailleerde logging aan. Alle SpotOn-daemons herstarten, librespot logt op debugniveau, Soloist draait in uitgebreide modus en Connect-gebeurtenissen krijgen [DIAG]-tijdregels. Het downloaden van het diagnoserapport heeft deze schakelaar niet nodig.
+	NO	Slår på detaljert logging. Alle SpotOn-daemoner starter på nytt, librespot logger på debug-nivå, Soloist kjører i utførlig modus, og Connect-hendelser får [DIAG]-tidslinjer. Nedlasting av diagnostikkrapporten krever ikke denne bryteren.
+	PL	Włącza szczegółowe logowanie. Wszystkie demony SpotOn uruchamiają się ponownie, librespot loguje na poziomie debug, Soloist działa w trybie szczegółowym, a zdarzenia Connect dostają wiersze czasowe [DIAG]. Pobranie raportu diagnostycznego nie wymaga tego przełącznika.
+	SV	Slår på detaljerad loggning. Alla SpotOn-daemoner startar om, librespot loggar på debug-nivå, Soloist körs i utförligt läge och Connect-händelser får [DIAG]-tidsrader. Nedladdning av diagnosrapporten kräver inte detta reglage.
 
 PLUGIN_SPOTON_DIAG_MODE_LABEL
 	CS	Povolit diagnostické protokolování
@@ -2781,17 +2781,17 @@ PLUGIN_SPOTON_DIAG_DOWNLOAD
 	SV	Diagnostikpaket
 
 PLUGIN_SPOTON_DIAG_DOWNLOAD_DESC
-	CS	Stáhne soubor se systémovými informacemi a protokoly démonů pro vzdálené ladění.
-	DA	Downloader en fil med systemoplysninger og dæmonlogfiler til fjernfejlfinding.
-	DE	Lädt eine Datei mit Systeminformationen und Daemon-Logs für Remote-Debugging herunter.
-	EN	Downloads a file with system information and daemon logs for remote debugging.
-	ES	Descarga un archivo con información del sistema y registros del demonio para depuración remota.
-	FR	Télécharge un fichier avec les informations système et les journaux du démon pour le débogage à distance.
-	IT	Scarica un file con informazioni di sistema e log del daemon per il debug remoto.
-	NL	Downloadt een bestand met systeeminformatie en daemon-logbestanden voor foutopsporing op afstand.
-	NO	Laster ned en fil med systeminformasjon og daemon-logger for fjernfeilsøking.
-	PL	Pobiera plik z informacjami o systemie i dziennikami demona do zdalnego debugowania.
-	SV	Laddar ner en fil med systeminformation och daemon-loggar för fjärrfelsökning.
+	CS	Vždy k dispozici, s přepínačem výše i bez něj: stáhne textový soubor se systémovými informacemi, stavem a posledními logy pro podporu. Osobní údaje se nahrazují; viz seznam výše.
+	DA	Altid tilgængelig, med eller uden kontakten ovenfor: downloader en tekstfil med systemoplysninger, status og seneste logfiler til support. Personlige data erstattes; se listen ovenfor.
+	DE	Immer verfügbar, mit oder ohne den Schalter oben: lädt eine Textdatei mit Systeminformationen, Status und aktuellen Logs für den Support herunter. Persönliche Daten werden ersetzt; siehe die Liste oben.
+	EN	Always available, with or without the switch above: downloads a text file with system information, status and recent logs for support. Personal data is replaced; see the list above.
+	ES	Siempre disponible, con o sin el interruptor de arriba: descarga un archivo de texto con información del sistema, estado y registros recientes para el soporte. Los datos personales se sustituyen; vea la lista de arriba.
+	FR	Toujours disponible, avec ou sans l'interrupteur ci-dessus : télécharge un fichier texte avec les informations système, l'état et les journaux récents pour l'assistance. Les données personnelles sont remplacées ; voir la liste ci-dessus.
+	IT	Sempre disponibile, con o senza l'interruttore qui sopra: scarica un file di testo con informazioni di sistema, stato e log recenti per l'assistenza. I dati personali vengono sostituiti; vedi l'elenco qui sopra.
+	NL	Altijd beschikbaar, met of zonder de schakelaar hierboven: downloadt een tekstbestand met systeeminformatie, status en recente logs voor ondersteuning. Persoonlijke gegevens worden vervangen; zie de lijst hierboven.
+	NO	Alltid tilgjengelig, med eller uten bryteren ovenfor: laster ned en tekstfil med systeminformasjon, status og nylige logger for support. Personlige data erstattes; se listen ovenfor.
+	PL	Zawsze dostępne, z przełącznikiem powyżej lub bez niego: pobiera plik tekstowy z informacjami o systemie, stanem i ostatnimi dziennikami dla wsparcia. Dane osobowe są zastępowane; zobacz listę powyżej.
+	SV	Alltid tillgänglig, med eller utan reglaget ovan: laddar ner en textfil med systeminformation, status och senaste loggar för support. Personuppgifter ersätts; se listan ovan.
 
 PLUGIN_SPOTON_DIAG_DOWNLOAD_BUTTON
 	CS	Stáhnout diagnostickou zprávu
@@ -2857,6 +2857,396 @@ PLUGIN_SPOTON_DIAG_CLEAR_LOGS_DONE
 	NO	%s filer slettet
 	PL	Usunięto %s plików
 	SV	%s filer borttagna
+
+PLUGIN_SPOTON_DIAG_SEC_SYSTEM
+	CS	Systém
+	DA	System
+	DE	System
+	EN	System
+	ES	Sistema
+	FR	Système
+	IT	Sistema
+	NL	Systeem
+	NO	System
+	PL	System
+	SV	System
+
+PLUGIN_SPOTON_DIAG_SEC_SYSTEM_DESC
+	CS	Verze LMS, operačního systému, Perlu a SpotOn, aktivní účet (zkrácený) a stav diagnostického přepínače.
+	DA	Versioner af LMS, operativsystem, Perl og SpotOn, den aktive konto (forkortet) og diagnosekontaktens tilstand.
+	DE	Versionen von LMS, Betriebssystem, Perl und SpotOn, das aktive Konto (gekürzt) und der Zustand des Diagnoseschalters.
+	EN	LMS, operating system, Perl and SpotOn versions, the active account (shortened) and the state of the diagnostic switch.
+	ES	Versiones de LMS, sistema operativo, Perl y SpotOn, la cuenta activa (abreviada) y el estado del interruptor de diagnóstico.
+	FR	Versions de LMS, du système, de Perl et de SpotOn, le compte actif (abrégé) et l'état de l'interrupteur de diagnostic.
+	IT	Versioni di LMS, sistema operativo, Perl e SpotOn, l'account attivo (abbreviato) e lo stato dell'interruttore diagnostico.
+	NL	Versies van LMS, besturingssysteem, Perl en SpotOn, het actieve account (ingekort) en de stand van de diagnoseschakelaar.
+	NO	Versjoner av LMS, operativsystem, Perl og SpotOn, den aktive kontoen (forkortet) og tilstanden til diagnosebryteren.
+	PL	Wersje LMS, systemu operacyjnego, Perla i SpotOn, aktywne konto (skrócone) oraz stan przełącznika diagnostycznego.
+	SV	Versioner av LMS, operativsystem, Perl och SpotOn, det aktiva kontot (förkortat) och diagnosreglagets läge.
+
+PLUGIN_SPOTON_DIAG_SEC_BACKEND
+	CS	Přehrávací backend
+	DA	Afspilningsbackend
+	DE	Wiedergabe-Backend
+	EN	Playback backend
+	ES	Backend de reproducción
+	FR	Backend de lecture
+	IT	Backend di riproduzione
+	NL	Afspeelbackend
+	NO	Avspillings-backend
+	PL	Backend odtwarzania
+	SV	Uppspelningsbackend
+
+PLUGIN_SPOTON_DIAG_SEC_BACKEND_DESC
+	CS	Který backend běží (Soloist nebo librespot), jeho verze, stav klíče, uložená kvalita, kontrola glibc a kontrola spuštění.
+	DA	Hvilken backend der kører (Soloist eller librespot), dens version, nøglestatus, gemt kvalitet, glibc-kontrol og startkontrol.
+	DE	Welches Backend läuft (Soloist oder librespot), seine Version, Schlüsselstatus, gespeicherte Qualität, glibc-Prüfung und Startprüfung.
+	EN	Which backend runs (Soloist or librespot), its version, key state, stored quality, glibc check and start check.
+	ES	Qué backend se ejecuta (Soloist o librespot), su versión, estado de la clave, calidad guardada, comprobación de glibc y comprobación de inicio.
+	FR	Quel backend tourne (Soloist ou librespot), sa version, l'état de la clé, la qualité enregistrée, le contrôle glibc et le contrôle de démarrage.
+	IT	Quale backend è in esecuzione (Soloist o librespot), la sua versione, lo stato della chiave, la qualità salvata, il controllo glibc e il controllo di avvio.
+	NL	Welke backend draait (Soloist of librespot), de versie, de sleutelstatus, de opgeslagen kwaliteit, de glibc-controle en de startcontrole.
+	NO	Hvilken backend som kjører (Soloist eller librespot), versjon, nøkkelstatus, lagret kvalitet, glibc-sjekk og startsjekk.
+	PL	Który backend działa (Soloist lub librespot), jego wersja, stan klucza, zapisana jakość, kontrola glibc i kontrola uruchomienia.
+	SV	Vilken backend som körs (Soloist eller librespot), dess version, nyckelstatus, sparad kvalitet, glibc-kontroll och startkontroll.
+
+PLUGIN_SPOTON_DIAG_SEC_PLAYERS
+	CS	Přehrávače
+	DA	Afspillere
+	DE	Player
+	EN	Players
+	ES	Reproductores
+	FR	Lecteurs
+	IT	Player
+	NL	Spelers
+	NO	Spillere
+	PL	Odtwarzacze
+	SV	Spelare
+
+PLUGIN_SPOTON_DIAG_SEC_PLAYERS_DESC
+	CS	Pro každý přehrávač: název, model, firmware, formáty, synchronizační skupina, zvolený a skutečný výstupní formát a nastavení SpotOn.
+	DA	For hver afspiller: navn, model, firmware, formater, synkroniseringsgruppe, valgt og faktisk uddataformat samt SpotOn-indstillinger.
+	DE	Pro Player: Name, Modell, Firmware, Formate, Sync-Gruppe, gewähltes und tatsächliches Ausgabeformat sowie die SpotOn-Playereinstellungen.
+	EN	Per player: name, model, firmware, formats, sync group, the chosen and effective output format and the SpotOn player settings.
+	ES	Por reproductor: nombre, modelo, firmware, formatos, grupo de sincronización, formato de salida elegido y efectivo y los ajustes de SpotOn.
+	FR	Par lecteur : nom, modèle, firmware, formats, groupe de synchronisation, format de sortie choisi et effectif et réglages SpotOn.
+	IT	Per ogni player: nome, modello, firmware, formati, gruppo di sincronizzazione, formato di uscita scelto ed effettivo e impostazioni SpotOn.
+	NL	Per speler: naam, model, firmware, formaten, synchronisatiegroep, gekozen en effectief uitvoerformaat en de SpotOn-spelerinstellingen.
+	NO	Per spiller: navn, modell, firmware, formater, synkroniseringsgruppe, valgt og faktisk utdataformat og SpotOn-innstillinger.
+	PL	Dla każdego odtwarzacza: nazwa, model, firmware, formaty, grupa synchronizacji, wybrany i faktyczny format wyjściowy oraz ustawienia SpotOn.
+	SV	Per spelare: namn, modell, firmware, format, synkgrupp, valt och faktiskt utdataformat samt SpotOn-inställningar.
+
+PLUGIN_SPOTON_DIAG_SEC_ENV
+	CS	Prostředí
+	DA	Miljø
+	DE	Umgebung
+	EN	Environment
+	ES	Entorno
+	FR	Environnement
+	IT	Ambiente
+	NL	Omgeving
+	NO	Miljø
+	PL	Środowisko
+	SV	Miljö
+
+PLUGIN_SPOTON_DIAG_SEC_ENV_DESC
+	CS	Typ a architektura operačního systému, příznak kontejneru, úrovně protokolování a seznam zapnutých a chybných zásuvných modulů LMS.
+	DA	Operativsystemets type og arkitektur, containerflag, logniveauer og listen over aktiverede og fejlede LMS-plugins.
+	DE	Betriebssystem-Variante und Architektur, Container-Kennzeichen, Log-Level und die Liste der aktivierten und fehlgeschlagenen LMS-Plugins.
+	EN	Operating system flavor and architecture, container flag, log levels and the list of enabled and failed LMS plugins.
+	ES	Variante y arquitectura del sistema operativo, indicador de contenedor, niveles de registro y la lista de plugins de LMS activados y fallidos.
+	FR	Variante et architecture du système, indicateur de conteneur, niveaux de journalisation et liste des plugins LMS activés et en échec.
+	IT	Variante e architettura del sistema operativo, indicatore di container, livelli di log e l'elenco dei plugin LMS attivi e falliti.
+	NL	Variant en architectuur van het besturingssysteem, containervlag, logniveaus en de lijst met ingeschakelde en mislukte LMS-plugins.
+	NO	Operativsystemets variant og arkitektur, containerflagg, loggnivåer og listen over aktiverte og feilede LMS-plugins.
+	PL	Wariant i architektura systemu, znacznik kontenera, poziomy logowania oraz lista włączonych i niedziałających wtyczek LMS.
+	SV	Operativsystemets variant och arkitektur, containerflagga, loggnivåer och listan över aktiverade och misslyckade LMS-plugins.
+
+PLUGIN_SPOTON_DIAG_SEC_TRANSCODING
+	CS	Překódování
+	DA	Transkodning
+	DE	Transkodierung
+	EN	Transcoding
+	ES	Transcodificación
+	FR	Transcodage
+	IT	Transcodifica
+	NL	Transcodering
+	NO	Transkoding
+	PL	Transkodowanie
+	SV	Transkodning
+
+PLUGIN_SPOTON_DIAG_SEC_TRANSCODING_DESC
+	CS	Převodní pravidla LMS používaná SpotOn, jejich stav zapnutí a zda byly nalezeny jejich nástroje.
+	DA	De LMS-konverteringsregler, som SpotOn bruger, med deres aktiveringstilstand og om deres værktøjer blev fundet.
+	DE	Die von SpotOn genutzten LMS-Konvertierungsregeln mit ihrem Aktivierungszustand und ob ihre Werkzeuge gefunden wurden.
+	EN	The LMS conversion rules used by SpotOn, with their enabled state and whether their tools were found.
+	ES	Las reglas de conversión de LMS que usa SpotOn, con su estado y si se encontraron sus herramientas.
+	FR	Les règles de conversion de LMS utilisées par SpotOn, avec leur état et la présence de leurs outils.
+	IT	Le regole di conversione di LMS usate da SpotOn, con il loro stato e se i relativi strumenti sono stati trovati.
+	NL	De door SpotOn gebruikte LMS-conversieregels, met hun status en of de bijbehorende hulpprogramma's zijn gevonden.
+	NO	LMS-konverteringsreglene som SpotOn bruker, med aktiveringstilstand og om verktøyene ble funnet.
+	PL	Reguły konwersji LMS używane przez SpotOn, ich stan włączenia oraz informacja, czy znaleziono ich narzędzia.
+	SV	De LMS-konverteringsregler som SpotOn använder, med deras aktiveringsläge och om verktygen hittades.
+
+PLUGIN_SPOTON_DIAG_SEC_STATUS
+	CS	Stav
+	DA	Status
+	DE	Status
+	EN	Status
+	ES	Estado
+	FR	État
+	IT	Stato
+	NL	Status
+	NO	Status
+	PL	Stan
+	SV	Status
+
+PLUGIN_SPOTON_DIAG_SEC_STATUS_DESC
+	CS	Čítače API, seznam posledních chyb všech modulů, stav přihlášení podle účtu (zkráceně) a souhrn démonů podle přehrávače.
+	DA	API-tællere, listen over seneste fejl fra alle moduler, loginstatus pr. konto (forkortet) og dæmonoversigt pr. afspiller.
+	DE	API-Zähler, die Liste der letzten Fehler aller Module, der Anmeldezustand je Konto (gekürzt) und die Daemon-Übersicht je Player.
+	EN	API counters, the recent error list of all modules, sign-in health per account (shortened) and the daemon summary per player.
+	ES	Contadores de la API, la lista de errores recientes de todos los módulos, el estado de inicio de sesión por cuenta (abreviado) y el resumen de demonios por reproductor.
+	FR	Compteurs de l'API, liste des erreurs récentes de tous les modules, état de connexion par compte (abrégé) et résumé des démons par lecteur.
+	IT	Contatori API, elenco degli errori recenti di tutti i moduli, stato di accesso per account (abbreviato) e riepilogo dei daemon per player.
+	NL	API-tellers, de lijst met recente fouten van alle modules, de aanmeldstatus per account (ingekort) en het daemonoverzicht per speler.
+	NO	API-tellere, listen over nylige feil fra alle moduler, påloggingsstatus per konto (forkortet) og daemonoversikt per spiller.
+	PL	Liczniki API, lista ostatnich błędów wszystkich modułów, stan logowania na konto (skrócony) i podsumowanie demonów na odtwarzacz.
+	SV	API-räknare, listan över senaste fel från alla moduler, inloggningsstatus per konto (förkortat) och daemonöversikt per spelare.
+
+PLUGIN_SPOTON_DIAG_SEC_DAEMONLOGS
+	CS	Logy démonů
+	DA	Dæmon-logfiler
+	DE	Daemon-Logs
+	EN	Daemon logs
+	ES	Registros del demonio
+	FR	Journaux du démon
+	IT	Log del daemon
+	NL	Daemon-logbestanden
+	NO	Daemon-logger
+	PL	Dzienniki demonów
+	SV	Daemon-loggar
+
+PLUGIN_SPOTON_DIAG_SEC_DAEMONLOGS_DESC
+	CS	Konec každého logu démona SpotOn a předchozí generace právě rotovaného logu Soloist.
+	DA	Slutningen af hver SpotOn-dæmonlog samt den forrige generation af en netop roteret Soloist-log.
+	DE	Das Ende jedes SpotOn-Daemon-Logs sowie die vorige Generation eines frisch rotierten Soloist-Logs.
+	EN	The end of each SpotOn daemon log, plus the previous generation of a freshly rotated Soloist log.
+	ES	El final de cada registro de demonio de SpotOn y la generación anterior de un registro de Soloist recién rotado.
+	FR	La fin de chaque journal de démon SpotOn, plus la génération précédente d'un journal Soloist tout juste archivé.
+	IT	La parte finale di ogni log del daemon SpotOn e la generazione precedente di un log Soloist appena ruotato.
+	NL	Het einde van elk SpotOn-daemonlogbestand, plus de vorige generatie van een net geroteerd Soloist-logbestand.
+	NO	Slutten av hver SpotOn-daemonlogg, pluss forrige generasjon av en nylig rotert Soloist-logg.
+	PL	Koniec każdego dziennika demona SpotOn oraz poprzednia generacja świeżo rotowanego dziennika Soloist.
+	SV	Slutet av varje SpotOn-daemonlogg samt föregående generation av en nyss roterad Soloist-logg.
+
+PLUGIN_SPOTON_DIAG_SEC_SERVERLOG
+	CS	LMS server.log
+	DA	LMS server.log
+	DE	LMS server.log
+	EN	LMS server.log
+	ES	LMS server.log
+	FR	LMS server.log
+	IT	LMS server.log
+	NL	LMS server.log
+	NO	LMS server.log
+	PL	LMS server.log
+	SV	LMS server.log
+
+PLUGIN_SPOTON_DIAG_SEC_SERVERLOG_DESC
+	CS	Řádky o SpotOn, modulech přehrávání a sítě a všechny chyby a varování, plus poslední řádky logu bez filtru.
+	DA	Linjer om SpotOn, afspilnings- og netværksmoduler og alle fejl og advarsler samt logfilens sidste linjer ufiltreret.
+	DE	Zeilen zu SpotOn, Wiedergabe- und Netzwerkmodulen sowie alle Fehler und Warnungen, dazu die letzten Zeilen des Logs ungefiltert.
+	EN	Lines about SpotOn, playback and network modules and any error or warning, plus the last lines of the log unfiltered.
+	ES	Líneas sobre SpotOn, los módulos de reproducción y de red y cualquier error o aviso, más las últimas líneas del registro sin filtrar.
+	FR	Lignes concernant SpotOn, les modules de lecture et de réseau et toute erreur ou tout avertissement, plus les dernières lignes du journal sans filtre.
+	IT	Righe su SpotOn, sui moduli di riproduzione e di rete e ogni errore o avviso, più le ultime righe del log senza filtro.
+	NL	Regels over SpotOn, afspeel- en netwerkmodules en elke fout of waarschuwing, plus de laatste regels van het log ongefilterd.
+	NO	Linjer om SpotOn, avspillings- og nettverksmoduler og alle feil og advarsler, pluss de siste linjene i loggen ufiltrert.
+	PL	Wiersze dotyczące SpotOn, modułów odtwarzania i sieci oraz wszystkie błędy i ostrzeżenia, a także ostatnie wiersze dziennika bez filtra.
+	SV	Rader om SpotOn, uppspelnings- och nätverksmoduler samt alla fel och varningar, plus de sista raderna i loggen ofiltrerat.
+
+PLUGIN_SPOTON_DIAG_RED_SECRETS
+	CS	Tajné údaje: tokeny, klíče a hesla se nahrazují textem [REDACTED].
+	DA	Hemmeligheder: tokens, nøgler og adgangskoder erstattes af [REDACTED].
+	DE	Geheimnisse: Tokens, Schlüssel und Passwörter werden durch [REDACTED] ersetzt.
+	EN	Secrets: tokens, keys and passwords are replaced by [REDACTED].
+	ES	Secretos: los tokens, claves y contraseñas se sustituyen por [REDACTED].
+	FR	Secrets : les jetons, clés et mots de passe sont remplacés par [REDACTED].
+	IT	Segreti: token, chiavi e password vengono sostituiti da [REDACTED].
+	NL	Geheimen: tokens, sleutels en wachtwoorden worden vervangen door [REDACTED].
+	NO	Hemmeligheter: tokens, nøkler og passord erstattes med [REDACTED].
+	PL	Sekrety: tokeny, klucze i hasła są zastępowane tekstem [REDACTED].
+	SV	Hemligheter: tokens, nycklar och lösenord ersätts med [REDACTED].
+
+PLUGIN_SPOTON_DIAG_RED_USERIDS
+	CS	ID uživatelů Spotify se nahrazují textem [REDACTED].
+	DA	Spotify-bruger-id'er erstattes af [REDACTED].
+	DE	Spotify-Benutzer-IDs werden durch [REDACTED] ersetzt.
+	EN	Spotify user IDs are replaced by [REDACTED].
+	ES	Los ID de usuario de Spotify se sustituyen por [REDACTED].
+	FR	Les identifiants d'utilisateur Spotify sont remplacés par [REDACTED].
+	IT	Gli ID utente Spotify vengono sostituiti da [REDACTED].
+	NL	Spotify-gebruikers-ID's worden vervangen door [REDACTED].
+	NO	Spotify-bruker-ID-er erstattes med [REDACTED].
+	PL	Identyfikatory użytkowników Spotify są zastępowane tekstem [REDACTED].
+	SV	Spotify-användar-ID ersätts med [REDACTED].
+
+PLUGIN_SPOTON_DIAG_RED_DISPLAYNAME
+	CS	Zobrazované jméno Spotify se nahrazuje textem [REDACTED].
+	DA	Spotify-visningsnavnet erstattes af [REDACTED].
+	DE	Der Spotify-Anzeigename wird durch [REDACTED] ersetzt.
+	EN	The Spotify display name is replaced by [REDACTED].
+	ES	El nombre visible de Spotify se sustituye por [REDACTED].
+	FR	Le nom d'affichage Spotify est remplacé par [REDACTED].
+	IT	Il nome visualizzato di Spotify viene sostituito da [REDACTED].
+	NL	De Spotify-weergavenaam wordt vervangen door [REDACTED].
+	NO	Spotify-visningsnavnet erstattes med [REDACTED].
+	PL	Nazwa wyświetlana Spotify jest zastępowana tekstem [REDACTED].
+	SV	Spotify-visningsnamnet ersätts med [REDACTED].
+
+PLUGIN_SPOTON_DIAG_RED_MACS
+	CS	MAC adresy přehrávačů si ponechají část výrobce a stanou se Player-1, Player-2 atd., všude v souboru stejně, včetně názvů souborů.
+	DA	Afspillernes MAC-adresser beholder producentdelen og bliver til Player-1, Player-2 og så videre, ens overalt i filen, også i filnavne.
+	DE	MAC-Adressen der Player behalten den Herstellerteil und werden zu Player-1, Player-2 usw., überall in der Datei gleich, auch in Dateinamen.
+	EN	Player MAC addresses keep the vendor part and become Player-1, Player-2 and so on, the same everywhere in the file, file names included.
+	ES	Las direcciones MAC de los reproductores conservan la parte del fabricante y pasan a ser Player-1, Player-2, etc., iguales en todo el archivo, también en los nombres de archivo.
+	FR	Les adresses MAC des lecteurs gardent la partie fabricant et deviennent Player-1, Player-2, etc., identiques partout dans le fichier, noms de fichiers compris.
+	IT	Gli indirizzi MAC dei player mantengono la parte del produttore e diventano Player-1, Player-2 e così via, uguali in tutto il file, nomi di file inclusi.
+	NL	MAC-adressen van spelers behouden het fabrikantdeel en worden Player-1, Player-2 enzovoort, overal in het bestand gelijk, ook in bestandsnamen.
+	NO	MAC-adresser til spillere beholder produsentdelen og blir til Player-1, Player-2 og så videre, like overalt i filen, også i filnavn.
+	PL	Adresy MAC odtwarzaczy zachowują część producenta i zmieniają się w Player-1, Player-2 itd., jednakowo w całym pliku, także w nazwach plików.
+	SV	Spelarnas MAC-adresser behåller tillverkardelen och blir Player-1, Player-2 och så vidare, lika överallt i filen, även i filnamn.
+
+PLUGIN_SPOTON_DIAG_RED_LANIPS
+	CS	Adresy místní sítě (IPv4 a IPv6) se stanou LAN-1, LAN-2 atd. (LAN6-1 u IPv6); veřejné adresy IPv6, například vašeho připojení k internetu, se stanou IP6-1, IP6-2 atd.
+	DA	Adresser på det lokale netværk (IPv4 og IPv6) bliver til LAN-1, LAN-2 og så videre (LAN6-1 for IPv6); offentlige IPv6-adresser, for eksempel din internetforbindelses, bliver til IP6-1, IP6-2 og så videre.
+	DE	Adressen im lokalen Netzwerk (IPv4 und IPv6) werden zu LAN-1, LAN-2 usw. (LAN6-1 bei IPv6); öffentliche IPv6-Adressen, etwa die Ihres Internetanschlusses, werden zu IP6-1, IP6-2 usw.
+	EN	Local network addresses (IPv4 and IPv6) become LAN-1, LAN-2 and so on (LAN6-1 for IPv6); public IPv6 addresses, such as that of your internet connection, become IP6-1, IP6-2 and so on.
+	ES	Las direcciones de la red local (IPv4 e IPv6) pasan a ser LAN-1, LAN-2, etc. (LAN6-1 para IPv6); las direcciones IPv6 públicas, como la de su conexión a Internet, pasan a ser IP6-1, IP6-2, etc.
+	FR	Les adresses du réseau local (IPv4 et IPv6) deviennent LAN-1, LAN-2, etc. (LAN6-1 pour IPv6) ; les adresses IPv6 publiques, comme celle de votre connexion Internet, deviennent IP6-1, IP6-2, etc.
+	IT	Gli indirizzi della rete locale (IPv4 e IPv6) diventano LAN-1, LAN-2 e così via (LAN6-1 per IPv6); gli indirizzi IPv6 pubblici, come quello della tua connessione a Internet, diventano IP6-1, IP6-2 e così via.
+	NL	Adressen in het lokale netwerk (IPv4 en IPv6) worden LAN-1, LAN-2 enzovoort (LAN6-1 voor IPv6); openbare IPv6-adressen, zoals dat van uw internetverbinding, worden IP6-1, IP6-2 enzovoort.
+	NO	Adresser på det lokale nettverket (IPv4 og IPv6) blir til LAN-1, LAN-2 og så videre (LAN6-1 for IPv6); offentlige IPv6-adresser, for eksempel til internettforbindelsen din, blir til IP6-1, IP6-2 og så videre.
+	PL	Adresy sieci lokalnej (IPv4 i IPv6) zmieniają się w LAN-1, LAN-2 itd. (LAN6-1 dla IPv6); publiczne adresy IPv6, na przykład Twojego połączenia z internetem, zmieniają się w IP6-1, IP6-2 itd.
+	SV	Adresser i det lokala nätverket (IPv4 och IPv6) blir LAN-1, LAN-2 och så vidare (LAN6-1 för IPv6); offentliga IPv6-adresser, till exempel din internetanslutnings, blir IP6-1, IP6-2 och så vidare.
+
+PLUGIN_SPOTON_DIAG_RED_DEVICEIDS
+	CS	ID zařízení Spotify, i jiných zařízení Connect, se stanou DEVICE-1, DEVICE-2 atd.
+	DA	Spotify-enheds-id'er, også fra andre Connect-enheder, bliver til DEVICE-1, DEVICE-2 og så videre.
+	DE	Spotify-Geräte-IDs, auch die anderer Connect-Geräte, werden zu DEVICE-1, DEVICE-2 usw.
+	EN	Spotify device IDs, also those of other Connect devices, become DEVICE-1, DEVICE-2 and so on.
+	ES	Los ID de dispositivo de Spotify, también los de otros dispositivos Connect, pasan a ser DEVICE-1, DEVICE-2, etc.
+	FR	Les identifiants d'appareil Spotify, y compris ceux d'autres appareils Connect, deviennent DEVICE-1, DEVICE-2, etc.
+	IT	Gli ID dispositivo Spotify, anche quelli di altri dispositivi Connect, diventano DEVICE-1, DEVICE-2 e così via.
+	NL	Spotify-apparaat-ID's, ook die van andere Connect-apparaten, worden DEVICE-1, DEVICE-2 enzovoort.
+	NO	Spotify-enhets-ID-er, også fra andre Connect-enheter, blir til DEVICE-1, DEVICE-2 og så videre.
+	PL	Identyfikatory urządzeń Spotify, także innych urządzeń Connect, zmieniają się w DEVICE-1, DEVICE-2 itd.
+	SV	Spotify-enhets-ID, även från andra Connect-enheter, blir DEVICE-1, DEVICE-2 och så vidare.
+
+PLUGIN_SPOTON_DIAG_RED_HOMEPATHS
+	CS	Cesty k domovským složkám ztratí uživatelské jméno: /home/jmeno se změní na ~.
+	DA	Stier til hjemmemapper mister brugernavnet: /home/navn bliver til ~.
+	DE	Pfade zu Home-Ordnern verlieren den Benutzernamen: /home/name wird zu ~.
+	EN	Home folder paths lose the user name: /home/name becomes ~.
+	ES	Las rutas de la carpeta personal pierden el nombre de usuario: /home/nombre pasa a ser ~.
+	FR	Les chemins du dossier personnel perdent le nom d'utilisateur : /home/nom devient ~.
+	IT	I percorsi della cartella home perdono il nome utente: /home/nome diventa ~.
+	NL	Paden naar de thuismap verliezen de gebruikersnaam: /home/naam wordt ~.
+	NO	Stier til hjemmemappen mister brukernavnet: /home/navn blir til ~.
+	PL	Ścieżki do folderu domowego tracą nazwę użytkownika: /home/nazwa zmienia się w ~.
+	SV	Sökvägar till hemkatalogen förlorar användarnamnet: /home/namn blir ~.
+
+PLUGIN_SPOTON_DIAG_RED_EMAILS
+	CS	E-mailové adresy se nahrazují textem [REDACTED].
+	DA	E-mailadresser erstattes af [REDACTED].
+	DE	E-Mail-Adressen werden durch [REDACTED] ersetzt.
+	EN	E-mail addresses are replaced by [REDACTED].
+	ES	Las direcciones de correo electrónico se sustituyen por [REDACTED].
+	FR	Les adresses e-mail sont remplacées par [REDACTED].
+	IT	Gli indirizzi e-mail vengono sostituiti da [REDACTED].
+	NL	E-mailadressen worden vervangen door [REDACTED].
+	NO	E-postadresser erstattes med [REDACTED].
+	PL	Adresy e-mail są zastępowane tekstem [REDACTED].
+	SV	E-postadresser ersätts med [REDACTED].
+
+PLUGIN_SPOTON_DIAG_SWITCH_TEXT
+	CS	Přepínač výše zapíná pouze podrobné protokolování: všichni démoni SpotOn se restartují, librespot zapisuje na úrovni debug, Soloist běží v podrobném režimu a Connect zapisuje řádky s časováním [DIAG]. Obsah zprávy se tím nemění a zprávu lze stáhnout i bez něj.
+	DA	Kontakten ovenfor slår kun detaljeret logning til: alle SpotOn-dæmoner genstarter, librespot logger på debug-niveau, Soloist kører i udførlig tilstand, og Connect skriver [DIAG]-tidslinjer. Den ændrer ikke rapportens indhold, og rapporten kan hentes uden den.
+	DE	Der Schalter oben aktiviert nur detailliertes Logging: Alle SpotOn-Daemons starten neu, librespot loggt auf Debug-Stufe, Soloist läuft im ausführlichen Modus und Connect schreibt [DIAG]-Zeitzeilen. Er ändert nichts am Inhalt des Berichts, und der Bericht lässt sich auch ohne ihn herunterladen.
+	EN	The switch above only turns on detailed logging: every SpotOn daemon restarts, librespot logs at debug level, Soloist runs in verbose mode and Connect writes [DIAG] timing lines. It does not change what the report contains, and the report can be downloaded without it.
+	ES	El interruptor de arriba solo activa el registro detallado: todos los demonios de SpotOn se reinician, librespot registra a nivel debug, Soloist se ejecuta en modo detallado y Connect escribe líneas de tiempos [DIAG]. No cambia el contenido del informe, y el informe se puede descargar sin él.
+	FR	L'interrupteur ci-dessus active seulement la journalisation détaillée : tous les démons SpotOn redémarrent, librespot journalise au niveau debug, Soloist tourne en mode verbeux et Connect écrit des lignes de temps [DIAG]. Il ne change pas le contenu du rapport, et le rapport peut être téléchargé sans lui.
+	IT	L'interruttore qui sopra attiva solo la registrazione dettagliata: tutti i daemon SpotOn si riavviano, librespot registra a livello debug, Soloist gira in modalità dettagliata e Connect scrive righe di tempi [DIAG]. Non cambia il contenuto del rapporto, e il rapporto si può scaricare anche senza.
+	NL	De schakelaar hierboven zet alleen gedetailleerde logging aan: alle SpotOn-daemons herstarten, librespot logt op debugniveau, Soloist draait in uitgebreide modus en Connect schrijft [DIAG]-tijdregels. Hij verandert niets aan de inhoud van het rapport, en het rapport kan ook zonder worden gedownload.
+	NO	Bryteren ovenfor slår bare på detaljert logging: alle SpotOn-daemoner starter på nytt, librespot logger på debug-nivå, Soloist kjører i utførlig modus og Connect skriver [DIAG]-tidslinjer. Den endrer ikke innholdet i rapporten, og rapporten kan lastes ned uten den.
+	PL	Przełącznik powyżej włącza tylko szczegółowe logowanie: wszystkie demony SpotOn uruchamiają się ponownie, librespot loguje na poziomie debug, Soloist działa w trybie szczegółowym, a Connect zapisuje wiersze czasowe [DIAG]. Nie zmienia zawartości raportu, a raport można pobrać także bez niego.
+	SV	Reglaget ovan slår bara på detaljerad loggning: alla SpotOn-daemoner startar om, librespot loggar på debug-nivå, Soloist körs i utförligt läge och Connect skriver [DIAG]-tidsrader. Det ändrar inte rapportens innehåll, och rapporten kan laddas ner utan det.
+
+PLUGIN_SPOTON_DIAG_SECTIONS_HEAD
+	CS	Co zpráva obsahuje
+	DA	Hvad rapporten indeholder
+	DE	Was der Bericht enthält
+	EN	What the report contains
+	ES	Qué contiene el informe
+	FR	Ce que contient le rapport
+	IT	Cosa contiene il rapporto
+	NL	Wat het rapport bevat
+	NO	Hva rapporten inneholder
+	PL	Co zawiera raport
+	SV	Vad rapporten innehåller
+
+PLUGIN_SPOTON_DIAG_REDACTIONS_HEAD
+	CS	Co se ve zprávě nahrazuje a jak
+	DA	Hvad der erstattes i rapporten, og hvordan
+	DE	Was im Bericht ersetzt wird und wie
+	EN	What is replaced in the report, and how
+	ES	Qué se sustituye en el informe y cómo
+	FR	Ce qui est remplacé dans le rapport, et comment
+	IT	Cosa viene sostituito nel rapporto e come
+	NL	Wat in het rapport wordt vervangen, en hoe
+	NO	Hva som erstattes i rapporten, og hvordan
+	PL	Co jest zastępowane w raporcie i jak
+	SV	Vad som ersätts i rapporten, och hur
+
+PLUGIN_SPOTON_DIAG_NOT_REDACTED
+	CS	Nenahrazuje se: názvy a modely přehrávačů, ID a názvy položek Spotify, čísla verzí, texty chyb a veřejné adresy IPv4.
+	DA	Erstattes ikke: afspillernes navne og modeller, Spotify-elementers id'er og titler, versionsnumre, fejltekster og offentlige IPv4-adresser.
+	DE	Nicht ersetzt werden: Namen und Modelle der Player, Spotify-Titel und -IDs, Versionsnummern, Fehlertexte und öffentliche IPv4-Adressen.
+	EN	Not replaced: player names and models, Spotify item IDs and titles, version numbers, error texts, and public IPv4 addresses.
+	ES	No se sustituyen: nombres y modelos de los reproductores, ID y títulos de elementos de Spotify, números de versión, textos de error y direcciones IPv4 públicas.
+	FR	Ne sont pas remplacés : les noms et modèles des lecteurs, les identifiants et titres des éléments Spotify, les numéros de version, les textes d'erreur et les adresses IPv4 publiques.
+	IT	Non vengono sostituiti: nomi e modelli dei player, ID e titoli degli elementi Spotify, numeri di versione, testi di errore e indirizzi IPv4 pubblici.
+	NL	Niet vervangen: namen en modellen van spelers, Spotify-item-ID's en -titels, versienummers, foutteksten en openbare IPv4-adressen.
+	NO	Erstattes ikke: navn og modeller på spillere, Spotify-elementers ID-er og titler, versjonsnumre, feiltekster og offentlige IPv4-adresser.
+	PL	Nie są zastępowane: nazwy i modele odtwarzaczy, identyfikatory i tytuły elementów Spotify, numery wersji, teksty błędów oraz publiczne adresy IPv4.
+	SV	Ersätts inte: spelarnas namn och modeller, Spotify-objektens ID och titlar, versionsnummer, feltexter och offentliga IPv4-adresser.
+
+PLUGIN_SPOTON_DIAG_LOCAL_ONLY
+	CS	Nic neopustí tento počítač, pokud soubor sami nepřiložíte.
+	DA	Intet forlader denne maskine, medmindre du selv vedhæfter filen.
+	DE	Nichts verlässt diesen Rechner, solange Sie die Datei nicht selbst anhängen.
+	EN	Nothing leaves this machine unless you attach the file yourself.
+	ES	Nada sale de este equipo a menos que adjunte usted mismo el archivo.
+	FR	Rien ne quitte cette machine tant que vous ne joignez pas vous-même le fichier.
+	IT	Nulla lascia questa macchina a meno che tu non alleghi il file di persona.
+	NL	Er verlaat niets deze machine tenzij u het bestand zelf bijvoegt.
+	NO	Ingenting forlater denne maskinen med mindre du selv legger ved filen.
+	PL	Nic nie opuszcza tego komputera, dopóki sam nie załączysz pliku.
+	SV	Ingenting lämnar den här datorn om du inte själv bifogar filen.
+
+PLUGIN_SPOTON_DIAG_OPEN_FIRST
+	CS	Textový soubor před přiložením otevřete a projděte, zda neobsahuje nic, co nechcete sdílet.
+	DA	Åbn tekstfilen, før du vedhæfter den, og søg den igennem for alt, du ikke vil dele.
+	DE	Öffnen Sie die Textdatei, bevor Sie sie anhängen, und durchsuchen Sie sie nach allem, was Sie nicht teilen möchten.
+	EN	Open the text file before you attach it and search it for anything you do not want to share.
+	ES	Abra el archivo de texto antes de adjuntarlo y busque en él cualquier cosa que no quiera compartir.
+	FR	Ouvrez le fichier texte avant de le joindre et cherchez-y tout ce que vous ne voulez pas partager.
+	IT	Apri il file di testo prima di allegarlo e cerca al suo interno tutto ciò che non vuoi condividere.
+	NL	Open het tekstbestand voordat u het bijvoegt en zoek erin naar alles wat u niet wilt delen.
+	NO	Åpne tekstfilen før du legger den ved, og søk gjennom den etter alt du ikke vil dele.
+	PL	Otwórz plik tekstowy przed załączeniem i przeszukaj go pod kątem wszystkiego, czego nie chcesz udostępniać.
+	SV	Öppna textfilen innan du bifogar den och sök igenom den efter allt du inte vill dela.
 
 PLUGIN_SPOTON_CREDITS
 	CS	SpotOn používá librespot. Inspirováno pluginem Spotty od Hergera.

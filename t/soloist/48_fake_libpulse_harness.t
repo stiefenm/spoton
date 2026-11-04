@@ -130,6 +130,27 @@
 # fallen, ohne EAGAIN_KEEP P3, ohne beide (die alte Lese-Stelle) P1, P2 und P3, waehrend P0 gruen bleibt. Die Untergrenze der
 # ok:-Zeilen steigt von 98 auf 102.
 #
+# Debug-Sitzung `skip-seek-arm-nach-flush` (2026-11-03, Messung lavender-UAT 09:44-09:46: jeder manuelle Skip im Browse unter
+# Soloist zahlt ~3 s ohne Audio-Bytes, FLAC und PCM): Controls /seek-arm geht VOR dem WS-skip_next raus, aber der HTTP-Thread schlaeft
+# bei leerem Ring und angehaengtem Client bis zu 50 ms in _ring_pop_timed und sieht seinen Backlog nicht. Soloists Flush kommt zuerst,
+# ist unarmiert und raeumt unter Browse-Keep KEINEN g_flush_disconnect auf, also lief der Backlog-Durchgang von 0cb0837 nie. Der Thread
+# las den Arm 8-57 ms nach dem Flush, hob g_seek_flush_armed fuer einen Flush an, der schon vorbei war, und das Drain-Tor hielt den neuen
+# Titel SEEK_ARM_TTL_MS (3 s) zurueck. Der Keep-Zweig von pa_stream_flush hebt jetzt g_flush_keep_pending an und weckt den schlafenden
+# Thread; dessen Schleifenkopf faehrt _flush_backlog_pass und loescht das Flag, ein dabei gelesener /seek-arm gehoert dem schon
+# erfolgten Flush (Bloecke `SKIPARM KEEP_FLAG`, `SKIPARM KEEP_PASS`, `SKIPARM KEEP_CONSUME`, `SKIPARM KEEP_WINDOW`; der Anspruch des Flush
+# auf einen Arm gilt nur SEEK_KEEP_ARM_WINDOW_MS = 50 ms, sonst schluckte das Flag unter einem haengenden Client-Schreibvorgang, der den
+# Schleifenkopf nie erreicht, jeden spaeteren Arm). Sechs Namen `skiparm: K...`: die Kontrolle (Arm vor dem Flush gelesen, K0), die
+# Live-Form (Arm ungelesen im Backlog, Thread im Leer-Ring-Warten, K1, vor der Reparatur rot: armed=1, ein einziger 16384-B-Chunk kommt an,
+# der Rest wird 3 s gehalten), ein Arm NACH dem Durchgang armiert weiter den naechsten Flush (K2), ein ungelesener GET /stream geht im
+# Durchgang nicht verloren (K3), und beim haengenden Schreibvorgang (Spielerpuffer voll, die Form des Testers) wird ein knapp danach
+# gelesener Arm verbraucht (K4), ein 150 ms danach gelesener bleibt ein gewoehnlicher Arm (K5). Vier Mutanten laufen im Nur-Skiparm-Modus
+# (FAKE_LIBPULSE_TEST_SKIPARM_ONLY=1): ohne KEEP_FLAG MUSS K1, K4 und K5 fallen, ohne KEEP_CONSUME K1 und K4, ohne KEEP_PASS (das Flag
+# bleibt stehen) K2 und K3, ohne KEEP_WINDOW K5; K0 bleibt in jeder Mutante gruen (die Kontrolle ist kein Fehlerdetektor). Die Untergrenze
+# der ok:-Zeilen steigt von 102 auf 108.
+# 79-75 IN-01 (Fable-Review beta.5): K2b (Arm 20 ms nach dem Flush, im 50-ms-Fenster, aber nach dem Durchgang, bleibt ein gewoehnlicher
+# Arm) und der fuenfte Mutant MUT_KEEP_FLAGCHECK (ein Textschnitt IM Block KEEP_CONSUME, der beide Flag-Pruefungen aus der Bedingung nimmt;
+# der Produktcode bleibt ungemarkt und das gebaute libpulse.so.0 byte-gleich) MUSS K2b verfehlen. Sieben Namen, Untergrenze 109.
+#
 # Der Test uebersetzt fake-libpulse.c mit -DFAKE_LIBPULSE_TEST in ein
 # Temp-Verzeichnis (kein Build-Artefakt im Quellbaum), fuehrt den Harness
 # aus und macht aus jeder `ok:`-/`FAIL:`-Zeile einen TAP-Punkt. Ohne
@@ -182,7 +203,7 @@ fail("harness: $_") for @fail;
 
 is($run_rc, 0, 'harness exits 0') or diag($out);
 like($out, qr/^All fake-libpulse HTTP mode tests passed$/m, 'harness reports all tests passed');
-cmp_ok(scalar(@ok), '>=', 102, 'harness ran at least the 102 known checks') or diag($out);
+cmp_ok(scalar(@ok), '>=', 109, 'harness ran at least the 109 known checks') or diag($out);
 
 # The regression tests of this session must stay in the harness -- a
 # silently deleted test would otherwise still leave "All ... passed".
@@ -286,6 +307,15 @@ for my $want (
     qr/^ok: pending: P1 a GET whose head comes 150 ms after its connect survives an unread \/seek-arm in the slot while a dead client is attached/m,
     qr/^ok: pending: P2 a GET without its head yet is not closed by the hangup of the connection it replaced in the slot/m,
     qr/^ok: pending: P3 a GET with half its head survives a control POST that drains its bytes in the same tick/m,
+    # debug skip-seek-arm-nach-flush (2026-11-03): a browse skip's arm read after the flush
+    qr/^ok: skiparm: K0 an arm the HTTP thread read before the flush is consumed by it and the new title flows \(control\)/m,
+    qr/^ok: skiparm: K1 with browse keep set an arm queued unread while the HTTP thread sleeps in the empty-ring wait is consumed by the flush that follows and the new title flows/m,
+    qr/^ok: skiparm: K2 an arm that arrives after the keep flush still arms the next flush and is consumed by it/m,
+    # 79-75 IN-01: an arm read inside the 50 ms window but AFTER the pass is a plain arm (a window-only mutant survived K0-K5)
+    qr/^ok: skiparm: K2b an arm read 20 ms after the keep flush, inside the 50 ms window but after the backlog pass, is a plain arm for the next flush/m,
+    qr/^ok: skiparm: K3 a GET \/stream queued unread at the keep flush still takes over and gets the new title/m,
+    qr/^ok: skiparm: K4 during a stalled client write an arm queued before the keep flush and read by the write loop right after it is consumed by it/m,
+    qr/^ok: skiparm: K5 during a stalled client write an arm read 150 ms after the keep flush is a plain arm for the next flush/m,
 ) {
     like($out, $want, "regression check present: $want");
 }
@@ -548,6 +578,115 @@ for my $want (
     ok(($prc == 0 && $pok == 4 && $pout !~ /^FAIL: /m) ? 1 : 0,
        'silent start: the unmutated harness passes all four pending cells in pending-only mode')
         or diag("pending-only exit=$prc ok=$pok output:\n$pout");
+}
+
+# debug skip-seek-arm-nach-flush: the four keep-flush mutants, in skiparm-only mode (FAKE_LIBPULSE_TEST_SKIPARM_ONLY=1). Each cuts one marked
+# `SKIPARM <tag>` block: KEEP_FLAG (the keep flush raises no flag and wakes nobody) MUST fail K1, K4 and K5; KEEP_CONSUME (the queued arm is
+# read as a plain arm again) K1 and K4; KEEP_PASS (the flag is never cleared) K2 and K3; KEEP_WINDOW (the claim never expires) K5. K0, the
+# control, MUST stay green in every mutant, and the cells named in `keeps` are the ones the cut must NOT touch. The unmutated binary MUST pass
+# all six cells in that mode.
+{
+    open(my $sfh, '<', $src) or die "cannot read $src: $!";
+    my $code = do { local $/; <$sfh> };
+    close $sfh;
+    my $kn = 0;
+    for my $m (
+        [ 'MUT_KEEP_FLAG',    'KEEP_FLAG',    [ qr/^FAIL: skiparm: K1 /m, qr/^FAIL: skiparm: K4 /m, qr/^FAIL: skiparm: K5 /m ],
+          [ qr/^ok: skiparm: K0 /m ],
+          'the flag and the wake of the keep flush (the live skip: the arm is read after the flush and arms the next one)' ],
+        [ 'MUT_KEEP_CONSUME', 'KEEP_CONSUME', [ qr/^FAIL: skiparm: K1 /m, qr/^FAIL: skiparm: K4 /m ],
+          [ qr/^ok: skiparm: K0 /m, qr/^ok: skiparm: K5 /m ],
+          'the consumption of the queued arm (it is read as a plain arm and holds the new title)' ],
+        [ 'MUT_KEEP_PASS',    'KEEP_PASS',    [ qr/^FAIL: skiparm: K2 /m, qr/^FAIL: skiparm: K3 /m ],
+          [ qr/^ok: skiparm: K0 /m, qr/^ok: skiparm: K1 /m ],
+          'the backlog pass that clears the flag (a stale flag stands and the empty-ring wait is skipped for good)' ],
+        [ 'MUT_KEEP_WINDOW',  'KEEP_WINDOW',  [ qr/^FAIL: skiparm: K5 /m ],
+          [ qr/^ok: skiparm: K0 /m, qr/^ok: skiparm: K1 /m, qr/^ok: skiparm: K4 /m ],
+          'the 50 ms claim window (a stalled write swallows every later arm)' ],
+        # 79-75 IN-01: the window alone, without the flag. The cut is a text replacement INSIDE the KEEP_CONSUME block (the
+        # product source stays unmarked and byte-identical to the shipped shim): the two flag tests leave the condition.
+        [ 'MUT_KEEP_FLAGCHECK', 'KEEP_CONSUME', [ qr/^FAIL: skiparm: K2b /m ],
+          [ qr/^ok: skiparm: K0 /m, qr/^ok: skiparm: K1 /m, qr/^ok: skiparm: K2 /m, qr/^ok: skiparm: K4 /m, qr/^ok: skiparm: K5 /m ],
+          'the flag test of the claim (an arm read in the window after the pass is swallowed although the flag is long cleared)',
+          sub { my ($c) = @_; my $n = ($c =~ s{(client_fd >= 0 && keep_in_window)\s*&& atomic_load\(&g_flush_keep_pending\)\s*&& atomic_exchange\(&g_flush_keep_pending, 0\)\)}{$1)}); return ($n == 1) ? $c : undef; } ],
+    ) {
+        my ($label, $tag, $wants, $keeps, $what, $textcut) = @$m;
+        my $begins = () = $code =~ /SKIPARM ${tag}_BEGIN/g;
+        my $ends   = () = $code =~ /SKIPARM ${tag}_END/g;
+        my $cut    = $code;
+        my $nrep   = $textcut ? 0 : (($cut =~ s{/\* SKIPARM ${tag}_BEGIN \*/.*?/\* SKIPARM ${tag}_END \*/}{}s) || 0);
+        if ($textcut) {
+            my $t = $textcut->($code);
+            ($cut, $nrep) = defined $t ? ($t, 1) : ($code, 0);
+        }
+        my $one    = ($begins == 1 && $ends == 1 && $nrep == 1 && $cut ne $code) ? 1 : 0;
+        ok($one, "skip arm: the $label mutant source differs from the real source at exactly one marked block")
+            or diag("begin markers=$begins end markers=$ends replaced=$nrep");
+
+        my ($mcompiled, $mout, $mrc) = (0, '', 0);
+        my $mbin = '';
+        if ($one) {
+            $kn++;
+            my $msrc = "$tmp/fake-libpulse-skiparm-mutant-$kn.c";
+            $mbin = "$tmp/fake-libpulse-skiparm-mutant-$kn";
+            open(my $mfh, '>', $msrc) or die "cannot write $msrc: $!";
+            print $mfh $cut;
+            close $mfh;
+            my $mbuild = `"$cc" -O2 -Wall -Wextra -DFAKE_LIBPULSE_TEST -o "$mbin" "$msrc" -lpthread -lm 2>&1`;
+            $mcompiled = (($? >> 8) == 0 && -x $mbin) ? 1 : 0;
+            diag($mbuild) unless $mcompiled;
+            if ($mcompiled) {
+                $mout = `FAKE_LIBPULSE_TEST_SKIPARM_ONLY=1 $timeout"$mbin" 2>&1`;
+                $mrc  = $? >> 8;
+            }
+        }
+        ok($mcompiled, "skip arm: the $label mutant compiles");
+        my $all = ($mcompiled && $mrc != 0 && !(grep { $mout !~ $_ } @$wants) && !(grep { $mout !~ $_ } @$keeps)) ? 1 : 0;
+        ok($all, "skip arm: the $label mutant fails its cell(s): $what")
+            or diag("mutant exit=$mrc output:\n$mout");
+
+        # 79-75 WR-R2-01: K4 is the cell that detects the two mutants that remove the flag or the consumption of the claim in the
+        # stalled-write shape. Its verdict must not depend on who wins a microsecond race. K4 sends the arm's head without its
+        # terminating blank line before the flush, so the HTTP thread (woken by the connect itself) can only accept and read a
+        # partial head. The hook FAKE_LIBPULSE_TEST_K4_DELAY_US adds 5 ms between that POST and the flush: this guards that the split
+        # head stays in place (with a complete head the thread serves the arm before the flush and both mutants pass K4).
+        # The mutants MUST still fail K4.
+        if ($mcompiled && ($label eq 'MUT_KEEP_FLAG' || $label eq 'MUT_KEEP_CONSUME')) {
+            my $dout = `FAKE_LIBPULSE_TEST_K4_DELAY_US=5000 FAKE_LIBPULSE_TEST_SKIPARM_ONLY=1 $timeout"$mbin" 2>&1`;
+            ok(($dout =~ /^FAIL: skiparm: K4 /m) ? 1 : 0,
+               "skip arm: the $label mutant is still caught by K4 when the accept and the partial read land 5 ms before the flush (guards the split head)")
+                or diag("forced-race mutant output:\n$dout");
+            # 79-75 IN-R3-01: the FAIL line of the exhausted attempts shows the client that WAS attached when it was judged
+            ok(($dout =~ /^FAIL: skiparm: K4 .*attached=1 /m) ? 1 : 0,
+               "skip arm: the $label mutant's K4 FAIL line reports the attached client of the last attempt")
+                or diag("forced-race mutant output:\n$dout");
+        }
+    }
+
+    # 79-75 WR-R2-01: the REAL build under the forced interleavings. (1) The accept and the partial read 5 ms before the flush: K4
+    # stays ok. (2) The first attempt's reply lands 80 ms after the flush, outside the 50 ms claim window: K4 must retry and be ok
+    # (attempts=2, or 3 or 4 when a later attempt's own tick is late too: the cell asserts "retried and ok", WR-R3-01; the cap is four so
+    # that the forced-late cells keep one attempt of slack, ORCH-R4-01).
+    my $dly = `FAKE_LIBPULSE_TEST_K4_DELAY_US=5000 FAKE_LIBPULSE_TEST_SKIPARM_ONLY=1 $timeout"$bin" 2>&1`;
+    ok(($dly =~ /^ok: skiparm: K4 /m && $dly !~ /^FAIL: /m) ? 1 : 0, 'skip arm: the real build passes K4 when the accept and the partial read land 5 ms before the flush (guards the split head)')
+        or diag($dly);
+    my $late = `FAKE_LIBPULSE_TEST_K4_LATE_FIRST=1 FAKE_LIBPULSE_TEST_SKIPARM_ONLY=1 $timeout"$bin" 2>&1`;
+    ok(($late =~ /^ok: skiparm: K4 .*attempts=[234] read_after_flush_ms=/m && $late !~ /^FAIL: /m) ? 1 : 0, 'skip arm: the real build passes K4 on a retry when the first reply lands outside the 50 ms window (late read forced)')
+        or diag($late);
+
+    # 79-75 WR-R3-01: the runner face again, now on the second attempt too: LATE_FIRST=2 holds the terminator of attempts 1 and 2,
+    # so the judged attempt is the third. K4 must still be ok.
+    my $late2 = `FAKE_LIBPULSE_TEST_K4_LATE_FIRST=2 FAKE_LIBPULSE_TEST_SKIPARM_ONLY=1 $timeout"$bin" 2>&1`;
+    ok(($late2 =~ /^ok: skiparm: K4 .*attempts=[34] read_after_flush_ms=/m && $late2 !~ /^FAIL: /m) ? 1 : 0,
+       'skip arm: the real build passes K4 when the first two replies land outside the 50 ms window (a later attempt judged)')
+        or diag($late2);
+
+    my $kout = `FAKE_LIBPULSE_TEST_SKIPARM_ONLY=1 $timeout"$bin" 2>&1`;
+    my $krc  = $? >> 8;
+    my $kok  = () = $kout =~ /^ok: skiparm: K\d\w* /mg;
+    ok(($krc == 0 && $kok == 7 && $kout !~ /^FAIL: /m) ? 1 : 0,
+       'skip arm: the unmutated harness passes all seven skiparm cells (K0-K5 and K2b) in skiparm-only mode')
+        or diag("skiparm-only exit=$krc ok=$kok output:\n$kout");
 }
 
 done_testing();

@@ -2331,6 +2331,59 @@ subtest 'extract-run-79-51-discard' => sub {
 };
 
 # ============================================================
+# subtest 'extract-run-skiparm-consumed' -- debug skip-seek-arm-nach-flush (2026-11-03). The shim writes
+# `seek_arm: consumed by browse-keep flush via=<pending|backlog|handler|write-wait> armed=<n>` when a browse-kept
+# flush has already happened by the time the HTTP thread reads the arm that was sent before it (the live skip: Perl sent
+# the arm 12 ms before the flush, the shim read it 12 ms after), and `seek_arm: consumed by pending flush-disconnect
+# via=<..> armed=<n>` (0cb0837) for the same situation at an unarmed flush-disconnect. Under architecture rule 4 a line
+# without a category is only counted, never printed, so the live proof of the fix could not quote them. One category prints both.
+# REAL in this fixture: three lines copied from the UAT daemon log of the 2026-11-03 10:29-10:32 verification run
+# (/var/lib/squeezeboxserver/cache/spoton/0200005a1101-soloist.log, BOUNDARY ts 10:30:03.623 browse-keep/pending,
+# 10:31:47.508 browse-keep/backlog, 10:31:16.117 pending flush-disconnect/backlog). SYNTHETIC: a write_summary line and the
+# armed=1 line of the opposite outcome, which must stay OUT of this category (they have their own).
+# ============================================================
+subtest 'extract-run-skiparm-consumed' => sub {
+    my $stubdir   = tempdir(CLEANUP => 1);
+    my $sudo_stub = write_sudo_passthrough_stub($stubdir);
+
+    my ($sfh, $server_log) = tempfile();
+    close($sfh);
+
+    my ($dfh, $daemon_log) = tempfile();
+    print $dfh "[fakepulse BOUNDARY ts=10:30:03.623] seek_arm: consumed by browse-keep flush via=pending armed=0\n";
+    print $dfh "[fakepulse BOUNDARY ts=10:31:16.117] seek_arm: consumed by pending flush-disconnect via=backlog armed=0\n";
+    print $dfh "[fakepulse BOUNDARY ts=10:31:47.508] seek_arm: consumed by browse-keep flush via=backlog armed=0\n";
+    print $dfh "[fakepulse BOUNDARY ts=10:32:04.327] seek_arm: armed=1\n";
+    print $dfh "[fakepulse BOUNDARY ts=10:32:05.000] write_summary: bytes_written=1 ring_fill=0 calls=1 bytes_since=1 corked=0\n";
+    close($dfh);
+
+    my ($exit, $stdout, $stderr) = run_perl_tool($extract_run_script,
+        [ 'aa:bb:cc:dd:ee:01', '10:29:00', '10:33:00',
+          '--server-log', $server_log, '--daemon-log', $daemon_log,
+          '--date', '2026-11-03' ],
+        SUDO_BIN => $sudo_stub, TZ => 'Europe/Berlin');
+    is($exit, 0, 'extract-run-skiparm-consumed: Exit 0') or diag("stderr: $stderr");
+
+    my $body = ($stdout =~ /^--- Daemon-Log: seek-arm consumed by an already-happened flush[^\n]*---\n(.*?)(?=\n---|\z)/ms) ? $1 : '';
+    like($stdout, qr/^--- Daemon-Log: seek-arm consumed by an already-happened flush[^\n]*\(Anzahl: 3 im Fenster/m,
+        'extract-run-skiparm-consumed: category header carries Anzahl 3 (count => 1)');
+    like($body, qr/\] seek_arm: consumed by browse-keep flush via=pending armed=0/,
+        'extract-run-skiparm-consumed: the real 10:30:03.623 browse-keep line (via=pending) is verbatim');
+    like($body, qr/\] seek_arm: consumed by browse-keep flush via=backlog armed=0/,
+        'extract-run-skiparm-consumed: the real 10:31:47.508 browse-keep line (via=backlog) is verbatim');
+    like($body, qr/\] seek_arm: consumed by pending flush-disconnect via=backlog armed=0/,
+        'extract-run-skiparm-consumed: the real 10:31:16.117 pending flush-disconnect line is verbatim');
+    unlike($body, qr/seek_arm: armed=/,     'extract-run-skiparm-consumed: the opposite outcome (armed=1) stays out of the category');
+    unlike($body, qr/write_summary:/,       'extract-run-skiparm-consumed: a write_summary line stays out of the category');
+    like($stdout, qr/^--- Daemon-Log: seek_arm \/ seek_arm_expired \/ boundary_planted ---\n[^\n]*seek_arm: armed=1/m,
+        'extract-run-skiparm-consumed: the armed=1 line is still printed by its own category');
+    unlike($stdout, qr/Restzaehler-Selbsttest[^\n]*FEHLGESCHLAGEN/,
+        'extract-run-skiparm-consumed: Restzaehler self-test stays silent');
+
+    unlink($server_log, $daemon_log);
+};
+
+# ============================================================
 # subtest 'extract-run-dateless-utc-day-boundary' -- 84.1-REVIEW.md round 3,
 # WR-09. resolve_dateless_utc() picked its candidate day by asking "does the
 # time-of-day fall inside the (local) window?" -- but time-of-day is

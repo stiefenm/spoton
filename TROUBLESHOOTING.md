@@ -83,16 +83,22 @@ In a sync group only the group's master runs a Soloist daemon; pair and select t
 
 ## Collecting Diagnostic Data
 
-SpotOn has a built-in diagnostic system that collects system info, daemon logs, and LMS server log entries into a single downloadable file.
+SpotOn can write a single text file with everything support needs: system and player information, the status of the Spotify sign-in and the daemons, the transcoding rules, the recent errors, the daemon logs and the matching lines of the LMS server log. It works without enabling anything.
 
 1. Go to **SpotOn Settings** (Server Settings > SpotOn)
-2. Scroll to **Diagnostics** and enable the checkbox
-3. Click **Save**
-4. Reproduce the issue
-5. Return to SpotOn Settings and click **Download Diagnostic Report**
-6. Attach the `.txt` file to your GitHub issue
+2. Scroll to **Diagnostics** and click **Download Diagnostic Report**. If you prefer the address bar, open `/plugins/SpotOn/settings/diagnosticBundle` on your LMS address, for example `http://<lms>:9000/plugins/SpotOn/settings/diagnosticBundle`.
+3. Open the `.txt` file and read through it before you share it
+4. Attach it to your GitHub issue or forum post
 
-The bundle includes: LMS version, OS, Perl version, SpotOn version, player list, active settings, Connect and unified daemon logs, browse error log, and SpotOn-related entries from the LMS server log.
+The report has eight sections, each between a `=== BEGIN <name> ===` and an `=== END <name> ===` line: system, backend, players, environment, transcoding, status, daemon logs and server log. The Diagnostics area of the settings page lists them next to the download button.
+
+Personal data is replaced by placeholders before the file is written, the same value always by the same placeholder: player MAC addresses keep their vendor part and become `Player-1`, `Player-2` (also in file names), addresses in your local network become `LAN-1` (IPv6: `LAN6-1`), public IPv6 addresses, such as that of your internet connection, become `IP6-1`, Spotify device IDs become `DEVICE-1`, the Spotify display name, user IDs, tokens, keys, passwords and e-mail addresses become `[REDACTED]`, and your home folder name is cut from file paths. Not replaced are player names and models, Spotify item IDs and titles, version numbers, error texts and public IPv4 addresses. Nothing leaves your machine unless you attach the file yourself.
+
+The **Diagnostic Mode** checkbox is not needed for the download. It only turns on detailed logging and restarts the SpotOn daemons: enable it, reproduce the issue, then download the report so the logs in it contain the failing moment.
+
+### If the SpotOn settings page does not open
+
+Then the report cannot be downloaded from the page. Use the LMS server log instead: **LMS Settings > Advanced > Logging**, open **server.log**, or call `http://<lms>:9000/server.log?lines=1000` (or `?zip=1` for a compressed copy). Paste the lines around the failure into the issue, including the lines that do not mention SpotOn.
 
 ## Known Issues
 
@@ -191,6 +197,14 @@ Use this when the Spotify app cannot see the pairing device (Docker bridge netwo
 spoton -n "SpotOn Setup" --cache /tmp/spoton-auth --discover-once
 ```
 
+On Windows (Command Prompt or PowerShell, in the folder that holds `spoton.exe`):
+
+```bat
+spoton.exe -n "SpotOn Setup" --cache %TEMP%\spoton-auth --discover-once
+```
+
+The file then lies in `%TEMP%\spoton-auth\credentials.json`.
+
 **Step 3:** In the Spotify app (same network as that machine), **play a track**, open the devices menu and pick **SpotOn Setup**. The helper writes `/tmp/spoton-auth/credentials.json` and exits.
 
 **Step 4:** Copy that file to `<cachedir>/spoton/__DISCOVER__/credentials.json` on the LMS host **while LMS runs**:
@@ -257,6 +271,18 @@ This happens when mDNS doesn't work between your phone/computer and the LMS host
 - **Firewall** blocks mDNS (UDP port 5353) — open it, or use the `__DISCOVER__` folder
 
 The `__DISCOVER__` folder adds an account without mDNS on the LMS host: you create the login file on any machine in the phone's network and copy it over. It works in any network topology.
+
+### Windows Server checklist
+
+The Spotify app does not list the SpotOn device on a Windows Server host, although the same binary is found on a Windows 11 machine in the same network? That points at the host, not at the account. Work through these points:
+
+- **Network profile and firewall scope.** Check the profile of the active network adapter (Domain, Private or Public) and whether an inbound firewall rule for exactly that profile allows **UDP 5353** and the daemon program. The daemon's TCP port is chosen by Windows on every start, so allow the program `spoton.exe` (Windows Defender Firewall, Allow an app, or `New-NetFirewallRule -DisplayName "SpotOn daemon" -Program <path>\spoton.exe -Profile <Domain|Private> -Direction Inbound -Action Allow`, with the profile that the adapter reports) rather than a port number. Scope the rule to the profile of your LAN; do not open it for all profiles and do not switch the firewall off.
+- **Several adapters.** Hyper-V virtual switch, NIC teaming or a VPN adapter: find out which adapter holds the LAN the phone is on.
+- **VM on a NAT network.** A phone cannot see a VM behind NAT. Use a bridged adapter.
+- **Another mDNS responder.** Bonjour or iTunes, or another Connect service, may already answer on UDP 5353 on the same host.
+- **Same subnet and VLAN.** The phone and the server must be in the same subnet and VLAN.
+- **What SpotOn does.** SpotOn passes no bind address and no interface option to the daemon, so there is no SpotOn setting to try. How the daemon binds for discovery on Windows was not verified and is not claimed here. The upstream librespot change PR 1724 (IPv4 fallback when IPv6 is disabled at kernel level) is closed, unmerged and Linux-only, so it is not the cause.
+- **Fallback.** Pair the account through the `__DISCOVER__` route from any Windows 11 machine in the phone's network (see "Konto ohne mDNS koppeln" above, with the Windows command).
 
 ## Windows: Daemon Timeout or "Binary not found"
 

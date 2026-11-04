@@ -463,6 +463,32 @@ static struct timeval g_seek_arm_at;
  * atomic_int, the g_seek_flush_armed precedent. */
 static atomic_int g_browse_keep = 0;
 
+/* debug skip-seek-arm-nach-flush (2026-11-03): the browse-keep counterpart of the
+ * flush-disconnect backlog pass (0cb0837). An UNARMED flush under browse keep raises no
+ * g_flush_disconnect (it keeps the client), so that pass never ran for it. But the arm of a
+ * browse skip is sent strictly BEFORE the WS command that makes Soloist flush, and the HTTP
+ * thread, whenever the ring is empty and a client is attached, sleeps up to 50 ms in
+ * _ring_pop_timed() and watches no socket: the arm then sits unread in the listen backlog
+ * while the flush decides "unarmed". The thread read it 8-57 ms later (live, lavender-UAT
+ * 09:44-09:46, six of seven manual skips), raised g_seek_flush_armed for a flush that was
+ * already over, and the drain gate withheld the new title for SEEK_ARM_TTL_MS (3 s).
+ * pa_stream_flush() therefore raises this flag in its keep branch (and wakes the sleeping
+ * HTTP thread); the thread's loop top runs _flush_backlog_pass() for it and clears it; a
+ * loopback /seek-arm served while it stands belongs to that flush and is consumed by it
+ * (_serve_seek_arm), exactly as in the flush-disconnect case. Set by the flush caller's
+ * thread under g_ring.lock, cleared by the HTTP thread -- atomic_int, the g_browse_keep
+ * precedent. The claim is time-bounded: the flush stamps g_flush_keep_at (_mono_ms()) and an arm
+ * is consumed by it only while that stamp is at most SEEK_KEEP_ARM_WINDOW_MS old. The window has
+ * to outlast the longest the HTTP thread can leave a queued arm unread after the flush -- a stalled
+ * client write polls the listen socket every HTTP_WRITE_TICK_MS (20 ms) and never reaches the loop
+ * top that clears the flag, so without it the flag would swallow any LATER arm for as long as the
+ * stall lasts. Accepted residual (recoverable direction, same as 0cb0837): an arm meant for a LATER
+ * command that is read inside that window is consumed by the flush; the later flush then runs
+ * unarmed, which under browse keep still keeps the client. */
+static atomic_int  g_flush_keep_pending = 0;
+static atomic_long g_flush_keep_at = 0;
+#define SEEK_KEEP_ARM_WINDOW_MS 50
+
 /* 79-50 (D-34 R2): the connect decision window. In a Connect session an app
  * seek makes the daemon flush on its own, the flush is unarmed, and the
  * disconnect it raises used to run at the HTTP thread's next wake-up, 9 ms
@@ -1363,12 +1389,19 @@ static void _ring_release_writers_and_wait(ring_buffer_t *r) {
  * interleaving they test is the same every run. Never compiled into
  * libpulse.so.0. */
 static atomic_int g_test_pop_waiting = 0;
+/* 79-75 WR-R2-01, harness only: _mono_ms() of the last /seek-arm served (any path). K4 reads it to tell whether the
+ * arm was read inside the keep flush's claim window; a read outside it is a plain arm by design, so the cell retries
+ * instead of judging. Never compiled into libpulse.so.0. */
+static atomic_long g_test_seek_arm_served_at = 0;
 #endif
 
 static size_t _ring_pop_timed(ring_buffer_t *r, unsigned char *out, size_t maxlen, int timeout_ms) {
     pthread_mutex_lock(&r->lock);
 
-    if (r->fill == 0) {
+    /* skip-seek-arm-nach-flush: a keep flush that is still waiting for the HTTP thread's backlog
+     * pass (g_flush_keep_pending, raised under this lock) ends the wait before it starts -- the
+     * predicate is read under the lock, so the flush's wake cannot be lost. */
+    if (r->fill == 0 && !atomic_load(&g_flush_keep_pending)) {
         struct timeval now;
         gettimeofday(&now, NULL);
         long usec = now.tv_usec + (long)(timeout_ms % 1000) * 1000;
@@ -1932,6 +1965,9 @@ static void _serve_boundary(pending_conn_t *p, int client_fd) {
  * the drain gate, withhold audio from the kept client until the 3 s
  * TTL). Returns 1 iff the arm cancelled a pending flush-disconnect. */
 static int _serve_seek_arm(pending_conn_t *p, int client_fd, const char *via) {
+#ifdef FAKE_LIBPULSE_TEST
+    atomic_store(&g_test_seek_arm_served_at, _mono_ms());
+#endif
     /* WR-04 (77-REVIEW): loopback-only -- see _serve_boundary. Because
      * of WR-03's TTL, a spoofed /seek-arm now only freezes the attached
      * client's audio for up to SEEK_ARM_TTL_MS rather than
@@ -1968,6 +2004,36 @@ static int _serve_seek_arm(pending_conn_t *p, int client_fd, const char *via) {
                  via, (int)g_seek_flush_armed);
         return 1;
     }
+
+    /* debug skip-seek-arm-nach-flush: the same rule for an unarmed flush that browse keep kept
+     * (g_flush_keep_pending, see its comment): the arm was sent before the WS command, only read
+     * too late; it belongs to the flush that already happened and must not arm the next one. One
+     * flush consumes one arm (the exchange). */
+    int keep_in_window = 1;
+    /* SKIPARM KEEP_WINDOW_BEGIN */
+    {
+        long keep_at = atomic_load(&g_flush_keep_at);
+        keep_in_window = (keep_at != 0 && _mono_since(keep_at) <= SEEK_KEEP_ARM_WINDOW_MS);
+    }
+    /* SKIPARM KEEP_WINDOW_END */
+    /* SKIPARM KEEP_CONSUME_BEGIN */
+    if (client_fd >= 0 && keep_in_window && atomic_load(&g_flush_keep_pending)
+        && atomic_exchange(&g_flush_keep_pending, 0)) {
+        _http_write_all(p->fd, (const unsigned char *)seek_arm_resp,
+                         sizeof(seek_arm_resp) - 1);
+        close(p->fd);
+        p->fd = -1;
+        p->len = 0;
+        if (g_debug_trace) {
+            char _ts[32];
+            _trace_ts(_ts, sizeof(_ts));
+            fprintf(stderr, "[fakepulse %s] browse-keep flush consumed queued seek-arm (via=%s)\n", _ts, via);
+        }
+        BOUNDARY("seek_arm: consumed by browse-keep flush via=%s armed=%d",
+                 via, (int)g_seek_flush_armed);
+        return 1;
+    }
+    /* SKIPARM KEEP_CONSUME_END */
 
     /* WR-01 (77-REVIEW): CAS loop for symmetry with the consuming
      * decrement in pa_stream_flush() -- the same read-modify-write
@@ -2342,7 +2408,7 @@ static void _flush_backlog_pass(pending_conn_t *p, int client_fd) {
     } else if (_pending_is_control(p, "/seek-keep")) {
         _serve_seek_keep(p, client_fd);    /* 79-50: the keep of the decision window, served wherever the arm is */
     }
-    for (int i = 0; i < FLUSH_BACKLOG_PASS_MAX && g_flush_disconnect; i++) {
+    for (int i = 0; i < FLUSH_BACKLOG_PASS_MAX && (g_flush_disconnect || atomic_load(&g_flush_keep_pending)); i++) {
         struct pollfd lfd;
         lfd.fd = g_http_listen_fd;
         lfd.events = POLLIN;
@@ -2540,6 +2606,18 @@ static void *_http_thread_fn(void *arg) {
         if (g_flush_disconnect && client_fd >= 0) {
             _flush_backlog_pass(&pending, client_fd);
         }
+        /* debug skip-seek-arm-nach-flush: a flush that browse keep kept raised no flush-disconnect,
+         * so the pass above did not run for it. Run it now (this iteration starts right after the
+         * flush woke the empty-ring wait, see g_flush_keep_pending) and clear the flag: a /seek-arm
+         * read after this point is a plain arm for the NEXT flush. */
+        /* SKIPARM KEEP_PASS_BEGIN */
+        if (atomic_load(&g_flush_keep_pending)) {
+            if (client_fd >= 0 && !g_flush_disconnect) {
+                _flush_backlog_pass(&pending, client_fd);
+            }
+            atomic_store(&g_flush_keep_pending, 0);
+        }
+        /* SKIPARM KEEP_PASS_END */
         /* 79-50 (D-34 R2): the decision is final unless a window is open (an
          * unarmed flush holds its disconnect for FLUSH_DECIDE_MS so Control's
          * /seek-keep can arrive, see g_flush_decide_deadline). While it is open the
@@ -3046,7 +3124,9 @@ static void *_http_thread_fn(void *arg) {
              * Edge-triggered via g_ring_underrun_fired (reset on any fresh
              * ring_push/ring_flush) so this fires once per genuine empty
              * streak, not every 50ms tick while legitimately idle. */
-            if (client_fd >= 0) {
+            /* skip-seek-arm-nach-flush: the wake a keep flush gives the empty-ring wait is not a
+             * ring-empty edge of its own; the next iteration's wait raises it as before. */
+            if (client_fd >= 0 && !atomic_load(&g_flush_keep_pending)) {
                 /* WR-02 (77-REVIEW): the ring-empty check and the
                  * g_ring_underrun_fired set must be decided as ONE
                  * operation under g_ring.lock, serialized against
@@ -4187,6 +4267,20 @@ pa_operation *pa_stream_flush(pa_stream *s, pa_stream_success_cb_t cb, void *use
                     fprintf(stderr, "[fakepulse %s] flush-keep: browse keep set, active HTTP client stays\n", _ts);
                 }
                 BOUNDARY("flush_keep: browse keep set, no flush-disconnect");
+                /* debug skip-seek-arm-nach-flush: this kept flush may have outrun the /seek-arm that was
+                 * sent for it (the HTTP thread sleeps in the empty-ring wait and reads its backlog
+                 * only when it wakes). Tell the thread to look NOW: flag and wake under the ring
+                 * lock, the predicate _ring_pop_timed reads under the same lock. */
+                /* SKIPARM KEEP_FLAG_BEGIN */
+                pthread_mutex_lock(&g_ring.lock);
+                {
+                    long keep_now = _mono_ms();
+                    atomic_store(&g_flush_keep_at, keep_now != 0 ? keep_now : 1);   /* 0 = none */
+                }
+                atomic_store(&g_flush_keep_pending, 1);
+                pthread_cond_broadcast(&g_ring.data_avail);
+                pthread_mutex_unlock(&g_ring.lock);
+                /* SKIPARM KEEP_FLAG_END */
             } else {
                 /* 79-50 (D-34 R2): the unarmed, not-browse-kept flush. The decision
                  * deadline is stored BEFORE the flag: the HTTP thread must never see
@@ -7484,6 +7578,375 @@ static void _test_pending_cases(pa_stream *s, int port, int *failures) {
     _test_pending_p3(s, port, failures);
 }
 
+/* ==================================================================== */
+/* debug skip-seek-arm-nach-flush (2026-11-03): a browse skip's          */
+/* /seek-arm that the HTTP thread reads only AFTER the flush.            */
+/* ==================================================================== */
+/*
+ * Live (lavender-UAT 09:44-09:46, six of seven manual skips, FLAC and PCM): Control
+ * sends the arm strictly before the WS skip_next, but with an empty ring and a client
+ * attached the HTTP thread sleeps up to 50 ms in _ring_pop_timed and watches no
+ * socket, so the arm sits unread in the listen backlog. Soloist's flush lands first,
+ * is unarmed and -- browse keep being set -- raises no g_flush_disconnect, so the
+ * 0cb0837 backlog pass (guarded by g_flush_disconnect) never ran. The thread read the
+ * arm 8-57 ms after the flush, raised g_seek_flush_armed for a flush that was over,
+ * and the drain gate withheld the new title for SEEK_ARM_TTL_MS = 3 s. The one skip
+ * whose ring was not empty (the thread sat in the poll that watches the listen socket)
+ * had the arm 8 ms BEFORE the flush and no hold.
+ *
+ * K0 is the control (the arm read before the flush; green before and after), K1 is the
+ * live shape (RED before the fix), K2 pins that an arm arriving after the pass still
+ * arms the next flush (a fix that swallowed every arm under browse keep would pass K1
+ * and fail K2), K3 pins that a GET /stream queued unread at the flush is not lost by
+ * the pass.
+ */
+#define _TEST_SKIPARM_LEN 262144   /* 7.4 drain budgets: a gate that closes after the first tick shows as a short read */
+
+typedef struct {
+    size_t got;
+    long   first;
+    long   bad;
+    int    eof;
+    int    armed;    /* g_seek_flush_armed once the new title was collected */
+} _test_sa_res_t;
+
+/* After the flush: push the new title, collect it from fd, sample the arm counter. */
+static void _test_skiparm_new_title(pa_stream *s, int fd, _test_sa_res_t *r) {
+    _test_hold_push(s, _TEST_SKIPARM_LEN, 0.75f);
+    unsigned char *buf = malloc(_TEST_SKIPARM_LEN);
+    r->got = _test_hold_collect(fd, 2500, _TEST_SKIPARM_LEN, buf, &r->first, &r->eof);
+    r->bad = buf ? _test_hold_bad_samples(buf, r->got, 0.75f) : -1;
+    free(buf);
+    r->armed = (int)g_seek_flush_armed;
+}
+
+static void _test_skiparm_flush(pa_stream *s) {
+    pa_operation *op = pa_stream_flush(s, NULL, NULL);
+    if (op) {
+        pa_operation_unref(op);
+    }
+}
+
+static int _test_skiparm_flows(const _test_sa_res_t *r) {
+    return r->got == _TEST_SKIPARM_LEN && r->bad == 0 && r->first >= 0 && r->first <= 250 && !r->eof && r->armed == 0;
+}
+
+static void _test_skiparm_facts(char *facts, size_t cap, const char *head, const _test_sa_res_t *r) {
+    snprintf(facts, cap, "%s armed_after=%d (want 0) got=%zu (want %d) bad_samples=%ld (want 0) first_byte_ms=%ld (want <= 250) eof=%d (want 0)",
+             head, r->armed, r->got, (int)_TEST_SKIPARM_LEN, r->bad, r->first, r->eof);
+}
+
+/* K0 (control): the HTTP thread answered the arm before the flush -- the flush consumes it. */
+static void _test_skiparm_k0(pa_stream *s, int port, int *failures) {
+    const char *name = "skiparm: K0 an arm the HTTP thread read before the flush is consumed by it and the new title flows (control)";
+    char kb[128];
+    kb[0] = '\0';
+    int keep_ok = _test_browse_keep_post(port, "?on=1", kb, sizeof(kb));
+    _test_hc_t c;
+    _test_hold_open(s, port, "0", NULL, &c);
+    int armpost = 0, armed_before = -1;
+    _test_sa_res_t r;
+    memset(&r, 0, sizeof(r));
+    r.first = -1;
+    if (keep_ok && c.gotA) {
+        armpost = _test_post_control(port, "/seek-arm");
+        armed_before = (int)g_seek_flush_armed;
+        _test_skiparm_flush(s);
+        usleep(10000);
+        _test_skiparm_new_title(s, c.fd, &r);
+    }
+    char head[160], facts[512];
+    snprintf(head, sizeof(head), "keep_post=%d gotA=%d arm_post=%d armed_before_flush=%d (want 1)", keep_ok, c.gotA, armpost, armed_before);
+    _test_skiparm_facts(facts, sizeof(facts), head, &r);
+    int ok = keep_ok && c.gotA && armpost && armed_before == 1 && _test_skiparm_flows(&r);
+    if (c.fd >= 0) close(c.fd);
+    _test_hold_verdict(failures, ok, name, facts);
+    _test_browse_cleanup(port);
+}
+
+/* K1 (the live shape): the arm sits unread in the backlog while the HTTP thread sleeps in the
+ * empty-ring wait; the unarmed flush that follows is the one it was sent for. */
+static void _test_skiparm_k1(pa_stream *s, int port, int *failures) {
+    const char *name = "skiparm: K1 with browse keep set an arm queued unread while the HTTP thread sleeps in the empty-ring wait is consumed by the flush that follows and the new title flows";
+    char kb[128];
+    kb[0] = '\0';
+    int keep_ok = _test_browse_keep_post(port, "?on=1", kb, sizeof(kb));
+    _test_hc_t c;
+    _test_hold_open(s, port, "0", NULL, &c);
+    int pre = keep_ok && c.gotA && _test_pend_await_pop_wait(1000);
+    int a = pre ? _test_post_raw(port, "/seek-arm") : -1;
+    int armed_before = (int)g_seek_flush_armed;
+    int fd_flag = -1, reply = 0;
+    _test_sa_res_t r;
+    memset(&r, 0, sizeof(r));
+    r.first = -1;
+    if (a >= 0) {
+        _test_skiparm_flush(s);
+        fd_flag = (int)g_flush_disconnect;
+        usleep(10000);   /* live: the first post-flush push came 8-57 ms after the flush */
+        _test_skiparm_new_title(s, c.fd, &r);
+        reply = _test_read_control_ok(a, 1000);
+    }
+    char head[200], facts[600];
+    snprintf(head, sizeof(head), "precondition=%d armed_before_flush=%d (want 0: arm still unread) flush_disconnect=%d (want 0) arm_answered=%d (want 1)",
+             pre && a >= 0, armed_before, fd_flag, reply);
+    _test_skiparm_facts(facts, sizeof(facts), head, &r);
+    int ok = pre && a >= 0 && armed_before == 0 && fd_flag == 0 && reply && _test_skiparm_flows(&r);
+    if (a >= 0) close(a);
+    if (c.fd >= 0) close(c.fd);
+    _test_hold_verdict(failures, ok, name, facts);
+    _test_browse_cleanup(port);
+}
+
+/* K2: an arm that arrives after the keep flush (and after its pass) is an ordinary arm: it counts, the
+ * next flush consumes it, the new title flows. */
+static void _test_skiparm_k2(pa_stream *s, int port, int *failures) {
+    const char *name = "skiparm: K2 an arm that arrives after the keep flush still arms the next flush and is consumed by it";
+    char kb[128];
+    kb[0] = '\0';
+    int keep_ok = _test_browse_keep_post(port, "?on=1", kb, sizeof(kb));
+    _test_hc_t c;
+    _test_hold_open(s, port, "0", NULL, &c);
+    int armpost = 0, armed_mid = -1, flag_after_pass = -1;
+    _test_sa_res_t r;
+    memset(&r, 0, sizeof(r));
+    r.first = -1;
+    if (keep_ok && c.gotA) {
+        _test_skiparm_flush(s);                         /* unarmed, kept: no arm anywhere */
+        usleep(150000);                                 /* the pass is long over */
+        flag_after_pass = (int)atomic_load(&g_flush_keep_pending);
+        armpost = _test_post_control(port, "/seek-arm");
+        armed_mid = (int)g_seek_flush_armed;
+        _test_skiparm_flush(s);                         /* the flush the late arm was for */
+        usleep(10000);
+        _test_skiparm_new_title(s, c.fd, &r);
+    }
+    char head[200], facts[600];
+    snprintf(head, sizeof(head), "keep_post=%d gotA=%d keep_flag_after_pass=%d (want 0) arm_post=%d armed_between_flushes=%d (want 1)", keep_ok, c.gotA, flag_after_pass, armpost, armed_mid);
+    _test_skiparm_facts(facts, sizeof(facts), head, &r);
+    int ok = keep_ok && c.gotA && flag_after_pass == 0 && armpost && armed_mid == 1 && _test_skiparm_flows(&r);
+    if (c.fd >= 0) close(c.fd);
+    _test_hold_verdict(failures, ok, name, facts);
+    _test_browse_cleanup(port);
+}
+
+/* K2b (79-75 IN-01): K2's late arm, but READ inside the 50 ms claim window and AFTER the pass that already cleared
+ * the flag. It is an ordinary arm of the NEXT flush; a claim that looked at the window alone (without the flag)
+ * would swallow it. K0-K5 left that mutant alive: K2 and K5 read their arm 150 ms after the flush. The HTTP thread
+ * sleeps up to 50 ms in the empty-ring wait and reads its backlog only when it wakes, so the arm is posted unread
+ * (10 ms) and a small push (20 ms, the post-flush audio of the live shape) wakes the thread: it reads the arm about
+ * 20 ms after the flush. */
+static void _test_skiparm_k2b(pa_stream *s, int port, int *failures) {
+    const char *name = "skiparm: K2b an arm read 20 ms after the keep flush, inside the 50 ms window but after the backlog pass, is a plain arm for the next flush";
+    char kb[128];
+    kb[0] = '\0';
+    int keep_ok = _test_browse_keep_post(port, "?on=1", kb, sizeof(kb));
+    _test_hc_t c;
+    _test_hold_open(s, port, "0", NULL, &c);
+    int pre = keep_ok && c.gotA && _test_pend_await_pop_wait(1000);
+    int a = -1, flag_after_pass = -1, armed_mid = -1, reply = 0, eof_wake = 0;
+    _test_sa_res_t r;
+    memset(&r, 0, sizeof(r));
+    r.first = -1;
+    if (pre) {
+        _test_skiparm_flush(s);                         /* unarmed, kept: no arm anywhere */
+        usleep(10000);
+        a = _test_post_raw(port, "/seek-arm");          /* unread: the thread sleeps in the empty-ring wait */
+        usleep(10000);
+        flag_after_pass = (int)atomic_load(&g_flush_keep_pending);
+        _test_hold_push(s, 4096, 0.75f);                /* wakes the thread: it reads the arm now, 20 ms after the flush */
+        reply = (a >= 0) && _test_read_control_ok(a, 1000);
+        armed_mid = (int)g_seek_flush_armed;
+        (void)_test_hold_read_window(c.fd, 200, &eof_wake);   /* the wake chunk, if the drain gate let it through */
+        _test_skiparm_flush(s);                         /* the flush the late arm was for */
+        usleep(10000);
+        _test_skiparm_new_title(s, c.fd, &r);
+    }
+    char head[240], facts[640];
+    snprintf(head, sizeof(head), "precondition=%d keep_flag_after_pass=%d (want 0) arm_answered=%d (want 1) armed_between_flushes=%d (want 1)", pre, flag_after_pass, reply, armed_mid);
+    _test_skiparm_facts(facts, sizeof(facts), head, &r);
+    int ok = pre && a >= 0 && flag_after_pass == 0 && reply && armed_mid == 1 && !eof_wake && _test_skiparm_flows(&r);
+    if (a >= 0) close(a);
+    if (c.fd >= 0) close(c.fd);
+    _test_hold_verdict(failures, ok, name, facts);
+    _test_browse_cleanup(port);
+}
+
+/* K3: LMS's new GET /stream is queued unread (complete head) when the keep flush lands: the pass must leave
+ * it for the takeover -- the old client ends, the new one gets its header and the new title. */
+static void _test_skiparm_k3(pa_stream *s, int port, int *failures) {
+    const char *name = "skiparm: K3 a GET /stream queued unread at the keep flush still takes over and gets the new title";
+    static const char getReq[] = "GET /stream HTTP/1.0\r\n\r\n";
+    char kb[128];
+    kb[0] = '\0';
+    int keep_ok = _test_browse_keep_post(port, "?on=1", kb, sizeof(kb));
+    _test_hc_t c;
+    _test_hold_open(s, port, "0", NULL, &c);
+    int pre = keep_ok && c.gotA && _test_pend_await_pop_wait(1000);
+    int g = pre ? _test_connect_loopback(port) : -1;
+    int sent = (g >= 0) && write(g, getReq, sizeof(getReq) - 1) == (ssize_t)(sizeof(getReq) - 1);
+    int hdr = 0, old_eof = 0;
+    _test_sa_res_t r;
+    memset(&r, 0, sizeof(r));
+    r.first = -1;
+    if (sent) {
+        _test_skiparm_flush(s);
+        hdr = (_test_read_header(g, 3000) == 0);
+        old_eof = _test_saw_eof(c.fd, 1500);
+        if (hdr) {
+            usleep(10000);
+            _test_skiparm_new_title(s, g, &r);
+        }
+    }
+    char head[200], facts[600];
+    snprintf(head, sizeof(head), "precondition=%d get_sent=%d new_header=%d (want 1) old_client_ended=%d (want 1)", pre, sent, hdr, old_eof);
+    _test_skiparm_facts(facts, sizeof(facts), head, &r);
+    int ok = pre && sent && hdr && old_eof && _test_skiparm_flows(&r);
+    if (g >= 0) close(g);
+    if (c.fd >= 0) close(c.fd);
+    _test_hold_verdict(failures, ok, name, facts);
+    _test_browse_cleanup(port);
+}
+
+/* K4/K5: a client write stalled on a reader that stopped reading (the tester's slow-player shape: LMS stops
+ * reading, the HTTP thread sits in the write loop, which polls the listen socket every 20 ms and never reaches the
+ * loop top that clears the keep flag). K4: an arm sent before the keep flush and read by the write loop after it is
+ * consumed by it. K5: an arm read long after the flush is a plain arm, the claim of the flush having expired --
+ * otherwise a stalled write would swallow every later arm for as long as it lasts. */
+static int _test_skiparm_stall(pa_stream *s, int port, int *keep_ok, int *fd) {
+    _test_wr_reset();
+    char kb[128];
+    kb[0] = '\0';
+    *keep_ok = _test_browse_keep_post(port, "?on=1", kb, sizeof(kb));
+    *fd = *keep_ok ? _test_wr_attach(port) : -1;
+    if (*fd < 0) {
+        return 0;
+    }
+    _test_wr_push(s, 0, _TEST_WR_SAMPLES);
+    return _test_wr_wait_stalled();
+}
+
+/* 79-75 WR-R2-01: connect and send the head WITHOUT its terminating blank line. The stalled HTTP thread's poll wakes at
+ * the connect itself and reads what is there, but cannot classify the arm until the terminator arrives, so the arm can
+ * never be served BEFORE the flush (the race of the complete-head form: the read won against the flush in every mutant). */
+static int _test_post_raw_split(int port, const char *path, int *fd_out) {
+    int fd = _test_connect_loopback(port);
+    if (fd < 0) {
+        return -1;
+    }
+    char req[128];
+    int n = snprintf(req, sizeof(req), "POST %s HTTP/1.0\r\nConnection: close\r\n", path);
+    if (n <= 0 || write(fd, req, (size_t)n) != (ssize_t)n) {
+        close(fd);
+        return -1;
+    }
+    *fd_out = fd;
+    return 0;
+}
+
+static int _test_post_raw_finish(int fd) {
+    return write(fd, "\r\n", 2) == 2 ? 0 : -1;
+}
+
+/* K4: the arm's head is sent unterminated before the flush and terminated right after it, so the write loop reads
+ * the arm in the first tick after the flush. When that tick lands outside the 50 ms claim window (a stalled runner)
+ * the arm is a plain arm by design: the cell then retries (at most four attempts) instead of judging. Test hooks:
+ * FAKE_LIBPULSE_TEST_K4_DELAY_US sleeps 5 ms more between the POST and the flush (with the split head the thread has only
+ * accepted and read a partial head by then; reverting to a complete head makes the mutants pass K4 under it),
+ * FAKE_LIBPULSE_TEST_K4_LATE_FIRST=<n> delays the terminator of the first n attempts by 80 ms (forces the late read;
+ * a bare presence counts as 1). The window is judged with a margin (< 50 ms): the stamp is taken before the product's
+ * own check, so a read at exactly 50 ms could disagree with it by a millisecond. */
+static void _test_skiparm_k4(pa_stream *s, int port, int *failures) {
+    const char *name = "skiparm: K4 during a stalled client write an arm queued before the keep flush and read by the write loop right after it is consumed by it";
+    const char *dly = getenv("FAKE_LIBPULSE_TEST_K4_DELAY_US");
+    const char *late_env = getenv("FAKE_LIBPULSE_TEST_K4_LATE_FIRST");
+    const int late_n = late_env ? (atoi(late_env) > 0 ? atoi(late_env) : 1) : 0;
+    int keep_ok = 0, fd = -1, stalled = 0;
+    int a = -1, armed = -1, r = 0, attempts = 0;
+    long served_after = -1;
+    while (attempts < 4) {
+        attempts++;
+        if (attempts > 1) {                             /* tear the failed attempt down here, so a final failure still reports it */
+            if (a >= 0) close(a);
+            if (fd >= 0) close(fd);
+            _test_wr_reset();
+            _test_browse_cleanup(port);
+        }
+        stalled = _test_skiparm_stall(s, port, &keep_ok, &fd);
+        a = -1; armed = -1; r = 0; served_after = -1;
+        if (!stalled) {
+            break;
+        }
+        if (_test_post_raw_split(port, "/seek-arm", &a) < 0) {
+            a = -1;
+            break;
+        }
+        usleep(5000);                                   /* the thread accepted at the connect and holds an unterminated head */
+        if (dly) {
+            usleep((useconds_t)atoi(dly));
+        }
+        atomic_store(&g_test_seek_arm_served_at, 0);
+        _test_skiparm_flush(s);
+        long keep_at = atomic_load(&g_flush_keep_at);
+        if (attempts <= late_n) {
+            usleep(80000);
+        }
+        (void)_test_post_raw_finish(a);
+        usleep(100000);
+        armed = (int)g_seek_flush_armed;                /* consumed by the flush: the read came after it, inside the window */
+        r = _test_read_control_ok(a, 1000);
+        long served = atomic_load(&g_test_seek_arm_served_at);
+        served_after = (served != 0 && keep_at != 0) ? (long)((unsigned long)served - (unsigned long)keep_at) : -1;
+        if (r && served_after >= 0 && served_after < SEEK_KEEP_ARM_WINDOW_MS) {
+            break;                                      /* the precondition held: judge this attempt */
+        }
+    }
+    char facts[400];
+    snprintf(facts, sizeof(facts), "keep_post=%d attached=%d writer_stalled=%d arm_answered=%d armed_after=%d (want 0) attempts=%d read_after_flush_ms=%ld (want < %d)",
+             keep_ok, fd >= 0, stalled, r, armed, attempts, served_after, SEEK_KEEP_ARM_WINDOW_MS);
+    int ok = keep_ok && fd >= 0 && stalled && a >= 0 && r && armed == 0 && served_after >= 0 && served_after < SEEK_KEEP_ARM_WINDOW_MS;
+    if (a >= 0) close(a);
+    if (fd >= 0) close(fd);
+    _test_hold_verdict(failures, ok, name, facts);
+    _test_wr_reset();
+    _test_browse_cleanup(port);
+}
+
+static void _test_skiparm_k5(pa_stream *s, int port, int *failures) {
+    const char *name = "skiparm: K5 during a stalled client write an arm read 150 ms after the keep flush is a plain arm for the next flush";
+    int keep_ok = 0, fd = -1;
+    int stalled = _test_skiparm_stall(s, port, &keep_ok, &fd);
+    int a = -1, armed = -1, r = 0, flag = -1;
+    if (stalled) {
+        _test_skiparm_flush(s);                         /* unarmed, kept; the stalled loop never reaches the loop top */
+        flag = (int)atomic_load(&g_flush_keep_pending);
+        usleep(150000);                                 /* the claim of the keep flush (50 ms) is over */
+        a = _test_post_raw(port, "/seek-arm");
+        usleep(100000);
+        armed = (int)g_seek_flush_armed;
+        r = (a >= 0) ? _test_read_control_ok(a, 1000) : 0;
+    }
+    char facts[320];
+    snprintf(facts, sizeof(facts), "keep_post=%d attached=%d writer_stalled=%d flag_right_after_flush=%d (want 1: the stall keeps it standing) arm_answered=%d armed_after=%d (want 1)",
+             keep_ok, fd >= 0, stalled, flag, r, armed);
+    int ok = keep_ok && fd >= 0 && stalled && flag == 1 && a >= 0 && r && armed == 1;
+    if (a >= 0) close(a);
+    if (fd >= 0) close(fd);
+    _test_hold_verdict(failures, ok, name, facts);
+    _test_wr_reset();
+    _test_browse_cleanup(port);
+}
+
+static void _test_skiparm_cases(pa_stream *s, int port, int *failures) {
+    _test_skiparm_k0(s, port, failures);
+    _test_skiparm_k1(s, port, failures);
+    _test_skiparm_k2(s, port, failures);
+    _test_skiparm_k2b(s, port, failures);
+    _test_skiparm_k3(s, port, failures);
+    _test_skiparm_k4(s, port, failures);
+    _test_skiparm_k5(s, port, failures);
+}
+
 int main(void) {
     int failures = 0;
     const int hold_only = (getenv("FAKE_LIBPULSE_TEST_HOLD_ONLY") != NULL);
@@ -7499,6 +7962,9 @@ int main(void) {
     /* debug silent-browse-start-headers-closed: the pending cells alone, used by t/soloist/48 for the
      * pending-read mutants (the SILENT-START POLLED_FD and EAGAIN_KEEP blocks). */
     const int pending_only = (getenv("FAKE_LIBPULSE_TEST_PENDING_ONLY") != NULL);
+    /* debug skip-seek-arm-nach-flush: the skip-arm cells alone, used by t/soloist/48 for the keep-flush
+     * backlog-pass mutant (the SKIPARM KEEP_PASS blocks). */
+    const int skiparm_only = (getenv("FAKE_LIBPULSE_TEST_SKIPARM_ONLY") != NULL);
 
     /* 84-20: stdout and stderr go to one pipe under prove; a block-buffered
      * stdout let a FAIL line land inside a half-written `ok:` line, which the
@@ -7518,7 +7984,7 @@ int main(void) {
 
     /* quick-261022-ca3: the read helpers must measure a sub-second budget in
      * elapsed milliseconds across a wall-clock second boundary. */
-    if (!hold_only && !browse_only && !connect_only && !runaway_only && !pending_only) {
+    if (!hold_only && !browse_only && !connect_only && !runaway_only && !pending_only && !skiparm_only) {
         long ms_b = 0, ms_h = 0, ms_r = 0;
         int rc_b = _test_boundary_probe(0, &ms_b);
         int rc_h = _test_boundary_probe(1, &ms_h);
@@ -7587,6 +8053,12 @@ int main(void) {
         unlink(portFilePath);
         return failures > 0 ? 1 : 0;
     }
+    if (skiparm_only) {
+        _test_skiparm_cases(s, port, &failures);
+        printf("Skiparm-only run: failures=%d\n", failures);
+        unlink(portFilePath);
+        return failures > 0 ? 1 : 0;
+    }
     if (runaway_only) {
         _test_runaway_cases(s, port, &failures);
         printf("Runaway-only run: failures=%d\n", failures);
@@ -7619,6 +8091,8 @@ int main(void) {
     _test_runaway_cases(s, port, &failures);
     /* debug silent-browse-start-headers-closed: the pending-read cells, right after the runaway cells. */
     _test_pending_cases(s, port, &failures);
+    /* debug skip-seek-arm-nach-flush: the skip-arm cells, right after the pending cells. */
+    _test_skiparm_cases(s, port, &failures);
 
     int client = _test_connect_loopback(port);
     if (client < 0) {

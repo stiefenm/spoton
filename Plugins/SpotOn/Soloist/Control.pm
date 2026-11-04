@@ -7667,6 +7667,12 @@ sub _markOwnQueue {
 #     the proxy path has its own verdict line there, not assumed from
 #     A1 -- see 82-G1-MESSUNG.md ## Berichtigung 82-19 for the corrected
 #     record this tradeoff rests on.
+#     Correction 2026-11-03 (debug skip-seek-arm-nach-flush): H-ii DOES
+#     occur on the direct path for Browse skips -- 6 of 7 skips showed the
+#     arm read 8-57 ms after Soloist's flush. Not a send-order problem
+#     (the arm is sent before skip_next): the shim's HTTP thread sat in its
+#     empty-ring wait and read it late. Fixed in fake-libpulse.c (keep-flush
+#     backlog pass, g_flush_keep_pending), not here.
 # (b) the async arm this replaces never actually arrived in six of six
 #     recorded post-fix opportunities (server.log 09:31:26.8688 ..
 #     09:53:04.7944, Control.pm:2241) -- a guarantee that never lands is

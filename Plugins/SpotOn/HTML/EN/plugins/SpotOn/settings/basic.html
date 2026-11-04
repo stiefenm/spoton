@@ -369,12 +369,31 @@
 		</div>
 	[% END %]
 
-	[% IF diagnosticEnabled %]
+	<div style="margin:8px 0 12px 0; font-size:0.9em">
+		<p>[% 'PLUGIN_SPOTON_DIAG_SWITCH_TEXT' | string %]</p>
+		<p><b>[% 'PLUGIN_SPOTON_DIAG_SECTIONS_HEAD' | string %]</b></p>
+		<ul>
+		[% FOREACH s IN diagSections %]
+			<li><b>[% s.title | string %]</b>: [% s.desc | string %]</li>
+		[% END %]
+		</ul>
+		<p><b>[% 'PLUGIN_SPOTON_DIAG_REDACTIONS_HEAD' | string %]</b></p>
+		<ul>
+		[% FOREACH r IN diagRedactions %]
+			<li>[% r.key | string %]</li>
+		[% END %]
+		</ul>
+		<p>[% diagNotRedactedKey | string %]</p>
+	</div>
+
 	[% WRAPPER setting title="PLUGIN_SPOTON_DIAG_DOWNLOAD" desc="PLUGIN_SPOTON_DIAG_DOWNLOAD_DESC" %]
 		<button type="button" class="submit" onclick="window.location.href='/plugins/SpotOn/settings/diagnosticBundle'">
 			[% 'PLUGIN_SPOTON_DIAG_DOWNLOAD_BUTTON' | string %]
 		</button>
-	[% END %]
+		<div style="margin-top:6px; font-size:0.9em">
+			<p>[% 'PLUGIN_SPOTON_DIAG_LOCAL_ONLY' | string %]</p>
+			<p>[% 'PLUGIN_SPOTON_DIAG_OPEN_FIRST' | string %]</p>
+		</div>
 	[% END %]
 
 	[% WRAPPER setting title="PLUGIN_SPOTON_DIAG_CLEAR_LOGS" desc="PLUGIN_SPOTON_DIAG_CLEAR_LOGS_DESC" %]

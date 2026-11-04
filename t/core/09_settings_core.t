@@ -99,6 +99,9 @@ sub import {
     *{"${caller}::logger"} = \&logger;
 }
 sub addLogCategory { return bless {}, 'Slim::Utils::Log' }
+# 79-72: the environment section reads the running log levels (category => level).
+our %CATEGORIES = ();
+sub allCategories { return { %CATEGORIES } }
 sub logger {
     return bless { _calls => [] }, 'Slim::Utils::Log';
 }
@@ -217,7 +220,41 @@ END
 # LMS runtime, not in this stub harness).
 write_stub($stub_dir, 'Slim::Utils::OSDetect', <<'END');
 package Slim::Utils::OSDetect;
-sub details { return { osArch => 'x86_64' } }
+# 79-72: controllable so the environment section cells can plant a login name and a server MAC.
+our $DETAILS = { osArch => 'x86_64' };
+sub details { return $DETAILS }
+1;
+END
+
+# Stub: Slim::Utils::PluginManager (79-72: the environment section lists enabled and failed plugins)
+write_stub($stub_dir, 'Slim::Utils::PluginManager', <<'END');
+package Slim::Utils::PluginManager;
+our %LOADED  = ();    # name => manifest hash (version, ...)
+our %ALL     = ();    # name => { error => 'INSTALLERROR_SUCCESS' | ... }
+sub enabledPlugins { return keys %LOADED }
+sub allPlugins     { return \%ALL }
+sub dataForPlugin  { my ($class, $name) = @_; return $LOADED{$name} }
+sub getErrorString { my ($class, $name) = @_; return "string:" . ($ALL{$name}{error} // '') }
+1;
+END
+
+# Stub: Slim::Player::TranscodingHelper (79-72: the transcoding section)
+write_stub($stub_dir, 'Slim::Player::TranscodingHelper', <<'END');
+package Slim::Player::TranscodingHelper;
+our %TABLE   = ();    # profile => command
+our %MISSING = ();    # command-token => 1 (checkBin reports it as the missing binary)
+sub Conversions  { return \%TABLE }
+sub enabledFormat {
+    my $profile = shift;
+    my $off = Slim::Utils::Prefs::preferences('server')->get('disabledformats') || [];
+    return (grep { $_ eq $profile } @$off) ? 0 : 1;
+}
+sub checkBin {
+    my ($profile, $ignore) = @_;
+    my $cmd = $TABLE{$profile} or return undef;
+    while ($cmd =~ /\[([^]]+)\]/g) { if ($MISSING{$1}) { $@ = $1; return undef } }
+    return $cmd;
+}
 1;
 END
 
@@ -511,6 +548,11 @@ our $fake_output = { chosen => 'auto', resolved => 'pcm', effective => 'pcm', ty
 our $fake_glibc = undef;
 our $fake_glibc_problem = undef;
 sub effectiveOutput      { return { %$fake_output } }
+# 79-72: the environment section asks for the container flag; the status collector reads the backend state per MAC.
+our $fake_container = 0;
+our %fake_state     = ();
+sub runsInContainer      { return $fake_container }
+sub backendFor           { my ($class, $mac) = @_; return bless { mac => $mac }, 'Plugins::SpotOn::Unified::DaemonManager::FakeBackendState' }
 sub glibcVersion         { return $fake_glibc }
 sub soloistGlibcProblem  { return $fake_glibc_problem }
 sub reset_calls     {
@@ -520,6 +562,9 @@ sub reset_calls     {
     %fake_switched_at      = ();
     %fake_health           = ();
 }
+
+package Plugins::SpotOn::Unified::DaemonManager::FakeBackendState;
+sub state { return { %{ $Plugins::SpotOn::Unified::DaemonManager::fake_state{ $_[0]{mac} } || {} } } }
 
 package Plugins::SpotOn::Unified::DaemonManager::FakeHelper;
 sub new {
@@ -1152,7 +1197,7 @@ SKIP: {
                 "P-CR-03: $handler calls _csrfCheck");
         }
 
-        # 4. _diagnosticBundleHandler does NOT call _csrfCheck (read-only, gated by diagnosticMode)
+        # 4. _diagnosticBundleHandler does NOT call _csrfCheck (read-only; 79-72 D-43: no diagnosticMode gate any more)
         my ($diag_body) = $src =~ /(sub _diagnosticBundleHandler\b.*?)(?=\nsub \w|\z)/s;
         ok(defined $diag_body && $diag_body !~ /_csrfCheck/,
             'P-CR-03: _diagnosticBundleHandler does NOT call _csrfCheck (read-only)');
@@ -1274,8 +1319,10 @@ SKIP: {
 
         ok($src !~ /sub _collectAuthHealth\b/,
             'Settings.pm no longer defines _collectAuthHealth (moved to Status.pm)');
-        ok($src !~ /authHealth/,
-            'Settings.pm no longer references authHealth (moved to Status.pm)');
+        # 79-72: the diagnostic report READS the status payload (Status->collectAll, authHealth per account); what stays
+        # moved is the settings-page card: Settings.pm feeds no authHealth template parameter.
+        ok($src !~ /paramRef->\{authHealth\}|\$params->\{authHealth\}/,
+            'Settings.pm no longer feeds an authHealth template parameter (moved to Status.pm; the report only reads collectAll)');
     }
 
     my $status_module = "$project_dir/Plugins/SpotOn/Status.pm";
@@ -1805,14 +1852,14 @@ sub resolve_raw_route {
     like($body, qr/Spotify quality \(stored\): 4/, '74b-03 D-07: header names the stored stream quality');
     like($body, qr/^glibc: 2\.36$/m, '74b-03 D-07: header names the glibc version');
     like($body, qr/glibc check: Soloist cannot run on this system/, '74b-03 D-07: header carries the glibc problem message');
-    like($body, qr/Kitchen \| 02:00:00:5a:11:01 \|.*chosen=flac.*effective=flac.*type=sof.*path=proxy/, '74b-03 D-07: the player line carries chosen/effective/type/path');
+    like($body, qr/Kitchen \| 02:00:00:Player-1 \|.*chosen=flac.*effective=flac.*type=sof.*path=proxy/, '74b-03 D-07 / 79-72 D-44: the player line carries chosen/effective/type/path, the MAC as a placeholder');
     like($body, qr/quality=High \(320 kbit\/s\)/, '74b-03 D-07: the player line carries the effective quality label under soloist');
     unlike($body, qr/reason=/, '74b-03 D-07: no reason= when none is set');
     unlike($body, qr/Bitrate:/, '74b-03 D-07: no Bitrate line under soloist');
     unlike($body, qr/Normalization:/, '74b-03 D-07: no Normalization line under soloist');
-    like($body, qr/--- Log: 0200005a1101-soloist\.log ---/, '74b-03 D-07: the live Soloist log is included');
+    like($body, qr/--- Log: 020000-Player-1-soloist\.log ---/, '74b-03 D-07 / 79-72 D-44: the live Soloist log is included, its file name carries the MAC placeholder');
     like($body, qr/74b-marker-line/, '74b-03 D-07: the Soloist log tail is in the bundle');
-    unlike($body, qr/74b-gen1-marker-line/, '74b-03 D-07: the .1 generation stays out of the bundle');
+    like($body, qr/74b-gen1-marker-line/, '74b-03 D-07 / 79-72 T3: the .1 generation of a SHORT live Soloist log is in the bundle (the live file is under 50 KB)');
     like($body, qr/\[REDACTED\]/, '74b-03 T-74b-07: redaction marks are present');
     unlike($body, qr/spak_SEEDED74bSECRET/, '74b-03 T-74b-07: the seeded spak_ token is not in the bundle');
     unlike($body, qr/abc\.DEF-123/, '74b-03 T-74b-07: the Bearer token is not in the bundle');
@@ -1895,10 +1942,29 @@ sub resolve_raw_route {
     $p->set('backend', 'librespot');
 
     # --- access ------------------------------------------------------------
+    # 79-72 (D-43): the download no longer needs diagnosticMode (T-65-07: the gate bought nothing).
     $p->set('diagnosticMode', 0);
     ($res, $body) = $bundle->();
-    is($res->code, 403, '74b-03 T-74b-10: the bundle stays 403 without diagnosticMode');
-    unlike($body, qr/74b-marker-line|Backend:/, '74b-03 T-74b-10: a 403 carries no bundle content');
+    is($res->code, 200, '79-72 D-43: the bundle answers 200 without diagnosticMode');
+    like($body, qr/^diagnosticMode: 0$/m, '79-72 D-43: the header shows the switch state');
+    unlike($body, qr/Diagnostic mode not enabled/, '79-72 D-43: no 403 text any more');
+
+    # --- 79-72 D-45: one list drives the bundle ------------------------------
+    require Plugins::SpotOn::Diagnostics;
+    for my $sec (Plugins::SpotOn::Diagnostics::sections()) {
+        my $id = $sec->{id};
+        my $nb = () = $body =~ /^=== BEGIN \Q$id\E ===$/mg;
+        my $ne = () = $body =~ /^=== END \Q$id\E ===$/mg;
+        is($nb, 1, "79-72 D-45: section '$id' has exactly one BEGIN marker");
+        is($ne, 1, "79-72 D-45: section '$id' has exactly one END marker");
+    }
+
+    # --- 79-72 D-44: MAC placeholders ----------------------------------------
+    like($body, qr/Kitchen \| 02:00:00:Player-1 \|/, '79-72 D-44: the Players line shows the OUI and Player-N');
+    unlike($body, qr/02:00:00:5a:11:01/i, '79-72 D-44: the fixture MAC appears nowhere');
+    like($body, qr/^--- Log: 020000-Player-1-soloist\.log ---$/m, '79-72 D-44: the soloist log file name carries the bare placeholder');
+    like($body, qr/^--- Log: 020000-Player-2-unified\.log ---$/m, '79-72 D-44: a MAC seen only in a file name gets the next N after the client list');
+    unlike($body, qr/0200005a11/i, '79-72 D-44: no bare fixture MAC remains');
 
     # --- redaction primitive ---------------------------------------------------
     is(Plugins::SpotOn::Settings::_redactBundleText("a spak_ABC-def_1 b Bearer x.y-z c auth_data=QQ d"),
@@ -1909,7 +1975,10 @@ sub resolve_raw_route {
     open(my $sfh, '<', "$project_dir/Plugins/SpotOn/Settings.pm") or die $!;
     my $ssrc = do { local $/; <$sfh> };
     close $sfh;
-    like($ssrc, qr/spak_\[A-Za-z0-9_-\]\*\|auth_data\[\^ \]\*\|Bearer \[A-Za-z0-9\._-\]\+/, '74b-03 T-74b-07: the redaction pattern is the repo pattern of tools/uat/extract-run.pl');
+    open(my $dfh, '<', "$project_dir/Plugins/SpotOn/Diagnostics.pm") or die "Diagnostics.pm: $!";
+    my $dsrc = do { local $/; <$dfh> };
+    close $dfh;
+    like($dsrc, qr/spak_\[A-Za-z0-9_-\]\*\|auth_data\[\^ \]\*\|Bearer \[A-Za-z0-9\._-\]\+/, '74b-03 T-74b-07 / 79-72 D-45: the redaction pattern (now in Diagnostics.pm) is the repo pattern of tools/uat/extract-run.pl');
 
     $srv->set('logdir', undef);
     Slim::Player::Client::set_mock_clients();
@@ -2036,6 +2105,287 @@ sub resolve_raw_route {
     $p->set('diagnosticMode', 0);
     unlink "$spotonDir/0200005a1144-soloist.log";
 }
+
+# ============================================================
+# 79-72 Task 3 (todo items 2-4): the new sections - environment, transcoding, status (full error ring, auth
+# health, daemons), per-player details, the widened server.log extract with its bounded unfiltered tail, and the
+# .1 daemon-log generation. Every read is bounded and guarded; the OS details hash carries a login name and the
+# server MAC that must never reach the report (T-79-313).
+# ============================================================
+{
+    package FakeBundleClient2;
+    our @ISA = ('FakeBundleClient');
+    sub modelName               { $_[0]{modelName} }
+    sub revision                { $_[0]{revision} }
+    sub formats                 { return @{ $_[0]{formats} || [] } }
+    sub maxSupportedSamplerate  { $_[0]{maxrate} }
+    sub isSynced                { return $_[0]{master} || @{ $_[0]{members} || [] } ? 1 : 0 }
+    sub master                  { return $_[0]{master} }
+    sub syncedWith              { return @{ $_[0]{members} || [] } }
+    sub ip                      { return '192.168.99.99:3483' }
+
+    package FakeDaemonHelper;
+    sub new { my ($c, %a) = @_; return bless {%a}, $c }
+    sub mac              { $_[0]{mac} }
+    sub alive            { $_[0]{alive} }
+    sub pid              { $_[0]{pid} }
+    sub uptime           { $_[0]{uptime} }
+    sub _connectEnabled  { 1 }
+    sub _streamPort      { 41234 }
+    sub _lastHealthSession { 'ok' }
+
+    package FakeSyncClient;
+    sub new { my ($c, %a) = @_; return bless {%a}, $c }
+    sub name { $_[0]{name} }
+    sub id   { $_[0]{id} }
+    sub isPlaying { 0 }
+    sub isSynced { 1 }
+    sub syncGroupActiveMembers { return @{ $_[0]{peers} } }
+
+    package main;
+
+    require Plugins::SpotOn::Settings;
+    require Plugins::SpotOn::Diagnostics;
+    require Plugins::SpotOn::Status;
+    require Slim::Utils::OSDetect;
+    require Slim::Utils::Log;
+    require Slim::Utils::PluginManager;
+    require Slim::Player::TranscodingHelper;
+    my $p   = Slim::Utils::Prefs::preferences('plugin.spoton');
+    my $srv = Slim::Utils::Prefs::preferences('server');
+    no warnings 'redefine';
+    local $main::VERSION = '9.1.1-test';
+    local *Plugins::SpotOn::Plugin::_pluginDataFor = sub { '9.9.9-test' };
+    my $spotonDir = File::Spec->catdir($srv->get('cachedir'), 'spoton');
+    make_path($spotonDir);
+    for my $old (glob("$spotonDir/*-connect.log"), glob("$spotonDir/*-unified.log"), glob("$spotonDir/*-soloist.log*")) { unlink $old; }
+    my $write = sub { my ($f, $text) = @_; open(my $fh, '>', $f) or die "$f: $!"; print $fh $text; close($fh); };
+    my $logdir = tempdir(CLEANUP => 1);
+    $srv->set('logdir', $logdir);
+
+    my $accountsBefore = $p->get('accounts');
+    my $activeBefore   = $p->get('activeAccount');
+    $p->set('accounts', { t3a10001 => { spotifyUserId => 'fixtureuser72', displayName => 'Fixture Person' } });
+    $p->set('activeAccount', 't3a10001');
+    $p->set('diagnosticMode', 0);
+    $p->set('backend', 'librespot');
+
+    # --- fixtures --------------------------------------------------------------------------------------
+    local $Slim::Utils::OSDetect::DETAILS = {
+        os => 'Linux', osName => 'Fixture Linux 12', osArch => 'x86_64-linux-fx', binArch => 'x86_64-linux',
+        uid => 'plantedloginname', mac => 'ab:cd:ef:01:02:03',
+    };
+    $Plugins::SpotOn::Unified::DaemonManager::fake_container = 1;
+    %Slim::Utils::Log::CATEGORIES = (
+        'plugin.spoton' => 'WARN', 'player.source' => 'ERROR', 'player.streaming' => 'INFO',
+        'network.asynchttp' => 'WARN', 'server.plugins' => 'ERROR',    # player.sync deliberately absent
+    );
+    %Slim::Utils::PluginManager::LOADED = (
+        SpotOn => { version => '4.0.0-fx' }, Qobuz => { version => '3.1' }, SqueezeDSP => { version => '2.0' },
+    );
+    %Slim::Utils::PluginManager::ALL = (
+        SpotOn => { error => 'INSTALLERROR_SUCCESS' }, Qobuz => { error => 'INSTALLERROR_SUCCESS' },
+        SqueezeDSP => { error => 'INSTALLERROR_SUCCESS' }, Broken => { error => 'INSTALLERROR_INVALID_VERSION' },
+        NoMod => { error => 'INSTALLERROR_NO_MODULE' },
+    );
+    # 42 SpotOn-family profiles (soc/sof/smp/son), three foreign ones
+    %Slim::Player::TranscodingHelper::TABLE = (
+        ( map { sprintf('soc-pcm-*-%02d', $_) => "[spoton-helper] -o pcm \$FILE\$" } 1 .. 20 ),
+        ( map { sprintf('sof-flc-*-%02d', $_) => "[spoton-helper] -o flc | [flac] -s - \$FILE\$" } 1 .. 20 ),
+        'smp-mp3-*-ff' => '[spoton-helper] -o mp3', 'son-ogg-*-ff' => '[spoton-helper] -o ogg',
+        'mp3-flc-*-ff' => '[lame] --decode', 'ogg-pcm-*-ff' => '[sox] x', 'aac-pcm-*-ff' => '[faad] x',
+    );
+    %Slim::Player::TranscodingHelper::MISSING = ('flac' => 1);
+    $srv->set('disabledformats', ['smp-mp3-*-ff']);
+
+    my $fx = FakeBundleClient2->new(name => 'Kitchen', id => '02:00:00:5a:11:51', model => 'squeezelite',
+        modelName => 'SqueezeLite', revision => 'v2.0.0-fx', formats => [qw(flc pcm mp3)], maxrate => 192000,
+        master => undef, members => []);
+    my $mem = FakeBundleClient2->new(name => 'Office', id => '02:00:00:5a:11:52', model => 'squeezelite',
+        modelName => 'SqueezeLite', revision => 'v2.0.0-fx', formats => [qw(flc pcm)], maxrate => 96000,
+        master => $fx, members => [$fx]);
+    $fx->{members} = [$mem];
+    Slim::Player::Client::set_mock_clients($fx, $mem);
+    $p->client($fx)->set('enableSpotifyConnect', 1);
+    $p->client($fx)->set('connectPowerOff', 1);
+    $p->client($fx)->set('disableDiscovery', 0);
+    $p->client($fx)->set('discoveryDisabledByCrashLoop', 0);
+    $p->client($fx)->set('bitrateOverride', 160);
+    $p->client($fx)->set('streamFormat', 'flac');
+    $p->client($fx)->set('streamingMode', 'proxy');
+    $p->client($fx)->set('soloistQuality', 4);
+
+    Plugins::SpotOn::Status->recordError('error', 'Token',      'login5 said no_credentials t3-marker-token', 'k1');
+    Plugins::SpotOn::Status->recordError('error', 'Pathfinder', 'pathfinder 500 t3-marker-pathfinder', 'k2');
+    Plugins::SpotOn::Status->recordError('error', 'Soloist',    'soloist exited t3-marker-soloist', 'k3');
+    Plugins::SpotOn::Status->recordError('error', 'Soloist',    "t3-marker-chars caf\x{e9}-t3", 'k4');   # a decoded character string (79-75 IN-03 control)
+
+    # status data: the real collectAll is exercised below (Test 4); the report cells read this fixed payload
+    my $fixtureAll = {
+        daemons => [ {
+            mac => '02:00:00:5a:11:51', name => 'Kitchen', alive => 1, pid => 4242, uptime => 3600, connectEnabled => 1,
+            streamPort => 41234, playing => 0, currentTrack => undef, syncGroup => ['Office'], sessionHealth => 'ok',
+            paired => 1, wsConnected => 1, controlMode => 'connect', health => { last_reason => 'ok_t3' },
+        } ],
+        authHealth => { t3a10001 => {
+            login    => { state => 'ok', hasCredentials => 1, needsPairing => 0 },
+            connect  => { alive => 1, pid => 4242, uptime => 3600 },
+            audioKey => { state => 'ok' },
+            playback => { hasCredentials => 1, needsAuth => 0, reason => '', source => 'zeroconf' },
+        } },
+        api => {}, tokens => {}, madeForYou => {}, system => {},
+        # 79-75 IN-04: the ring the report prints is the one collectAll returns, AFTER it re-asserted the standing
+        # conditions: a standing condition evicted from the ring is back in this payload and in no other read.
+        errors => [ { ts => time, module => 'Standing', message => 't3-marker-standing-in-all', key => 'k0' },
+                    @{ Plugins::SpotOn::Status->getErrorHistory() } ],
+    };
+    my $realCollectAll = \&Plugins::SpotOn::Status::collectAll;
+    local *Plugins::SpotOn::Status::collectAll = sub { return $fixtureAll };
+
+    # server.log: > 2 MB window, 450 matching lines at the end, a foreign Error line, plain lines
+    my $big = '';
+    $big .= sprintf("[26-10-22 09:00:%02d.0001] filler line %06d %s\n", $_ % 60, $_, 'x' x 900) for 1 .. 2600;    # about 2.4 MB
+    my @tailLines;
+    push @tailLines, sprintf("[26-10-22 10:00:00.%04d] Plugins::SpotOn::Plugin matching-line-%03d\n", $_, $_) for 1 .. 450;
+    push @tailLines, "[26-10-22 10:00:01.0001] Some::Other::Module Error: foreign-error-t3\n";
+    push @tailLines, "[26-10-22 10:00:02.0001] Slim::Player::Source stream-line-t3\n";
+    push @tailLines, "[26-10-22 10:00:03.0001] plain unfiltered line t3-plain-end\n";
+    $write->("$logdir/server.log", $big . join('', @tailLines));
+    $write->("$spotonDir/0200005a1161-soloist.log", "short live log\n");
+    $write->("$spotonDir/0200005a1161-soloist.log.1", "gen1-marker-t3-short\n");
+    $write->("$spotonDir/0200005a1163-soloist.log", "umlaut M\xc3\xbcnchen-t3 end\n");    # UTF-8 BYTES, as a daemon log holds them (79-75 IN-03)
+    $write->("$spotonDir/0200005a1162-soloist.log", join('', (('long live line ' . ('y' x 60) . "\n") x 1000)));    # > 50 KB
+    $write->("$spotonDir/0200005a1162-soloist.log.1", "gen1-marker-t3-long\n");
+
+    my $bundle = sub {
+        @Slim::Web::HTTP::http_responses = ();
+        my $res = FakeSettingsResponse->new();
+        Plugins::SpotOn::Settings::_diagnosticBundleHandler(undef, $res);
+        my $ref = $Slim::Web::HTTP::http_responses[0][2];
+        return ($res, $ref ? $$ref : '');
+    };
+    my $section = sub { my ($body, $id) = @_; return $body =~ /^=== BEGIN \Q$id\E ===\n(.*?)^=== END \Q$id\E ===$/ms ? $1 : '' };
+
+    my ($res, $body) = $bundle->();
+    is($res->code, 200, '79-72 T3: the bundle answers 200');
+
+    # Test 1: environment
+    my $env = $section->($body, 'environment');
+    like($env, qr/^OS: Linux .*Fixture Linux 12/m, '79-72 T3 environment: OS line from os and osName');
+    like($env, qr/^Arch: x86_64-linux-fx \/ x86_64-linux$/m, '79-72 T3 environment: Arch line from osArch and binArch');
+    like($env, qr/^Container: yes$/m, '79-72 T3 environment: container flag');
+    like($env, qr/^Log levels: .*plugin\.spoton=WARN.*player\.source=ERROR.*player\.streaming=INFO.*player\.sync=\(default\).*network\.asynchttp=WARN.*server\.plugins=ERROR/m,
+        '79-72 T3 environment: the six log levels, a missing category reads (default)');
+    like($env, qr/^Plugins: 3 enabled$/m, '79-72 T3 environment: plugin count');
+    like($env, qr/^  Plugin: SpotOn 4\.0\.0-fx$/m, '79-72 T3 environment: enabled plugin with version');
+    like($env, qr/^  Plugin failed: Broken: string:INSTALLERROR_INVALID_VERSION$/m, '79-72 T3 environment: a failed plugin with its error string');
+    unlike($env, qr/NoMod/, '79-72 T3 environment: INSTALLERROR_NO_MODULE is not a failure');
+    like($env, qr/^convert-rule writers: SqueezeDSP$/m, '79-72 T3 environment: a known convert-rule writer is named');
+    unlike($body, qr/plantedloginname/, '79-72 T3 environment: the login name of the OS details never reaches the report');
+    unlike($body, qr/ab:cd:ef:01:02:03/i, '79-72 T3 environment: the server MAC of the OS details never reaches the report');
+
+    # Test 2: transcoding
+    my $tr = $section->($body, 'transcoding');
+    my @rows = grep { /^  (?:soc|sof|smp|son)-/ } split /\n/, $tr;
+    is(scalar(@rows), 40, '79-72 T3 transcoding: at most 40 rows');
+    like($tr, qr/^\(\+2 more\)$/m, '79-72 T3 transcoding: the rest is counted');
+    unlike($tr, qr/mp3-flc|ogg-pcm|aac-pcm/, '79-72 T3 transcoding: foreign profiles are not listed');
+    like($tr, qr/^  sof-flc-\*-01 \| enabled=1 \| checkBin: missing flac \| \[spoton-helper\] -o flc/m, '79-72 T3 transcoding: profile | enabled | checkBin | command');
+    like($tr, qr/^  soc-pcm-\*-01 \| enabled=1 \| checkBin: ok \|/m, '79-72 T3 transcoding: a found binary reads ok');
+    like($tr, qr/^disabledformats: smp-mp3-\*-ff$/m, '79-72 T3 transcoding: the disabledformats pref is printed');
+
+    # Test 3: status
+    my $st = $section->($body, 'status');
+    like($st, qr/t3-marker-token/, '79-72 T3 status: a Token-module error is in the ring');
+    like($st, qr/t3-marker-pathfinder/, '79-72 T3 status: a Pathfinder-module error is in the ring');
+    like($st, qr/t3-marker-soloist/, '79-72 T3 status: a Soloist-module error is in the ring');
+    like($st, qr/Standing: t3-marker-standing-in-all/, '79-75 IN-04 status: the error list is the one collectAll returns (a re-asserted standing condition is in the report)');
+    like($body, qr/t3-marker-chars caf\xc3\xa9-t3/, '79-75 IN-03 control: a decoded character string is UTF-8 encoded once');
+    like($body, qr/umlaut M\xc3\xbcnchen-t3 end/, '79-75 IN-03 daemon logs: UTF-8 bytes of a log file come out as the same UTF-8 bytes (not double encoded)');
+    unlike($body, qr/\xc3\x83\xc2/, '79-75 IN-03 daemon logs: no double-encoded sequence (C3 83 C2 xx) anywhere in the body');
+    like($st, qr/Pathfinder: pathfinder 500 t3-marker-pathfinder/, '79-72 T3 status: an error line names its module');
+    like($st, qr/t3a1\*\*\*\*.*login=ok.*hasCredentials=1.*needsPairing=0.*connect\.alive=1.*playback\.source=zeroconf/, '79-72 T3 status: auth health per masked account id');
+    unlike($st, qr/t3a10001/, '79-72 T3 status: the account id is masked to 4 characters');
+    like($st, qr/Kitchen \| 02:00:00:Player-\d+ alive=1 pid=4242 uptime=3600s connectEnabled=1 .*paired=1 .*syncGroup=Office controlMode=connect/, '79-72 T3 status: the daemons summary per player, MAC redacted');
+    unlike($st, qr/02:00:00:5a:11:5/, '79-72 T3 status: no raw MAC in the daemons summary');
+
+    # Test 4: collectAll is the one payload
+    {
+        my $all = eval { $realCollectAll->() };
+        is(ref($all), 'HASH', '79-72 T3 status: the real collectAll returns the payload hash' . ($@ ? " ($@)" : ''));
+        is_deeply([ sort keys %{ $all || {} } ], [ sort qw(daemons api errors tokens madeForYou system authHealth) ],
+            '79-72 T3 status: collectAll returns the keys _statusDataHandler serves');
+    }
+    open(my $stfh, '<', "$project_dir/Plugins/SpotOn/Status.pm") or die $!;
+    my $stsrc = do { local $/; <$stfh> };
+    close $stfh;
+    my ($dh) = $stsrc =~ /(sub _statusDataHandler\b.*?)(?=\nsub \w)/s;
+    ok(defined $dh && $dh =~ /collectAll/, '79-72 T3 status: _statusDataHandler serves collectAll');
+    open(my $setfh, '<', "$project_dir/Plugins/SpotOn/Settings.pm") or die $!;
+    my $setsrc = do { local $/; <$setfh> };
+    close $setfh;
+    my ($stc) = $setsrc =~ /(sub _collectStatus\b.*?)(?=\nsub \w)/s;
+    ok(defined $stc && $stc =~ /collectAll/ && $stc =~ /\{errors\}/ && $stc !~ /getErrorHistory/, '79-72 T3 status / 79-75 IN-04: the report section reads collectAll first and prints its error list (no second read of the ring)');
+    unlike($setsrc, qr/eq 'Token'/, '79-72 T3 status: the dead Token/Auth module filter is gone');
+
+    # Test 5: players
+    my $pl = $section->($body, 'players');
+    like($pl, qr/^  Kitchen \| 02:00:00:Player-1 \| squeezelite .*model=squeezelite modelName=SqueezeLite firmware=v2\.0\.0-fx formats=flc,pcm,mp3 maxrate=192000/m, '79-72 T3 players: model, modelName, firmware, formats, maxrate');
+    like($pl, qr/^    sync: master of Office$/m, '79-72 T3 players: the master names its members');
+    like($pl, qr/^    sync: member of Kitchen$/m, '79-72 T3 players: a member names its master');
+    like($pl, qr/^    prefs: enableSpotifyConnect=1 connectPowerOff=1 disableDiscovery=0 discoveryDisabledByCrashLoop=0 bitrateOverride=160 streamFormat=flac streamingMode=proxy soloistQuality=4$/m,
+        '79-72 T3 players: the eight player prefs');
+    unlike($pl, qr/192\.168\.99\.99|LAN-/, '79-72 T3 players: the player IP is not printed');
+
+    # Test 6: server.log widening
+    my $sl = $section->($body, 'serverlog');
+    my ($filtered) = $sl =~ /^--- LMS server\.log \(SpotOn, player and network modules, Error\/Warning lines; last 400\) ---\n(.*?)^--- LMS server\.log \(last lines, unfiltered\) ---$/ms;
+    $filtered //= '';
+    my @fl = grep { length } split /\n/, $filtered;
+    is(scalar(@fl), 400, '79-72 T3 server.log: the filtered block has exactly 400 lines (cap)');
+    like($filtered, qr/matching-line-450/, '79-72 T3 server.log: ... the last matching lines');
+    unlike($filtered, qr/matching-line-0(?:[0-4]\d|50)\b/, '79-72 T3 server.log: ... and not the first 50 of 450 matches');
+    like($filtered, qr/foreign-error-t3/, '79-72 T3 server.log: an Error line of a foreign module is in the filtered block');
+    like($filtered, qr/stream-line-t3/, '79-72 T3 server.log: a Slim::Player::Source line is in the filtered block');
+    unlike($filtered, qr/t3-plain-end/, '79-72 T3 server.log: a plain line is not in the filtered block');
+    my ($tail) = $sl =~ /^--- LMS server\.log \(last lines, unfiltered\) ---\n(.*)\z/ms;
+    $tail //= '';
+    my @tl = grep { length } split /\n/, $tail;
+    is(scalar(@tl), 100, '79-72 T3 server.log: the unfiltered tail has 100 lines');
+    like($tail, qr/t3-plain-end/, '79-72 T3 server.log: ... ending with the plain last line');
+    like($sl, qr/server\.log.*size: \d+ bytes.*first line of the window: \[26-10-22 /s, '79-72 T3 server.log: the header prints the size and the first timestamp of the window');
+    like($sl, qr/daemon logs are UTC, server\.log is local time/, '79-72 T3 server.log: the time-zone sentence');
+    {
+        # lines of about 1 KB: the 32 KB cap wins over the 100 lines
+        $write->("$logdir/server.log", join('', map { sprintf("[26-10-22 11:00:00.%04d] kb-line-%03d %s\n", $_, $_, 'z' x 1000) } 1 .. 200));
+        my (undef, $b2) = $bundle->();
+        my ($t2) = $section->($b2, 'serverlog') =~ /^--- LMS server\.log \(last lines, unfiltered\) ---\n(.*)\z/ms;
+        $t2 //= '';
+        my @l2 = grep { length } split /\n/, $t2;
+        ok(@l2 >= 20 && @l2 <= 33 && length($t2) <= 32 * 1024 + 1100, '79-72 T3 server.log: 1 KB lines: the unfiltered tail stops at about 32 KB (' . scalar(@l2) . ' lines)');
+        like($t2, qr/kb-line-200/, '79-72 T3 server.log: ... and it is the END of the log');
+    }
+
+    # Test 7: the .1 generation
+    my $dl = $section->($body, 'daemonlogs');
+    like($dl, qr/^--- Log: 020000-Player-\d+-soloist\.log ---\nshort live log\n/m, '79-72 T3 daemon logs: the short live log is there');
+    like($dl, qr/^--- Log: 020000-Player-\d+-soloist\.log\.1 ---\ngen1-marker-t3-short$/m, '79-72 T3 daemon logs: a short live file is followed by its .1 generation');
+    unlike($dl, qr/gen1-marker-t3-long/, '79-72 T3 daemon logs: a live file over 50 KB skips the .1 generation');
+
+    # restore
+    $p->set('accounts', $accountsBefore);
+    $p->set('activeAccount', $activeBefore);
+    $srv->set('logdir', undef);
+    $srv->set('disabledformats', undef);
+    Slim::Player::Client::set_mock_clients();
+    $Plugins::SpotOn::Unified::DaemonManager::fake_container = 0;
+    %Slim::Utils::PluginManager::LOADED = ();
+    %Slim::Utils::PluginManager::ALL = ();
+    %Slim::Player::TranscodingHelper::TABLE = ();
+    %Slim::Player::TranscodingHelper::MISSING = ();
+    unlink glob("$spotonDir/*-soloist.log*");
+}
+
 
 # ============================================================
 # 79-61 (79-REVIEW-FULL-1 WR-03): the CSRF guard was inert under the LMS

@@ -5,7 +5,7 @@ use warnings;
 use base qw(Slim::Web::Settings);
 
 use Digest::MD5 qw(md5_hex);
-use Encode qw(encode);
+use Encode qw(encode decode);
 use File::Basename qw(basename);
 use File::Glob qw(bsd_glob);
 use File::Spec::Functions qw(catdir catfile);
@@ -14,6 +14,8 @@ use JSON::XS::VersionOneAndTwo;
 use Slim::Utils::Log;
 use Slim::Utils::Prefs;
 use Slim::Utils::Strings qw(string);
+
+use Plugins::SpotOn::Diagnostics ();
 # 84-08 (SEAM-6.2, G3): no compile-time `use` of a backend or helper module
 # -- the librespot binary status comes from its role's settingsInfo (below),
 # backend modules are loaded only through the registry.
@@ -33,6 +35,17 @@ use constant SOLOIST_KEY_MASKED_PREVIEW => '********';
 # end of server.log. The whole file was read line by line inside the request
 # handler before; a few hundred MB of debug log stalled LMS's single thread.
 use constant SERVER_LOG_TAIL_BYTES => 2 * 1024 * 1024;
+
+# 79-72 (todo item 4): the widened server.log extract is bounded three ways, all inside the 2 MB window above:
+# a ring of the last FILTERED_MAX matching lines, and an unfiltered tail of the last TAIL_LINES lines but at most
+# TAIL_BYTES_UNFILTERED bytes (a debug-flooded log has 1 KB lines). The .1 generation of a SHORT live Soloist log
+# (under DAEMON_LOG_SHORT_BYTES, e.g. right after a rotation) is appended with its own tail cap.
+use constant SERVER_LOG_FILTERED_MAX          => 400;
+use constant SERVER_LOG_TAIL_LINES            => 100;
+use constant SERVER_LOG_TAIL_BYTES_UNFILTERED => 32 * 1024;
+use constant DAEMON_LOG_GEN1_TAIL_BYTES       => 200 * 1024;
+use constant DAEMON_LOG_SHORT_BYTES           => 50 * 1024;
+use constant TRANSCODING_ROWS_MAX             => 40;
 
 my $log   = Slim::Utils::Log->logger('plugin.spoton');
 my $prefs = preferences('plugin.spoton');
@@ -533,6 +546,12 @@ sub handler {
     # Diagnostic mode status for template (#3)
     $paramRef->{diagnosticEnabled} = $prefs->get('diagnosticMode') ? 1 : 0;
 
+    # 79-72 (D-45, D-45b): the transparency block next to the switch reads the SAME two lists the bundle handler
+    # iterates (Plugins::SpotOn::Diagnostics), so the page and the report cannot drift apart.
+    $paramRef->{diagSections}       = [ map { +{ title => $_->{title}, desc => $_->{desc} } } Plugins::SpotOn::Diagnostics::sections() ];
+    $paramRef->{diagRedactions}     = [ map { +{ key => $_->{key} } } Plugins::SpotOn::Diagnostics::redactions() ];
+    $paramRef->{diagNotRedactedKey} = Plugins::SpotOn::Diagnostics::notRedactedKey();
+
     # Global streaming mode default status for template (COMPAT-01, GH #96 scope extension)
     $paramRef->{globalStreamingMode} = $prefs->get('streamingMode') || 'direct';
 
@@ -678,87 +697,109 @@ sub _formatHealthNotice {
 # ============================================================
 # Diagnostic bundle endpoint (#3): /plugins/SpotOn/settings/diagnosticBundle
 # Returns a downloadable text file with system info + daemon logs.
-# Only works when diagnosticMode pref is enabled (403 otherwise).
-# 74b-03 (D-07): at the Soloist state - backend, Soloist version/expiry/key
-# state, stored stream quality, glibc, per-player effective format and path,
-# the live *-soloist.log tails - and every log tail and the server.log
-# extract pass through _redactBundleText (T-74b-07).
+# 79-72 (D-43): works WITHOUT diagnosticMode (the 403 gate bought nothing, T-65-07: the handler is read-only,
+# un-CSRF-guarded by design, behind LMS's own password protection, and its payload is symbolic after
+# redaction). diagnosticMode only changes the log verbosity of the daemons.
+# 79-72 (D-45): Plugins::SpotOn::Diagnostics::sections() is the ONE ordered section list; the handler prints
+# `=== BEGIN <id> ===` / `=== END <id> ===` around every collector, and ONE
+# Plugins::SpotOn::Diagnostics::redact() pass over the whole text replaces secrets, user ids, the display
+# name, MACs, LAN addresses, device ids, home paths and e-mail addresses (D-44, T-74b-07).
 # ============================================================
 
-# The repo's secret pattern, copied verbatim from tools/uat/extract-run.pl
-# ($REDACT_RE): Soloist keys, auth_data values and Bearer tokens.
-my $BUNDLE_REDACT_RE = qr/spak_[A-Za-z0-9_-]*|auth_data[^ ]*|Bearer [A-Za-z0-9._-]+/;
+use constant DAEMON_LOG_MAX_BYTES => 500 * 1024;    # per live daemon log
 
+# Kept as one-line delegates so the 79-43/79-44 cells keep their call sites. The patterns and rules live in
+# Plugins::SpotOn::Diagnostics ($SECRET_RE is the verbatim copy of tools/uat/extract-run.pl $REDACT_RE).
 sub _redactBundleText {
     my ($text) = @_;
-    return $text unless defined $text;
-    $text =~ s/$BUNDLE_REDACT_RE/[REDACTED]/g;
-    return $text;
+    return Plugins::SpotOn::Diagnostics::_redactSecrets($text, {});
 }
 
-# _redactBundleUsers($text) -- 79-43 (D-33 FULL-3 WR-01): replaces every stored spotifyUserId (every account in
-# prefs) with [REDACTED], in each form it can take in the bundle: the stored value, its UTF-8 bytes (as a log file
-# holds it) and its URI escape (as a spclient path holds it, matched case-insensitively). quotemeta, longest first.
-# Runs over the whole assembled bundle, header and log extracts; $BUNDLE_REDACT_RE stays the extract-run.pl copy.
-# D-33 WR-04 (79-44 Fable review): an id is replaced as a TOKEN, not as a substring: no word character (or % escape
-# byte) directly before or after it, and case-sensitive (ids are). Only the URI-escape form, whose hex digits a log may
-# print in either case, stays case-insensitive. A short id ("max") therefore no longer eats HOLD_MAX_S or Maxwell.
 sub _redactBundleUsers {
     my ($text) = @_;
-    return $text unless defined $text && length $text;
-    my $accounts = $prefs->get('accounts');
-    return $text unless ref($accounts) eq 'HASH';
-    require URI::Escape;
-    my (%forms, %escForms);
-    for my $acct (values %$accounts) {
-        next unless ref($acct) eq 'HASH';
-        my $uid = $acct->{spotifyUserId};
-        next unless defined $uid && !ref($uid) && length($uid) >= 3;
-        $forms{$uid} = 1;
-        $forms{ encode('UTF-8', $uid) } = 1;
-        my $esc = URI::Escape::uri_escape(encode('UTF-8', $uid));   # = uri_escape_utf8, for either representation
-        if (exists $forms{$esc} || $esc eq $uid) { $forms{$esc} = 1; }    # nothing escaped: stays case-sensitive
-        else                                      { $escForms{$esc} = 1; }
-    }
-    return $text unless %forms || %escForms;
-    my $by  = sub { length($b) <=> length($a) || $a cmp $b };
-    my @alt = ((map { quotemeta } sort $by keys %forms), (map { '(?i:' . quotemeta($_) . ')' } sort $by keys %escForms));
-    my $alt = join '|', @alt;
-    $text =~ s/(?<![A-Za-z0-9_%])(?:$alt)(?![A-Za-z0-9_])/[REDACTED]/g;
-    return $text;
+    return Plugins::SpotOn::Diagnostics::_redactUserIds($text, { accounts => scalar($prefs->get('accounts')) });
+}
+
+# The facts every collector shares. The MAC list is built BEFORE any file name is printed (research 2.4 rule 1),
+# so a daemon log file name is renamed consistently with the Players line.
+sub _bundleContext {
+    my $serverPrefs = preferences('server');
+    my $activeId    = $prefs->get('activeAccount') || '';
+
+    require Plugins::SpotOn::Unified::DaemonManager;
+    my $DM          = 'Plugins::SpotOn::Unified::DaemonManager';
+    my $backendName = eval { $DM->backendName() } // 'unknown';
+
+    return {
+        dm          => $DM,
+        backendName => $backendName,
+        isSoloist   => ($backendName eq 'soloist' ? 1 : 0),
+        role        => eval { $DM->backendClass() },
+        activeId    => $activeId,
+        redactedId  => ($activeId ? substr($activeId, 0, 4) . '****' : 'none'),
+        serverPrefs => $serverPrefs,
+        spotonDir   => catdir($serverPrefs->get('cachedir'), 'spoton'),
+        accounts    => ($prefs->get('accounts') || {}),
+        macs        => [ map { lc $_->id } sort { $a->id cmp $b->id } Slim::Player::Client::clients() ],
+    };
 }
 
 sub _diagnosticBundleHandler {
     my ($httpClient, $response) = @_;
 
-    unless ($prefs->get('diagnosticMode')) {
-        _jsonResponse($httpClient, $response, { error => 'Diagnostic mode not enabled' }, 403);
-        return;
+    my $ctx = _bundleContext();
+
+    require POSIX;
+    my $timestamp = POSIX::strftime('%Y%m%d-%H%M%S', localtime);
+
+    my @out = ('=== SpotOn Diagnostic Bundle ===', "Generated: $timestamp", '');
+    for my $sec (Plugins::SpotOn::Diagnostics::sections()) {
+        push @out, "=== BEGIN $sec->{id} ===";
+        # UNIVERSAL::can, not ->can: a Slim::Web::Settings base (or a test double of it) may override can()
+        my $code = UNIVERSAL::can(__PACKAGE__, $sec->{collector});
+        if ($code) {
+            my @lines = eval { $code->($ctx) };
+            if ($@) {
+                @lines = ("  (could not collect: $@)");
+            }
+            push @out, @lines;
+        }
+        else {
+            push @out, "(collector missing: $sec->{collector})";
+        }
+        push @out, "=== END $sec->{id} ===", '';
     }
 
-    my $serverPrefs = preferences('server');
-    my $spotonDir   = catdir($serverPrefs->get('cachedir'), 'spoton');
+    # ONE redaction pass over header, status and logs.
+    my $content = Plugins::SpotOn::Diagnostics::redact(join("\n", @out) . "\n", $ctx);
+    my $filename = "spoton-diag-$timestamp.txt";
 
-    # Collect all daemon logs (connect + unified + soloist). Live files only:
-    # the *-soloist.log.1 generation stays out to keep the bundle bounded.
-    my @logFiles = (
-        bsd_glob(catfile($spotonDir, '*-connect.log')),
-        bsd_glob(catfile($spotonDir, '*-unified.log')),
-        bsd_glob(catfile($spotonDir, '*-soloist.log')),
+    my $bytes = encode('UTF-8', $content);
+    $response->header('Content-Length' => length($bytes));
+    $response->code(200);
+    $response->header('Connection' => 'close');
+    $response->content_type('text/plain; charset=utf-8');
+    $response->header('Content-Disposition' => "attachment; filename=\"$filename\"");
+    Slim::Web::HTTP::addHTTPResponse($httpClient, $response, \$bytes);
+}
+
+sub _collectSystem {
+    my ($ctx) = @_;
+    return (
+        "LMS version: $::VERSION",
+        "OS: $^O",
+        "Perl: $]",
+        "SpotOn version: " . (Plugins::SpotOn::Plugin->_pluginDataFor('version') || 'unknown'),
+        "Active account: $ctx->{redactedId}",
+        'diagnosticMode: ' . ($prefs->get('diagnosticMode') ? 1 : 0),
     );
+}
 
-    # Build header with system info
-    my $activeId = $prefs->get('activeAccount') || '';
-    my $redactedId = $activeId ? substr($activeId, 0, 4) . '****' : 'none';
+# Backend block (D-07). Every read is eval-guarded: a broken role must not take the whole bundle down.
+sub _collectBackend {
+    my ($ctx) = @_;
+    my ($DM, $role, $backendName, $isSoloist) = @$ctx{qw(dm role backendName isSoloist)};
 
-    require Plugins::SpotOn::Unified::DaemonManager;
-    my $DM          = 'Plugins::SpotOn::Unified::DaemonManager';
-    my $backendName = eval { $DM->backendName() } // 'unknown';
-    my $isSoloist   = $backendName eq 'soloist';
-    my $role        = eval { $DM->backendClass() };
-
-    # Backend block (D-07). Every read is eval-guarded: a broken role must
-    # not take the whole bundle down.
     my @backendLines = ("Backend: $backendName");
     if ($isSoloist) {
         my %info;
@@ -814,6 +855,12 @@ sub _diagnosticBundleHandler {
         push @backendLines, 'Bitrate: ' . ($prefs->get('bitrate') || 320);
         push @backendLines, 'Normalization: ' . ($prefs->get('normalization') ? 'on' : 'off');
     }
+    return @backendLines;
+}
+
+sub _collectPlayers {
+    my ($ctx) = @_;
+    my ($DM, $role, $isSoloist) = @$ctx{qw(dm role isSoloist)};
 
     my @playerList;
     for my $c (Slim::Player::Client::clients()) {
@@ -829,38 +876,142 @@ sub _diagnosticBundleHandler {
             my $q = eval { $role->qualityInfo($c) } || {};
             $line .= ' quality=' . ($q->{effectiveLabel} || 'unknown');
         }
+
+        # 79-72 (todo item 3): what the player is (model, firmware, formats), never its IP address.
+        my $get = sub { my $m = shift; return $c->can($m) ? scalar(eval { $c->$m }) : undef };
+        my @formats = $c->can('formats') ? eval { $c->formats } : ();
+        my @fields;
+        push @fields, 'model=' . $get->('model') if defined $get->('model');
+        push @fields, 'modelName=' . $get->('modelName') if defined $get->('modelName');
+        push @fields, 'firmware=' . $get->('revision') if defined $get->('revision');
+        push @fields, 'formats=' . join(',', @formats) if @formats;
+        push @fields, 'maxrate=' . $get->('maxSupportedSamplerate') if defined $get->('maxSupportedSamplerate');
+        $line .= ' | ' . join(' ', @fields) if @fields;
         push @playerList, $line;
+
+        push @playerList, '    sync: ' . _playerSyncText($c);
+
+        my $pp = $prefs->client($c);
+        my $val = sub { my $v = $pp->get($_[0]); return defined $v && length $v ? $v : '-' };
+        my $conn = $pp->get('enableSpotifyConnect');
+        my $mode = $pp->get('streamingMode');
+        push @playerList, '    prefs: ' . join(' ',
+            'enableSpotifyConnect=' . (defined $conn ? $conn : 1),
+            'connectPowerOff=' . ($pp->get('connectPowerOff') ? 1 : 0),
+            'disableDiscovery=' . ($pp->get('disableDiscovery') ? 1 : 0),
+            'discoveryDisabledByCrashLoop=' . ($pp->get('discoveryDisabledByCrashLoop') ? 1 : 0),
+            'bitrateOverride=' . $val->('bitrateOverride'),
+            'streamFormat=' . ((defined $pp->get('streamFormat') && length $pp->get('streamFormat')) ? $pp->get('streamFormat') : $val->('connectOggOverride')),
+            'streamingMode=' . (defined $mode && length $mode ? $mode : 'global:' . ($prefs->get('streamingMode') || 'direct')),
+            'soloistQuality=' . $val->('soloistQuality'),
+        );
     }
+    return @playerList ? @playerList : ('  (none)');
+}
 
+# standalone | master of <members> | member of <master>. LMS answers master() with the player itself for the
+# master of a group; syncedWith() lists the OTHER members. Names only; MACs go through the MAC rule.
+sub _playerSyncText {
+    my ($c) = @_;
+    my $text = eval {
+        return 'standalone' unless $c->can('isSynced') && $c->isSynced;
+        my $m = $c->can('master') ? $c->master : undef;
+        if ($m && $m->can('id') && $m->id ne $c->id) {
+            return 'member of ' . ($m->name // '?');
+        }
+        my @others = $c->can('syncedWith') ? $c->syncedWith : ();
+        return 'master of ' . (@others ? join(', ', map { $_->name // '?' } @others) : '(nobody)');
+    };
+    return defined $text ? $text : '(unknown)';
+}
+
+# 79-72 (todo item 2): the host the report is about. The OS details hash also carries the login name and the
+# server MAC; they are NOT read here, only os, osName, osArch and binArch (T-79-313).
+sub _collectEnvironment {
+    my ($ctx) = @_;
+    my @lines;
+
+    my $d = eval { require Slim::Utils::OSDetect; Slim::Utils::OSDetect::details() } || {};
+    my $osName = $d->{osName};
+    push @lines, 'OS: ' . ($d->{os} // 'unknown') . (defined $osName && length $osName ? " ($osName)" : '');
+    push @lines, 'Arch: ' . ($d->{osArch} // '?') . ' / ' . ($d->{binArch} // '?');
+
+    my $container = eval { $ctx->{dm}->runsInContainer() ? 'yes' : 'no' } // 'unknown';
+    push @lines, "Container: $container";
+
+    my $cats = eval { require Slim::Utils::Log; Slim::Utils::Log->allCategories() } || {};
+    push @lines, 'Log levels: ' . join(', ',
+        map { "$_=" . ($cats->{$_} // '(default)') }
+        qw(plugin.spoton player.source player.streaming player.sync network.asynchttp server.plugins));
+
+    eval {
+        require Slim::Utils::PluginManager;
+        my $PM  = 'Slim::Utils::PluginManager';
+        my @on  = sort $PM->enabledPlugins;
+        push @lines, 'Plugins: ' . scalar(@on) . ' enabled';
+        for my $name (@on) {
+            my $data = eval { $PM->dataForPlugin($name) } || {};
+            push @lines, "  Plugin: $name " . ($data->{version} // '?');
+        }
+        my $all    = $PM->allPlugins || {};
+        my @failed = sort grep { ($all->{$_}{error} // '') !~ /INSTALLERROR_SUCCESS|INSTALLERROR_NO_MODULE/ } keys %$all;
+        push @lines, 'Plugins failed: ' . scalar(@failed);
+        for my $name (@failed) {
+            push @lines, "  Plugin failed: $name: " . (eval { $PM->getErrorString($name) } // '?');
+        }
+        # plugins that write convert rules change what the transcoding section shows
+        my @writers = grep { /SqueezeDSP|C-3PO/i } @on;
+        push @lines, 'convert-rule writers: ' . (@writers ? join(', ', @writers) : '(none)');
+        1;
+    } or push @lines, "Plugins: (could not read: $@)";
+
+    return @lines;
+}
+
+# 79-72 (todo item 2): the soc/sof/smp/son rows of the LMS transcoding table (SpotOn's input types) with their
+# enabled state and whether every binary of the command was found.
+sub _collectTranscoding {
+    my ($ctx) = @_;
+    require Slim::Player::TranscodingHelper;
+    my $table = Slim::Player::TranscodingHelper::Conversions() || {};
+    my @keys  = sort grep { /^(?:soc|sof|smp|son)-/ } keys %$table;
+    my @show  = @keys > TRANSCODING_ROWS_MAX ? @keys[0 .. TRANSCODING_ROWS_MAX - 1] : @keys;
+
+    my @lines;
+    for my $profile (@show) {
+        my $enabled = eval { Slim::Player::TranscodingHelper::enabledFormat($profile) ? 1 : 0 } // '?';
+        # checkBin leaves the name of a missing binary in $@; the eval below must not wipe it, so it is read inside
+        my ($cmd, $missing);
+        eval {
+            local $@ = '';
+            $cmd     = Slim::Player::TranscodingHelper::checkBin($profile, 1);
+            $missing = $@;
+            1;
+        };
+        push @lines, sprintf('  %s | enabled=%s | checkBin: %s | %s', $profile, $enabled,
+            ($cmd ? 'ok' : 'missing ' . ((defined $missing && length $missing) ? $missing : '?')),
+            substr($table->{$profile} // '', 0, 300));
+    }
+    push @lines, '(+' . (@keys - @show) . ' more)' if @keys > @show;
+    push @lines, '(no soc/sof/smp/son profile found)' unless @keys;
+
+    my $disabled = $ctx->{serverPrefs}->get('disabledformats');
+    push @lines, 'disabledformats: ' . ((ref $disabled eq 'ARRAY' && @$disabled) ? join(',', @$disabled) : '(none)');
+    return @lines;
+}
+
+# --- Token & API Status, error ring, auth health, daemons ---
+# 79-72: the whole ring (all modules, newest first) instead of the dead Token/Auth filter, and the same payload
+# the status page serves (Plugins::SpotOn::Status->collectAll).
+sub _collectStatus {
+    my ($ctx) = @_;
+    my $activeId = $ctx->{activeId};
+    my @status;
     require POSIX;
-    my $timestamp = POSIX::strftime('%Y%m%d-%H%M%S', localtime);
-
-    my $header = join("\n",
-        '=== SpotOn Diagnostic Bundle ===',
-        "Generated: $timestamp",
-        '',
-        '--- System Info ---',
-        "LMS version: $::VERSION",
-        "OS: $^O",
-        "Perl: $]",
-        "SpotOn version: " . (Plugins::SpotOn::Plugin->_pluginDataFor('version') || 'unknown'),
-        "Active account: $redactedId",
-        @backendLines,
-        "diagnosticMode: 1",
-        '',
-        '--- Players ---',
-        (@playerList ? join("\n", @playerList) : '  (none)'),
-        '',
-        '=' x 50,
-        '',
-    );
-
-    # --- Token & API Status ---
-    my @tokenStatus;
     eval {
         require Plugins::SpotOn::API::SpClient;
         my $snapshot = Plugins::SpotOn::API::SpClient->statusSnapshot() || {};
-        push @tokenStatus, '--- Token & API Status ---';
+        push @status, '--- Token & API Status ---';
 
         my $accounts = $prefs->get('accounts') || {};
         my $displayName = 'unknown';
@@ -871,87 +1022,150 @@ sub _diagnosticBundleHandler {
                 || ((defined $uid && length $uid) ? substr($uid, 0, 3) . '****' : undef)
                 || 'unknown';
         }
-        push @tokenStatus, "  Display name: $displayName";
-        push @tokenStatus, "  API requests: " . ($snapshot->{apiRequestCount} || 0);
-        push @tokenStatus, "  429 responses: " . ($snapshot->{api429Count} || 0);
-        push @tokenStatus, "  Rate limited: " . ($snapshot->{rateLimited} ? 'YES' : 'no');
-        push @tokenStatus, "  spclient host: " . ($snapshot->{spclientHost} // '(not resolved)');
-        push @tokenStatus, "  Last error: " . ($snapshot->{lastErrorClass} // '(none)');
+        push @status, "  Display name: $displayName";
+        push @status, "  API requests: " . ($snapshot->{apiRequestCount} || 0);
+        push @status, "  429 responses: " . ($snapshot->{api429Count} || 0);
+        push @status, "  Rate limited: " . ($snapshot->{rateLimited} ? 'YES' : 'no');
+        push @status, "  spclient host: " . ($snapshot->{spclientHost} // '(not resolved)');
+        push @status, "  Last error: " . ($snapshot->{lastErrorClass} // '(none)');
         for my $acctId (sort keys %{ $snapshot->{login5} || {} }) {
-            push @tokenStatus, "  login5 state (" . substr($acctId, 0, 4) . "****): " . ($snapshot->{login5}{$acctId} // 'unknown');
+            push @status, "  login5 state (" . substr($acctId, 0, 4) . "****): " . ($snapshot->{login5}{$acctId} // 'unknown');
         }
-
-        if ($INC{'Plugins/SpotOn/Status.pm'}) {
-            my $errors = Plugins::SpotOn::Status->getErrorHistory() || [];
-            my @tokenErrors = grep { $_->{module} && ($_->{module} eq 'Token' || $_->{module} eq 'Auth') } @$errors;
-            if (@tokenErrors) {
-                push @tokenStatus, '';
-                push @tokenStatus, '  Recent token errors (' . scalar(@tokenErrors) . '):';
-                for my $err (@tokenErrors[0 .. ($#tokenErrors > 9 ? 9 : $#tokenErrors)]) {
-                    my $ts = POSIX::strftime('%Y-%m-%d %H:%M:%S', localtime($err->{ts}));
-                    push @tokenStatus, "    [$ts] $err->{message}";
-                }
-            } else {
-                push @tokenStatus, '  Recent token errors: (none)';
-            }
-        }
+        1;
     };
     if ($@) {
-        @tokenStatus = ('--- Token & API Status ---');
-        push @tokenStatus, "  (could not collect: $@)";
-    }
-    $header .= join("\n", @tokenStatus) . "\n\n";
-
-    # Append each log file (cap at 500KB per file)
-    my $maxBytes = 500 * 1024;
-    my $logs = '';
-    for my $logFile (@logFiles) {
-        my $basename = basename($logFile);
-        $logs .= "--- Log: $basename ---\n";
-        $logs .= _redactBundleText(_readLogTail($logFile, $maxBytes));
-        $logs .= "\n";
+        @status = ('--- Token & API Status ---');
+        push @status, "  (could not collect: $@)";
     }
 
-    if (!@logFiles) {
-        $logs = "--- No daemon log files found ---\n";
-    }
+    # collectAll FIRST (79-75 IN-04): it re-asserts the standing conditions into the error ring, so the list it
+    # returns is the one the status page shows; reading the ring before it listed an evicted standing condition
+    # as missing. The full error ring, all modules, newest first (MAX_ERROR_HISTORY = 30 in Status.pm).
+    eval {
+        require Plugins::SpotOn::Status;
+        my $all = Plugins::SpotOn::Status->collectAll() || {};
 
-    # Extract SpotOn-related lines from LMS server.log
-    my $logdir = $serverPrefs->get('logdir');
-    my $serverLogFile = $logdir ? catfile($logdir, 'server.log') : undef;
-    if ($serverLogFile && -f $serverLogFile) {
-        $logs .= "--- LMS server.log (SpotOn entries, last 200, from the last 2 MB) ---\n";
-        if (open(my $sfh, '<', $serverLogFile)) {
-            my @spotonLines;
-            # 79-61 (FULL-1 WR-04): bounded tail, like _readLogTail; the
-            # first, partial line after the seek is dropped.
-            if ((-s $sfh || 0) > SERVER_LOG_TAIL_BYTES) {
-                seek($sfh, -SERVER_LOG_TAIL_BYTES(), 2);
-                scalar <$sfh>;
-            }
-            while (my $line = <$sfh>) {
-                push @spotonLines, $line if $line =~ /SpotOn|spoton/i;
-                shift @spotonLines if @spotonLines > 200;
-            }
-            close $sfh;
-            $logs .= _redactBundleText(join('', @spotonLines)) || "(no SpotOn entries found)\n";
-        } else {
-            $logs .= "(could not open server.log: $!)\n";
+        my $errors = $all->{errors} || [];
+        push @status, '';
+        push @status, '  Recent errors (' . scalar(@$errors) . ', newest first, all modules, local time):';
+        for my $err (@$errors) {
+            my $ts = POSIX::strftime('%Y-%m-%d %H:%M:%S', localtime($err->{ts} || 0));
+            push @status, "    [$ts] " . ($err->{module} // '?') . ': ' . ($err->{message} // '');
         }
-        $logs .= "\n";
+        push @status, '    (none)' unless @$errors;
+
+        # per account: the four auth indicators; the id is masked to 4 characters like the header
+        my $auth = $all->{authHealth} || {};
+        push @status, '';
+        push @status, '  Auth health:';
+        for my $id (sort keys %$auth) {
+            my $h = $auth->{$id} || {};
+            push @status, sprintf('    (%s****) login=%s hasCredentials=%s needsPairing=%s connect.alive=%s audioKey=%s playback.source=%s playback.needsAuth=%s',
+                substr($id, 0, 4),
+                $h->{login}{state} // '?', $h->{login}{hasCredentials} // '?', $h->{login}{needsPairing} // '?',
+                $h->{connect}{alive} // '?', $h->{audioKey}{state} // '?',
+                (defined $h->{playback}{source} && length $h->{playback}{source}) ? $h->{playback}{source} : '-',
+                $h->{playback}{needsAuth} // '?');
+        }
+        push @status, '    (no account)' unless %$auth;
+
+        push @status, '';
+        push @status, '  Daemons:';
+        for my $d (@{ $all->{daemons} || [] }) {
+            my $health = ref $d->{health} eq 'HASH' ? ($d->{health}{last_reason} // '-') : ($d->{health} // '-');
+            my $line = sprintf('    %s | %s alive=%s pid=%s uptime=%ss connectEnabled=%s streamPort=%s playing=%s paired=%s wsConnected=%s syncGroup=%s controlMode=%s health=%s',
+                $d->{name} // '?', $d->{mac} // '?', $d->{alive} // '?', $d->{pid} // '?', $d->{uptime} // '?',
+                $d->{connectEnabled} // '?', $d->{streamPort} // '-', $d->{playing} // '?',
+                $d->{paired} // '-', $d->{wsConnected} // '-',
+                (ref $d->{syncGroup} eq 'ARRAY' && @{ $d->{syncGroup} }) ? join(',', @{ $d->{syncGroup} }) : '-',
+                $d->{controlMode} // '-', $health);
+            $line .= ' track="' . $d->{currentTrack} . '"' if defined $d->{currentTrack} && length $d->{currentTrack};
+            push @status, $line;
+        }
+        push @status, '    (none)' unless @{ $all->{daemons} || [] };
+        1;
+    } or push @status, "  Recent errors, auth health and daemons: (could not collect: $@)";
+
+    return @status;
+}
+
+# Daemon logs: the live files (connect + unified + soloist), each capped at DAEMON_LOG_MAX_BYTES. The
+# `--- Log: <basename> ---` line carries the file name, which holds the player MAC; redact() renames it.
+# 79-72: a SHORT live Soloist log (just rotated) is followed by the tail of its .1 generation.
+sub _collectDaemonLogs {
+    my ($ctx) = @_;
+    my $spotonDir = $ctx->{spotonDir};
+    my @logFiles = (
+        bsd_glob(catfile($spotonDir, '*-connect.log')),
+        bsd_glob(catfile($spotonDir, '*-unified.log')),
+        bsd_glob(catfile($spotonDir, '*-soloist.log')),
+    );
+    return ('--- No daemon log files found ---') unless @logFiles;
+
+    my @lines;
+    for my $logFile (@logFiles) {
+        push @lines, '--- Log: ' . basename($logFile) . ' ---';
+        push @lines, _readLogTail($logFile, DAEMON_LOG_MAX_BYTES);
+
+        my $gen1 = "$logFile.1";
+        if ($logFile =~ /-soloist\.log$/ && (-s $logFile || 0) < DAEMON_LOG_SHORT_BYTES && -f $gen1) {
+            push @lines, '--- Log: ' . basename($gen1) . ' ---';
+            push @lines, _readLogTail($gen1, DAEMON_LOG_GEN1_TAIL_BYTES);
+        }
     }
+    return @lines;
+}
 
-    # 79-43 (D-33 FULL-3 WR-01): no stored Spotify user id leaves in the bundle, header or log extract
-    my $content = _redactBundleUsers($header . $logs);
-    my $filename = "spoton-diag-$timestamp.txt";
+# 79-72 (todo item 4): the server.log extract. One pass over the last SERVER_LOG_TAIL_BYTES (2 MB) keeps (a) the
+# last SERVER_LOG_FILTERED_MAX lines that mention SpotOn, belong to a player or network module that decides
+# playback, or carry an Error/Warning of ANY module, and (b) an unfiltered tail of the last SERVER_LOG_TAIL_LINES
+# lines, at most SERVER_LOG_TAIL_BYTES_UNFILTERED bytes.
+sub _collectServerLog {
+    my ($ctx) = @_;
+    my $logdir = $ctx->{serverPrefs}->get('logdir');
+    my $serverLogFile = $logdir ? catfile($logdir, 'server.log') : undef;
+    return () unless $serverLogFile && -f $serverLogFile;
 
-    my $bytes = encode('UTF-8', $content);
-    $response->header('Content-Length' => length($bytes));
-    $response->code(200);
-    $response->header('Connection' => 'close');
-    $response->content_type('text/plain; charset=utf-8');
-    $response->header('Content-Disposition' => "attachment; filename=\"$filename\"");
-    Slim::Web::HTTP::addHTTPResponse($httpClient, $response, \$bytes);
+    my $size = -s $serverLogFile || 0;
+    open(my $sfh, '<', $serverLogFile) or return ("--- LMS server.log ---", "(could not open server.log: $!)");
+
+    # 79-61 (FULL-1 WR-04): bounded tail, like _readLogTail; the first, partial line after the seek is dropped.
+    if ($size > SERVER_LOG_TAIL_BYTES) {
+        seek($sfh, -SERVER_LOG_TAIL_BYTES(), 2);
+        scalar <$sfh>;
+    }
+    my (@filtered, @tail, $firstTs);
+    my $tailBytes = 0;
+    while (my $line = <$sfh>) {
+        $firstTs //= ($line =~ /^(\[[^\]]+\])/ ? $1 : '(no timestamp)');
+        if ($line =~ /SpotOn|spoton/i
+            || $line =~ /Slim::Player::(?:Source|Song|StreamingController|Sync|TranscodingHelper)|Slim::Networking::SimpleAsyncHTTP/
+            || $line =~ / (?:Error|Warning): /) {
+            push @filtered, $line;
+            shift @filtered if @filtered > SERVER_LOG_FILTERED_MAX;
+        }
+        push @tail, $line;
+        $tailBytes += length $line;
+        while (@tail > SERVER_LOG_TAIL_LINES || $tailBytes > SERVER_LOG_TAIL_BYTES_UNFILTERED) {
+            if (@tail == 1) {                                  # one line over the cap: keep its end
+                $tail[0] = substr($tail[0], -SERVER_LOG_TAIL_BYTES_UNFILTERED);
+                $tailBytes = length $tail[0];
+                last;
+            }
+            $tailBytes -= length(shift @tail);
+        }
+    }
+    close $sfh;
+
+    return (
+        "--- LMS server.log (path: $serverLogFile, size: $size bytes, window: last 2 MB, first line of the window: "
+            . ($firstTs // '(empty)') . ') ---',
+        '(daemon logs are UTC, server.log is local time)',
+        '--- LMS server.log (SpotOn, player and network modules, Error/Warning lines; last ' . SERVER_LOG_FILTERED_MAX . ') ---',
+        (_decodeLog(join('', @filtered)) || "(no matching entries found)\n"),
+        '--- LMS server.log (last lines, unfiltered) ---',
+        (_decodeLog(join('', @tail)) || "(empty)\n"),
+    );
 }
 
 # ============================================================
@@ -1012,6 +1226,16 @@ sub _jsonResponse {
     Slim::Web::HTTP::addHTTPResponse($httpClient, $response, \$bytes);
 }
 
+# A log file is read as BYTES; the report text is a mix of those and decoded character strings (player names,
+# titles), and encode('UTF-8') of the whole text treats every byte as a character: an u-umlaut of a daemon or
+# server log would come out as two characters (79-75 IN-03). Decode once at the read; malformed bytes (a tail cut
+# inside a character) become U+FFFD, never an exception.
+sub _decodeLog {
+    my ($bytes) = @_;
+    return $bytes unless defined $bytes && length $bytes;
+    return decode('UTF-8', $bytes, Encode::FB_DEFAULT);
+}
+
 sub _readLogTail {
     my ($path, $maxBytes) = @_;
     if (open my $fh, '<', $path) {
@@ -1020,12 +1244,12 @@ sub _readLogTail {
         if ($size > $maxBytes) {
             seek($fh, -$maxBytes, 2);
             <$fh>;
-            $content .= "[...truncated to last 500KB...]\n";
+            $content .= '[...truncated to last ' . int($maxBytes / 1024) . "KB...]\n";
         }
         local $/;
         $content .= <$fh> // '';
         close $fh;
-        return $content;
+        return _decodeLog($content);
     }
     return "(could not read " . basename($path) . ": $!)\n";
 }

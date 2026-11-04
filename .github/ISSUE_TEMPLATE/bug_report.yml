@@ -64,8 +64,10 @@ body:
     attributes:
       label: Log Excerpt
       description: >
-        Relevant lines from LMS server.log. If you have a diagnostic bundle
-        (.txt file from SpotOn Settings > Diagnostics), attach it below instead.
+        Relevant lines from LMS server.log. Attach the SpotOn diagnostic report
+        (SpotOn Settings > Diagnostics > Download; it is redacted, open it first)
+        when the settings page opens; if the settings page does not open, paste
+        the server.log lines around the failure.
     validations:
       required: false
 

@@ -149,10 +149,16 @@ sub _statusDataHandler {
 
     # No CSRF check — read-only endpoint (D-12)
 
-    my %data;
+    # 79-72: one reviewed payload. The diagnostic report (Settings.pm _collectStatus) reads the SAME hash through
+    # collectAll(), so the report cannot show more than this endpoint serves (T-85-29, T-66-05).
+    _jsonResponse($httpClient, $response, collectAll());
+}
 
-    # Each collector is eval-guarded so a broken module or missing method
-    # at startup returns partial data rather than crashing the handler (CR-01).
+# collectAll() -- the payload of /plugins/SpotOn/status/data: daemons, api, errors, tokens, madeForYou, system,
+# authHealth. Each collector is eval-guarded so a broken module or missing method at startup returns partial
+# data rather than crashing the caller (CR-01).
+sub collectAll {
+    my %data;
 
     # --- Daemons ---
     $data{daemons} = eval { _collectDaemons() } // [];
@@ -161,8 +167,10 @@ sub _statusDataHandler {
     }
 
     # --- API telemetry ---
-    require Plugins::SpotOn::API::SpClient;
-    $data{api} = eval { Plugins::SpotOn::API::SpClient->statusSnapshot() } // {};
+    $data{api} = eval {
+        require Plugins::SpotOn::API::SpClient;
+        Plugins::SpotOn::API::SpClient->statusSnapshot();
+    } // {};
     if ($@) {
         main::INFOLOG && $log->is_info && $log->info("Status: statusSnapshot failed: $@");
     }
@@ -205,17 +213,20 @@ sub _statusDataHandler {
     # 4-indicator aggregation (login5, connect, audio key, playback). Every read inside _collectAuthHealth is a
     # passive cache/prefs/accessor query -- zero outbound API calls triggered
     # by page render (T-54-02/T-54-06).
-    require Plugins::SpotOn::API::TokenManager;
     my %authHealth;
-    for my $id (Plugins::SpotOn::API::TokenManager->getAccountIds()) {
-        $authHealth{$id} = eval { _collectAuthHealth($id) } // {};
-        if ($@) {
-            main::INFOLOG && $log->is_info && $log->info("Status: _collectAuthHealth($id) failed: $@");
+    eval {
+        require Plugins::SpotOn::API::TokenManager;
+        for my $id (Plugins::SpotOn::API::TokenManager->getAccountIds()) {
+            $authHealth{$id} = eval { _collectAuthHealth($id) } // {};
+            if ($@) {
+                main::INFOLOG && $log->is_info && $log->info("Status: _collectAuthHealth($id) failed: $@");
+            }
         }
-    }
+        1;
+    } or main::INFOLOG && $log->is_info && $log->info("Status: getAccountIds failed: $@");
     $data{authHealth} = \%authHealth;
 
-    _jsonResponse($httpClient, $response, \%data);
+    return \%data;
 }
 
 # ============================================================

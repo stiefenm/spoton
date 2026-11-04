@@ -365,6 +365,51 @@ SKIP: {
         is(scalar(@dash), 0, "79-69 T2 e: $key carries no em or en dash");
     }
 
+    # 79-72 (D-45, D-45b, item 6): the diagnostic page text comes from the ONE list module. Walk its section list,
+    # its redaction list and its six fixed keys, plus the two reworded switch/download descriptions: every key
+    # exists in exactly the eleven shipped languages, non-empty, without an em or en dash. Diagnostics.pm needs
+    # no Slim stub (it requires no Slim module), so it loads here directly.
+    {
+        unshift @INC, $project_dir;
+        require Plugins::SpotOn::Diagnostics;
+        my @diag_keys = (
+            (map { ($_->{title}, $_->{desc}) } Plugins::SpotOn::Diagnostics::sections()),
+            (map { $_->{key} } Plugins::SpotOn::Diagnostics::redactions()),
+            Plugins::SpotOn::Diagnostics::fixedKeys(),
+            qw(PLUGIN_SPOTON_DIAG_MODE_DESC PLUGIN_SPOTON_DIAG_DOWNLOAD_DESC),
+        );
+        is(scalar(@diag_keys), 32, '79-72 D-45: 8 titles + 8 descriptions + 8 redactions + 6 fixed + 2 reworded = 32 keys to walk');
+        is(scalar(keys %{ { map { $_ => 1 } @diag_keys } }), 32, '79-72 D-45: the 32 keys are distinct');
+        for my $key (@diag_keys) {
+            for my $lang (qw(CS DA DE EN ES FR IT NL NO PL SV)) {
+                ok(defined $langs_of{$key}{$lang} && length $langs_of{$key}{$lang}, "79-72 D-45: $key has a $lang translation");
+            }
+            is(scalar(keys %{ $langs_of{$key} || {} }), 11, "79-72 D-45: $key has exactly the eleven shipped languages");
+            my @dash = grep { $langs_of{$key}{$_} =~ /[\x{2013}\x{2014}]/ } keys %{ $langs_of{$key} || {} };
+            is(scalar(@dash), 0, "79-72 D-45: $key carries no em or en dash");
+        }
+        like($langs_of{PLUGIN_SPOTON_DIAG_MODE_DESC}{EN}, qr/restart/i, '79-72 D-43: the EN switch description names the daemon restart');
+        like($langs_of{PLUGIN_SPOTON_DIAG_SWITCH_TEXT}{EN}, qr/restart/i, '79-72 D-45b: the EN switch text names the daemon restart');
+        # owner decision 2026-11-04: global IPv6 addresses are replaced (IP6-N); only public IPv4 addresses stay readable
+        for my $lang (qw(CS DA DE EN ES FR IT NL NO PL SV)) {
+            like($langs_of{PLUGIN_SPOTON_DIAG_NOT_REDACTED}{$lang}, qr/IPv4/, "79-72 D-44: the not-redacted text names public IPv4 ($lang)");
+            unlike($langs_of{PLUGIN_SPOTON_DIAG_NOT_REDACTED}{$lang}, qr/IPv6/, "79-72 D-44: the not-redacted text no longer lists an IPv6 address as readable ($lang)");
+            like($langs_of{PLUGIN_SPOTON_DIAG_RED_LANIPS}{$lang}, qr/IP6-1/, "79-72 D-44: the redaction list names the IP6-N placeholder ($lang)");
+        }
+
+        my $html_path = "$project_dir/Plugins/SpotOn/HTML/EN/plugins/SpotOn/settings/basic.html";
+        open(my $hfh, '<:encoding(UTF-8)', $html_path) or die "basic.html: $!";
+        my $html = do { local $/; <$hfh> };
+        close($hfh);
+        like($html, qr/FOREACH \w+ IN diagSections\b/, '79-72 D-45: basic.html renders the section list from diagSections');
+        like($html, qr/FOREACH \w+ IN diagRedactions\b/, '79-72 D-45: basic.html renders the redaction list from diagRedactions');
+        for my $fixed (Plugins::SpotOn::Diagnostics::fixedKeys()) {
+            next if $fixed eq 'PLUGIN_SPOTON_DIAG_NOT_REDACTED';    # rendered through diagNotRedactedKey
+            like($html, qr/\Q$fixed\E/, "79-72 D-45b: basic.html shows $fixed");
+        }
+        like($html, qr/diagNotRedactedKey/, '79-72 D-45b: basic.html shows the not-redacted text from the list module');
+    }
+
     # 85-11 (D-24, D-02, D-23): the two-step settings page and the __DISCOVER__ notices exist
     # in all eleven languages -- 12 keys, 132 lines. PLUGIN_SPOTON_STEP_ACCOUNT_TITLE and
     # PLUGIN_SPOTON_STEP_PLAYER_TITLE carry the numbered headings; the German wording of the
