@@ -2781,17 +2781,17 @@ PLUGIN_SPOTON_DIAG_DOWNLOAD
 	SV	Diagnostikpaket
 
 PLUGIN_SPOTON_DIAG_DOWNLOAD_DESC
-	CS	Vždy k dispozici, s přepínačem výše i bez něj: stáhne textový soubor se systémovými informacemi, stavem a posledními logy pro podporu. Osobní údaje se nahrazují; viz seznam výše.
-	DA	Altid tilgængelig, med eller uden kontakten ovenfor: downloader en tekstfil med systemoplysninger, status og seneste logfiler til support. Personlige data erstattes; se listen ovenfor.
-	DE	Immer verfügbar, mit oder ohne den Schalter oben: lädt eine Textdatei mit Systeminformationen, Status und aktuellen Logs für den Support herunter. Persönliche Daten werden ersetzt; siehe die Liste oben.
-	EN	Always available, with or without the switch above: downloads a text file with system information, status and recent logs for support. Personal data is replaced; see the list above.
-	ES	Siempre disponible, con o sin el interruptor de arriba: descarga un archivo de texto con información del sistema, estado y registros recientes para el soporte. Los datos personales se sustituyen; vea la lista de arriba.
-	FR	Toujours disponible, avec ou sans l'interrupteur ci-dessus : télécharge un fichier texte avec les informations système, l'état et les journaux récents pour l'assistance. Les données personnelles sont remplacées ; voir la liste ci-dessus.
-	IT	Sempre disponibile, con o senza l'interruttore qui sopra: scarica un file di testo con informazioni di sistema, stato e log recenti per l'assistenza. I dati personali vengono sostituiti; vedi l'elenco qui sopra.
-	NL	Altijd beschikbaar, met of zonder de schakelaar hierboven: downloadt een tekstbestand met systeeminformatie, status en recente logs voor ondersteuning. Persoonlijke gegevens worden vervangen; zie de lijst hierboven.
-	NO	Alltid tilgjengelig, med eller uten bryteren ovenfor: laster ned en tekstfil med systeminformasjon, status og nylige logger for support. Personlige data erstattes; se listen ovenfor.
-	PL	Zawsze dostępne, z przełącznikiem powyżej lub bez niego: pobiera plik tekstowy z informacjami o systemie, stanem i ostatnimi dziennikami dla wsparcia. Dane osobowe są zastępowane; zobacz listę powyżej.
-	SV	Alltid tillgänglig, med eller utan reglaget ovan: laddar ner en textfil med systeminformation, status och senaste loggar för support. Personuppgifter ersätts; se listan ovan.
+	CS	Vždy k dispozici, s přepínačem výše i bez něj: stáhne textový soubor se systémovými informacemi, stavem a posledními logy pro podporu. Osobní údaje se nahrazují; odkaz vedle tlačítka vysvětluje co a jak.
+	DA	Altid tilgængelig, med eller uden kontakten ovenfor: downloader en tekstfil med systemoplysninger, status og seneste logfiler til support. Personlige data erstattes; linket ved siden af knappen forklarer hvad og hvordan.
+	DE	Immer verfügbar, mit oder ohne den Schalter oben: lädt eine Textdatei mit Systeminformationen, Status und aktuellen Logs für den Support herunter. Persönliche Daten werden ersetzt; der Link neben der Schaltfläche erklärt, was und wie.
+	EN	Always available, with or without the switch above: downloads a text file with system information, status and recent logs for support. Personal data is replaced; the link next to this button explains what and how.
+	ES	Siempre disponible, con o sin el interruptor de arriba: descarga un archivo de texto con información del sistema, estado y registros recientes para el soporte. Los datos personales se sustituyen; el enlace junto a este botón explica qué y cómo.
+	FR	Toujours disponible, avec ou sans l'interrupteur ci-dessus : télécharge un fichier texte avec les informations système, l'état et les journaux récents pour l'assistance. Les données personnelles sont remplacées ; le lien à côté de ce bouton explique quoi et comment.
+	IT	Sempre disponibile, con o senza l'interruttore qui sopra: scarica un file di testo con informazioni di sistema, stato e log recenti per l'assistenza. I dati personali vengono sostituiti; il link accanto a questo pulsante spiega cosa e come.
+	NL	Altijd beschikbaar, met of zonder de schakelaar hierboven: downloadt een tekstbestand met systeeminformatie, status en recente logs voor ondersteuning. Persoonlijke gegevens worden vervangen; de link naast deze knop legt uit wat en hoe.
+	NO	Alltid tilgjengelig, med eller uten bryteren ovenfor: laster ned en tekstfil med systeminformasjon, status og nylige logger for support. Personlige data erstattes; lenken ved siden av knappen forklarer hva og hvordan.
+	PL	Zawsze dostępne, z przełącznikiem powyżej lub bez niego: pobiera plik tekstowy z informacjami o systemie, stanem i ostatnimi dziennikami dla wsparcia. Dane osobowe są zastępowane; link obok tego przycisku wyjaśnia co i jak.
+	SV	Alltid tillgänglig, med eller utan reglaget ovan: laddar ner en textfil med systeminformation, status och senaste loggar för support. Personuppgifter ersätts; länken bredvid knappen förklarar vad och hur.
 
 PLUGIN_SPOTON_DIAG_DOWNLOAD_BUTTON
 	CS	Stáhnout diagnostickou zprávu
@@ -3171,17 +3171,17 @@ PLUGIN_SPOTON_DIAG_RED_EMAILS
 	SV	E-postadresser ersätts med [REDACTED].
 
 PLUGIN_SPOTON_DIAG_SWITCH_TEXT
-	CS	Přepínač výše zapíná pouze podrobné protokolování: všichni démoni SpotOn se restartují, librespot zapisuje na úrovni debug, Soloist běží v podrobném režimu a Connect zapisuje řádky s časováním [DIAG]. Obsah zprávy se tím nemění a zprávu lze stáhnout i bez něj.
-	DA	Kontakten ovenfor slår kun detaljeret logning til: alle SpotOn-dæmoner genstarter, librespot logger på debug-niveau, Soloist kører i udførlig tilstand, og Connect skriver [DIAG]-tidslinjer. Den ændrer ikke rapportens indhold, og rapporten kan hentes uden den.
-	DE	Der Schalter oben aktiviert nur detailliertes Logging: Alle SpotOn-Daemons starten neu, librespot loggt auf Debug-Stufe, Soloist läuft im ausführlichen Modus und Connect schreibt [DIAG]-Zeitzeilen. Er ändert nichts am Inhalt des Berichts, und der Bericht lässt sich auch ohne ihn herunterladen.
-	EN	The switch above only turns on detailed logging: every SpotOn daemon restarts, librespot logs at debug level, Soloist runs in verbose mode and Connect writes [DIAG] timing lines. It does not change what the report contains, and the report can be downloaded without it.
-	ES	El interruptor de arriba solo activa el registro detallado: todos los demonios de SpotOn se reinician, librespot registra a nivel debug, Soloist se ejecuta en modo detallado y Connect escribe líneas de tiempos [DIAG]. No cambia el contenido del informe, y el informe se puede descargar sin él.
-	FR	L'interrupteur ci-dessus active seulement la journalisation détaillée : tous les démons SpotOn redémarrent, librespot journalise au niveau debug, Soloist tourne en mode verbeux et Connect écrit des lignes de temps [DIAG]. Il ne change pas le contenu du rapport, et le rapport peut être téléchargé sans lui.
-	IT	L'interruttore qui sopra attiva solo la registrazione dettagliata: tutti i daemon SpotOn si riavviano, librespot registra a livello debug, Soloist gira in modalità dettagliata e Connect scrive righe di tempi [DIAG]. Non cambia il contenuto del rapporto, e il rapporto si può scaricare anche senza.
-	NL	De schakelaar hierboven zet alleen gedetailleerde logging aan: alle SpotOn-daemons herstarten, librespot logt op debugniveau, Soloist draait in uitgebreide modus en Connect schrijft [DIAG]-tijdregels. Hij verandert niets aan de inhoud van het rapport, en het rapport kan ook zonder worden gedownload.
-	NO	Bryteren ovenfor slår bare på detaljert logging: alle SpotOn-daemoner starter på nytt, librespot logger på debug-nivå, Soloist kjører i utførlig modus og Connect skriver [DIAG]-tidslinjer. Den endrer ikke innholdet i rapporten, og rapporten kan lastes ned uten den.
-	PL	Przełącznik powyżej włącza tylko szczegółowe logowanie: wszystkie demony SpotOn uruchamiają się ponownie, librespot loguje na poziomie debug, Soloist działa w trybie szczegółowym, a Connect zapisuje wiersze czasowe [DIAG]. Nie zmienia zawartości raportu, a raport można pobrać także bez niego.
-	SV	Reglaget ovan slår bara på detaljerad loggning: alla SpotOn-daemoner startar om, librespot loggar på debug-nivå, Soloist körs i utförligt läge och Connect skriver [DIAG]-tidsrader. Det ändrar inte rapportens innehåll, och rapporten kan laddas ner utan det.
+	CS	Přepínač Diagnostický režim v nastavení SpotOn zapíná pouze podrobné protokolování: všichni démoni SpotOn se restartují, librespot zapisuje na úrovni debug, Soloist běží v podrobném režimu a Connect zapisuje řádky s časováním [DIAG]. Obsah zprávy se tím nemění a zprávu lze stáhnout i bez něj.
+	DA	Kontakten Diagnostisk tilstand i SpotOn-indstillingerne slår kun detaljeret logning til: alle SpotOn-dæmoner genstarter, librespot logger på debug-niveau, Soloist kører i udførlig tilstand, og Connect skriver [DIAG]-tidslinjer. Den ændrer ikke rapportens indhold, og rapporten kan hentes uden den.
+	DE	Der Schalter Diagnosemodus in den SpotOn-Einstellungen aktiviert nur detailliertes Logging: Alle SpotOn-Daemons starten neu, librespot loggt auf Debug-Stufe, Soloist läuft im ausführlichen Modus und Connect schreibt [DIAG]-Zeitzeilen. Er ändert nichts am Inhalt des Berichts, und der Bericht lässt sich auch ohne ihn herunterladen.
+	EN	The Diagnostic Mode switch in the SpotOn settings only turns on detailed logging: every SpotOn daemon restarts, librespot logs at debug level, Soloist runs in verbose mode and Connect writes [DIAG] timing lines. It does not change what the report contains, and the report can be downloaded without it.
+	ES	El interruptor Modo diagnóstico de los ajustes de SpotOn solo activa el registro detallado: todos los demonios de SpotOn se reinician, librespot registra a nivel debug, Soloist se ejecuta en modo detallado y Connect escribe líneas de tiempos [DIAG]. No cambia el contenido del informe, y el informe se puede descargar sin él.
+	FR	L'interrupteur Mode diagnostic des réglages de SpotOn active seulement la journalisation détaillée : tous les démons SpotOn redémarrent, librespot journalise au niveau debug, Soloist tourne en mode verbeux et Connect écrit des lignes de temps [DIAG]. Il ne change pas le contenu du rapport, et le rapport peut être téléchargé sans lui.
+	IT	L'interruttore Modalità diagnostica nelle impostazioni di SpotOn attiva solo la registrazione dettagliata: tutti i daemon SpotOn si riavviano, librespot registra a livello debug, Soloist gira in modalità dettagliata e Connect scrive righe di tempi [DIAG]. Non cambia il contenuto del rapporto, e il rapporto si può scaricare anche senza.
+	NL	De schakelaar Diagnostische modus in de SpotOn-instellingen zet alleen gedetailleerde logging aan: alle SpotOn-daemons herstarten, librespot logt op debugniveau, Soloist draait in uitgebreide modus en Connect schrijft [DIAG]-tijdregels. Hij verandert niets aan de inhoud van het rapport, en het rapport kan ook zonder worden gedownload.
+	NO	Bryteren Diagnostisk modus i SpotOn-innstillingene slår bare på detaljert logging: alle SpotOn-daemoner starter på nytt, librespot logger på debug-nivå, Soloist kjører i utførlig modus og Connect skriver [DIAG]-tidslinjer. Den endrer ikke innholdet i rapporten, og rapporten kan lastes ned uten den.
+	PL	Przełącznik Tryb diagnostyczny w ustawieniach SpotOn włącza tylko szczegółowe logowanie: wszystkie demony SpotOn uruchamiają się ponownie, librespot loguje na poziomie debug, Soloist działa w trybie szczegółowym, a Connect zapisuje wiersze czasowe [DIAG]. Nie zmienia zawartości raportu, a raport można pobrać także bez niego.
+	SV	Reglaget Diagnostikläge i SpotOn-inställningarna slår bara på detaljerad loggning: alla SpotOn-daemoner startar om, librespot loggar på debug-nivå, Soloist körs i utförligt läge och Connect skriver [DIAG]-tidsrader. Det ändrar inte rapportens innehåll, och rapporten kan laddas ner utan det.
 
 PLUGIN_SPOTON_DIAG_SECTIONS_HEAD
 	CS	Co zpráva obsahuje
@@ -3247,6 +3247,32 @@ PLUGIN_SPOTON_DIAG_OPEN_FIRST
 	NO	Åpne tekstfilen før du legger den ved, og søk gjennom den etter alt du ikke vil dele.
 	PL	Otwórz plik tekstowy przed załączeniem i przeszukaj go pod kątem wszystkiego, czego nie chcesz udostępniać.
 	SV	Öppna textfilen innan du bifogar den och sök igenom den efter allt du inte vill dela.
+
+PLUGIN_SPOTON_DIAG_PAGE_LINK
+	CS	Co je ve zprávě?
+	DA	Hvad står der i rapporten?
+	DE	Was steht im Bericht?
+	EN	What's in the report?
+	ES	¿Qué contiene el informe?
+	FR	Que contient le rapport ?
+	IT	Cosa c'è nel rapporto?
+	NL	Wat staat er in het rapport?
+	NO	Hva står det i rapporten?
+	PL	Co zawiera raport?
+	SV	Vad finns i rapporten?
+
+PLUGIN_SPOTON_DIAG_PAGE_TITLE
+	CS	Diagnostická zpráva SpotOn: co obsahuje
+	DA	SpotOn-diagnoserapport: hvad den indeholder
+	DE	SpotOn-Diagnosebericht: was er enthält
+	EN	SpotOn diagnostic report: what it contains
+	ES	Informe de diagnóstico de SpotOn: qué contiene
+	FR	Rapport de diagnostic SpotOn : ce qu'il contient
+	IT	Rapporto diagnostico di SpotOn: cosa contiene
+	NL	SpotOn-diagnoserapport: wat erin staat
+	NO	SpotOn-diagnostikkrapport: hva den inneholder
+	PL	Raport diagnostyczny SpotOn: co zawiera
+	SV	SpotOn-diagnosrapport: vad den innehåller
 
 PLUGIN_SPOTON_CREDITS
 	CS	SpotOn používá librespot. Inspirováno pluginem Spotty od Hergera.

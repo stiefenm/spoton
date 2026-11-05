@@ -300,13 +300,30 @@ sub _collectDaemons {
         # could (and live did) disagree.
         $playing = 0 if $hasPairing && !($paired && $wsConnected);
 
+        # D-54 (79-81, forum #347): the Connect field shows the helper's own
+        # flag when it has one (the librespot daemon, started with or without
+        # --enable-connect, Daemon.pm:233-235), else the player's effective
+        # pref. SoloistDaemon declares _connectEnabled (SoloistDaemon.pm:99)
+        # and never sets it, so every Soloist card read "No". The pref is read
+        # at render time on purpose: under Soloist the Connect toggle is no
+        # daemon start flag and restarts nothing, so a value set at start would
+        # go stale. Same expression as DaemonManager::_isConnectEnabled
+        # (DaemonManager.pm:310-314): per-player value, else the global one.
+        # The rule is backend-agnostic (defined-ness decides), this file names
+        # no backend module.
+        my $ownFlag = $helper->_connectEnabled;
+        my $connectEnabled = defined $ownFlag
+            ? ($ownFlag ? 1 : 0)
+            : ((($client ? $prefs->client($client)->get('enableSpotifyConnect') : undef)
+                    // $prefs->get('enableSpotifyConnect')) ? 1 : 0);
+
         push @daemons, {
             mac            => $mac,
             name           => $name,
             alive          => $helper->alive ? 1 : 0,
             pid            => $helper->pid || 0,
             uptime         => int($helper->uptime || 0),
-            connectEnabled => $helper->_connectEnabled ? 1 : 0,
+            connectEnabled => $connectEnabled,
             streamPort     => $helper->_streamPort // undef,
             playing        => $playing,
             currentTrack   => $currentTrack,
@@ -418,8 +435,22 @@ sub _collectAuthHealth {
     # default 'ok'. 'throttled' has a 600s TTL and auto-clears back to 'ok'
     # (absence = ok); 'denied' persists permanently (TTL 'never', written by
     # DaemonManager Plan 54-01).
+    #
+    # D-54 (79-81, GH #188): under a non-librespot backend the row reads
+    # 'not_used', never a 'denied' left in the cache by earlier librespot use.
+    # Same condition as DaemonManager's errors[] path (DaemonManager.pm:
+    # 2631-2634: backendName() eq 'librespot'). SpotOn learns the key state
+    # only from librespot's stderr, so under Soloist nothing measures it:
+    # 'ok' would claim a health state no source backs (D-02), 'not_used' says
+    # why the row says nothing. The cache key is never deleted here, a switch
+    # back to librespot shows the stored state. The eval only covers a
+    # backendName that dies (a stub without it, a load failure): then the raw
+    # cache state shows as before.
+    my $backend = eval { Plugins::SpotOn::Unified::DaemonManager->backendName };
     $health{audioKey} = {
-        state => $cache->get("spoton_audiokey_state_" . $accountId) || 'ok',
+        state => (defined $backend && $backend ne 'librespot')
+            ? 'not_used'
+            : ($cache->get("spoton_audiokey_state_" . $accountId) || 'ok'),
     };
 
     # 4. Playback Credentials (D-08, GH #147 plan 66-02) -- the librespot

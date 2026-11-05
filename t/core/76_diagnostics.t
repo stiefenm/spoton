@@ -264,14 +264,52 @@ is($R->("Authenticated as 'someone' !", {}), "Authenticated as '[REDACTED]' !", 
     ok((!grep { $_->{collector} !~ /^_collect/ || $_->{title} !~ /^PLUGIN_SPOTON_DIAG_SEC_/ || $_->{desc} !~ /^PLUGIN_SPOTON_DIAG_SEC_\w+_DESC$/ } @sec),
        '79-72 T2 lists: every section has a _collect* collector name and SEC title/desc keys');
     my @fixed = Plugins::SpotOn::Diagnostics::fixedKeys();
-    is(scalar(@fixed), 6, '79-72 T2 lists: six fixed page keys');
+    is(scalar(@fixed), 8, '79-82 D-56: eight fixed keys (the six of 79-72 plus the page link text and the page title)');
+    ok((grep { $_ eq 'PLUGIN_SPOTON_DIAG_PAGE_LINK' } @fixed) && (grep { $_ eq 'PLUGIN_SPOTON_DIAG_PAGE_TITLE' } @fixed),
+       '79-82 D-56: the fixed keys contain PLUGIN_SPOTON_DIAG_PAGE_LINK and PLUGIN_SPOTON_DIAG_PAGE_TITLE');
     is(Plugins::SpotOn::Diagnostics::notRedactedKey(), 'PLUGIN_SPOTON_DIAG_NOT_REDACTED', '79-72 T2 lists: the not-redacted key');
+}
+
+# --- 79-82 D57 (D-57): stripAnsi ------------------------------------------------------------------------
+# The user's Pi report (spoton-diag-20261105-111320.txt) held 4661 terminal color sequences on 4616 lines of the
+# daemonlogs section: ESC[0m at every line end, ESC[1;31m before the text of an E line, ESC[1;33m before a W line.
+# The three fixture lines are lines 104, 281 and 419 of it. The function is called through can() so that a missing
+# function gives `not ok` lines, not a die.
+{
+    my $strip = Plugins::SpotOn::Diagnostics->can('stripAnsi') || sub { $_[0] };
+    my $fixturePath = "$project_dir/t/fixtures/soloist/d57-ansi-soloist.log";
+    open(my $fh, '<:raw', $fixturePath) or die "$fixturePath: $!";
+    my @fx = <$fh>;
+    close $fh;
+    is(scalar(@fx), 3, 'D57 fixture: three real report lines (an I line, an E line, a W line)');
+    my @out = map { $strip->($_) } @fx;
+
+    ok(Plugins::SpotOn::Diagnostics->can('stripAnsi') ? 1 : 0, 'D57-1 (D-57): Diagnostics::stripAnsi exists');
+    is(scalar(grep { /\x1b/ } @out), 0, 'D57-1 (D-57): none of the three real lines keeps an ESC byte');
+    like($out[0], qr/^18:56:11\.090 I \[f:219 +\] soloist 1\.3\.10\.13 build 1792778483 \(20261023\) \(g19412df6ea\) \(linux\/aarch64\)\n\z/,
+         'D57-1: the I line ends in (linux/aarch64), letter and column intact');
+    like($out[1], qr/^07:09:16\.755 E \[f:430 +\] mDNS: unable to parse question 0 string, aborting\n\z/,
+         'D57-1: the E line reads "] mDNS: ... aborting" (the ESC[1;31m before the text is gone)');
+    like($out[2], qr/^20:45:29\.110 W \[f:1200 +\] Session Track Player closed without close source\n\z/,
+         'D57-1: the W line reads "] Session Track Player ..." (the ESC[1;33m before the text is gone)');
+
+    my @plain = ("[fakepulse] vsink: T_ms=3000 source=default\n", "12:00:00.001 I [f:47                            ] plain text [x] (y)\n", "no newline at all");
+    is_deeply([ map { $strip->($_) } @plain ], \@plain,
+              'D57-2: a line without ESC comes back byte-identical, bracket forms included');
+
+    is($strip->("a\e[1;31mb\e[0mc"), 'abc', 'D57-3: ESC[1;31m and ESC[0m go');
+    is($strip->("x\e[38;5;196my"), 'xy', 'D57-3: a 256-colour form goes');
+    is($strip->("a\e[2Kb\e[?25lc"), 'abc', 'D57-3: other CSI forms go (erase line, private mode)');
+    my $multi = "one\e[0m\ntwo \e[1;33mwarn\e[0m\nthree\n";
+    my $res = $strip->($multi);
+    is($res, "one\ntwo warn\nthree\n", 'D57-3: a multi-line text keeps its newlines and its line count');
+    is($strip->("a\eb"), "a\eb", 'D57-3: a lone ESC that is no CSI start stays (the gate would count it)');
 }
 
 # --- the module needs no Slim module --------------------------------------------------------------------
 {
     my @slim = grep { m{^Slim/} } keys %INC;
-    is(scalar(@slim), 0, '79-72 T1 module: loading Diagnostics.pm pulled in no Slim module');
+    is(scalar(@slim), 0, '79-72 T1 module / D57-4 (D-57): loading Diagnostics.pm (stripAnsi included) pulled in no Slim module');
 }
 
 done_testing();

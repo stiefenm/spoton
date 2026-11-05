@@ -345,12 +345,14 @@ sub protectURI     { $_[1] }
 1;
 END
 
-# Stub: Slim::Web::Pages (for addRawFunction)
+# Stub: Slim::Web::Pages (for addRawFunction; 79-82 D-56: addPageFunction for the diagnostics page)
 write_stub($stub_dir, 'Slim::Web::Pages', <<'END');
 package Slim::Web::Pages;
 our @registered_raw = ();
-sub addRawFunction { push @registered_raw, [$_[1], $_[2]] }
-sub reset_calls    { @registered_raw = () }
+our @registered_page = ();
+sub addRawFunction  { push @registered_raw, [$_[1], $_[2]] }
+sub addPageFunction { push @registered_page, [$_[1], $_[2]] }
+sub reset_calls     { @registered_raw = (); @registered_page = () }
 1;
 END
 
@@ -358,8 +360,10 @@ END
 write_stub($stub_dir, 'Slim::Web::HTTP', <<'END');
 package Slim::Web::HTTP;
 our @http_responses = ();
+our @filled = ();
 sub addHTTPResponse { push @http_responses, [@_] }
-sub reset_calls     { @http_responses = () }
+sub filltemplatefile { push @filled, [@_]; return 'FILLED:' . $_[0] }
+sub reset_calls     { @http_responses = (); @filled = () }
 1;
 END
 
@@ -2478,6 +2482,120 @@ sub resolve_raw_route {
 
     $srv->set('logdir', undef);
     $p->set('diagnosticMode', 0);
+}
+
+# ============================================================
+# 79-82 D57-B (D-57): the user's Pi report held 4661 terminal color sequences on 4616 lines of the daemonlogs section
+# (ESC[0m at every line end, ESC[1;31m before the text of an E line, ESC[1;33m before a W line), 'unreadable' in the text
+# the tester attaches. The copy of a daemon log in the bundle carries no ESC byte any more; every line keeps its E, W or
+# I letter and its text; the live log files are only read, so the planted files stay byte-identical. The fixture is three
+# real lines of that report (an I line, an E line, a W line), t/fixtures/soloist/d57-ansi-soloist.log.
+# ============================================================
+{
+    require Plugins::SpotOn::Settings;
+    require Encode;
+    my $p   = Slim::Utils::Prefs::preferences('plugin.spoton');
+    my $srv = Slim::Utils::Prefs::preferences('server');
+    no warnings 'redefine';
+    local $main::VERSION = '9.1.1-test';
+    local *Plugins::SpotOn::Plugin::_pluginDataFor = sub { '9.9.9-test' };
+    my $spotonDir = File::Spec->catdir($srv->get('cachedir'), 'spoton');
+    make_path($spotonDir);
+    for my $old (glob("$spotonDir/*-connect.log"), glob("$spotonDir/*-unified.log"), glob("$spotonDir/*-soloist.log*")) {
+        unlink $old;
+    }
+    my $fixturePath = "$project_dir/t/fixtures/soloist/d57-ansi-soloist.log";
+    open(my $ffh, '<:raw', $fixturePath) or die "$fixturePath: $!";
+    my $fixture = do { local $/; <$ffh> };
+    close $ffh;
+    my $connectLine = "connect line with a color code at its end\e[0m\n";
+    my $write = sub { my ($f, $text) = @_; open(my $fh, '>:raw', $f) or die "$f: $!"; print $fh $text; close($fh); };
+    $write->("$spotonDir/0200005a1157-soloist.log", $fixture);
+    $write->("$spotonDir/0200005a1158-connect.log", $connectLine);
+    my $logdir = tempdir(CLEANUP => 1);
+    $write->("$logdir/server.log", "[x] SpotOn: plain line\n");
+    $srv->set('logdir', $logdir);
+    Slim::Player::Client::set_mock_clients();
+    $p->set('diagnosticMode', 1);
+
+    @Slim::Web::HTTP::http_responses = ();
+    my $res = FakeSettingsResponse->new();
+    Plugins::SpotOn::Settings::_diagnosticBundleHandler(undef, $res);
+    my $ref  = $Slim::Web::HTTP::http_responses[0][2];
+    my $body = $ref ? $$ref : '';
+
+    is($res->code, 200, '79-82 D57-B: the bundle answers 200');
+    unlike($body, qr/\x1b/, '79-82 D57-B (D-57): the bundle body holds no ESC byte (the E, W and I lines and the connect line were planted with codes)');
+    like($body, qr/^\d\d:\d\d:\d\d\.\d+ E \[f:430 +\] mDNS: unable to parse question 0 string, aborting$/m,
+         '79-82 D57-B: the E line keeps its letter and its text on one line');
+    like($body, qr/^\d\d:\d\d:\d\d\.\d+ W \[f:1200 +\] Session Track Player closed without close source$/m,
+         '79-82 D57-B: the W line keeps its letter and its text on one line');
+    like($body, qr/^\d\d:\d\d:\d\d\.\d+ I \[f:219 +\] soloist 1\.3\.10\.13 build 1792778483 \(20261023\) \(g19412df6ea\) \(linux\/aarch64\)$/m,
+         '79-82 D57-B: the I line keeps its letter and its text (the line end is where the code was)');
+    like($body, qr/^connect line with a color code at its end$/m, '79-82 D57-B: a connect log line is cleaned the same way');
+
+    open(my $cmpfh, '<:raw', "$spotonDir/0200005a1157-soloist.log") or die $!;
+    my $after = do { local $/; <$cmpfh> };
+    close $cmpfh;
+    is($after, $fixture, '79-82 D57-B (D-57): the planted live log is read, never rewritten (byte-identical afterwards)');
+    open($cmpfh, '<:raw', "$spotonDir/0200005a1158-connect.log") or die $!;
+    $after = do { local $/; <$cmpfh> };
+    close $cmpfh;
+    is($after, $connectLine, '79-82 D57-B: the planted connect log is byte-identical afterwards');
+
+    $srv->set('logdir', undef);
+    $p->set('diagnosticMode', 0);
+    unlink "$spotonDir/0200005a1157-soloist.log", "$spotonDir/0200005a1158-connect.log";
+}
+
+# ============================================================
+# 79-82 D56-R / D56-H / D56-S (D-56, D-45): the explanation of the diagnostic report moved from the settings page to
+# its own page. The page is a page function (the status.html mechanism, Status.pm): registered in Settings->new, it
+# fills the template with the lists of the ONE list module and nothing else (T-79-343: no pref, cache, account or log
+# value reaches the page). The settings handler no longer sets the three list params.
+# ============================================================
+{
+    require Plugins::SpotOn::Settings;
+    require Plugins::SpotOn::Diagnostics;
+    require Slim::Web::Pages;
+    require Slim::Web::HTTP;
+
+    # D56-R: the registration
+    Slim::Web::Pages::reset_calls();
+    Plugins::SpotOn::Settings->new();
+    my @page = grep { $_->[0] eq 'plugins/SpotOn/diagnostics.html' } @Slim::Web::Pages::registered_page;
+    is(scalar(@page), 1, '79-82 D56-R: plugins/SpotOn/diagnostics.html is registered as a page function exactly once');
+    is($page[0] && $page[0][1], \&Plugins::SpotOn::Settings::_diagnosticsPageHandler,
+       '79-82 D56-R: its handler is Settings::_diagnosticsPageHandler');
+    ok(!defined resolve_raw_route(\@Slim::Web::Pages::registered_raw, 'plugins/SpotOn/diagnostics.html'),
+       '79-82 D56-R: no raw route (unanchored substring match) swallows the page path');
+    ok(defined resolve_raw_route(\@Slim::Web::Pages::registered_raw, 'plugins/SpotOn/settings/diagnosticBundle'),
+       '79-82 D56-R: the bundle route is still served by its own raw function');
+
+    # D56-H: the handler
+    my $handler = defined(&Plugins::SpotOn::Settings::_diagnosticsPageHandler) ? \&Plugins::SpotOn::Settings::_diagnosticsPageHandler : undef;
+    ok($handler, '79-82 D56-H: Settings::_diagnosticsPageHandler exists');
+    my $params = {};
+    @Slim::Web::HTTP::filled = ();
+    my $ret = $handler ? eval { $handler->(undef, $params) } : undef;
+    is($ret, 'FILLED:plugins/SpotOn/diagnostics.html', '79-82 D56-H: the handler returns filltemplatefile for the page template');
+    is(scalar(@Slim::Web::HTTP::filled), 1, '79-82 D56-H: filltemplatefile is called once');
+    is($Slim::Web::HTTP::filled[0] && $Slim::Web::HTTP::filled[0][1], $params, '79-82 D56-H: ... with the params hash it was given');
+    is_deeply($params->{diagSections},
+              [ map { +{ id => $_->{id}, title => $_->{title}, desc => $_->{desc} } } Plugins::SpotOn::Diagnostics::sections() ],
+              '79-82 D56-H (D-45): diagSections equals sections() in order (id, title, desc)');
+    is_deeply($params->{diagRedactions},
+              [ map { +{ id => $_->{id}, key => $_->{key} } } Plugins::SpotOn::Diagnostics::redactions() ],
+              '79-82 D56-H (D-45): diagRedactions equals redactions() in order (id, key)');
+    is($params->{diagNotRedactedKey}, Plugins::SpotOn::Diagnostics::notRedactedKey(), '79-82 D56-H: diagNotRedactedKey is the list module key');
+    is_deeply([ sort keys %$params ], [ sort qw(diagSections diagRedactions diagNotRedactedKey) ],
+              '79-82 D56-H (T-79-343): no other key is added to the params (the page shows list keys only)');
+
+    # D56-S: the settings handler no longer feeds the lists
+    my $sparams = {};
+    Plugins::SpotOn::Settings->handler(undef, $sparams, sub { }, undef, undef);
+    ok(!exists $sparams->{diagSections} && !exists $sparams->{diagRedactions} && !exists $sparams->{diagNotRedactedKey},
+       '79-82 D56-S: the settings handler no longer sets diagSections, diagRedactions or diagNotRedactedKey');
 }
 
 done_testing();

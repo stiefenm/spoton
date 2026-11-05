@@ -510,6 +510,12 @@ my @SRV_CATS = (
       pat  => qr/Control: command_result -- command=/,                                 count => 1 },
     { name => 'server.log: D-34 context end without successor (Control.pm _maybeContextEnd)',
       pat  => qr/Control: context end without successor on /,                          count => 1 },
+    # 79-78 (D-50): the reactive replay of a mid-title stall (Control.pm _hangReplayFire, WARN, at most two per
+    # title). Without a category of its own the line would only be counted (rule 4), never printed, and
+    # runners/hang-replay-gate.sh could not be backed by an extract. Sits before the four 84.3 entries (the 84-26
+    # entry stays last, see their comment).
+    { name => 'server.log: D-50 hang replay (Control: hang replay <uri> pos=<ms>; Control.pm _hangReplayFire)',
+      pat  => qr/Control: hang replay spotify:/,                                       count => 1 },
     # 84.3-03 (D-09): the context-end settle (Connect.pm _settleNow, 84.3-01) leaves FOUR kinds of
     # server.log line that no category printed -- they were only counted (rule 4), so a guarded hit
     # (or its absence) could be proven only by hand-grepping. The four entries below sit BEFORE the

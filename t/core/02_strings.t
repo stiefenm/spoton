@@ -366,7 +366,8 @@ SKIP: {
     }
 
     # 79-72 (D-45, D-45b, item 6): the diagnostic page text comes from the ONE list module. Walk its section list,
-    # its redaction list and its six fixed keys, plus the two reworded switch/download descriptions: every key
+    # its redaction list and its eight fixed keys (79-82 D-56: the page link text and the page title joined the six), plus the two
+    # reworded switch/download descriptions: every key
     # exists in exactly the eleven shipped languages, non-empty, without an em or en dash. Diagnostics.pm needs
     # no Slim stub (it requires no Slim module), so it loads here directly.
     {
@@ -378,8 +379,8 @@ SKIP: {
             Plugins::SpotOn::Diagnostics::fixedKeys(),
             qw(PLUGIN_SPOTON_DIAG_MODE_DESC PLUGIN_SPOTON_DIAG_DOWNLOAD_DESC),
         );
-        is(scalar(@diag_keys), 32, '79-72 D-45: 8 titles + 8 descriptions + 8 redactions + 6 fixed + 2 reworded = 32 keys to walk');
-        is(scalar(keys %{ { map { $_ => 1 } @diag_keys } }), 32, '79-72 D-45: the 32 keys are distinct');
+        is(scalar(@diag_keys), 34, '79-72 D-45 / 79-82 D-56: 8 titles + 8 descriptions + 8 redactions + 8 fixed + 2 reworded = 34 keys to walk');
+        is(scalar(keys %{ { map { $_ => 1 } @diag_keys } }), 34, '79-72 D-45 / 79-82 D-56: the 34 keys are distinct');
         for my $key (@diag_keys) {
             for my $lang (qw(CS DA DE EN ES FR IT NL NO PL SV)) {
                 ok(defined $langs_of{$key}{$lang} && length $langs_of{$key}{$lang}, "79-72 D-45: $key has a $lang translation");
@@ -397,17 +398,58 @@ SKIP: {
             like($langs_of{PLUGIN_SPOTON_DIAG_RED_LANIPS}{$lang}, qr/IP6-1/, "79-72 D-44: the redaction list names the IP6-N placeholder ($lang)");
         }
 
-        my $html_path = "$project_dir/Plugins/SpotOn/HTML/EN/plugins/SpotOn/settings/basic.html";
-        open(my $hfh, '<:encoding(UTF-8)', $html_path) or die "basic.html: $!";
-        my $html = do { local $/; <$hfh> };
-        close($hfh);
-        like($html, qr/FOREACH \w+ IN diagSections\b/, '79-72 D-45: basic.html renders the section list from diagSections');
-        like($html, qr/FOREACH \w+ IN diagRedactions\b/, '79-72 D-45: basic.html renders the redaction list from diagRedactions');
-        for my $fixed (Plugins::SpotOn::Diagnostics::fixedKeys()) {
-            next if $fixed eq 'PLUGIN_SPOTON_DIAG_NOT_REDACTED';    # rendered through diagNotRedactedKey
-            like($html, qr/\Q$fixed\E/, "79-72 D-45b: basic.html shows $fixed");
+        # 79-82 (D-56): the explanation lives on its own page. The switch text names the switch (it no longer says "above"),
+        # the download description points at the link next to the button (it no longer says "list above"), in every language.
+        # ASCII fragments only: this file has no `use utf8`, a non-ASCII literal would never match the decoded value
+        my %old_download_tail = (
+            CS => 'viz seznam', DA => 'se listen ovenfor', DE => 'siehe die Liste oben', EN => 'see the list above',
+            ES => 'vea la lista de arriba', FR => 'voir la liste ci-dessus', IT => "vedi l'elenco qui sopra",
+            NL => 'zie de lijst hierboven', NO => 'se listen ovenfor', PL => 'zobacz list', SV => 'se listan ovan',
+        );
+        for my $lang (qw(CS DA DE EN ES FR IT NL NO PL SV)) {
+            like($langs_of{PLUGIN_SPOTON_DIAG_SWITCH_TEXT}{$lang}, qr/\Q$langs_of{PLUGIN_SPOTON_DIAG_MODE}{$lang}\E/,
+                 "79-82 D-56: the switch text names the switch (its heading text) instead of pointing above ($lang)");
+            unlike($langs_of{PLUGIN_SPOTON_DIAG_DOWNLOAD_DESC}{$lang}, qr/\Q$old_download_tail{$lang}\E/,
+                   "79-82 D-56: the download description no longer points at a list above ($lang)");
         }
-        like($html, qr/diagNotRedactedKey/, '79-72 D-45b: basic.html shows the not-redacted text from the list module');
+        unlike($langs_of{PLUGIN_SPOTON_DIAG_SWITCH_TEXT}{EN}, qr/^The switch above/, '79-82 D-56: the EN switch text no longer starts with "The switch above"');
+        unlike($langs_of{PLUGIN_SPOTON_DIAG_DOWNLOAD_DESC}{EN}, qr/list above/, '79-82 D-56: the EN download description no longer says "list above"');
+        like($langs_of{PLUGIN_SPOTON_DIAG_DOWNLOAD_DESC}{EN}, qr/link next to this button/, '79-82 D-56: the EN download description points at the link next to the button');
+        is($langs_of{PLUGIN_SPOTON_DIAG_PAGE_LINK}{EN}, "What's in the report?", '79-82 D-56: the EN link text');
+        is($langs_of{PLUGIN_SPOTON_DIAG_PAGE_LINK}{DE}, 'Was steht im Bericht?', '79-82 D-56: the DE link text');
+
+        my $slurp = sub {
+            my ($path) = @_;
+            return '' unless open(my $fh, '<:encoding(UTF-8)', $path);
+            local $/;
+            my $t = <$fh>;
+            close($fh);
+            return $t // '';
+        };
+        my $page_path = "$project_dir/Plugins/SpotOn/HTML/EN/plugins/SpotOn/diagnostics.html";
+        my $html_path = "$project_dir/Plugins/SpotOn/HTML/EN/plugins/SpotOn/settings/basic.html";
+        my $page = $slurp->($page_path);
+        my $html = $slurp->($html_path);
+        ok(length $page, '79-82 D-56: diagnostics.html exists');
+        like($page, qr/FOREACH \w+ IN diagSections\b/, '79-82 D-45/D-56: diagnostics.html renders the section list from diagSections');
+        like($page, qr/FOREACH \w+ IN diagRedactions\b/, '79-82 D-45/D-56: diagnostics.html renders the redaction list from diagRedactions');
+        like($page, qr/data-diag-section=/, '79-82 D-56: every section entry carries data-diag-section');
+        like($page, qr/data-diag-redaction=/, '79-82 D-56: every redaction entry carries data-diag-redaction');
+        like($page, qr/diagNotRedactedKey/, '79-82 D-45b/D-56: diagnostics.html shows the not-redacted text from the list module');
+        for my $onpage (qw(PLUGIN_SPOTON_DIAG_SWITCH_TEXT PLUGIN_SPOTON_DIAG_SECTIONS_HEAD PLUGIN_SPOTON_DIAG_REDACTIONS_HEAD
+                           PLUGIN_SPOTON_DIAG_LOCAL_ONLY PLUGIN_SPOTON_DIAG_PAGE_TITLE PLUGIN_SPOTON_DIAG_MODE)) {
+            like($page, qr/\Q$onpage\E/, "79-82 D-56: diagnostics.html shows $onpage");
+        }
+        unlike($page, qr/<script/i, '79-82 D-56: diagnostics.html carries no script element (everything is rendered on the server)');
+
+        for my $moved (qw(diagSections diagRedactions diagNotRedactedKey PLUGIN_SPOTON_DIAG_SWITCH_TEXT
+                          PLUGIN_SPOTON_DIAG_SECTIONS_HEAD PLUGIN_SPOTON_DIAG_REDACTIONS_HEAD)) {
+            unlike($html, qr/\Q$moved\E/, "79-82 D-56: basic.html no longer renders $moved (moved to the page)");
+        }
+        for my $kept (qw(PLUGIN_SPOTON_DIAG_LOCAL_ONLY PLUGIN_SPOTON_DIAG_OPEN_FIRST PLUGIN_SPOTON_DIAG_PAGE_LINK)) {
+            like($html, qr/\Q$kept\E/, "79-82 D-56: basic.html keeps $kept next to the download button");
+        }
+        like($html, qr{href="/plugins/SpotOn/diagnostics\.html" target="_blank"}, '79-82 D-56: basic.html links the page in a new tab (the form of the SpotOn Status link)');
     }
 
     # 85-11 (D-24, D-02, D-23): the two-step settings page and the __DISCOVER__ notices exist

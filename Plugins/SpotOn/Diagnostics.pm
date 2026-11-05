@@ -6,8 +6,8 @@ package Plugins::SpotOn::Diagnostics;
 # redactions() -- the ordered redaction rules (id, string key, applier)
 # redact($text, \%ctx) -- applies every rule in list order over the whole report text
 #
-# The bundle handler (Settings.pm), the settings page template and t/core/02_strings.t all read these two
-# lists, so the page and the report cannot drift apart. This module requires NO Slim module (at file scope or
+# The bundle handler (Settings.pm), the explanation page (diagnostics.html since 79-82 D-56) and t/core/02_strings.t
+# all read these two lists, so the page and the report cannot drift apart. This module requires NO Slim module (at file scope or
 # inside the list subs): `perl -I. -MPlugins::SpotOn::Diagnostics` runs over archived log files, and
 # 02_strings.t loads it without LMS stubs.
 #
@@ -54,7 +54,8 @@ sub redactions {
     );
 }
 
-# The six fixed keys of the transparency block on the settings page.
+# The eight fixed keys of the explanation page and the download block (79-82, D-56: the transparency block moved from
+# the settings page to /plugins/SpotOn/diagnostics.html; the page link text and the page title joined the six of 79-72).
 sub fixedKeys {
     return qw(
         PLUGIN_SPOTON_DIAG_SWITCH_TEXT
@@ -63,12 +64,28 @@ sub fixedKeys {
         PLUGIN_SPOTON_DIAG_NOT_REDACTED
         PLUGIN_SPOTON_DIAG_LOCAL_ONLY
         PLUGIN_SPOTON_DIAG_OPEN_FIRST
+        PLUGIN_SPOTON_DIAG_PAGE_LINK
+        PLUGIN_SPOTON_DIAG_PAGE_TITLE
     );
 }
 
 # What the report does NOT redact (shown on the page; player names and models, Spotify item ids and titles,
 # versions and error texts stay readable).
 sub notRedactedKey { 'PLUGIN_SPOTON_DIAG_NOT_REDACTED' }
+
+# 79-82 (D-57): the Soloist daemon colours its log lines with terminal codes (ESC[0m at every line end, ESC[1;31m before
+# the text of an E line, ESC[1;33m before a W line). The user's Pi report held 4661 such sequences on 4616 lines of the
+# daemonlogs section, which read as "[0m" garbage in the text a tester attaches. stripAnsi removes every ECMA-48 CSI
+# sequence (ESC, "[", parameter bytes 0x30-0x3F, intermediate bytes 0x20-0x2F, one final byte 0x40-0x7E) and nothing
+# else: a lone ESC that is no CSI start stays. The line's own E, W or I letter keeps the severity. It is a pure text
+# function with no Slim module, so t/core/76 tests it without stubs and the runner's strip-check runs the shipped
+# function over a real report. The log files themselves are never rewritten (Settings.pm only reads them).
+sub stripAnsi {
+    my ($text) = @_;
+    return $text unless defined $text && length $text;
+    $text =~ s/\e\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]//g;
+    return $text;
+}
 
 sub redact {
     my ($text, $ctx) = @_;

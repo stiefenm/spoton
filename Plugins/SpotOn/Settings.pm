@@ -62,6 +62,16 @@ sub new {
         \&_diagnosticBundleHandler
     );
 
+    # 79-82 (D-56, D-45): the explanation of the diagnostic report lives on its own page, opened by the link next to
+    # the download button. A page function, exactly how status.html is served (Status.pm::new): LMS's HTTP server
+    # serves /plugins/SpotOn/diagnostics.html and processes it with the same template engine, so the `| string` filter
+    # renders every key in the server language. Not a raw function (that would build HTML and resolve strings in
+    # Perl). The path shares no substring with a raw route above (Tie::RegexpHash matches unanchored).
+    Slim::Web::Pages->addPageFunction(
+        'plugins/SpotOn/diagnostics.html',
+        \&_diagnosticsPageHandler
+    );
+
     # Register clear logs endpoint (GT-07)
     Slim::Web::Pages->addRawFunction(
         'plugins/SpotOn/settings/clearLogs',
@@ -546,11 +556,8 @@ sub handler {
     # Diagnostic mode status for template (#3)
     $paramRef->{diagnosticEnabled} = $prefs->get('diagnosticMode') ? 1 : 0;
 
-    # 79-72 (D-45, D-45b): the transparency block next to the switch reads the SAME two lists the bundle handler
-    # iterates (Plugins::SpotOn::Diagnostics), so the page and the report cannot drift apart.
-    $paramRef->{diagSections}       = [ map { +{ title => $_->{title}, desc => $_->{desc} } } Plugins::SpotOn::Diagnostics::sections() ];
-    $paramRef->{diagRedactions}     = [ map { +{ key => $_->{key} } } Plugins::SpotOn::Diagnostics::redactions() ];
-    $paramRef->{diagNotRedactedKey} = Plugins::SpotOn::Diagnostics::notRedactedKey();
+    # 79-82 (D-56): the transparency lists no longer render on this page; _diagListParams feeds them to
+    # diagnostics.html (the link next to the download button opens it).
 
     # Global streaming mode default status for template (COMPAT-01, GH #96 scope extension)
     $paramRef->{globalStreamingMode} = $prefs->get('streamingMode') || 'direct';
@@ -700,6 +707,26 @@ sub _formatHealthNotice {
 # 79-72 (D-43): works WITHOUT diagnosticMode (the 403 gate bought nothing, T-65-07: the handler is read-only,
 # un-CSRF-guarded by design, behind LMS's own password protection, and its payload is symbolic after
 # redaction). diagnosticMode only changes the log verbosity of the daemons.
+# 79-82 (D-56, D-45): the explanation page. _diagListParams is the ONLY producer of diagSections, diagRedactions and
+# diagNotRedactedKey: the three lists come from the same list module (Plugins::SpotOn::Diagnostics) the bundle
+# handler iterates, so the page and the report cannot drift apart. Each entry carries its id, so the page can mark
+# every entry (data-diag-section / data-diag-redaction) and a gate can check every list id in any language.
+sub _diagListParams {
+    my ($paramRef) = @_;
+    $paramRef->{diagSections}       = [ map { +{ id => $_->{id}, title => $_->{title}, desc => $_->{desc} } } Plugins::SpotOn::Diagnostics::sections() ];
+    $paramRef->{diagRedactions}     = [ map { +{ id => $_->{id}, key => $_->{key} } } Plugins::SpotOn::Diagnostics::redactions() ];
+    $paramRef->{diagNotRedactedKey} = Plugins::SpotOn::Diagnostics::notRedactedKey();
+    return $paramRef;
+}
+
+# /plugins/SpotOn/diagnostics.html (page function, like Status.pm::_statusPageHandler). The page reads no pref, cache,
+# account or log value: it shows the string keys of the list module and nothing about the installation (T-79-343).
+sub _diagnosticsPageHandler {
+    my ($client, $params) = @_;
+    _diagListParams($params);
+    return Slim::Web::HTTP::filltemplatefile('plugins/SpotOn/diagnostics.html', $params);
+}
+
 # 79-72 (D-45): Plugins::SpotOn::Diagnostics::sections() is the ONE ordered section list; the handler prints
 # `=== BEGIN <id> ===` / `=== END <id> ===` around every collector, and ONE
 # Plugins::SpotOn::Diagnostics::redact() pass over the whole text replaces secrets, user ids, the display
@@ -1102,15 +1129,19 @@ sub _collectDaemonLogs {
     );
     return ('--- No daemon log files found ---') unless @logFiles;
 
+    # 79-82 (D-57): every copied daemon-log text (the current file and the .1 generation) passes through
+    # Diagnostics::stripAnsi, so the report carries no terminal color codes (the user's Pi report: 4661 sequences on
+    # 4616 lines). The log files are only READ here: their writers (Unified/, Soloist/, Bin/) are not touched and the
+    # live *-soloist.log keeps its codes.
     my @lines;
     for my $logFile (@logFiles) {
         push @lines, '--- Log: ' . basename($logFile) . ' ---';
-        push @lines, _readLogTail($logFile, DAEMON_LOG_MAX_BYTES);
+        push @lines, Plugins::SpotOn::Diagnostics::stripAnsi(_readLogTail($logFile, DAEMON_LOG_MAX_BYTES));
 
         my $gen1 = "$logFile.1";
         if ($logFile =~ /-soloist\.log$/ && (-s $logFile || 0) < DAEMON_LOG_SHORT_BYTES && -f $gen1) {
             push @lines, '--- Log: ' . basename($gen1) . ' ---';
-            push @lines, _readLogTail($gen1, DAEMON_LOG_GEN1_TAIL_BYTES);
+            push @lines, Plugins::SpotOn::Diagnostics::stripAnsi(_readLogTail($gen1, DAEMON_LOG_GEN1_TAIL_BYTES));
         }
     }
     return @lines;

@@ -115,6 +115,14 @@ sub init { }
 sub get  { \$_store{\$_[0]->{_ns}}{\$_[1]} }
 sub set  { \$_store{\$_[0]->{_ns}}{\$_[1]} = \$_[2] }
 sub setChange { }
+# D-54 (forum #347): Status.pm reads the per-player enableSpotifyConnect through
+# \$prefs->client(\$client); the namespace is the base one plus the client's mac, so
+# a per-player value and the global one are separate keys (as in LMS).
+sub client {
+    my (\$self, \$c) = \@_;
+    my \$mac = ref \$c ? (\$c->{mac} // '') : (\$c // '');
+    return bless { _ns => \$self->{_ns} . '|' . \$mac }, 'Slim::Utils::Prefs';
+}
 sub AUTOLOAD  { }
 1;
 END
@@ -427,6 +435,11 @@ sub helperInstances { return @HELPERS }
 # stay undef/null for a helper the tick has never touched).
 sub soloistHealthFor  { return undef }
 sub crashStateSnapshot { return undef }
+# D-54 (79-81, GH #188): Status.pm reads the backend name for the Audio Keys row.
+# Controllable per test through $BACKEND; undef by default, as in every stub that
+# has no backendName at all (then Status.pm keeps the raw cache state).
+our $BACKEND;
+sub backendName { return $BACKEND }
 # 84-08 (SEAM-6.2): Status.pm reads paired/wsConnected/mode from the backend
 # role's state(). This factory hands out the REAL role class per helper --
 # Backend::Soloist for a SoloistDaemon-class helper, Backend::Librespot
@@ -603,7 +616,7 @@ require Plugins::SpotOn::Plugin;
 # Tests
 # ============================================================
 
-plan tests => 33;   # 79-60: +11 Auth Health Connect cells (Soloist daemons per account); 84-09: soloist half of t/13_status_page.t (T-7/WR-05 over the REAL Backend::Soloist state()); the rest is t/core/13_status_page_core.t
+plan tests => 44;   # 79-81 D-54: +5 Connect card cells (D54-A1..A4), +6 Audio Keys cells (D54-B1..B5); 79-60: +11 Auth Health Connect cells (Soloist daemons per account); 84-09: soloist half of t/13_status_page.t (T-7/WR-05 over the REAL Backend::Soloist state()); the rest is t/core/13_status_page_core.t
 
 # Test 1: Status.pm compiles
 require_ok('Plugins::SpotOn::Status');
@@ -847,4 +860,109 @@ require Plugins::SpotOn::Unified::DaemonManager;   # 84-09: load the stub BEFORE
     is($c3->{alive}, 0, '79-60: no daemon alive => connect.alive 0 as before');
     is($c3->{players}, 0, '79-60: no daemon alive => players 0');
     is($c3->{connectActive}, '', '79-60: no daemon alive => no Connect player');
+}
+
+# ============================================================
+# 79-81 D-54 (a), forum #347: under Soloist every player card showed "Connect: No".
+# SoloistDaemon declares _connectEnabled (SoloistDaemon.pm:99) and never sets it, so
+# `$helper->_connectEnabled ? 1 : 0` was always 0. A helper with no flag of its own
+# now shows the player's effective pref, per player first, else the global one (the
+# expression of DaemonManager::_isConnectEnabled); a helper that carries its own flag
+# (the librespot daemon) keeps showing it. Fake helper shaped like the real SoloistDaemon:
+# no connectEnabled argument at all, so _connectEnabled is undef.
+# ============================================================
+{
+    my $prefs = Slim::Utils::Prefs::preferences('plugin.spoton');
+    my $SD = 'Plugins::SpotOn::Unified::SoloistDaemon';
+    my $LD = 'Plugins::SpotOn::Unified::Daemon';
+    my $card = sub {   # -> connectEnabled of the single fake helper
+        my ($helper) = @_;
+        local @Plugins::SpotOn::Unified::DaemonManager::HELPERS = ($helper);
+        return Plugins::SpotOn::Status::_collectDaemons()->[0]{connectEnabled};
+    };
+    my $setpref = sub {   # <mac> <player value|undef> <global value|undef>
+        my ($mac, $pv, $gv) = @_;
+        $prefs->client(Test::FakeStatusClient->new($mac))->set(enableSpotifyConnect => $pv);
+        $prefs->set(enableSpotifyConnect => $gv);
+    };
+
+    # D54-A1: per-player '1' -> 1 (RED on HEAD: the card read 0)
+    my $mA1 = 'aa:bb:cc:dd:ee:d1';
+    $setpref->($mA1, '1', undef);
+    is($card->($SD->new(mac => $mA1, alive => 1, pid => 71, uptime => 5)), 1,
+        "D54-A1 (D-54, forum #347): Soloist helper without a flag of its own, per-player enableSpotifyConnect '1' -> card 1");
+
+    # D54-A2: per-player '0' beats the global '1'
+    my $mA2 = 'aa:bb:cc:dd:ee:d2';
+    $setpref->($mA2, '0', '1');
+    is($card->($SD->new(mac => $mA2, alive => 1, pid => 72, uptime => 5)), 0,
+        "D54-A2 (D-54): per-player '0', global '1' -> card 0 (the per-player value wins)");
+
+    # D54-A3: per-player unset -> the global one
+    my $mA3 = 'aa:bb:cc:dd:ee:d3';
+    $setpref->($mA3, undef, '1');
+    is($card->($SD->new(mac => $mA3, alive => 1, pid => 73, uptime => 5)), 1,
+        "D54-A3 (D-54): per-player unset, global '1' -> card 1");
+    $setpref->($mA3, undef, '0');
+    is($card->($SD->new(mac => $mA3, alive => 1, pid => 73, uptime => 5)), 0,
+        "D54-A3 (D-54): per-player unset, global '0' -> card 0");
+
+    # D54-A4: a helper with its own flag keeps it (librespot daemon started without --enable-connect)
+    my $mA4 = 'aa:bb:cc:dd:ee:d4';
+    $setpref->($mA4, '1', '1');
+    is($card->($LD->new(mac => $mA4, alive => 1, pid => 74, uptime => 5, connectEnabled => 0)), 0,
+        "D54-A4 (D-54): librespot helper with connectEnabled 0 while the per-player pref reads '1' -> card 0 (its own flag)");
+
+    $setpref->($_, undef, undef) for ($mA1, $mA2, $mA3, $mA4);
+}
+
+# ============================================================
+# 79-81 D-54 (b), GH #188: "Audio Keys: Denied" stayed under Soloist. The cache key
+# spoton_audiokey_state_<acct> holds a permanent 'denied' from earlier librespot use and
+# only the librespot path clears it. Under a non-librespot backend (DaemonManager's own
+# condition, backendName() ne 'librespot', DaemonManager.pm:2631) the row reads
+# not_used; under librespot the raw cache state shows as before. The plant is unit level:
+# no LMS command writes the plugin cache. Status.pm never deletes the key.
+# ============================================================
+{
+    my $KEY   = 'spoton_audiokey_state_fixtureAcct1';
+    my $cache = Slim::Utils::Cache->new;
+    my $state = sub { return ((eval { Plugins::SpotOn::Status::_collectAuthHealth('fixtureAcct1') } || {})->{audioKey} || {})->{state} };
+
+    # D54-B1 (RED on HEAD: the raw 'denied' showed): soloist + planted 'denied' -> not_used
+    $cache->set($KEY, 'denied');
+    {
+        local $Plugins::SpotOn::Unified::DaemonManager::BACKEND = 'soloist';
+        is($state->(), 'not_used', "D54-B1 (D-54, GH #188): backend soloist, a planted 'denied' -> not_used");
+    }
+
+    # D54-B2: librespot + the same planted 'denied' -> denied (the raw cache, unchanged)
+    {
+        local $Plugins::SpotOn::Unified::DaemonManager::BACKEND = 'librespot';
+        is($state->(), 'denied', "D54-B2 (D-54): backend librespot, the same planted 'denied' -> denied");
+    }
+
+    # D54-B4: Status.pm never deletes the key, so a switch back to librespot shows the stored state
+    {
+        local $Plugins::SpotOn::Unified::DaemonManager::BACKEND = 'soloist';
+        $state->();
+        is($cache->get($KEY), 'denied', "D54-B4 (D-54): the cache still holds 'denied' after the soloist read");
+    }
+
+    # D54-B5: a DaemonManager that answers no backend (undef, as every stub without backendName) -> the raw cache
+    {
+        local $Plugins::SpotOn::Unified::DaemonManager::BACKEND = undef;
+        is($state->(), 'denied', "D54-B5 (D-54): no backend name (undef) -> the raw cache state as before");
+    }
+
+    # D54-B3: key unset
+    $cache->remove($KEY);
+    {
+        local $Plugins::SpotOn::Unified::DaemonManager::BACKEND = 'soloist';
+        is($state->(), 'not_used', "D54-B3 (D-54): backend soloist, key unset -> not_used");
+    }
+    {
+        local $Plugins::SpotOn::Unified::DaemonManager::BACKEND = 'librespot';
+        is($state->(), 'ok', "D54-B3 (D-54): backend librespot, key unset -> ok (today's default)");
+    }
 }

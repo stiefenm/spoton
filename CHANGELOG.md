@@ -5,6 +5,23 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.0.0-beta.6] - 2026-11-05
+
+**Installing this beta.** Same beta repository URL as before (`https://stiefenm.github.io/spoton/beta/repo.xml`); the Plugins page offers SpotOn 4.0.0beta6 as an update over 4.0.0beta5. Restart LMS after the update.
+
+### Fixed
+
+- Soloist: SpotOn no longer piles up its own next-track entries in your Spotify queue when you skip or jump around in an LMS playlist. Entries that earlier versions already left there stay until you remove them in the Spotify app (Queue); SpotOn cannot delete queue entries.
+- Status page (Soloist): each player card now shows that player's own Spotify Connect setting; it read "Connect: No" for every player.
+- Status page (Soloist): the Audio Keys row reads "Not used (Soloist)" instead of a "Denied" left over from earlier librespot use. ([#188](https://github.com/stiefenm/spoton/issues/188))
+- Diagnostic report: Soloist log lines in the report no longer carry terminal color codes, which showed up as "[0m" in the text; each line keeps its E, W or I severity letter.
+
+### Changed
+
+- Diagnostic report: what the report contains and what it replaces is now explained on its own page; the link "What's in the report?" next to the download button in SpotOn Settings opens it in a new tab.
+
+Everything else is as in 4.0.0-beta.5 below.
+
 ## [4.0.0-beta.5] - 2026-11-04
 
 **Installing this beta.** Same beta repository URL as before (`https://stiefenm.github.io/spoton/beta/repo.xml`); the Plugins page offers SpotOn 4.0.0beta5 as an update over 4.0.0beta4. Restart LMS after the update.

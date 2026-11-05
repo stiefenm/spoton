@@ -311,8 +311,10 @@ END
 write_stub($stub_dir, 'Slim::Web::Pages', <<'END');
 package Slim::Web::Pages;
 our @registered_raw = ();
-sub addRawFunction { push @registered_raw, [$_[1], $_[2]] }
-sub reset_calls    { @registered_raw = () }
+our @registered_page = ();
+sub addRawFunction  { push @registered_raw, [$_[1], $_[2]] }
+sub addPageFunction { push @registered_page, [$_[1], $_[2]] }    # 79-82 D-56: Settings->new registers the diagnostics page
+sub reset_calls     { @registered_raw = (); @registered_page = () }
 1;
 END
 

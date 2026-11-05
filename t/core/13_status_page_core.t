@@ -661,7 +661,7 @@ require Plugins::SpotOn::Plugin;
 # Tests
 # ============================================================
 
-plan tests => 76;   # 79-63 R1: +1 (Status.pm names no backend-side module); 79-60: +7 (Connect row render, English labels, librespot match); 74b WR-01: +3 hasError level cells; 84-09: 57 before the split; 21 Soloist cells moved to t/soloist/13_status_page_soloist.t
+plan tests => 77;   # 79-81 D-54: +1 (Audio Keys not_used branch); 79-63 R1: +1 (Status.pm names no backend-side module); 79-60: +7 (Connect row render, English labels, librespot match); 74b WR-01: +3 hasError level cells; 84-09: 57 before the split; 21 Soloist cells moved to t/soloist/13_status_page_soloist.t
 
 # Test 1: Status.pm compiles
 require_ok('Plugins::SpotOn::Status');
@@ -1120,4 +1120,19 @@ require Plugins::SpotOn::Unified::DaemonManager;    # load the stub BEFORE the f
     my @k2 = map { $_->{key} // '' } @{ $d2->{errors} || [] };
     ok((grep { $_ eq 'glibc' } @k2), "74b-03 D-09: the error entry is still listed WARN_TTL_S + 1 later (never expires)");
     ok(!(grep { $_ eq '74b-03-warn-probe' } @k2), "74b-03 D-09: the warn entry recorded at the same time is gone");
+}
+
+# 79-81 D-54 (b), GH #188: the Audio Keys row of status.html reads state not_used (Soloist
+# does not measure the key state) as 'Not used (Soloist)' in the neutral dot-unknown class;
+# 'denied', 'throttled' and the OK default are unchanged.
+SKIP: {
+    skip 'node unavailable (Test 28 reported it)', 1 unless $NODE;
+    my @states = ('not_used', 'denied', 'throttled', 'ok');
+    my $r = eval { run_page_render('renderAuthHealth', map {
+        { authHealth => { acctK => { login => {}, playback => {}, connect => {}, audioKey => { state => $_ } } } }
+    } @states) } || do { diag("renderAuthHealth D54-B6: $@"); [ map { [] } @states ] };
+    my @got = map { my $row = row_of($_, 'Audio Keys'); [ $row->[1], $row->[2] ] } @$r;
+    is_deeply(\@got, [ [ 'Not used (Soloist)', 'metric-value dot-unknown' ], [ 'Denied', 'metric-value dot-dead' ], [ 'Throttled', 'metric-value dot-warn' ], [ 'OK', 'metric-value dot-alive' ] ],
+        "D54-B6 (D-54, GH #188): status.html maps audioKey.state not_used to 'Not used (Soloist)' / dot-unknown, denied/throttled/ok unchanged")
+        or diag(JSON::PP->new->canonical->encode(\@got));
 }

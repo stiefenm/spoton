@@ -58,6 +58,30 @@ use constant SEEK_THRESHOLD => 3;
 # by more than SEEK_THRESHOLD, is the daemon's frozen report, not a seek.
 use constant FROZEN_POSITION_TOLERANCE_MS => 500;
 
+# 79-78 (D-50): reactive replay of a mid-title Soloist stall. About 12-20 % of
+# cold Browse skips stall mid-title because the daemon's first 3 MB CDN chunk
+# never arrives (the head file plays for about 9-10 s, then `Audio is
+# buffering`); the stall lasts 9 s to more than 20 s. An armed `play uri` of
+# the same title plus a seek restarts it in 0.05 s in about half the cases
+# (spike S2, a new range request). Values chosen from the M1 data
+# (.planning/debug/beta5-skip-latenz.md ## M1):
+#  - HANG_REPLAY_DEADLINE_MS: D-50 says "about 2-2.5 s"; the 1.73 s self-heal
+#    of m1-c2 k2 stays untouched, the 8.71 s and 10.01 s stalls get a replay.
+#  - HANG_MIN_PLAYING_S: M1 condition (b), the title's own `playing` was seen
+#    at least about 1 s earlier (start-up frames come 0.02-0.11 s after the
+#    command, before the title ever reported playing).
+#  - HANG_SUPPRESS_S: measured from Control's last own play/seek/pause (or
+#    noteSeekIntent) to the onset frame. M1 condition (c) said about 10 s,
+#    but the earliest real mid-title stall came 9.55 s after its skip (M1 row
+#    3); every start-up and seek onset frame in M1 came 0.012-0.113 s after
+#    the command, so 5 s covers them and suppresses no measured stall.
+#  - HANG_REPLAY_MAX: "once or twice" (FABLE-2 2.2(b)); a hung retry costs
+#    nothing extra, the title is already stalled.
+use constant HANG_REPLAY_DEADLINE_MS => 2250;
+use constant HANG_MIN_PLAYING_S      => 1;
+use constant HANG_SUPPRESS_S         => 5;
+use constant HANG_REPLAY_MAX         => 2;
+
 # 84-02 C4-c: how old (seconds) the last real position before a zero reset
 # frame may be and still stand in for the transfer-in position.
 use constant ENTRY_ANCHOR_MAX_AGE_S => 10;
@@ -536,6 +560,8 @@ sub leaveBrowse {
     $self->observed->{leftBrowsePlanted} = $self->observed->{contextEndPlanted} if defined $self->observed->{contextEndPlanted};
     delete $self->observed->{contextEndPlanted};
     delete $self->observed->{preResetAnchor};
+    $self->_cancelHangWatch('leaveBrowse');    # 79-78 D-50
+    delete @{ $self->observed }{qw(hangPre hangReplays playingSince)};
     $self->mode('idle');
     $self->wanted({});
 }
@@ -648,6 +674,7 @@ sub shutdown {
     $self->_dropPendingChange('shutdown');
     delete $self->observed->{hold};
 
+    $self->_cancelHangWatch('shutdown');    # 79-78 D-50
     Slim::Utils::Timers::killTimers($self, \&_t1Fire);
     Slim::Utils::Timers::killTimers($self, \&_watchdogRound2);
     # 79-51 runaway D1: a held resume does not outlive the instance (the 82-46 rule).
@@ -1597,6 +1624,7 @@ sub noteSeekIntent {
     return unless defined $uri;
 
     $self->wanted->{seekIntent} = { uri => $uri, target_ms => int($target_ms), ts => Time::HiRes::time() };
+    $self->observed->{lastPlaybackCmdAt} = Time::HiRes::time();    # 79-78 D-50: the seek burst that follows is no stall
 
     main::DEBUGLOG && $log->is_debug && $log->debug(
         "Control: noteSeekIntent($uri, $target_ms) (" . ($self->mac // '?') . ")"
@@ -3074,6 +3102,13 @@ sub _execute {
             # told from an app action (_ownEchoOpen).
             $self->observed->{ownSend}{$cmd} = Time::HiRes::time()
                 if $cmd eq 'pause' || $cmd eq 'play' || $cmd eq 'seek';
+
+            # 79-78 D-50: every own playback command opens the HANG_SUPPRESS_S window and ends a
+            # stall watch (the command itself answers the stall or moves the title on).
+            if ($cmd eq 'pause' || $cmd eq 'play' || $cmd eq 'seek') {
+                $self->observed->{lastPlaybackCmdAt} = Time::HiRes::time();
+                $self->_cancelHangWatch("own $cmd");
+            }
 
             if ($intent->{seekTarget}) {
                 $self->observed->{seekIssued} = {
@@ -4862,6 +4897,8 @@ sub _onFrameTrackChanged {
 
         $self->_noteCurrentItem($msg->{item});    # 85-07 D-09
 
+        $self->_hangTrackChanged($uri);    # 79-78 D-50: before observed.track moves
+
         # 79 D-31: a title change ends the hold-release candidate (see _noteHoldRelease).
         {
             my $hrPrev = $self->observed->{track};
@@ -5365,6 +5402,7 @@ sub _onFramePlaybackChanged {
 
         $self->observed->{status} = $status;
         $self->_noteHoldRelease($status, undef, $prevStatus, $self->observed->{track});    # 79 D-31
+        $self->_noteHangStatus($status, $prevStatus, $mode);    # 79-78 D-50
         # D-02 (unchanged from SoloistWS:731): a natural end plants a
         # boundary so the bounded serve gets a clean EOF. A transient
         # 'paused' arriving while a play is pending (fixture: +21ms) is
@@ -5475,6 +5513,9 @@ sub _onFramePositionSync {
         # daemon's pre-echo idle state must not overwrite the just-issued
         # 'playing' wish.
         if (defined $p->{speed} && !$p->{speed}) {
+            # 79-78 D-50: BEFORE the status is overwritten below -- the guard reads the
+            # status as it stood when this speed-0 frame arrived (`buffering`).
+            $self->_armHangWatch($p);
             my $pending = $self->pending;
             my $g4Applied = ($pending && $pending->{cmd} eq 'play') ? 0 : 1;
             main::DEBUGLOG && $log->is_debug && $log->debug(
@@ -5501,6 +5542,138 @@ sub _onFramePositionSync {
         $self->_checkSplitBrain;
 
         return;
+}
+
+# _noteHangStatus($self, $status, $prevStatus, $mode) -- 79-78 D-50: the bookkeeping of one
+# playback_changed frame. `buffering` records the burst record (hangPre: the title, the status
+# as it stood BEFORE this frame, and a copy of the last position anchor of the same title --
+# the pre-burst anchor the seek guard measures against, because the playback_state of the same
+# burst overwrites observed.anchor before the speed-0 position_sync arrives). Every other status
+# deletes it and ends a stall watch: `playing` is the heal, `paused`/`stopped`/`idle` leave the
+# stall (an app pause inside the deadline must never be un-paused by the replay). `playing`
+# on the own title also stamps playingSince (the start-up guard).
+sub _noteHangStatus {
+    my ($self, $status, $prevStatus, $mode) = @_;
+
+    my $o = $self->observed;
+    if ($status eq 'buffering') {
+        if ($mode eq 'browse') {
+            my $a = $o->{anchor};
+            $o->{hangPre} = {
+                uri        => $o->{track},
+                prevStatus => $prevStatus,
+                anchor     => (ref($a) eq 'HASH' && defined $o->{track} && defined $a->{uri} && $a->{uri} eq $o->{track})
+                                  ? { %$a } : undef,
+            };
+        }
+        return;
+    }
+
+    delete $o->{hangPre};
+    $self->_cancelHangWatch("playback_changed $status");
+    if ($status eq 'playing' && $mode eq 'browse' && defined $o->{track}) {
+        $o->{playingSince} = { uri => $o->{track}, at => Time::HiRes::time() };
+    }
+    return;
+}
+
+# _hangTrackChanged($self, $uri) -- 79-78 D-50: a track_changed (called before observed.track
+# moves) ends the burst record, the playing-seen stamp and a running watch. The replay budget
+# (hangReplays) is dropped only when the daemon moves to ANOTHER title: the replay's own echo is
+# a track_changed of the same uri and must not give the title a fresh budget (HANG_REPLAY_MAX).
+sub _hangTrackChanged {
+    my ($self, $uri) = @_;
+
+    my $o = $self->observed;
+    delete @{$o}{qw(hangPre playingSince)};
+    $self->_cancelHangWatch('track_changed');
+    delete $o->{hangReplays} unless defined $o->{track} && $o->{track} eq $uri;
+    return;
+}
+
+# _armHangWatch($self, $p) -- 79-78 D-50: called from the speed-0 branch of _onFramePositionSync
+# (before observed.status is overwritten) with the frame's position hash. Arms the stall watch
+# only when ALL twelve guards hold; every guard line carries a trailing comment of the form
+# `D-50 guard` colon, one space, the tag name (runners/hang-replay-gate.sh mirrors exactly this tag set,
+# one rule per tag). The watch is a
+# timer HANG_REPLAY_DEADLINE_MS ahead; _hangReplayFire re-checks and replays.
+sub _armHangWatch {
+    my ($self, $p) = @_;
+
+    my $o   = $self->observed;
+    my $now = Time::HiRes::time();
+
+    return unless $self->mode eq 'browse';    # D-50 guard: browse
+    return if $self->_knownInactive;    # D-50 guard: not_inactive
+    return if $self->pending;    # D-50 guard: no_pending
+    return unless ($o->{status} // '') eq 'buffering';    # D-50 guard: status_buffering
+    my $pre = $o->{hangPre};
+    return unless ref($pre) eq 'HASH' && defined $pre->{uri} && defined $o->{track} && $pre->{uri} eq $o->{track}
+        && ($pre->{prevStatus} // '') eq 'playing';    # D-50 guard: burst_from_playing
+    my $wantedUri = $self->wanted->{uri};
+    return unless defined $o->{track} && defined $wantedUri && $o->{track} eq $wantedUri;    # D-50 guard: own_title
+    return unless defined $p->{position_ms} && $p->{position_ms} > 0;    # D-50 guard: pos_positive
+    my $ps = $o->{playingSince};
+    return unless ref($ps) eq 'HASH' && defined $ps->{uri} && $ps->{uri} eq $o->{track}
+        && ($now - $ps->{at}) >= HANG_MIN_PLAYING_S;    # D-50 guard: playing_seen
+    return unless ($now - ($o->{lastPlaybackCmdAt} // 0)) >= HANG_SUPPRESS_S;    # D-50 guard: suppress
+    my $a = $pre->{anchor};
+    return unless ref($a) eq 'HASH' && defined $a->{position_ms} && defined $a->{timestamp_ms} && defined $p->{timestamp_ms}
+        && abs($p->{position_ms} - ($a->{position_ms} + ($a->{speed} // 0) * ($p->{timestamp_ms} - $a->{timestamp_ms})))
+            <= SEEK_THRESHOLD * 1000;    # D-50 guard: seek_pre_burst
+    return unless (($o->{hangReplays} || {})->{ $o->{track} } // 0) < HANG_REPLAY_MAX;    # D-50 guard: per_title_cap
+    return if $o->{hangWatch};    # D-50 guard: one_watch
+
+    $o->{hangWatch} = { uri => $o->{track}, position_ms => $p->{position_ms}, onset => $now };
+    Slim::Utils::Timers::killTimers($self, \&_hangReplayFire);
+    Slim::Utils::Timers::setTimer($self, $now + HANG_REPLAY_DEADLINE_MS / 1000, \&_hangReplayFire);
+    main::DEBUGLOG && $log->is_debug && $log->debug(
+        "Control: hang watch armed $o->{track} pos=$p->{position_ms} (" . ($self->mac // '?') . ")"
+    );
+    return;
+}
+
+# _cancelHangWatch($self, $why) -- 79-78 D-50: kill the deadline timer and drop the watch.
+sub _cancelHangWatch {
+    my ($self, $why) = @_;
+
+    Slim::Utils::Timers::killTimers($self, \&_hangReplayFire);
+    my $w = delete $self->observed->{hangWatch};
+    main::DEBUGLOG && $log->is_debug && $log->debug(
+        "Control: hang watch cancelled ($why) (" . ($self->mac // '?') . ")"
+    ) if $w;
+    return;
+}
+
+# _hangReplayFire($self) -- 79-78 D-50: the deadline timer. Re-checks the situation (the stall is
+# still there, nothing of Control's own is in flight, the title is still the wanted one, the budget
+# is not used up) and sends exactly the S2 action: an armed `play uri` of the same title with a
+# seek to the stall frame's own position_ms (M1: within 0.6 s of what the listener heard; never the
+# wall-clock projection, which the spike used and which repeats 2-3 s).
+sub _hangReplayFire {
+    my $self = shift;
+
+    my $o = $self->observed;
+    my $w = delete $o->{hangWatch};
+    return unless $w;
+    return unless $self->mode eq 'browse';
+    return if $self->_knownInactive;
+    return if $self->pending;
+    my $uri = $w->{uri};
+    return unless defined $o->{track} && $o->{track} eq $uri;
+    my $wantedUri = $self->wanted->{uri};
+    return unless defined $wantedUri && $wantedUri eq $uri;
+    return if ($o->{status} // '') eq 'playing';
+    my $n = ($o->{hangReplays} || {})->{$uri} // 0;
+    return if $n >= HANG_REPLAY_MAX;
+
+    my $pos = int($w->{position_ms});
+    $log->warn(sprintf("Control: hang replay %s pos=%d after %.2f s without audio (%s)",
+        $uri, $pos, Time::HiRes::time() - $w->{onset}, ($self->mac // '?')));
+    $o->{hangReplays}{$uri} = $n + 1;
+    $self->_dispatch('play', uri => $uri, position_ms => $pos, armed => 1, awaitMeta => 0,
+        postSeek => ($pos > 0 ? $pos : undef), fromTrack => $uri);
+    return;
 }
 
 sub _onFramePlaybackState {
@@ -7610,6 +7783,37 @@ sub _prefetchNext {
         );
         $self->_markOwnQueue($nextUri);
         return;
+    }
+
+    # 79-77 D-49 (beta.6; .planning/debug/beta5-skip-latenz.md ## Decision,
+    # FABLE-2 1.3 and 2.2(a)): add the successor only when the daemon's known
+    # queue is empty. The only consumer of a queued successor is
+    # _reconcilePlan's skip_next branch, which fires only when the target IS
+    # the queue head; any play whose target is not the head (a jump, a new
+    # playlist) leaves the queued successor behind as a stale head, and from
+    # then on every skip adds one more entry behind it (78 leftovers in one
+    # evening of measurement). The daemon API has no remove, so the only fix
+    # is to stop adding. "Head is already the successor" is the dedupe branch
+    # above and stays first.
+    #
+    # One leading entry equal to observed.track is ignored: it is the head
+    # skip_next (or the natural advance) just consumed. In the real frame
+    # order the echo's prefetch runs inside the track_changed frame BEFORE
+    # the queue_changed of the same batch that empties the queue
+    # (m1-c2/frames.jsonl:19-21), so queueUris still names the title now
+    # playing; _onFrameTrackChanged clears queueHead on every track_changed
+    # for the same reason. Without this rule the shipped successor prefetch
+    # would die on every clean queue.
+    # Reversibility: reversible (one block, no state outside the process).
+    {
+        my @known = @{ $self->observed->{queueUris} || [] };
+        shift @known if @known && defined $self->observed->{track} && $known[0] eq $self->observed->{track};
+        if (@known) {
+            main::DEBUGLOG && $log->is_debug && $log->debug(
+                "Control: prefetch skipped, queue head $known[0] is not the successor $nextUri (" . ($self->mac // '?') . ")"
+            );
+            return;
+        }
     }
 
     # Idempotent per uri: already queued by us in this session -> no second send.

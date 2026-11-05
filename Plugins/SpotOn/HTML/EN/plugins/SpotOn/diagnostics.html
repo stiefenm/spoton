@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>[% 'PLUGIN_SPOTON_DIAG_PAGE_TITLE' | string %]</title>
+<style>
+body {
+    background: #1a1a1a;
+    color: #e0e0e0;
+    font-family: sans-serif;
+    margin: 0;
+    padding: 24px 16px;
+}
+header {
+    max-width: 900px;
+    margin: 0 auto 16px;
+}
+header h1 {
+    font-size: 20px;
+    font-weight: 600;
+    margin: 0 0 4px;
+}
+.cards {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 16px;
+    max-width: 900px;
+    margin: 0 auto;
+}
+.card {
+    background: #242424;
+    border-radius: 8px;
+    padding: 16px;
+    border: 1px solid rgba(255,255,255,0.08);
+}
+.card h2 {
+    margin: 0 0 12px;
+    font-size: 16px;
+    font-weight: 600;
+    opacity: 0.7;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+.card p {
+    margin: 0;
+    font-size: 14px;
+    line-height: 1.5;
+}
+.card p + p {
+    margin-top: 12px;
+}
+.entry {
+    padding: 8px 0 8px 12px;
+    border-left: 3px solid #1db954;
+    margin: 0 0 12px;
+}
+.entry:last-child {
+    margin-bottom: 0;
+}
+.entry-title {
+    font-size: 14px;
+    font-weight: 600;
+    margin: 0 0 2px;
+}
+.entry-desc {
+    font-size: 13px;
+    opacity: 0.75;
+    line-height: 1.5;
+}
+.redactions {
+    margin: 0 0 12px;
+    padding: 0 0 0 20px;
+    font-size: 14px;
+    line-height: 1.5;
+}
+.redactions li {
+    margin: 0 0 6px;
+}
+.keep {
+    font-size: 13px;
+    opacity: 0.75;
+    line-height: 1.5;
+}
+</style>
+</head>
+<body>
+<header>
+    <h1>[% 'PLUGIN_SPOTON_DIAG_PAGE_TITLE' | string %]</h1>
+</header>
+<div class="cards">
+    <div class="card" id="card-switch">
+        <h2>[% 'PLUGIN_SPOTON_DIAG_MODE' | string %]</h2>
+        <p>[% 'PLUGIN_SPOTON_DIAG_SWITCH_TEXT' | string %]</p>
+    </div>
+    <div class="card" id="card-sections">
+        <h2>[% 'PLUGIN_SPOTON_DIAG_SECTIONS_HEAD' | string %]</h2>
+        [% FOREACH s IN diagSections %]
+        <div class="entry" data-diag-section="[% s.id %]">
+            <div class="entry-title">[% s.title | string %]</div>
+            <div class="entry-desc">[% s.desc | string %]</div>
+        </div>
+        [% END %]
+    </div>
+    <div class="card" id="card-redactions">
+        <h2>[% 'PLUGIN_SPOTON_DIAG_REDACTIONS_HEAD' | string %]</h2>
+        <ul class="redactions">
+        [% FOREACH r IN diagRedactions %]
+            <li data-diag-redaction="[% r.id %]">[% r.key | string %]</li>
+        [% END %]
+        </ul>
+        <p class="keep">[% diagNotRedactedKey | string %]</p>
+    </div>
+    <div class="card" id="card-local">
+        <p>[% 'PLUGIN_SPOTON_DIAG_LOCAL_ONLY' | string %]</p>
+    </div>
+</div>
+</body>
+</html>

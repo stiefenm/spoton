@@ -478,6 +478,7 @@ footer {
             var akLabel, akClass;
             if (audioKey.state === 'denied')         { akLabel = 'Denied'; akClass = 'dot-dead'; }
             else if (audioKey.state === 'throttled') { akLabel = 'Throttled'; akClass = 'dot-warn'; }
+            else if (audioKey.state === 'not_used')  { akLabel = 'Not used (Soloist)'; akClass = 'dot-unknown'; }
             else                                     { akLabel = 'OK'; akClass = 'dot-alive'; }
             body.appendChild(createMetricRow('Audio Keys', akLabel, akClass));
         }

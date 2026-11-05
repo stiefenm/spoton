@@ -5792,4 +5792,17 @@ subtest '79-66-command-result-ack-category' => sub {
     unlike($body, qr/Control: dispatch play/, '79-66: an unrelated line stays out of the category');
 };
 
+# 79-78 (D-50): the reactive replay line (Control.pm _hangReplayFire, WARN) has its own category, so the hang-replay gate can be
+# backed by an extract. An unrelated dispatch line stays out of it.
+subtest 'd50-hang-replay-category' => sub {
+    my $hdr = 'server.log: D-50 hang replay (Control: hang replay <uri> pos=<ms>; Control.pm _hangReplayFire)';
+    my ($exit, $stdout, $stderr) = $d34_run_srv->(
+        '[26-10-26 12:00:06.0000] Plugins::SpotOn::Soloist::Control::_hangReplayFire (5700) Control: hang replay spotify:track:1JhNmwO8Y04b4XidpSrytb pos=9195 after 2.25 s without audio (02:00:00:5a:11:01)');
+    is($exit, 0, 'd50: extract-run.pl exits 0') or diag("stderr: $stderr");
+    my $body = $d34_section->($stdout, $hdr);
+    like($body, qr/Control: hang replay spotify:track:1JhNmwO8Y04b4XidpSrytb pos=9195 after 2\.25 s without audio \(02:00:00:5a:11:01\)/,
+        'd50: the replay line lands in its own category');
+    unlike($body, qr/Control: dispatch play/, 'd50: an unrelated line stays out of the category');
+};
+
 done_testing();
