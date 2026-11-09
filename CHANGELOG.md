@@ -5,6 +5,23 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.0.0-beta.7] - 2026-11-09
+
+**Installing this beta.** Same beta repository URL as before (`https://stiefenm.github.io/spoton/beta/repo.xml`); the Plugins page offers SpotOn 4.0.0beta7 as an update over 4.0.0beta6. Restart LMS after the update. The fixes below are for the librespot backend.
+
+### Fixed
+
+- Connect (librespot): after pausing, a different track started in the Spotify app now plays on the LMS player; LMS no longer stays paused with the app showing the new track. ([#201](https://github.com/stiefenm/spoton/issues/201))
+- Connect (librespot): a Connect player no longer blocks when nothing reads its stream, for example after a Browse takeover; a daemon restart is no longer needed to recover. ([#202](https://github.com/stiefenm/spoton/issues/202))
+- Connect (librespot): after a handoff in the middle of a track, the position LMS shows stays within about a second of the Spotify app on the OGG passthrough path (it ran up to 4 seconds behind). A handoff at the very start of a session is not covered by this fix yet. ([#128](https://github.com/stiefenm/spoton/issues/128))
+- Connect (librespot): a short stall after resuming playback from the Spotify app is gone.
+
+### Known issues
+
+- Connect (librespot): tapping the same track again after a pause can still stall for about 3 seconds before it plays. This is tracked for a later release. ([#201](https://github.com/stiefenm/spoton/issues/201))
+
+Everything else is as in 4.0.0-beta.6 below.
+
 ## [4.0.0-beta.6] - 2026-11-05
 
 **Installing this beta.** Same beta repository URL as before (`https://stiefenm.github.io/spoton/beta/repo.xml`); the Plugins page offers SpotOn 4.0.0beta6 as an update over 4.0.0beta5. Restart LMS after the update.

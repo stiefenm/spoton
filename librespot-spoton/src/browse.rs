@@ -36,11 +36,11 @@ use librespot_playback::player::{Player, PlayerEvent};
 
 /// Audio sink for --browse mode.
 ///
-/// Unlike HttpStreamSink in connect.rs, this sink does NOT rate-limit PCM delivery.
+/// Unlike UnifiedHttpStreamSink (unified.rs, Connect), this sink does NOT rate-limit PCM delivery.
 /// Browse mode has no Spirc position sync — PCM should be sent as fast as librespot
 /// produces it (Pitfall 3). LMS controls playback timing via its own audio buffer.
 ///
-/// stop() is a no-op — daemon outlives track boundaries (same as HttpStreamSink,
+/// stop() is a no-op — daemon outlives track boundaries (same as UnifiedHttpStreamSink,
 /// but without the frame counter reset since there is nothing to reset here).
 pub struct BrowseHttpSink {
     pcm_tx: mpsc::Sender<Bytes>,
@@ -73,7 +73,7 @@ impl Sink for BrowseHttpSink {
     }
 
     fn stop(&mut self) -> SinkResult<()> {
-        // CRITICAL: do NOT call exit() here (same as HttpStreamSink Pitfall 1).
+        // CRITICAL: do NOT call exit() here (same as UnifiedHttpStreamSink, Pitfall 1).
         // Browse daemon outlives track boundaries — stop() is called between tracks,
         // NOT when the process should exit.
         Ok(())

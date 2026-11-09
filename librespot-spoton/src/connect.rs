@@ -5,7 +5,8 @@
 //
 // Provides:
 //   - LMS struct: JSON-RPC event notifier (5 commands: start/change/stop/volume/seek)
-//   - HttpStreamSink: wall-clock rate-limited PCM sink (S16LE) for HTTP streaming
+//   (the old HttpStreamSink lived here; it was dead since unified.rs got its own
+//    UnifiedHttpStreamSink and was removed in quick 261109-ath)
 //
 // Architecture decisions:
 //   D-01: HTTP streaming (not FIFO)
@@ -13,24 +14,18 @@
 //   D-03: Dynamic port (bind :0, announce stream_port=N on stdout)
 //   D-14: HTTP control endpoints (/control/pause|play|volume|seek|next|prev)
 //   CON-11: Volume suppression on SessionConnected
-//   CON-14: Nanosecond-accurate rate-limiting in HttpStreamSink::write()
+//   CON-14: Nanosecond-accurate rate-limiting, now in UnifiedHttpStreamSink::write()
 //   CON-16: stream_port flushed to stdout immediately after println
 
 use std::sync::{Arc, atomic::{AtomicBool, AtomicU64, Ordering}};
 use std::time::{Duration, Instant};
 
-use bytes::Bytes;
 use serde_json::json;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::watch;
 
-use librespot_playback::audio_backend::{Sink, SinkError, SinkResult};
-use librespot_playback::config::AudioFormat;
-use librespot_playback::convert::Converter;
-use librespot_playback::decoder::AudioPacket;
 use librespot_playback::player::PlayerEvent;
-use librespot_playback::{NUM_CHANNELS, SAMPLE_RATE};
 
 // -------------------------------------------------------------------------
 // Position anchor — GH #128 relay-start resync
@@ -255,9 +250,17 @@ impl LMS {
                         }
                     }
                     Some(_) => {
-                        self.was_paused.store(false, Ordering::Release);
+                        // GH #201: a pause that is still pending (set by Paused, kept
+                        // across TrackChanged) means this Playing is the app starting
+                        // a title after a pause. LMS stays paused on `change` alone
+                        // (Connect.pm #158 contract), so `resume` follows `change`.
+                        let resumed = self.was_paused.swap(false, Ordering::AcqRel);
                         let prev = current_track.replace(new_id.clone()).unwrap_or_default();
                         self.notify("change", &new_id, &prev).await;
+                        if resumed {
+                            let secs = f64::from(*position_ms) / 1000.0;
+                            self.notify("resume", &new_id, &format!("{secs:.3}")).await;
+                        }
                         // A session-start sync armed before this change (TrackChanged
                         // None->Some -> TrackChanged Some->Some -> Playing) is still
                         // pending here — honor it the same way the same-id branch does.
@@ -351,35 +354,7 @@ impl LMS {
             // Playing only handles seek-sync for the same track.
             PlayerEvent::TrackChanged { audio_item } => {
                 let new_id = audio_item.track_id.to_id();
-                log::debug!("[spoton] TrackChanged: track_id={new_id}");
-                // GH #128: new (or re-announced) track — the old anchor no
-                // longer describes this track's position. Cleared until the
-                // next position-carrying event; a relay start in between
-                // performs no resync (better none than a wrong one).
-                self.clear_anchor();
-                match current_track.as_deref() {
-                    Some(prev) if prev == new_id.as_str() => {
-                        self.was_paused.store(false, Ordering::Release);
-                    }
-                    Some(_) => {
-                        self.was_paused.store(false, Ordering::Release);
-                        let prev = current_track.replace(new_id.clone()).unwrap_or_default();
-                        self.notify("change", &new_id, &prev).await;
-                    }
-                    None => {
-                        // D-03: Session start — set grace timer to suppress spurious
-                        // Paused that Spirc fires immediately after TrackChanged.
-                        // ONLY on None->Some (session start), never on Some->Some (track change).
-                        // Uses Instant for NTP immunity (WR-05 fix).
-                        if let Ok(mut start) = self.last_session_start.lock() {
-                            *start = Some(std::time::Instant::now());
-                        }
-                        log::debug!("[spoton] TrackChanged (session start): grace timer set");
-                        self.needs_position_sync.store(true, Ordering::Release);
-                        *current_track = Some(new_id.clone());
-                        self.notify("start", &new_id, "").await;
-                    }
-                }
+                self.handle_track_changed(&new_id, current_track).await;
             }
 
             // GH #128: no LMS notification, but the corrected position feeds
@@ -404,6 +379,44 @@ impl LMS {
 
             // All other events: no LMS equivalent.
             _ => {}
+        }
+    }
+
+    /// TrackChanged handling, split out of `handle_player_event` so the unit
+    /// tests can drive it without building an `AudioItem` (that type lives in
+    /// librespot-metadata, which this crate does not depend on directly).
+    /// Behaviour is exactly the former TrackChanged arm.
+    async fn handle_track_changed(&self, new_id: &str, current_track: &mut Option<String>) {
+        log::debug!("[spoton] TrackChanged: track_id={new_id}");
+        // GH #128: new (or re-announced) track — the old anchor no
+        // longer describes this track's position. Cleared until the
+        // next position-carrying event; a relay start in between
+        // performs no resync (better none than a wrong one).
+        self.clear_anchor();
+        match current_track.as_deref() {
+            // GH #201: was_paused is NOT cleared here. After a pause the app's
+            // "play this title" arrives as TrackChanged -> Playing with no Paused in
+            // between (start_playback emits TrackChanged first, then Playing); the
+            // Playing must still find the pause and notify `resume`, for a different
+            // id (after `change`) and for the same id (reload of the paused title).
+            Some(prev) if prev == new_id => {}
+            Some(_) => {
+                let prev = current_track.replace(new_id.to_owned()).unwrap_or_default();
+                self.notify("change", new_id, &prev).await;
+            }
+            None => {
+                // D-03: Session start — set grace timer to suppress spurious
+                // Paused that Spirc fires immediately after TrackChanged.
+                // ONLY on None->Some (session start), never on Some->Some (track change).
+                // Uses Instant for NTP immunity (WR-05 fix).
+                if let Ok(mut start) = self.last_session_start.lock() {
+                    *start = Some(std::time::Instant::now());
+                }
+                log::debug!("[spoton] TrackChanged (session start): grace timer set");
+                self.needs_position_sync.store(true, Ordering::Release);
+                *current_track = Some(new_id.to_owned());
+                self.notify("start", new_id, "").await;
+            }
         }
     }
 
@@ -480,233 +493,6 @@ impl LMS {
 }
 
 // -------------------------------------------------------------------------
-// HttpStreamSink
-// -------------------------------------------------------------------------
-
-/// Audio sink for --connect mode.
-///
-/// Unlike StdoutSink (which calls exit(0) in stop()), this sink's stop()
-/// only resets counters — the process outlives individual track boundaries
-/// for gapless Spotify Connect playback (CON Pitfall 1).
-///
-/// Rate-limiting follows nanosecond wall-clock math with an optional
-/// buffer_latency_ns addend that compensates for LMS's audio buffer depth
-/// (CON-14). Without compensation, Spirc reports the decoder's position
-/// (ahead of audio output by LMS buffer latency), causing Spotify's progress
-/// bar to drift ahead of what the user hears.
-pub struct HttpStreamSink {
-    pcm_tx: mpsc::Sender<Bytes>,
-    /// Held for ownership — actual flush signals are sent by LMS::handle_player_event.
-    #[allow(dead_code)]
-    flush_tx: watch::Sender<u64>,
-    began_at: Instant,
-    frames_consumed: u64,
-    buffer_latency_ns: u128,
-    // Phase 44 fix: granule_position offset captured on the first audio page after
-    // each start(). See UnifiedHttpStreamSink for rationale.
-    granule_offset: i64,
-    ogg_serial: u32,
-}
-
-impl HttpStreamSink {
-    pub fn open(
-        _device: Option<String>,
-        format: AudioFormat,
-        pcm_tx: mpsc::Sender<Bytes>,
-        flush_tx: watch::Sender<u64>,
-        buffer_latency_ms: u64,
-    ) -> Box<dyn Sink> {
-        if format != AudioFormat::S16 {
-            panic!(
-                "HttpStreamSink: only AudioFormat::S16 supported, got {:?}",
-                format
-            );
-        }
-        Box::new(Self {
-            pcm_tx,
-            flush_tx,
-            began_at: Instant::now(),
-            frames_consumed: 0,
-            buffer_latency_ns: u128::from(buffer_latency_ms) * 1_000_000u128,
-            granule_offset: -1,
-            ogg_serial: 0,
-        })
-    }
-}
-
-impl Sink for HttpStreamSink {
-    fn start(&mut self) -> SinkResult<()> {
-        self.began_at = Instant::now();
-        self.frames_consumed = 0;
-        self.granule_offset = -1; // Phase 44 fix: re-capture on first audio page
-        self.ogg_serial = 0;
-        Ok(())
-    }
-
-    fn stop(&mut self) -> SinkResult<()> {
-        // CRITICAL: do NOT call exit() here (Pitfall 1).
-        // StdoutSink/pipe backend calls exit(0) — Connect daemon must not do this.
-        // Reset counters only. Process outlives track boundaries.
-        self.frames_consumed = 0;
-        self.began_at = Instant::now();
-        self.granule_offset = -1;
-        self.ogg_serial = 0;
-        Ok(())
-    }
-
-    fn write(&mut self, packet: AudioPacket, converter: &mut Converter) -> SinkResult<()> {
-        match packet {
-            AudioPacket::Samples(samples) => {
-                // Convert f64 samples to S16LE bytes.
-                let samples_s16 = converter.f64_to_s16(&samples);
-                // SAFETY: i16 values are valid as two u8 bytes; ptr and len from valid Vec.
-                let bytes: &[u8] = unsafe {
-                    std::slice::from_raw_parts(
-                        samples_s16.as_ptr().cast::<u8>(),
-                        samples_s16.len() * std::mem::size_of::<i16>(),
-                    )
-                };
-
-                // Wall-clock rate-limiter with buffer-latency compensation (CON-14).
-                //
-                // expected_ns = frames_consumed * 1e9 / SAMPLE_RATE + buffer_latency_ns
-                //
-                // Without rate-limiting: decoder races ahead of wall-clock, making Spotify
-                // clients show nonsensical seek positions.
-                //
-                // With buffer_latency_ns > 0: decoder advances `buffer_latency_ms` ms slower
-                // than wall-clock, so reported position matches actual audio output position.
-                let frames_in_packet = (samples.len() / NUM_CHANNELS as usize) as u64;
-                self.frames_consumed = self.frames_consumed.saturating_add(frames_in_packet);
-                if self.frames_consumed % 1000 == 0 {
-                    log::trace!("[spoton] sink write: {} frames consumed", self.frames_consumed);
-                }
-                let expected_ns: u128 =
-                    u128::from(self.frames_consumed) * 1_000_000_000u128 / u128::from(SAMPLE_RATE)
-                    + self.buffer_latency_ns;
-                let elapsed_ns: u128 = self.began_at.elapsed().as_nanos();
-
-                if expected_ns > elapsed_ns {
-                    let park_ns = (expected_ns - elapsed_ns) as u64;
-                    std::thread::sleep(Duration::from_nanos(park_ns));
-                }
-
-                // Send PCM bytes over the channel to the HTTP stream server.
-                // Player::new spawns a std::thread with its own tokio Runtime; Sink::write
-                // runs within a tokio context. blocking_send would panic.
-                // try_send with spin-retry: the channel has 256 slots (~1.5s of audio)
-                // and a single consumer — contention is transient, rate-limiter keeps us
-                // at real-time, so the channel is nearly always empty.
-                let chunk = Bytes::copy_from_slice(bytes);
-                loop {
-                    match self.pcm_tx.try_send(chunk.clone()) {
-                        Ok(()) => break,
-                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                            std::thread::sleep(Duration::from_millis(1));
-                        }
-                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                            return Err(SinkError::OnWrite(
-                                "HTTP stream server shut down".into(),
-                            ));
-                        }
-                    }
-                }
-            }
-            AudioPacket::Raw(bytes) => {
-                // Phase 44 (D-01): granule_position-based wall-clock rate-limiting for
-                // OGG passthrough. Replaces the Phase 43 backpressure-only pacing — for
-                // code consistency with UnifiedHttpStreamSink (D-05), even though this
-                // standalone sink is not the primary production path.
-                let chunk = Bytes::copy_from_slice(&bytes);
-
-                // Phase 44 fix: detect gapless track transitions via OGG serial
-                // change. See UnifiedHttpStreamSink for full rationale.
-                // Note: no header buffer here (standalone sink has no /stream handler).
-                // .max(0) guard on relative_granule prevents hangs if serial change
-                // is missed in a multi-page chunk spanning a track boundary.
-                if chunk.len() >= 18 && &chunk[0..4] == b"OggS" {
-                    let serial = u32::from_le_bytes(
-                        chunk[14..18].try_into().expect("OGG serial is 4 bytes"),
-                    );
-                    if self.ogg_serial != 0 && serial != self.ogg_serial {
-                        log::info!(
-                            "[spoton/connect] OGG serial change: {} -> {} — resetting rate-limiter",
-                            self.ogg_serial, serial
-                        );
-                        self.began_at = Instant::now();
-                        self.granule_offset = -1;
-                    }
-                    self.ogg_serial = serial;
-                }
-
-                // Phase 44: multi-page rate-limiting — see UnifiedHttpStreamSink
-                // for full rationale. Scan ALL OGG pages, pace by the last one.
-                {
-                    let mut last_granule: i64 = -1;
-                    let mut pos = 0usize;
-                    while pos + 27 <= chunk.len() {
-                        if &chunk[pos..pos + 4] != b"OggS" {
-                            break;
-                        }
-                        let granule = i64::from_le_bytes(
-                            chunk[pos + 6..pos + 14]
-                                .try_into()
-                                .expect("OGG granule_position slice is exactly 8 bytes"),
-                        );
-                        let n_segments = chunk[pos + 26] as usize;
-                        if pos + 27 + n_segments > chunk.len() {
-                            break;
-                        }
-                        let body_size: usize = chunk[pos + 27..pos + 27 + n_segments]
-                            .iter()
-                            .map(|&b| b as usize)
-                            .sum();
-                        let page_size = 27 + n_segments + body_size;
-
-                        if granule > 0 {
-                            last_granule = granule;
-                        }
-                        pos += page_size;
-                    }
-                    if last_granule > 0 {
-                        if self.granule_offset < 0 {
-                            self.granule_offset = last_granule;
-                        }
-                        let relative_granule = (last_granule - self.granule_offset).max(0) as u128;
-                        let expected_ns: u128 = relative_granule
-                            * 1_000_000_000u128
-                            / u128::from(SAMPLE_RATE)
-                            + self.buffer_latency_ns;
-                        let elapsed_ns: u128 = self.began_at.elapsed().as_nanos();
-
-                        if expected_ns > elapsed_ns {
-                            let park_ns = (expected_ns - elapsed_ns) as u64;
-                            std::thread::sleep(Duration::from_nanos(park_ns));
-                        }
-                    }
-                }
-
-                loop {
-                    match self.pcm_tx.try_send(chunk.clone()) {
-                        Ok(()) => break,
-                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                            std::thread::sleep(Duration::from_millis(1));
-                        }
-                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                            return Err(SinkError::OnWrite(
-                                "HTTP stream server shut down".into(),
-                            ));
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(())
-    }
-}
-
-// -------------------------------------------------------------------------
 // Relay-start position resync unit tests (GH #128)
 // -------------------------------------------------------------------------
 
@@ -761,3 +547,218 @@ mod relay_resync_tests {
     }
 }
 
+
+// -------------------------------------------------------------------------
+// Event-translation unit tests (GH #201: resume across TrackChanged)
+// -------------------------------------------------------------------------
+
+#[cfg(test)]
+mod event_translation_tests {
+    use super::*;
+    use librespot_core::spotify_uri::SpotifyUri;
+    use std::sync::Mutex;
+    use tokio::io::AsyncReadExt;
+    use tokio::net::TcpListener;
+
+    const TRACK_A: &str = "4uLU6hMCjMI75M1A2tKUQC";
+    const TRACK_B: &str = "7ouMYWpwJ422jRcDASZB7P";
+
+    /// A loopback "LMS": accepts the one-connection-per-notify POSTs of
+    /// `LMS::notify` strictly in arrival order and records
+    /// `<cmd> <p1> <p2>` (the params after "spottyconnect") per request.
+    struct FakeLms {
+        seen: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl FakeLms {
+        async fn start() -> (Self, String) {
+            let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+            let addr = listener.local_addr().expect("addr").to_string();
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let seen_task = Arc::clone(&seen);
+            tokio::spawn(async move {
+                loop {
+                    let (mut sock, _) = match listener.accept().await {
+                        Ok(c) => c,
+                        Err(_) => return,
+                    };
+                    let mut raw = Vec::new();
+                    if sock.read_to_end(&mut raw).await.is_err() {
+                        continue;
+                    }
+                    let text = String::from_utf8_lossy(&raw).into_owned();
+                    let body = text.split("\r\n\r\n").nth(1).unwrap_or("");
+                    let v: serde_json::Value =
+                        serde_json::from_str(body).expect("notify body is JSON");
+                    let params = v["params"][1].as_array().expect("params array");
+                    // params[0] is "spottyconnect"; the rest is `cmd p1 p2`.
+                    let line = params[1..]
+                        .iter()
+                        .map(|p| p.as_str().unwrap_or("?").to_owned())
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    seen_task.lock().unwrap().push(line);
+                }
+            });
+            (Self { seen }, addr)
+        }
+
+        /// notify() calls are awaited one by one and the fake handles its
+        /// connections in arrival order, so once a sentinel is recorded
+        /// everything sent before it is recorded too.
+        async fn drain(&self, lms: &LMS) -> Vec<String> {
+            lms.notify("sentinel", "", "").await;
+            for _ in 0..200 {
+                {
+                    let seen = self.seen.lock().unwrap();
+                    if seen.last().map(String::as_str) == Some("sentinel") {
+                        let mut out = seen.clone();
+                        out.pop();
+                        return out;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            panic!("fake LMS never saw the sentinel: {:?}", self.seen.lock().unwrap());
+        }
+    }
+
+    fn uri(id: &str) -> SpotifyUri {
+        SpotifyUri::from_uri(&format!("spotify:track:{id}")).expect("valid track uri")
+    }
+
+    fn playing(id: &str, position_ms: u32) -> PlayerEvent {
+        PlayerEvent::Playing {
+            play_request_id: 1,
+            track_id: uri(id),
+            position_ms,
+        }
+    }
+
+    fn paused(id: &str, position_ms: u32) -> PlayerEvent {
+        PlayerEvent::Paused {
+            play_request_id: 1,
+            track_id: uri(id),
+            position_ms,
+        }
+    }
+
+    /// A configured LMS pointing at the fake, plus a cursor already inside a
+    /// session on TRACK_A that is past the 2 s grace window (no grace timer
+    /// armed), i.e. the state of a Connect session in steady playback.
+    async fn session_on_a() -> (FakeLms, LMS, Option<String>) {
+        let (fake, addr) = FakeLms::start().await;
+        let lms = LMS::new(Some(addr), Some("aa:bb:cc:dd:ee:ff".into()), None, None);
+        (fake, lms, Some(TRACK_A.to_owned()))
+    }
+
+    /// GH #201 core (different track): pause, then a tap in the app. Spirc
+    /// emits TrackChanged -> Playing with no Paused in between. LMS has to be
+    /// told to resume or it stays paused (Connect.pm refuses to unpause on
+    /// `change` while the session is paused, the #158 contract).
+    #[tokio::test]
+    async fn pause_then_tap_other_track_emits_stop_change_resume() {
+        let (fake, lms, mut cur) = session_on_a().await;
+        lms.handle_player_event(&paused(TRACK_A, 84_858), &mut cur).await;
+        lms.handle_track_changed(TRACK_B, &mut cur).await;
+        lms.handle_player_event(&playing(TRACK_B, 0), &mut cur).await;
+        assert_eq!(
+            fake.drain(&lms).await,
+            vec![
+                "stop".to_owned(),
+                format!("change {TRACK_B} {TRACK_A}"),
+                format!("resume {TRACK_B} 0.000"),
+            ]
+        );
+    }
+
+    /// GH #201 sibling E4: tapping the CURRENT paused title again reloads the
+    /// same id (TrackChanged same id -> Playing). Same drop, no `change`.
+    #[tokio::test]
+    async fn pause_then_tap_same_track_emits_stop_resume() {
+        let (fake, lms, mut cur) = session_on_a().await;
+        lms.handle_player_event(&paused(TRACK_A, 84_858), &mut cur).await;
+        lms.handle_track_changed(TRACK_A, &mut cur).await;
+        lms.handle_player_event(&playing(TRACK_A, 0), &mut cur).await;
+        assert_eq!(
+            fake.drain(&lms).await,
+            vec!["stop".to_owned(), format!("resume {TRACK_A} 0.000")]
+        );
+    }
+
+    /// Fallback branch: a Playing for a different id with no TrackChanged
+    /// before it (the cursor still names the old title) after a pause gets the
+    /// same treatment: `change`, then `resume`.
+    #[tokio::test]
+    async fn pause_then_playing_other_id_without_track_changed_emits_change_resume() {
+        let (fake, lms, mut cur) = session_on_a().await;
+        lms.handle_player_event(&paused(TRACK_A, 84_858), &mut cur).await;
+        lms.handle_player_event(&playing(TRACK_B, 0), &mut cur).await;
+        assert_eq!(
+            fake.drain(&lms).await,
+            vec![
+                "stop".to_owned(),
+                format!("change {TRACK_B} {TRACK_A}"),
+                format!("resume {TRACK_B} 0.000"),
+            ]
+        );
+    }
+
+    /// Unchanged: a track change WITHOUT a pause is a plain `change`, never a
+    /// `resume` (LMS is playing; a resume would re-anchor its clock).
+    #[tokio::test]
+    async fn track_change_without_pause_emits_change_only() {
+        let (fake, lms, mut cur) = session_on_a().await;
+        lms.handle_player_event(&playing(TRACK_A, 30_000), &mut cur).await;
+        lms.handle_track_changed(TRACK_B, &mut cur).await;
+        lms.handle_player_event(&playing(TRACK_B, 0), &mut cur).await;
+        assert_eq!(
+            fake.drain(&lms).await,
+            vec![format!("change {TRACK_B} {TRACK_A}")]
+        );
+    }
+
+    /// Unchanged: pause then play on the same track is exactly one `resume`
+    /// carrying the paused position; a second Playing (buffer re-emit) adds none.
+    #[tokio::test]
+    async fn pause_then_play_same_track_emits_one_resume() {
+        let (fake, lms, mut cur) = session_on_a().await;
+        lms.handle_player_event(&paused(TRACK_A, 84_858), &mut cur).await;
+        lms.handle_player_event(&playing(TRACK_A, 84_858), &mut cur).await;
+        lms.handle_player_event(&playing(TRACK_A, 84_900), &mut cur).await;
+        assert_eq!(
+            fake.drain(&lms).await,
+            vec!["stop".to_owned(), format!("resume {TRACK_A} 84.858")]
+        );
+    }
+
+    /// Unchanged: a Paused inside the 2 s grace window after a session start is
+    /// suppressed (no `stop`), and the following Playing is no resume.
+    #[tokio::test]
+    async fn pause_inside_grace_window_is_suppressed() {
+        let (fake, lms, mut cur) = session_on_a().await;
+        *lms.last_session_start.lock().unwrap() = Some(Instant::now());
+        lms.handle_player_event(&paused(TRACK_A, 0), &mut cur).await;
+        lms.handle_player_event(&playing(TRACK_A, 0), &mut cur).await;
+        assert_eq!(fake.drain(&lms).await, Vec::<String>::new());
+    }
+
+    /// Edge: a pause that is followed by a load which stays paused (app
+    /// start_playing=false: TrackChanged -> Paused) keeps exactly one pending
+    /// resume; the later Playing resumes once.
+    #[tokio::test]
+    async fn pause_then_load_paused_then_play_emits_one_resume() {
+        let (fake, lms, mut cur) = session_on_a().await;
+        lms.handle_player_event(&paused(TRACK_A, 84_858), &mut cur).await;
+        lms.handle_track_changed(TRACK_B, &mut cur).await;
+        lms.handle_player_event(&paused(TRACK_B, 0), &mut cur).await;
+        lms.handle_player_event(&playing(TRACK_B, 0), &mut cur).await;
+        let got = fake.drain(&lms).await;
+        assert_eq!(
+            got.iter().filter(|l| l.starts_with("resume")).count(),
+            1,
+            "{got:?}"
+        );
+        assert_eq!(got.last().unwrap(), &format!("resume {TRACK_B} 0.000"));
+    }
+}

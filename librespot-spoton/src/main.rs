@@ -38,7 +38,7 @@
 //   stdout line 2: spotify_username
 //   exit 0 on success, exit 1 on failure (including 15-min timeout)
 
-mod connect;  // connect.rs: LMS + HttpStreamSink used by unified.rs
+mod connect;  // connect.rs: the LMS event notifier used by unified.rs
 mod browse;   // browse.rs: BrowseHttpSink + serve_track_request used by unified.rs
 mod unified;  // Phase 29: unified Browse+Connect daemon (one process, one port)
 
@@ -103,6 +103,9 @@ async fn main() {
     let mut lms_host = String::new();
     let mut lms_auth = String::new();
     let mut disable_discovery = false;
+    // --buffer-latency-ms is accepted but INERT (quick 261109-ath): the sink no longer
+    // holds the first page back by this value. Kept so older wrappers/Daemon.pm
+    // command lines (and tools/vm-rig `helper swap --latency-ms`) still parse.
     let mut buffer_latency_ms: u64 = 2000;
     let mut autoplay: Option<bool> = None;
     let mut initial_volume_lms: Option<u8> = None;

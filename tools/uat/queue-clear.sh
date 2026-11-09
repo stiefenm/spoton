@@ -77,13 +77,13 @@ QC_LMS_STATUS_CMD="${QC_LMS_STATUS_CMD:-}"
 QC_POLL_SLEEP="${QC_POLL_SLEEP:-3}"
 LMS_URL="${LMS_URL:-http://127.0.0.1:9000/jsonrpc.js}"
 PA_MAC_FIXED=$(printf '%s' "${PA_MAC:-}" | tr 'A-F' 'a-f')
-UAT_NAME="lavender-UAT"
+UAT_NAME="${RIG_UAT_NAME:-lavender-UAT}"
 
 read -r -a WS <<<"$QC_WS_RECORD"
 read -r -a CDP <<<"$QC_CDP"
 read -r -a GAPS <<<"$QC_GAPS"
 
-MAC="02:00:00:5a:11:01"
+MAC="${RIG_UAT_MAC:-02:00:00:5a:11:01}"
 OUT=""
 REFRESH=0
 

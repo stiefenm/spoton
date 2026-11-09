@@ -2259,6 +2259,20 @@ sub _connectEvent {
             );
         }
 
+        # GH #201 round 2 (P1): read the player's elapsed BEFORE the unpause. While PAUSED
+        # Squeezebox2::songElapsedSeconds returns the last STAT's elapsed raw; once `['pause', 0]`
+        # has made the player PLAYING it adds (now - that STAT's timestamp), i.e. the whole gap since
+        # the last PAUSED heartbeat (Squeezebox2.pm:454-456) although the player did not move. Read
+        # after the unpause, `position - elapsed` carried that gap and LMS's clamped clock sat at 0
+        # for exactly the gap (0.3-3.1 s, six rig runs). Only the startOffset write below uses it, so
+        # it is read under the same gating; the write itself stays AFTER the unpause, where
+        # StreamingController::_Resume still sees the startOffset it saw before this change (its
+        # sync start point derives from it).
+        my $elapsedBeforeUnpause;
+        if (defined $position && $position ne '' && !$jumped && $client->playingSong()) {
+            $elapsedBeforeUnpause = _streamElapsedSeconds($client);
+        }
+
         my $unPauseReq = Slim::Control::Request->new($client->id, ['pause', 0]);
         $unPauseReq->source(__PACKAGE__);
         $unPauseReq->execute();
@@ -2287,8 +2301,8 @@ sub _connectEvent {
             # elapsed` (84-24 C6 extract.txt:162 `Resume: adjusted startOffset to 25.191`), the re-opened
             # song's clock comes from the seekdata instead (onStream sets its startOffset to the seek target).
             my $song = $client->playingSong();
-            if ($song) {
-                my $elapsed = _streamElapsedSeconds($client);
+            if ($song && defined $elapsedBeforeUnpause) {
+                my $elapsed = $elapsedBeforeUnpause;   # P1: the PAUSED player's elapsed, read above
                 $song->startOffset($position - $elapsed);
                 main::INFOLOG && $log->is_info && $log->info(
                     "Resume: adjusted startOffset to " . $song->startOffset()

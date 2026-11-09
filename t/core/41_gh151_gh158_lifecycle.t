@@ -3466,4 +3466,136 @@ sub grace_case {
     }
 }
 
+# ==================================================================
+# GH #201 (quick 261108-ubq): the two halves of the pause-then-tap contract.
+# Connect.pm deliberately does NOT unpause on `change` while the Spotify
+# session is paused (GH-158 above); only `resume` clears it. After a pause
+# the app's tap produces TrackChanged -> Playing in the helper, which now
+# notifies `stop`, `change`, `resume` (librespot-spoton/src/connect.rs,
+# event_translation_tests). This drives that exact event sequence through
+# the real _connectEvent: LMS must be unpaused by the `resume` that follows
+# the `change`, with the new title's clock starting at 0. Before this test
+# no case spanned both halves (debug connect-boundary-201-202-128 R1).
+# The Perl side needed no change; this pins the contract the Rust fix relies on.
+# ==================================================================
+{
+    my $song   = f242_song();
+    my $client = f242_client(song => $song, ctl => { streaming => 1 });   # paused, stream still open
+    $client->pluginData(connectStartTime => 0);                            # past CONNECT_START_GRACE
+
+    @Slim::Control::Request::EXECUTED = ();
+    Plugins::SpotOn::Connect::_connectEvent(Test::FakeRequest->new($client, _cmd => 'stop', _p2 => undef));
+    is($client->pluginData('connectSessionPaused'), 1, 'GH-201: the post-grace stop records the Spotify-side pause');
+
+    @Slim::Control::Request::EXECUTED = ();
+    Plugins::SpotOn::Connect::_connectEvent(
+        Test::FakeRequest->new($client, _cmd => 'change', _p2 => '5Awt99LSbIaTmWkoOFhP03', _p3 => '1bcCUnCiOttYRh7AfoihFH'));
+    is(scalar(pause_unpause_dispatched()), 0, 'GH-201: `change` alone leaves LMS paused (the GH-158 contract)');
+    is($client->pluginData('connectSessionPaused'), 1, 'GH-201: `change` does not clear the pause state');
+
+    $client->pluginData(newTrack => 0);
+    @Slim::Control::Request::EXECUTED = ();
+    @Test::FakeController::JUMPS      = ();
+    Plugins::SpotOn::Connect::_connectEvent(
+        Test::FakeRequest->new($client, _cmd => 'resume', _p2 => '5Awt99LSbIaTmWkoOFhP03', _p3 => '0.000'));
+    is(scalar(pause_unpause_dispatched()), 1, 'GH-201: the `resume` after the `change` unpauses LMS exactly once');
+    is($client->pluginData('connectSessionPaused'), 0, 'GH-201: `resume` clears the pause state');
+    is(scalar(@Test::FakeController::JUMPS), 0, 'GH-201: a position of 0.000 never jumps (live stream, nothing stale to override)');
+    is(sprintf('%.3f', $song->startOffset), '-28.195',
+        'GH-201: the new title\'s clock starts at 0 (startOffset = 0.000 - the stream\'s elapsed 28.195)');
+    Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
+}
+
+# ==================================================================
+# GH #201 round 2 (quick 261109-f4r), P1: the resume handler's clock pin.
+# Squeezebox2::songElapsedSeconds returns the last STAT's elapsed raw while
+# the player is PAUSED, but once `['pause', 0]` has put it into PLAYING it
+# adds (now - the STAT's timestamp) -- the whole pause gap since the last
+# paused heartbeat, although the player did not move (Squeezebox2.pm
+# :454-456). The handler used to read the elapsed AFTER the unpause, so
+# `startOffset = position - elapsed` carried that gap (measured 0.3-3.1 s
+# in six rig runs, agreement to 0.01 s) and LMS's clamped clock sat at 0
+# for exactly the gap. The elapsed is now read BEFORE the unpause.
+# The fake below models the extrapolation faithfully: a client whose
+# songElapsedSeconds is the raw STAT value until a ['pause', 0] executes,
+# the raw value plus the heartbeat gap after it.
+# ==================================================================
+{
+    package Test::FakeClientExtrap;
+    our @ISA = ('Test::FakeClientSong');
+    sub songElapsedSeconds {
+        my $self = shift;
+        return $self->{elapsed} + ($self->{unpaused} ? $self->{gap} : 0);
+    }
+
+    package main;
+
+    my $mk = sub {
+        my ($gap) = @_;
+        my $song = f242_song();
+        my $client = Test::FakeClientExtrap->new(
+            power => 1, isPlaying => 0, paused => 1, song => $song, elapsed => 29.4, gap => $gap, unpaused => 0,
+            controller => Test::FakeController->new(streaming => 1),
+        );
+        Plugins::SpotOn::Connect->bindConnectClaim($client, 'transfer');
+        $client->pluginData(connectStartTime => 0);
+        return ($client, $song);
+    };
+    my $unpauseHook = sub {
+        my ($client) = @_;
+        return sub {
+            my $req = shift;
+            my $cmd = $req->{cmd} || [];
+            if (@$cmd >= 2 && $cmd->[0] eq 'pause' && $cmd->[1] eq '0') {
+                $client->{unpaused} = 1;
+                $client->{isPlaying} = 1;
+                $client->{paused}    = 0;
+            }
+        };
+    };
+
+    # stop, change, resume 0.000 (the tap after a pause) with a 2.18 s heartbeat gap
+    {
+        my ($client, $song) = $mk->(2.18);
+        local $Slim::Control::Request::ON_EXECUTE = $unpauseHook->($client);
+        Plugins::SpotOn::Connect::_connectEvent(Test::FakeRequest->new($client, _cmd => 'stop', _p2 => undef));
+        Plugins::SpotOn::Connect::_connectEvent(
+            Test::FakeRequest->new($client, _cmd => 'change', _p2 => '5Awt99LSbIaTmWkoOFhP03', _p3 => '1bcCUnCiOttYRh7AfoihFH'));
+        is(sprintf('%.3f', $song->startOffset), '-29.400',
+            'GH-201 P1: the change reset (still paused) writes the raw elapsed (guard, true before and after)');
+        $client->pluginData(newTrack => 0);
+        @Slim::Control::Request::EXECUTED = ();
+        Plugins::SpotOn::Connect::_connectEvent(
+            Test::FakeRequest->new($client, _cmd => 'resume', _p2 => '5Awt99LSbIaTmWkoOFhP03', _p3 => '0.000'));
+        is(scalar(pause_unpause_dispatched()), 1, 'GH-201 P1: the resume unpauses exactly once');
+        is($client->{unpaused}, 1, 'GH-201 P1: the fake clock extrapolated after the unpause (the model is live)');
+        is(sprintf('%.3f', $song->startOffset), '-29.400',
+            'GH-201 P1: tap clock offset = 0 - the PRE-unpause elapsed 29.4 (pre-fix -31.580: the 2.18 s heartbeat gap pinned the clock)');
+        Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
+    }
+
+    # plain resume at the daemon position 31.5 with a 3.12 s gap: the clock jumps forward to the daemon's figure
+    {
+        my ($client, $song) = $mk->(3.12);
+        local $Slim::Control::Request::ON_EXECUTE = $unpauseHook->($client);
+        @Slim::Control::Request::EXECUTED = ();
+        Plugins::SpotOn::Connect::_connectEvent(
+            Test::FakeRequest->new($client, _cmd => 'resume', _p2 => '5Awt99LSbIaTmWkoOFhP03', _p3 => '31.500'));
+        is(scalar(@Test::FakeController::JUMPS), 0, 'GH-201 P1: a live stream (not PAUSED-IDLE) never jumps');
+        is(sprintf('%.3f', $song->startOffset), '2.100',
+            'GH-201 P1: resume 31.5 -> startOffset = 31.5 - pre-unpause elapsed 29.4 = 2.1 (pre-fix -1.020)');
+        Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
+    }
+
+    # zero gap: both orders agree (the extrapolation adds nothing), the arithmetic is unchanged
+    {
+        my ($client, $song) = $mk->(0);
+        local $Slim::Control::Request::ON_EXECUTE = $unpauseHook->($client);
+        Plugins::SpotOn::Connect::_connectEvent(
+            Test::FakeRequest->new($client, _cmd => 'resume', _p2 => '5Awt99LSbIaTmWkoOFhP03', _p3 => '0.000'));
+        is(sprintf('%.3f', $song->startOffset), '-29.400', 'GH-201 P1 (guard): no heartbeat gap -> -29.4 before and after');
+        Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
+    }
+}
+
 done_testing();

@@ -25,7 +25,7 @@
 //   Pitfall 3: Race between Spirc TrackChanged and Browse request.
 //              Both sides check ActiveMode mutex before proceeding.
 //   Pitfall 4: Use "stream_port=N" for stdout announcement (not "unified_port=N").
-//   Pitfall 5: Rate-limiting is FORBIDDEN in BrowseHttpSink. Only HttpStreamSink is rate-limited.
+//   Pitfall 5: Rate-limiting is FORBIDDEN in BrowseHttpSink. Only UnifiedHttpStreamSink (Connect) is rate-limited.
 
 use std::io::Write as IoWrite;
 use std::sync::{Arc, atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering}};
@@ -207,14 +207,79 @@ fn passthrough_mixer(config: MixerConfig) -> Result<Arc<dyn Mixer>, librespot_co
 }
 
 // -------------------------------------------------------------------------
+// Fresh-stream burst credit (quick 261109-f4r, C)
+// -------------------------------------------------------------------------
+//
+// squeezelite starts its output only once it holds its OGG output threshold (LMS
+// Squeezebox.pm:695, 20 tenths = 88200 frames), and the sink delivers at 1x, so every
+// fresh `/stream` connection waits ~2.0 s for sound (claim-lms rows: loud fraction
+// 0.790 / 0.770 against 0.8). The credit lets the sink run ahead of wall time by
+// threshold + one maximal Spotify OGG page ONCE, at a relay start that coincides with a
+// fresh sink timeline, so the player's threshold is met from the burst alone.
+//
+// Granted by `UnifiedHttpStreamSink::maybe_grant_credit` iff ALL hold at an audio write:
+//   (a) the relay armed a start (`BurstArm::arm`) no longer than BURST_ARM_MAX_AGE ago,
+//   (b) the sink timeline is younger than BURST_FRESH_WINDOW (since start()/stop()),
+//   (c) no credit has been granted since the last start()/stop().
+// The arm is consumed by the FIRST audio write after it, granted or not, so a reconnect
+// in the middle of a track never leaves a pending arm that a later pause/resume could
+// pick up. start() and stop() reset the credit. Never on pause/resume (no relay start
+// there), never repeated within a start().
+
+/// LMS's OGG output threshold (20 tenths of a second at 44.1 kHz) ...
+const BURST_THRESHOLD_FRAMES: u64 = 20 * 4410;
+/// ... plus one maximal observed Spotify OGG page (230 ms, rounded up to 10240 frames).
+const BURST_PAGE_FRAMES: u64 = 10_240;
+/// 98440 frames = 2.232 s of lead the sink may build once per start().
+const BURST_CREDIT_FRAMES: u64 = BURST_THRESHOLD_FRAMES + BURST_PAGE_FRAMES;
+/// A sink timeline younger than this is "fresh" (rule b). Covers the LMS reaction time
+/// between `Playing` and the GET; older timelines are mid-track and get no credit.
+const BURST_FRESH_WINDOW: Duration = Duration::from_secs(5);
+/// An arm older than this is stale (rule a). Covers a PCM relay that starts before the
+/// sink does (the GET precedes `Playing` by the Spotify transfer-to-resume gap, 2.5 s
+/// normal, 4 s slow).
+const BURST_ARM_MAX_AGE: Duration = Duration::from_secs(10);
+
+/// Relay -> sink signal "a fresh /stream relay just started" (see the block above).
+struct BurstArm {
+    armed: AtomicBool,
+    at: std::sync::Mutex<Option<Instant>>,
+}
+
+impl BurstArm {
+    fn new() -> Self {
+        Self { armed: AtomicBool::new(false), at: std::sync::Mutex::new(None) }
+    }
+
+    /// Relay side: a relay start was just served.
+    fn arm(&self) {
+        self.arm_at(Instant::now());
+    }
+
+    fn arm_at(&self, when: Instant) {
+        *self.at.lock().unwrap_or_else(|e| e.into_inner()) = Some(when);
+        self.armed.store(true, Ordering::Release);
+    }
+
+    /// Sink side: consume the arm; true iff there was one and it is no older than `max_age`.
+    /// A stale arm is consumed (dropped) too.
+    fn take(&self, max_age: Duration) -> bool {
+        if !self.armed.swap(false, Ordering::AcqRel) {
+            return false;
+        }
+        let at = self.at.lock().unwrap_or_else(|e| e.into_inner()).take();
+        at.is_some_and(|t| t.elapsed() <= max_age)
+    }
+}
+
+// -------------------------------------------------------------------------
 // UnifiedHttpStreamSink — rate-limited PCM sink for Connect path
 // -------------------------------------------------------------------------
 //
-// This is a local reimplementation of connect::HttpStreamSink to avoid
-// exposing HttpStreamSink::flush_tx (watch::Sender is not Clone, so the
-// connect::HttpStreamSink wraps flush_tx as an owned field with a private
-// Clone impl that drops it). We replicate the struct in unified.rs to keep
-// ownership clean.
+// The only Connect sink. (It started as a reimplementation of connect.rs'
+// HttpStreamSink, which was dead for a long time and was removed in quick
+// 261109-ath.) It paces at 1x since start() with no hold-back, never blocks the
+// librespot player thread (GH #202) and hands chunks to the /stream relay.
 
 struct UnifiedHttpStreamSink {
     pcm_tx: mpsc::Sender<Bytes>,
@@ -224,7 +289,6 @@ struct UnifiedHttpStreamSink {
     last_track_gen: u64,
     began_at: Instant,
     frames_consumed: u64,
-    buffer_latency_ns: u128,
     // Phase 43 (D-03): shared with the /stream HTTP handler so buffered OGG BOS +
     // Vorbis header pages can be replayed after the handler drains stale chunks
     // from the main channel on each new connection.
@@ -251,35 +315,55 @@ struct UnifiedHttpStreamSink {
     // buffer-latency gap at every track boundary.
     ogg_track_base_frames: u128,
     ogg_timeline_frames: u128,
+    // GH #202: set by the sink when it had to drop a chunk because nobody reads
+    // pcm_rx; consumed by the /stream relay, which then discards the stale backlog.
+    overflow: Arc<AtomicBool>,
+    // GH #202: chunks dropped on a full channel since the sink was opened.
+    dropped: u64,
+    // Rate-limited WARN bookkeeping for the drop counter.
+    dropped_since_log: u64,
+    last_drop_log: Option<Instant>,
+    // Chunks dropped since the channel last accepted one (for the recovery INFO).
+    drops_in_episode: u64,
+    // Quick 261109-f4r (C): relay -> sink "fresh relay start" signal and the credit it may buy.
+    burst: Arc<BurstArm>,
+    // Frames of lead granted by the credit since the last start()/stop() (0 = none).
+    credit_frames: u64,
+    // Rule (b) bound; a field only so tests can shrink it (production: BURST_FRESH_WINDOW).
+    burst_fresh_window: Duration,
 }
 
 impl UnifiedHttpStreamSink {
-    fn open(
+    #[allow(clippy::too_many_arguments)]
+    fn new(
         _device: Option<String>,
         format: AudioFormat,
         pcm_tx: mpsc::Sender<Bytes>,
         flush_tx: watch::Sender<u64>,
         track_gen: Arc<AtomicU64>,
-        buffer_latency_ms: u64,
+        // Inert since quick 261109-ath: the CON-14 hold-back is gone (see write()).
+        // The parameter stays so `--buffer-latency-ms` keeps parsing end to end.
+        _buffer_latency_ms: u64,
         ogg_header_buf: Arc<std::sync::Mutex<Vec<Bytes>>>,
         ogg_header_serial: Arc<AtomicU32>,
         ogg_headers_complete: Arc<AtomicBool>,
+        overflow: Arc<AtomicBool>,
+        burst: Arc<BurstArm>,
         passthrough: bool,
-    ) -> Box<dyn Sink> {
+    ) -> Self {
         if format != AudioFormat::S16 {
             panic!(
                 "UnifiedHttpStreamSink: only AudioFormat::S16 supported, got {:?}",
                 format
             );
         }
-        Box::new(Self {
+        Self {
             pcm_tx,
             flush_tx,
             last_track_gen: track_gen.load(Ordering::Acquire),
             track_gen,
             began_at: Instant::now(),
             frames_consumed: 0,
-            buffer_latency_ns: u128::from(buffer_latency_ms) * 1_000_000u128,
             ogg_header_buf,
             ogg_header_serial,
             ogg_headers_complete,
@@ -289,7 +373,333 @@ impl UnifiedHttpStreamSink {
             ogg_serial: 0,
             ogg_track_base_frames: 0,
             ogg_timeline_frames: 0,
-        })
+            overflow,
+            dropped: 0,
+            dropped_since_log: 0,
+            last_drop_log: None,
+            drops_in_episode: 0,
+            burst,
+            credit_frames: 0,
+            burst_fresh_window: BURST_FRESH_WINDOW,
+        }
+    }
+
+    /// Quick 261109-f4r (C): called right before the 1x pacing of an AUDIO write (an OGG chunk
+    /// holding an audio page, or a PCM packet). Consumes the relay's arm (see the rules above
+    /// `BURST_THRESHOLD_FRAMES`) at the first audio write after it, and grants the one-off lead
+    /// iff the sink has none yet and its timeline is still fresh.
+    fn maybe_grant_credit(&mut self) {
+        // Consumed whatever the verdict, so a mid-track arm cannot linger for a later restart.
+        let armed = self.burst.take(BURST_ARM_MAX_AGE);
+        if !armed || self.credit_frames != 0 {
+            return;
+        }
+        let age = self.began_at.elapsed();
+        if age > self.burst_fresh_window {
+            log::debug!(
+                "[spoton/unified] fresh-relay credit not granted: sink timeline is {}ms old (mid-track relay restart)",
+                age.as_millis()
+            );
+            return;
+        }
+        self.credit_frames = BURST_CREDIT_FRAMES;
+        log::info!(
+            "[spoton/unified] fresh relay start on a fresh sink timeline ({}ms old): burst credit {} frames ({}ms)",
+            age.as_millis(),
+            BURST_CREDIT_FRAMES,
+            BURST_CREDIT_FRAMES * 1000 / u64::from(SAMPLE_RATE)
+        );
+    }
+
+    /// Non-blocking hand-over of one chunk to the /stream relay (GH #202).
+    ///
+    /// Runs on the librespot player thread, so it must never wait for the reader:
+    /// the old spin-on-Full loop froze Spirc (no pause, no Load, no Browse
+    /// preemption) for as long as nobody read, 64 s of Send-Q fill plus the
+    /// 256-slot channel after LMS stopped taking the stream. On `Full` the chunk
+    /// is dropped, `overflow` tells the relay to discard the stale backlog when a
+    /// reader returns (so it gets live audio, not a minute-old queue), and a
+    /// rate-limited WARN carries the drop counter. 1x pacing is untouched, so the
+    /// Spirc position stays honest. `Closed` (server gone) stays an error.
+    fn push_live(&mut self, chunk: Bytes) -> SinkResult<()> {
+        match self.pcm_tx.try_send(chunk) {
+            Ok(()) => {
+                if self.drops_in_episode > 0 {
+                    log::info!(
+                        "[spoton/unified] Connect sink: channel accepts chunks again after {} dropped (total {})",
+                        self.drops_in_episode,
+                        self.dropped
+                    );
+                    self.drops_in_episode = 0;
+                }
+                Ok(())
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                self.dropped += 1;
+                self.drops_in_episode += 1;
+                self.dropped_since_log += 1;
+                self.overflow.store(true, Ordering::Release);
+                let now = Instant::now();
+                let due = self
+                    .last_drop_log
+                    .map_or(true, |t| now.duration_since(t) >= Duration::from_secs(5));
+                if due {
+                    log::warn!(
+                        "[spoton/unified] Connect sink: no reader on /stream, dropped {} chunks \
+                         (total {})",
+                        self.dropped_since_log,
+                        self.dropped
+                    );
+                    self.dropped_since_log = 0;
+                    self.last_drop_log = Some(now);
+                }
+                Ok(())
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => Err(SinkError::OnWrite(
+                "Unified HTTP stream server shut down".into(),
+            )),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn open(
+        device: Option<String>,
+        format: AudioFormat,
+        pcm_tx: mpsc::Sender<Bytes>,
+        flush_tx: watch::Sender<u64>,
+        track_gen: Arc<AtomicU64>,
+        buffer_latency_ms: u64,
+        ogg_header_buf: Arc<std::sync::Mutex<Vec<Bytes>>>,
+        ogg_header_serial: Arc<AtomicU32>,
+        ogg_headers_complete: Arc<AtomicBool>,
+        overflow: Arc<AtomicBool>,
+        burst: Arc<BurstArm>,
+        passthrough: bool,
+    ) -> Box<dyn Sink> {
+        Box::new(Self::new(
+            device,
+            format,
+            pcm_tx,
+            flush_tx,
+            track_gen,
+            buffer_latency_ms,
+            ogg_header_buf,
+            ogg_header_serial,
+            ogg_headers_complete,
+            overflow,
+            burst,
+            passthrough,
+        ))
+    }
+}
+
+/// Bound of the relay's wait for the sink's OGG header pages at a new `/stream` GET
+/// (quick 261109-f4r, D; was 3 s). See the call site.
+const OGG_HEADER_WAIT_SECS: u64 = 10;
+
+/// Discards everything queued on the Connect channel; returns the count.
+fn drain_all(rx: &mut mpsc::Receiver<Bytes>) -> u64 {
+    let mut n = 0u64;
+    while rx.try_recv().is_ok() {
+        n += 1;
+    }
+    n
+}
+
+/// One complete OGG page found inside a chunk (no CRC check, like the sink).
+struct OggPageInfo {
+    range: std::ops::Range<usize>,
+    granule: i64,
+    serial: u32,
+}
+
+/// Walks the complete OGG pages of a chunk; stops at the first malformed or
+/// truncated page. Same framing rules as `UnifiedHttpStreamSink::write`.
+fn ogg_pages(chunk: &[u8]) -> Vec<OggPageInfo> {
+    let mut pages = Vec::new();
+    let mut pos = 0usize;
+    while pos + 27 <= chunk.len() {
+        if &chunk[pos..pos + 4] != b"OggS" {
+            break;
+        }
+        let granule = i64::from_le_bytes(chunk[pos + 6..pos + 14].try_into().expect("8 bytes"));
+        let serial = u32::from_le_bytes(chunk[pos + 14..pos + 18].try_into().expect("4 bytes"));
+        let n_segments = chunk[pos + 26] as usize;
+        if pos + 27 + n_segments > chunk.len() {
+            break;
+        }
+        let body_size: usize = chunk[pos + 27..pos + 27 + n_segments]
+            .iter()
+            .map(|&b| b as usize)
+            .sum();
+        let end = pos + 27 + n_segments + body_size;
+        if end > chunk.len() {
+            break;
+        }
+        pages.push(OggPageInfo { range: pos..end, granule, serial });
+        pos = end;
+    }
+    pages
+}
+
+/// Serial of the LAST complete OGG page in `chunk` (None for PCM / garbage).
+fn last_ogg_serial(chunk: &[u8]) -> Option<u32> {
+    ogg_pages(chunk).last().map(|p| p.serial)
+}
+
+/// What a NEW `/stream` connection takes over from the backlog the Connect channel
+/// holds at relay start (review W-1).
+///
+/// With the 2 s hold-back gone, the sink has usually already queued the header chunk
+/// AND the first audio page(s) by the time the GET is served (the GET lags `Playing`
+/// by the LMS reaction time). A total drain would throw that audio away, so the
+/// backlog is sorted instead of dropped:
+///
+/// - overflow flag set at relay start -> everything is stale (nobody was reading);
+/// - PCM -> no way to tell stale from fresh: total drain, as before;
+/// - OGG without a header snapshot (the header wait timed out; quick 261109-f4r) -> keep
+///   every queued chunk in order: the sink clears its header buffer on start(), so the
+///   queue is the current stream, and it may hold the header chunk itself;
+/// - OGG with a header snapshot -> per PAGE: keep audio pages (granule != 0) of the
+///   snapshot's serial; discard header pages (replayed from the snapshot, a second
+///   BOS would only confuse the decoder), pages of any other serial (pre-seek audio
+///   or the previous track) and trailing partial pages.
+///
+/// Returns (pages kept, in order, to forward right after the header replay;
+/// number of queued chunks that contributed nothing).
+fn relay_start_backlog(
+    rx: &mut mpsc::Receiver<Bytes>,
+    overflow: &AtomicBool,
+    passthrough: bool,
+    header_snapshot: &[Bytes],
+) -> (Vec<Bytes>, u64) {
+    // Clear the flag first: the drain below handles an earlier overflow, and a
+    // `Full` during/after it just costs one extra relay pass (review I-1).
+    let was_overflow = overflow.swap(false, Ordering::AcqRel);
+    let mut pending: Vec<Bytes> = Vec::new();
+    while let Ok(chunk) = rx.try_recv() {
+        pending.push(chunk);
+    }
+    let snapshot_serial = header_snapshot
+        .iter()
+        .find_map(|p| ogg_pages(p).first().map(|pg| pg.serial));
+    let serial = match (was_overflow, passthrough, snapshot_serial) {
+        (false, true, Some(serial)) => serial,
+        // Quick 261109-f4r (D): OGG without a header snapshot and without an overflow. The
+        // sink clears its header buffer on start(), so the queue holds the CURRENT stream
+        // only (possibly the header chunk that landed after the header wait timed out).
+        // Keep it all, in order; there is no replay to duplicate and no serial to filter by.
+        (false, true, None) => {
+            return (pending, 0);
+        }
+        _ => return (Vec::new(), pending.len() as u64),
+    };
+    let mut kept: Vec<Bytes> = Vec::new();
+    let mut discarded = 0u64;
+    for chunk in pending {
+        let mut chunk_kept = false;
+        let mut run: Option<(usize, usize)> = None;
+        for pg in ogg_pages(&chunk) {
+            if pg.serial == serial && pg.granule != 0 {
+                run = Some(match run {
+                    Some((start, _)) => (start, pg.range.end),
+                    None => (pg.range.start, pg.range.end),
+                });
+            } else if let Some((start, end)) = run.take() {
+                kept.push(chunk.slice(start..end));
+                chunk_kept = true;
+            }
+        }
+        if let Some((start, end)) = run.take() {
+            kept.push(chunk.slice(start..end));
+            chunk_kept = true;
+        }
+        if !chunk_kept {
+            discarded += 1;
+        }
+    }
+    (kept, discarded)
+}
+
+/// Shared header state the relay needs to repair a stream after an overflow.
+#[derive(Clone)]
+struct RelayHeaders {
+    buf: Arc<std::sync::Mutex<Vec<Bytes>>>,
+    serial: Arc<AtomicU32>,
+    complete: Arc<AtomicBool>,
+}
+
+/// Per-connection relay state: what was last forwarded to the client.
+struct RelayCursor {
+    passthrough: bool,
+    /// Serial of the last OGG page forwarded to this client (0 = none yet / PCM).
+    last_serial: u32,
+    headers: Option<RelayHeaders>,
+}
+
+/// Outcome of one relay pass over the Connect channel.
+enum RelayStep {
+    /// Forward this chunk.
+    Chunk(Bytes),
+    /// Forward these header pages (a new logical stream starts after an overflow).
+    Replay(Vec<Bytes>),
+    /// Nothing to forward this pass.
+    Idle,
+}
+
+/// One relay read step on the Connect channel (GH #202).
+///
+/// When the sink flagged an overflow (it dropped chunks because nobody read), the
+/// queued backlog is stale: discard it in one go and report Idle for this pass, so
+/// the first chunk forwarded after the stall is live. That is drop-oldest on a
+/// bounded `mpsc` without replacing it. Otherwise a plain FIFO `try_recv`.
+///
+/// A `Full` that lands between the `swap` and the drain sets the flag again and
+/// costs one extra pass (at most one page at 1x); accepted, no lock.
+fn relay_step(
+    rx: &mut mpsc::Receiver<Bytes>,
+    overflow: &AtomicBool,
+    cursor: &mut RelayCursor,
+) -> RelayStep {
+    if overflow.swap(false, Ordering::AcqRel) {
+        let n = drain_all(rx);
+        // W-2: if the stream moved to a new logical stream (serial) while this
+        // connection was not reading, its header pages were dropped or drained with
+        // the backlog. Replay them before any live page of that serial; never when
+        // the serial is unchanged (a second BOS of the same serial re-opens the link).
+        let replay = cursor.headers.as_ref().filter(|_| cursor.passthrough).and_then(|h| {
+            let current = h.serial.load(Ordering::Acquire);
+            if !h.complete.load(Ordering::Acquire) || current == 0 || current == cursor.last_serial {
+                return None;
+            }
+            let snapshot = h.buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let matches = snapshot
+                .first()
+                .and_then(|p| ogg_pages(p).first().map(|pg| pg.serial))
+                == Some(current);
+            if matches { Some((current, snapshot)) } else { None }
+        });
+        log::info!(
+            "[spoton/unified] /stream: sink overflowed while nobody read - discarded {} queued stale chunks{}",
+            n,
+            if replay.is_some() { ", replaying headers of the new stream" } else { "" }
+        );
+        if let Some((current, snapshot)) = replay {
+            cursor.last_serial = current;
+            return RelayStep::Replay(snapshot);
+        }
+        return RelayStep::Idle;
+    }
+    match rx.try_recv() {
+        Ok(chunk) => {
+            if cursor.passthrough {
+                if let Some(serial) = last_ogg_serial(&chunk) {
+                    cursor.last_serial = serial;
+                }
+            }
+            RelayStep::Chunk(chunk)
+        }
+        Err(_) => RelayStep::Idle,
     }
 }
 
@@ -302,6 +712,7 @@ impl Sink for UnifiedHttpStreamSink {
         self.ogg_serial = 0;
         self.ogg_track_base_frames = 0;
         self.ogg_timeline_frames = 0;
+        self.credit_frames = 0; // quick 261109-f4r (C): the credit is once per start()
         // Phase 43 (D-03): clear the header buffer on every track start so the
         // /stream handler always replays THIS track's headers, not a stale track's.
         if self.passthrough {
@@ -324,6 +735,7 @@ impl Sink for UnifiedHttpStreamSink {
         self.ogg_serial = 0;
         self.ogg_track_base_frames = 0;
         self.ogg_timeline_frames = 0;
+        self.credit_frames = 0;
         Ok(())
     }
 
@@ -357,12 +769,17 @@ impl Sink for UnifiedHttpStreamSink {
                     )
                 };
 
-                // Wall-clock rate-limiter with buffer-latency compensation (CON-14).
+                // Wall-clock rate-limiter (CON-14), 1x since start(), shifted by the one-off
+                // fresh-relay credit (`credit_frames`, 0 unless granted). There is NO
+                // buffer-latency addend any more: it held the first packet of every
+                // start() back by 2 s on the player thread, which opened a data gap at
+                // squeezelite after every pause/resume (quick 261109-ath).
                 let frames_in_packet = (samples.len() / NUM_CHANNELS as usize) as u64;
                 self.frames_consumed = self.frames_consumed.saturating_add(frames_in_packet);
-                let expected_ns: u128 =
-                    u128::from(self.frames_consumed) * 1_000_000_000u128 / u128::from(SAMPLE_RATE)
-                    + self.buffer_latency_ns;
+                self.maybe_grant_credit();
+                let expected_ns: u128 = u128::from(self.frames_consumed.saturating_sub(self.credit_frames))
+                    * 1_000_000_000u128
+                    / u128::from(SAMPLE_RATE);
                 let elapsed_ns: u128 = self.began_at.elapsed().as_nanos();
 
                 if expected_ns > elapsed_ns {
@@ -371,19 +788,7 @@ impl Sink for UnifiedHttpStreamSink {
                 }
 
                 let chunk = Bytes::copy_from_slice(bytes);
-                loop {
-                    match self.pcm_tx.try_send(chunk.clone()) {
-                        Ok(()) => break,
-                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                            std::thread::sleep(Duration::from_millis(1));
-                        }
-                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                            return Err(SinkError::OnWrite(
-                                "Unified HTTP stream server shut down".into(),
-                            ));
-                        }
-                    }
-                }
+                self.push_live(chunk)?;
             }
             AudioPacket::Raw(bytes) => {
                 let chunk = Bytes::from(bytes);
@@ -473,13 +878,17 @@ impl Sink for UnifiedHttpStreamSink {
                     pos += page_size;
                 }
 
-                // Rate limiting — continuous timeline across gapless tracks.
+                // Rate limiting — continuous timeline across gapless tracks, 1x since
+                // start(). No buffer-latency addend (see the PCM path above): in
+                // passthrough librespot skips PositionCorrection, so the addend was
+                // pure delay on the first page after every start().
                 if let Some(timeline_frames) = last_timeline_frames {
                     self.ogg_timeline_frames = timeline_frames;
+                    self.maybe_grant_credit();
                     let expected_ns: u128 = timeline_frames
+                        .saturating_sub(u128::from(self.credit_frames))
                         * 1_000_000_000u128
-                        / u128::from(SAMPLE_RATE)
-                        + self.buffer_latency_ns;
+                        / u128::from(SAMPLE_RATE);
                     let elapsed_ns: u128 = self.began_at.elapsed().as_nanos();
 
                     if expected_ns > elapsed_ns {
@@ -488,19 +897,9 @@ impl Sink for UnifiedHttpStreamSink {
                     }
                 }
 
-                loop {
-                    match self.pcm_tx.try_send(chunk.clone()) {
-                        Ok(()) => break,
-                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                            std::thread::sleep(Duration::from_millis(1));
-                        }
-                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                            return Err(SinkError::OnWrite(
-                                "Unified HTTP stream server shut down".into(),
-                            ));
-                        }
-                    }
-                }
+                // Header pages were captured into ogg_header_buf above, before this
+                // send, so a dropped chunk never loses the replay data.
+                self.push_live(chunk)?;
             }
         }
 
@@ -561,6 +960,10 @@ async fn unified_http_server(
     ogg_header_buf: Option<Arc<std::sync::Mutex<Vec<Bytes>>>>,
     ogg_header_serial: Option<Arc<AtomicU32>>,
     ogg_headers_complete: Option<Arc<AtomicBool>>,
+    // GH #202: overflow flag shared with the Connect sink (Some when enable_connect).
+    connect_overflow: Option<Arc<AtomicBool>>,
+    // Quick 261109-f4r (C): relay -> sink fresh-start signal (Some when enable_connect).
+    connect_burst: Option<Arc<BurstArm>>,
     // Issue #97: bitrate for Browse Player creation
     bitrate: Bitrate,
     enable_normalisation: bool,
@@ -608,6 +1011,8 @@ async fn unified_http_server(
                 let ogg_header_buf = ogg_header_buf.as_ref().map(Arc::clone);
                 let ogg_header_serial = ogg_header_serial.as_ref().map(Arc::clone);
                 let ogg_headers_complete = ogg_headers_complete.as_ref().map(Arc::clone);
+                let connect_overflow = connect_overflow.as_ref().map(Arc::clone);
+                let connect_burst = connect_burst.as_ref().map(Arc::clone);
                 let lms_notify = lms_notify.clone();
 
                 let svc = hyper::service::service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
@@ -631,6 +1036,8 @@ async fn unified_http_server(
                     let ogg_header_buf = ogg_header_buf.as_ref().map(Arc::clone);
                     let ogg_header_serial = ogg_header_serial.as_ref().map(Arc::clone);
                     let ogg_headers_complete = ogg_headers_complete.as_ref().map(Arc::clone);
+                    let connect_overflow = connect_overflow.as_ref().map(Arc::clone);
+                    let connect_burst = connect_burst.as_ref().map(Arc::clone);
                     let lms_notify = lms_notify.clone();
 
                     async move {
@@ -683,6 +1090,9 @@ async fn unified_http_server(
                                 Some(rx) => rx,
                                 None => return Ok(empty_response(StatusCode::SERVICE_UNAVAILABLE)),
                             };
+
+                            let overflow = connect_overflow.unwrap_or_default();
+                            let burst = connect_burst;
 
                             log::debug!("[spoton/unified] /stream: GET request received");
 
@@ -739,8 +1149,12 @@ async fn unified_http_server(
                             let mut header_snapshot: Vec<Bytes> = Vec::new();
                             if passthrough {
                                 if let Some(ref buf) = ogg_header_buf {
-                                    let deadline = tokio::time::Instant::now()
-                                        + Duration::from_secs(3);
+                                    // Quick 261109-f4r (D): Spotify delivers a transfer paused and the
+                                    // `resume` follows 2.5 s (normal) to 4 s (slow) later, so the old 3 s
+                                    // bound was load-bearing against the normal case and timed out on the
+                                    // slow one. squeezelite waits on the socket indefinitely.
+                                    let header_wait = Duration::from_secs(OGG_HEADER_WAIT_SECS);
+                                    let deadline = tokio::time::Instant::now() + header_wait;
                                     loop {
                                         let headers_done = ogg_headers_complete.as_ref()
                                             .map(|b| b.load(Ordering::Acquire))
@@ -771,9 +1185,11 @@ async fn unified_http_server(
                                             }
                                             log::warn!(
                                                 "[spoton/unified] /stream: OGG header wait \
-                                                 timeout (pages={}, done={}, serial match={}){}",
-                                                n, headers_done, serial_ok,
-                                                if header_snapshot.is_empty() { " — skipping replay" } else { "" }
+                                                 timeout after {}s (pages={}, done={}, serial match={}){}",
+                                                header_wait.as_secs(), n, headers_done, serial_ok,
+                                                if header_snapshot.is_empty() {
+                                                    " — skipping replay, keeping queued chunks"
+                                                } else { "" }
                                             );
                                             break;
                                         }
@@ -782,12 +1198,24 @@ async fn unified_http_server(
                                 }
                             }
 
-                            // Drain stale pre-seek audio from the channel.
-                            {
+                            // Relay-start backlog: discard what is stale, keep the
+                            // audio of the current stream that was pushed while the
+                            // GET was on its way (see relay_start_backlog).
+                            let (kept_audio, drained) = {
                                 let mut rx = pcm_rx.lock().unwrap_or_else(|e| e.into_inner());
-                                let mut drained = 0u64;
-                                while rx.try_recv().is_ok() { drained += 1; }
-                                log::debug!("[spoton/unified] /stream: relay starting, drained {} stale chunks", drained);
+                                relay_start_backlog(&mut rx, &overflow, passthrough, &header_snapshot)
+                            };
+                            log::debug!(
+                                "[spoton/unified] /stream: relay starting, drained {} stale chunks, kept {} audio chunks",
+                                drained, kept_audio.len()
+                            );
+
+                            // Quick 261109-f4r (C): tell the sink a fresh relay just started; it
+                            // grants the one-off burst credit iff its own timeline is fresh too
+                            // (rules at BURST_THRESHOLD_FRAMES). Armed after the backlog drain so
+                            // the pages kept above stay at their original pace.
+                            if let Some(ref burst) = burst {
+                                burst.arm();
                             }
 
                             // GH #128: the relay is now actually about to serve audio.
@@ -803,8 +1231,12 @@ async fn unified_http_server(
                                 });
                             }
 
-                            // Per-connection relay channel (64 frames capacity).
-                            let (conn_tx, conn_rx) = mpsc::channel::<Bytes>(64);
+                            // Per-connection relay channel: 64 live frames plus room for
+                            // the header replay and the kept backlog, which are queued
+                            // before the response (and so the reader) exists.
+                            let (conn_tx, conn_rx) = mpsc::channel::<Bytes>(
+                                64 + header_snapshot.len() + kept_audio.len(),
+                            );
 
                             // Replay snapshotted OGG headers (BOS + Vorbis setup)
                             // before the relay begins. The drain above removed them
@@ -828,7 +1260,34 @@ async fn unified_http_server(
                                 log::debug!("[spoton/unified] /stream: replayed {} OGG header pages", replayed);
                             }
 
+                            // Audio of the current stream that was already queued: it
+                            // follows the headers, in order. Capacity was reserved above.
+                            for chunk in &kept_audio {
+                                if conn_tx.try_send(chunk.clone()).is_err() {
+                                    break;
+                                }
+                            }
+
+                            let mut relay_cursor = RelayCursor {
+                                passthrough,
+                                last_serial: kept_audio
+                                    .iter()
+                                    .rev()
+                                    .find_map(|c| last_ogg_serial(c))
+                                    .or_else(|| header_snapshot.iter().rev().find_map(|c| last_ogg_serial(c)))
+                                    .unwrap_or(0),
+                                headers: match (&ogg_header_buf, &ogg_header_serial, &ogg_headers_complete) {
+                                    (Some(b), Some(s), Some(c)) if passthrough => Some(RelayHeaders {
+                                        buf: Arc::clone(b),
+                                        serial: Arc::clone(s),
+                                        complete: Arc::clone(c),
+                                    }),
+                                    _ => None,
+                                },
+                            };
+
                             let pcm_rx_clone = Arc::clone(&pcm_rx);
+                            let overflow_clone = Arc::clone(&overflow);
                             let flush_rx_clone = Arc::clone(&flush_rx);
                             let relay_active_clone = Arc::clone(&relay_active);
                             let relay_gen_clone = Arc::clone(&relay_gen);
@@ -904,12 +1363,12 @@ async fn unified_http_server(
                                         }
                                     }
 
-                                    let chunk = {
+                                    let step = {
                                         let mut rx = pcm_rx_clone.lock().unwrap_or_else(|e| e.into_inner());
-                                        rx.try_recv().ok()
+                                        relay_step(&mut rx, &overflow_clone, &mut relay_cursor)
                                     };
-                                    match chunk {
-                                        Some(bytes) => {
+                                    match step {
+                                        RelayStep::Chunk(bytes) => {
                                             if conn_tx.send(bytes).await.is_err() {
                                                 log::debug!("[spoton/unified] /stream: relay client disconnected");
                                                 break;
@@ -917,7 +1376,20 @@ async fn unified_http_server(
                                             *last_data_time_clone.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
                                             *last_activity_relay.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
                                         }
-                                        None => {
+                                        RelayStep::Replay(pages) => {
+                                            let mut gone = false;
+                                            for page in pages {
+                                                if conn_tx.send(page).await.is_err() {
+                                                    gone = true;
+                                                    break;
+                                                }
+                                            }
+                                            if gone {
+                                                log::debug!("[spoton/unified] /stream: relay client disconnected");
+                                                break;
+                                            }
+                                        }
+                                        RelayStep::Idle => {
                                             tokio::time::sleep(Duration::from_millis(1)).await;
                                         }
                                     }
@@ -1375,6 +1847,11 @@ pub async fn run_unified(
         _ => Bitrate::Bitrate320,
     };
     log::info!("[spoton/unified] Bitrate: {} kbps", bitrate_kbps);
+    log::info!(
+        "[spoton/unified] --buffer-latency-ms {} accepted but inert: the Connect sink \
+         paces at 1x and no longer holds the first page after start() back",
+        buffer_latency_ms
+    );
 
     // 1. Cache + Credentials
     //    Third arg (audio_path = Some(cache_dir)) enables audio key cache (D-02).
@@ -1472,6 +1949,8 @@ pub async fn run_unified(
     let ogg_header_buf_arc: Option<Arc<std::sync::Mutex<Vec<Bytes>>>>;
     let ogg_header_serial_arc: Option<Arc<AtomicU32>>;
     let ogg_headers_complete_arc: Option<Arc<AtomicBool>>;
+    let connect_overflow_arc: Option<Arc<AtomicBool>>;
+    let connect_burst_arc: Option<Arc<BurstArm>>;
 
     // Reconnect infrastructure.
     let mixer_fn_opt: Option<librespot_playback::mixer::MixerFn>;
@@ -1496,6 +1975,12 @@ pub async fn run_unified(
             Arc::new(std::sync::Mutex::new(Vec::new()));
         let ogg_header_serial: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
         let ogg_headers_complete: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+        // GH #202: sink -> relay overflow signal (see UnifiedHttpStreamSink::overflow).
+        let connect_overflow: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+        connect_overflow_arc = Some(Arc::clone(&connect_overflow));
+        // Quick 261109-f4r (C): relay -> sink fresh-start signal for the burst credit.
+        let connect_burst: Arc<BurstArm> = Arc::new(BurstArm::new());
+        connect_burst_arc = Some(Arc::clone(&connect_burst));
         ogg_header_buf_arc = Some(Arc::clone(&ogg_header_buf));
         ogg_header_serial_arc = Some(Arc::clone(&ogg_header_serial));
         ogg_headers_complete_arc = Some(Arc::clone(&ogg_headers_complete));
@@ -1514,6 +1999,8 @@ pub async fn run_unified(
         let ogg_buf_for_sink = Arc::clone(&ogg_header_buf);
         let ogg_serial_for_sink = Arc::clone(&ogg_header_serial);
         let ogg_complete_for_sink = Arc::clone(&ogg_headers_complete);
+        let overflow_for_sink = Arc::clone(&connect_overflow);
+        let burst_for_sink = Arc::clone(&connect_burst);
         let session_for_player = {
             let s = session_shared.lock().await;
             s.clone()
@@ -1533,6 +2020,8 @@ pub async fn run_unified(
                     ogg_buf_for_sink,
                     ogg_serial_for_sink,
                     ogg_complete_for_sink,
+                    overflow_for_sink,
+                    burst_for_sink,
                     passthrough,
                 )
             },
@@ -1755,6 +2244,8 @@ pub async fn run_unified(
             ogg_header_buf_arc,
             ogg_header_serial_arc,
             ogg_headers_complete_arc,
+            connect_overflow_arc,
+            connect_burst_arc,
             bitrate_enum,
             enable_normalisation,
             Some(lms_for_relay), // GH #128: relay-start position resync
@@ -2059,6 +2550,8 @@ pub async fn run_unified(
         ogg_header_buf_arc = None;
         ogg_header_serial_arc = None;
         ogg_headers_complete_arc = None;
+        connect_overflow_arc = None;
+        connect_burst_arc = None;
         mixer_fn_opt = None;
         lms_for_reconnect = None;
         connect_player_opt = None;
@@ -2086,6 +2579,8 @@ pub async fn run_unified(
             None,  // ogg_header_buf
             None,  // ogg_header_serial
             None,  // ogg_headers_complete
+            None,  // connect_overflow
+            None,  // connect_burst
             bitrate_enum,
             enable_normalisation,
             None,  // lms_notify (GH #128) — no Connect, no relay
@@ -2285,5 +2780,779 @@ mod control_status_tests {
     fn unknown_command_is_404() {
         assert_eq!(control_status(true, false, "bogus"), StatusCode::NOT_FOUND);
         assert_eq!(control_status(false, false, "bogus"), StatusCode::NOT_FOUND);
+    }
+}
+
+// -------------------------------------------------------------------------
+// Connect sink pacing tests (post-resume stall, quick 261109-ath)
+// -------------------------------------------------------------------------
+//
+// The Connect sink must pace at 1x since start() but must NOT hold the first
+// audio page back by the buffer latency: in OGG passthrough the hold-back is
+// pure delay (no PositionCorrection) and every pause/resume restart then opens
+// a data gap at squeezelite that is longer than the audio it still holds.
+//
+// Real-time tests with generous margins: no clock seam exists, and the
+// thresholds (500 ms vs the 2000 ms hold-back, against operations that take microseconds) leave wide margins both ways.
+
+#[cfg(test)]
+mod sink_test_support {
+    use super::*;
+
+    /// A synthetic single-segment OGG page: "OggS", version 0, granule LE i64
+    /// at 6..14, serial at 14..18, one lacing value. The sink parser checks no CRC.
+    pub fn ogg_page(granule: i64, serial: u32, body_len: usize) -> Vec<u8> {
+        let mut p = Vec::with_capacity(28 + body_len);
+        p.extend_from_slice(b"OggS");
+        p.push(0); // version
+        p.push(0); // header type
+        p.extend_from_slice(&granule.to_le_bytes());
+        p.extend_from_slice(&serial.to_le_bytes());
+        p.extend_from_slice(&0u32.to_le_bytes()); // page sequence
+        p.extend_from_slice(&0u32.to_le_bytes()); // crc (unchecked)
+        p.push(1); // one segment
+        p.push(body_len as u8);
+        p.extend(std::iter::repeat(0u8).take(body_len));
+        p
+    }
+
+    pub struct Rig {
+        pub sink: UnifiedHttpStreamSink,
+        pub rx: mpsc::Receiver<Bytes>,
+        pub overflow: Arc<AtomicBool>,
+        pub header_buf: Arc<std::sync::Mutex<Vec<Bytes>>>,
+        pub header_serial: Arc<AtomicU32>,
+        pub headers_complete: Arc<AtomicBool>,
+        pub burst: Arc<BurstArm>,
+    }
+
+    pub fn rig(capacity: usize, latency_ms: u64, passthrough: bool) -> Rig {
+        let (pcm_tx, rx) = mpsc::channel::<Bytes>(capacity);
+        let (flush_tx, _flush_rx) = watch::channel::<u64>(0);
+        let header_buf = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let overflow = Arc::new(AtomicBool::new(false));
+        let header_serial = Arc::new(AtomicU32::new(0));
+        let headers_complete = Arc::new(AtomicBool::new(false));
+        let burst = Arc::new(BurstArm::new());
+        let sink = UnifiedHttpStreamSink::new(
+            None,
+            AudioFormat::S16,
+            pcm_tx,
+            flush_tx,
+            Arc::new(AtomicU64::new(0)),
+            latency_ms,
+            Arc::clone(&header_buf),
+            Arc::clone(&header_serial),
+            Arc::clone(&headers_complete),
+            Arc::clone(&overflow),
+            Arc::clone(&burst),
+            passthrough,
+        );
+        Rig { sink, rx, overflow, header_buf, header_serial, headers_complete, burst }
+    }
+
+    pub fn write_raw(sink: &mut UnifiedHttpStreamSink, page: Vec<u8>) {
+        let mut conv = Converter::new(None);
+        sink.write(AudioPacket::Raw(page), &mut conv).expect("write");
+    }
+}
+
+#[cfg(test)]
+mod sink_pacing_tests {
+    use super::sink_test_support::*;
+    use super::*;
+
+    const SERIAL: u32 = 0x1111;
+
+    /// RED before the fix: the first audio page after start() waits the 2000 ms
+    /// buffer latency on the player thread.
+    #[test]
+    fn first_audio_page_after_start_is_sent_at_once() {
+        let mut r = rig(256, 2000, true);
+        r.sink.start().unwrap();
+        write_raw(&mut r.sink, ogg_page(0, SERIAL, 30)); // header (granule 0)
+        let t = Instant::now();
+        write_raw(&mut r.sink, ogg_page(4410, SERIAL, 30)); // first audio page
+        let took = t.elapsed();
+        assert!(
+            took < Duration::from_millis(500),
+            "first audio page after start() was held back {took:?} (hold-back must be 0, bound 500 ms)"
+        );
+    }
+
+    /// RED before the fix: pause then play restarts the sink; the restart must not
+    /// re-apply any hold-back to the first page.
+    #[test]
+    fn restart_after_stop_does_not_reapply_hold_back() {
+        let mut r = rig(256, 2000, true);
+        r.sink.start().unwrap();
+        write_raw(&mut r.sink, ogg_page(0, SERIAL, 30));
+        write_raw(&mut r.sink, ogg_page(4410, SERIAL, 30));
+        write_raw(&mut r.sink, ogg_page(8820, SERIAL, 30));
+        r.sink.stop().unwrap();
+        r.sink.start().unwrap();
+        let t = Instant::now();
+        write_raw(&mut r.sink, ogg_page(13230, SERIAL, 30)); // mid-track resume page
+        let took = t.elapsed();
+        assert!(
+            took < Duration::from_millis(500),
+            "first page after stop()+start() was held back {took:?}"
+        );
+    }
+
+    /// RED before the fix (PCM twin): the first Samples packet is released after
+    /// its own duration (50 ms), not after 50 ms + the 2000 ms buffer latency.
+    #[test]
+    fn pcm_first_packet_after_start_is_not_held_back() {
+        let mut r = rig(256, 2000, false);
+        r.sink.start().unwrap();
+        let mut conv = Converter::new(None);
+        // 2205 frames * 2 channels = 50 ms of stereo silence.
+        let samples = vec![0.0f64; 2205 * NUM_CHANNELS as usize];
+        let t = Instant::now();
+        r.sink.write(AudioPacket::Samples(samples), &mut conv).unwrap();
+        let took = t.elapsed();
+        assert!(
+            took < Duration::from_millis(500),
+            "first PCM packet after start() was held back {took:?}"
+        );
+    }
+
+    /// Guard (green before and after): pacing stays 1x. The page whose granule is
+    /// 100 ms past the first audio page is not released before ~100 ms since start().
+    #[test]
+    fn pacing_stays_one_x() {
+        let mut r = rig(256, 0, true);
+        r.sink.start().unwrap();
+        let t0 = Instant::now();
+        write_raw(&mut r.sink, ogg_page(0, SERIAL, 30));
+        write_raw(&mut r.sink, ogg_page(4410, SERIAL, 30)); // offset capture, relative 0
+        write_raw(&mut r.sink, ogg_page(8820, SERIAL, 30)); // relative 4410 = 100 ms
+        let took = t0.elapsed();
+        assert!(
+            took >= Duration::from_millis(90),
+            "second audio page released after {took:?}, expected >= ~100 ms (1x pacing lost)"
+        );
+    }
+
+    /// Guard (green before and after): a serial change keeps the continuous
+    /// timeline (existing branch), it must not reset to zero.
+    #[test]
+    fn serial_change_continues_timeline() {
+        let mut r = rig(256, 0, true);
+        r.sink.start().unwrap();
+        let t0 = Instant::now();
+        write_raw(&mut r.sink, ogg_page(0, SERIAL, 30));
+        write_raw(&mut r.sink, ogg_page(4410, SERIAL, 30));
+        write_raw(&mut r.sink, ogg_page(8820, SERIAL, 30)); // timeline 100 ms
+        write_raw(&mut r.sink, ogg_page(0, SERIAL + 1, 30)); // next track headers
+        write_raw(&mut r.sink, ogg_page(4410, SERIAL + 1, 30)); // base 100 ms + 100 ms
+        let took = t0.elapsed();
+        assert!(
+            took >= Duration::from_millis(190),
+            "timeline reset on serial change: finished after {took:?}, expected >= ~200 ms"
+        );
+    }
+}
+
+// -------------------------------------------------------------------------
+// Fresh-stream burst credit tests (quick 261109-f4r, C)
+// -------------------------------------------------------------------------
+//
+// Real-time tests with wide margins, like the pacing tests above. The credit is
+// BURST_CREDIT_FRAMES = 98440 frames (2.232 s). With the first audio page captured as
+// granule offset (relative 0), page k at granule 8820*k has relative 8820*(k-1) frames:
+// k = 12 is still inside the credit (97020), k = 13 is the first one that waits
+// (105840 - 98440 = 7400 frames = 168 ms).
+
+#[cfg(test)]
+mod sink_burst_credit_tests {
+    use super::sink_test_support::*;
+    use super::*;
+
+    const SERIAL: u32 = 0x5555;
+    const STEP: i64 = 8820; // 200 ms
+
+    fn drive(r: &mut Rig, ks: std::ops::RangeInclusive<i64>) {
+        for k in ks {
+            write_raw(&mut r.sink, ogg_page(STEP * k, SERIAL, 30));
+        }
+    }
+
+    /// RED before the fix: today the 12 pages take ~2.2 s.
+    #[test]
+    fn fresh_relay_start_releases_first_two_seconds_unpaced() {
+        let mut r = rig(256, 0, true);
+        r.burst.arm();
+        r.sink.start().unwrap();
+        let t = Instant::now();
+        write_raw(&mut r.sink, ogg_page(0, SERIAL, 30)); // header
+        drive(&mut r, 1..=12);
+        let took = t.elapsed();
+        assert!(
+            took < Duration::from_millis(300),
+            "first 2.2 s of a fresh relay start took {took:?} (credit missing, bound 300 ms)"
+        );
+        let mut n = 0;
+        while r.rx.try_recv().is_ok() {
+            n += 1;
+        }
+        assert_eq!(n, 13, "header + 12 audio pages all delivered");
+    }
+
+    /// Guard (green before, and after): the first page past the credit waits, and 1x holds
+    /// from there on: no burst beyond the credit.
+    #[test]
+    fn page_after_credit_is_paced_and_one_x_holds() {
+        let mut r = rig(256, 0, true);
+        r.burst.arm();
+        r.sink.start().unwrap();
+        let t0 = Instant::now();
+        write_raw(&mut r.sink, ogg_page(0, SERIAL, 30));
+        drive(&mut r, 1..=12);
+        let t = Instant::now();
+        drive(&mut r, 13..=13);
+        let took = t.elapsed();
+        assert!(
+            took >= Duration::from_millis(150),
+            "page 13 (7400 frames past the credit) was released after {took:?}, expected >= ~168 ms"
+        );
+        drive(&mut r, 14..=15);
+        let total = t0.elapsed();
+        // page 15: relative 123480 - 98440 = 25040 frames = 568 ms
+        assert!(
+            total >= Duration::from_millis(520),
+            "page 15 released after {total:?} since start, expected >= ~568 ms (1x lost after the credit)"
+        );
+    }
+
+    /// Guard (green before and after): without an arm there is no credit, 1x from start().
+    #[test]
+    fn no_credit_without_relay_start() {
+        let mut r = rig(256, 0, true);
+        r.sink.start().unwrap();
+        let t = Instant::now();
+        write_raw(&mut r.sink, ogg_page(0, SERIAL, 30));
+        drive(&mut r, 1..=6); // relative 44100 = 1.0 s
+        let took = t.elapsed();
+        assert!(took >= Duration::from_millis(900), "no arm, yet 6 pages took only {took:?}");
+    }
+
+    /// Guard (green before, and after): the credit is once per start(). After a pause/resume
+    /// cycle (stop(), start()) the arm is gone and the restart gets no credit.
+    #[test]
+    fn no_credit_on_resume() {
+        let mut r = rig(256, 0, true);
+        r.burst.arm();
+        r.sink.start().unwrap();
+        write_raw(&mut r.sink, ogg_page(0, SERIAL, 30));
+        drive(&mut r, 1..=3);
+        r.sink.stop().unwrap();
+        r.sink.start().unwrap();
+        let t = Instant::now();
+        write_raw(&mut r.sink, ogg_page(STEP * 20, SERIAL, 30)); // resume page, offset capture
+        write_raw(&mut r.sink, ogg_page(STEP * 21, SERIAL, 30)); // 200 ms later
+        write_raw(&mut r.sink, ogg_page(STEP * 22, SERIAL, 30)); // 400 ms later
+        let took = t.elapsed();
+        assert!(
+            took >= Duration::from_millis(380),
+            "the resume restart took {took:?} for 400 ms of audio, a credit leaked into it"
+        );
+    }
+
+    /// A reconnect in the middle of a track (timeline older than the fresh window) gets no
+    /// credit, and its arm is consumed by that write, so a pause/resume right afterwards
+    /// does not pick it up either. (The window is shrunk to 100 ms; production: 5 s.)
+    #[test]
+    fn no_credit_on_relay_restart_mid_track() {
+        let mut r = rig(256, 0, true);
+        r.sink.burst_fresh_window = Duration::from_millis(100);
+        r.sink.start().unwrap();
+        write_raw(&mut r.sink, ogg_page(0, SERIAL, 30));
+        write_raw(&mut r.sink, ogg_page(STEP, SERIAL, 30)); // relative 0
+        write_raw(&mut r.sink, ogg_page(STEP + 4410, SERIAL, 30)); // 100 ms, paced
+        std::thread::sleep(Duration::from_millis(150)); // timeline now ~250 ms old > window
+        r.burst.arm(); // mid-track relay restart
+        let t = Instant::now();
+        write_raw(&mut r.sink, ogg_page(STEP + 22050, SERIAL, 30)); // 500 ms since start
+        let took = t.elapsed();
+        assert!(
+            took >= Duration::from_millis(200),
+            "mid-track relay restart: page released after {took:?}, expected ~250 ms (credit leaked)"
+        );
+        // The arm was consumed above: pause/resume right after gets nothing.
+        r.sink.stop().unwrap();
+        r.sink.start().unwrap();
+        r.sink.burst_fresh_window = BURST_FRESH_WINDOW;
+        let t = Instant::now();
+        write_raw(&mut r.sink, ogg_page(STEP * 50, SERIAL, 30));
+        write_raw(&mut r.sink, ogg_page(STEP * 52, SERIAL, 30)); // 400 ms later
+        let took = t.elapsed();
+        assert!(
+            took >= Duration::from_millis(380),
+            "resume after a mid-track restart took {took:?} for 400 ms, the consumed arm came back"
+        );
+    }
+
+    /// An arm older than BURST_ARM_MAX_AGE (relay started long before the sink did) is stale.
+    #[test]
+    fn stale_arm_gives_no_credit() {
+        let mut r = rig(256, 0, true);
+        r.burst.arm_at(Instant::now().checked_sub(Duration::from_secs(20)).expect("clock"));
+        r.sink.start().unwrap();
+        let t = Instant::now();
+        write_raw(&mut r.sink, ogg_page(0, SERIAL, 30));
+        drive(&mut r, 1..=3); // relative 17640 = 400 ms
+        let took = t.elapsed();
+        assert!(took >= Duration::from_millis(380), "stale arm bought a credit: {took:?}");
+    }
+
+    /// PCM twin. 44 packets of 2205 frames = 97020 frames, inside the credit.
+    #[test]
+    fn pcm_fresh_relay_start_releases_first_two_seconds_unpaced() {
+        let mut r = rig(256, 0, false);
+        r.burst.arm(); // PCM: the relay may start before the sink does
+        r.sink.start().unwrap();
+        let mut conv = Converter::new(None);
+        let t = Instant::now();
+        for _ in 0..44 {
+            let samples = vec![0.0f64; 2205 * NUM_CHANNELS as usize];
+            r.sink.write(AudioPacket::Samples(samples), &mut conv).unwrap();
+        }
+        let took = t.elapsed();
+        assert!(took < Duration::from_millis(300), "PCM: 2.2 s of a fresh relay start took {took:?}");
+    }
+
+    /// PCM guard: no arm, 1x.
+    #[test]
+    fn pcm_no_credit_without_relay_start() {
+        let mut r = rig(256, 0, false);
+        r.sink.start().unwrap();
+        let mut conv = Converter::new(None);
+        let t = Instant::now();
+        for _ in 0..10 {
+            let samples = vec![0.0f64; 2205 * NUM_CHANNELS as usize];
+            r.sink.write(AudioPacket::Samples(samples), &mut conv).unwrap();
+        }
+        let took = t.elapsed();
+        assert!(took >= Duration::from_millis(450), "PCM, no arm: 10 packets (500 ms) took only {took:?}");
+    }
+}
+
+// -------------------------------------------------------------------------
+// Connect sink back-pressure tests (GH #202, quick 261109-ath)
+// -------------------------------------------------------------------------
+//
+// Nobody reading pcm_rx (LMS paused/cut the stream, Browse took over, relay
+// gone) must never freeze the librespot player thread: the sink drops what it
+// cannot deliver, flags the overflow, and the relay discards the stale backlog
+// when a reader returns.
+
+#[cfg(test)]
+mod sink_backpressure_tests {
+    use super::sink_test_support::*;
+    use super::*;
+
+    const SERIAL: u32 = 0x2222;
+
+    /// A PCM-style cursor (no header state): the plain GH #202 relay step.
+    fn pcm_cursor() -> RelayCursor {
+        RelayCursor { passthrough: false, last_serial: 0, headers: None }
+    }
+
+    /// The Chunk of one relay pass, None for Idle (Replay is not expected here).
+    fn take(rx: &mut mpsc::Receiver<Bytes>, overflow: &AtomicBool, cur: &mut RelayCursor) -> Option<Bytes> {
+        match relay_step(rx, overflow, cur) {
+            RelayStep::Chunk(b) => Some(b),
+            RelayStep::Idle => None,
+            RelayStep::Replay(_) => panic!("unexpected header replay"),
+        }
+    }
+
+    /// Runs `f` on a worker thread; None when it does not finish in time. A red run
+    /// (the old spin loop) must fail the test, not hang the suite.
+    fn within<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = done_tx.send(f());
+        });
+        done_rx.recv_timeout(Duration::from_secs(3)).ok()
+    }
+
+    /// RED before the fix: write into a full, unread channel never returns.
+    #[test]
+    fn write_returns_when_nobody_reads() {
+        let out = within(|| {
+            let mut r = rig(4, 0, true);
+            r.sink.start().unwrap();
+            let mut results = Vec::new();
+            let mut conv = Converter::new(None);
+            for _ in 0..6 {
+                // header pages: no pacing, but captured into ogg_header_buf
+                results.push(
+                    r.sink
+                        .write(AudioPacket::Raw(ogg_page(0, SERIAL, 30)), &mut conv)
+                        .is_ok(),
+                );
+            }
+            let queued = {
+                let mut n = 0;
+                while r.rx.try_recv().is_ok() {
+                    n += 1;
+                }
+                n
+            };
+            let captured = r.header_buf.lock().unwrap().len();
+            (results, r.sink.dropped, r.overflow.load(Ordering::Acquire), queued, captured)
+        });
+        let (results, dropped, overflow, queued, captured) = out
+            .expect("write() into an unread full channel did not return within 3 s (player thread frozen, GH #202)");
+        assert!(results.iter().all(|ok| *ok), "every write must return Ok on a full channel");
+        assert_eq!(queued, 4, "the channel holds its 4 slots");
+        assert_eq!(dropped, 2, "the 2 chunks that did not fit are dropped");
+        assert!(overflow, "overflow flag must be set for the relay");
+        assert_eq!(captured, 6, "header capture happens before the send, so replay survives a drop");
+    }
+
+    /// RED before the fix: the relay step discards the stale backlog once after an
+    /// overflow instead of replaying it.
+    #[test]
+    fn relay_drains_backlog_after_overflow() {
+        let (tx, mut rx) = mpsc::channel::<Bytes>(8);
+        let overflow = AtomicBool::new(false);
+        for i in 0..3u8 {
+            tx.try_send(Bytes::from(vec![i])).unwrap();
+        }
+        // no overflow: plain FIFO
+        let mut cur = pcm_cursor();
+        assert_eq!(take(&mut rx, &overflow, &mut cur).as_deref(), Some(&[0u8][..]));
+        overflow.store(true, Ordering::Release);
+        assert!(take(&mut rx, &overflow, &mut cur).is_none(), "overflow pass returns None once");
+        assert!(!overflow.load(Ordering::Acquire), "flag is consumed");
+        assert!(rx.try_recv().is_err(), "stale backlog is gone");
+        tx.try_send(Bytes::from(vec![9u8])).unwrap();
+        assert_eq!(take(&mut rx, &overflow, &mut cur).as_deref(), Some(&[9u8][..]), "live audio flows again");
+    }
+
+    /// RED before the fix: after the reader returns the player is not stuck and the
+    /// first chunk the reader sees is live audio, not the stale backlog.
+    #[test]
+    fn reader_returning_gets_live_audio_not_backlog() {
+        let out = within(|| {
+            let mut r = rig(2, 0, true);
+            r.sink.start().unwrap();
+            let mut conv = Converter::new(None);
+            // 4 pages into 2 slots: 2 stale queued, 2 dropped
+            for g in [0i64, 0, 0, 0] {
+                r.sink.write(AudioPacket::Raw(ogg_page(g, SERIAL, 30)), &mut conv).unwrap();
+            }
+            let mut cur = pcm_cursor();
+            let stale_pass = take(&mut r.rx, &r.overflow, &mut cur); // reader returns
+            // the player kept going while nobody read: a distinguishable live page
+            r.sink.write(AudioPacket::Raw(ogg_page(0, SERIAL, 77)), &mut conv).unwrap();
+            let live = take(&mut r.rx, &r.overflow, &mut cur);
+            (stale_pass.is_none(), live.map(|b| b.len()))
+        });
+        let (stale_none, live_len) = out.expect("sink froze with nobody reading (GH #202)");
+        assert!(stale_none, "first relay pass after the overflow discards the backlog");
+        assert_eq!(live_len, Some(28 + 77), "reader then receives the live page");
+    }
+
+    /// Guard (green before and after): a closed receiver (Browse/relay gone for
+    /// good) still surfaces as a sink error, distinct from a merely full channel.
+    #[test]
+    fn closed_receiver_returns_error() {
+        let mut r = rig(4, 0, true);
+        r.sink.start().unwrap();
+        drop(r.rx);
+        let mut conv = Converter::new(None);
+        let res = r.sink.write(AudioPacket::Raw(ogg_page(0, SERIAL, 30)), &mut conv);
+        assert!(res.is_err(), "Closed must stay an error");
+    }
+}
+
+// -------------------------------------------------------------------------
+// Sink edge cases that the review (sink-fix-review.md section 4) asked for
+// -------------------------------------------------------------------------
+
+#[cfg(test)]
+mod sink_edge_tests {
+    use super::sink_test_support::*;
+    use super::*;
+
+    const S: u32 = 0x3333;
+
+    /// The exact shape of the `same` row and of every tap (double `endpoint: play`):
+    /// ONE chunk holding [EOS page of the old serial][BOS][setup of the new serial]
+    /// [first audio page of the new serial], written right after start(). Must not be
+    /// held back, must leave exactly the two new-serial header pages in the buffer.
+    #[test]
+    fn same_track_reload_chunk_is_not_held_back() {
+        let mut r = rig(256, 2000, true);
+        r.sink.start().unwrap();
+        let mut chunk = ogg_page(1_300_000, S, 30); // old serial, EOS-ish page
+        chunk.extend(ogg_page(0, S + 1, 40)); // BOS new serial
+        chunk.extend(ogg_page(0, S + 1, 50)); // setup new serial
+        chunk.extend(ogg_page(5000, S + 1, 30)); // first audio new serial
+        let t = Instant::now();
+        write_raw(&mut r.sink, chunk);
+        let took = t.elapsed();
+        assert!(took < Duration::from_millis(500), "reload chunk held back {took:?}");
+        let buf = r.header_buf.lock().unwrap();
+        assert_eq!(buf.len(), 2, "exactly the two new-serial header pages are buffered");
+        assert!(buf.iter().all(|p| u32::from_le_bytes(p[14..18].try_into().unwrap()) == S + 1));
+        assert_eq!(r.header_serial.load(Ordering::Acquire), S + 1);
+        assert!(r.headers_complete.load(Ordering::Acquire));
+    }
+
+    /// Upper bound for the serial-change branch (the pacing test only had a lower
+    /// bound): no hidden hold-back at a track boundary.
+    #[test]
+    fn serial_change_first_page_released_promptly() {
+        let mut r = rig(256, 2000, true);
+        r.sink.start().unwrap();
+        let t0 = Instant::now();
+        write_raw(&mut r.sink, ogg_page(0, S, 30));
+        write_raw(&mut r.sink, ogg_page(4410, S, 30));
+        write_raw(&mut r.sink, ogg_page(8820, S, 30)); // timeline 100 ms
+        write_raw(&mut r.sink, ogg_page(0, S + 1, 30));
+        write_raw(&mut r.sink, ogg_page(4410, S + 1, 30)); // timeline 200 ms
+        let took = t0.elapsed();
+        assert!(took < Duration::from_millis(600), "boundary page held back: {took:?}");
+    }
+
+    /// PCM twin of write_returns_when_nobody_reads.
+    #[test]
+    fn pcm_write_returns_when_nobody_reads() {
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut r = rig(2, 0, false);
+            r.sink.start().unwrap();
+            let mut conv = Converter::new(None);
+            let mut oks = 0;
+            for _ in 0..3 {
+                let samples = vec![0.0f64; 2205 * NUM_CHANNELS as usize]; // 50 ms
+                if r.sink.write(AudioPacket::Samples(samples), &mut conv).is_ok() {
+                    oks += 1;
+                }
+            }
+            let _ = done_tx.send((oks, r.sink.dropped, r.overflow.load(Ordering::Acquire)));
+        });
+        let (oks, dropped, overflow) = done_rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("PCM write() into an unread full channel did not return within 3 s");
+        assert_eq!(oks, 3, "every PCM write returns Ok");
+        assert_eq!(dropped, 1, "third 50 ms packet does not fit the 2 slots");
+        assert!(overflow);
+    }
+}
+
+// -------------------------------------------------------------------------
+// Relay start and overflow recovery (review W-1 / W-2, quick 261109-ath)
+// -------------------------------------------------------------------------
+
+#[cfg(test)]
+mod relay_recovery_tests {
+    use super::sink_test_support::*;
+    use super::*;
+
+    const S: u32 = 0x4444;
+
+    fn serial_of(b: &[u8]) -> u32 {
+        u32::from_le_bytes(b[14..18].try_into().unwrap())
+    }
+
+    fn granule_of(b: &[u8]) -> i64 {
+        i64::from_le_bytes(b[6..14].try_into().unwrap())
+    }
+
+    fn queue(tx: &mpsc::Sender<Bytes>, pages: Vec<Vec<u8>>) {
+        for p in pages {
+            tx.try_send(Bytes::from(p)).unwrap();
+        }
+    }
+
+    /// W-1, RED before the fix: at relay start the sink has already pushed the header
+    /// chunk and the first audio page (no hold-back any more). The audio page of the
+    /// current stream must survive the drain; only the header chunk (replayed from
+    /// the snapshot) is discarded.
+    #[test]
+    fn relay_start_keeps_first_audio_page_of_current_serial() {
+        let mut r = rig(256, 0, true);
+        r.sink.start().unwrap();
+        write_raw(&mut r.sink, ogg_page(0, S, 30)); // chunk 1: headers
+        write_raw(&mut r.sink, ogg_page(4410, S, 30)); // chunk 2: first audio page
+        let snapshot: Vec<Bytes> = r.header_buf.lock().unwrap().clone();
+        let (kept, discarded) = relay_start_backlog(&mut r.rx, &r.overflow, true, &snapshot);
+        assert_eq!(kept.len(), 1, "the first audio page must be kept (discarded {discarded})");
+        assert_eq!(granule_of(&kept[0]), 4410);
+        assert_eq!(serial_of(&kept[0]), S);
+        assert_eq!(discarded, 1, "only the header chunk is discarded");
+        assert!(r.rx.try_recv().is_err(), "channel is empty afterwards");
+    }
+
+    /// W-1, RED before the fix: a queued chunk of a foreign serial (pre-seek /
+    /// previous track) is dropped, the rest survives.
+    #[test]
+    fn relay_start_drops_only_foreign_serial_chunks() {
+        let (tx, mut rx) = mpsc::channel::<Bytes>(16);
+        queue(&tx, vec![ogg_page(9000, S - 1, 30), ogg_page(0, S, 30), ogg_page(4410, S, 30)]);
+        let snapshot = vec![Bytes::from(ogg_page(0, S, 30))];
+        let overflow = AtomicBool::new(false);
+        let (kept, discarded) = relay_start_backlog(&mut rx, &overflow, true, &snapshot);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(serial_of(&kept[0]), S);
+        assert_eq!(granule_of(&kept[0]), 4410);
+        assert_eq!(discarded, 2, "foreign-serial chunk + header chunk");
+    }
+
+    /// W-1, RED before the fix: filtering is per page, so a chunk spanning the old
+    /// stream's tail and the new stream (the same-track reload shape) keeps only the
+    /// new stream's audio page.
+    #[test]
+    fn relay_start_splits_mixed_chunk_by_page() {
+        let (tx, mut rx) = mpsc::channel::<Bytes>(16);
+        let mut chunk = ogg_page(9000, S - 1, 30);
+        chunk.extend(ogg_page(0, S, 30));
+        chunk.extend(ogg_page(4410, S, 31));
+        queue(&tx, vec![chunk]);
+        let snapshot = vec![Bytes::from(ogg_page(0, S, 30))];
+        let overflow = AtomicBool::new(false);
+        let (kept, _) = relay_start_backlog(&mut rx, &overflow, true, &snapshot);
+        let all: Vec<u8> = kept.iter().flat_map(|b| b.to_vec()).collect();
+        let pages = ogg_pages(&all);
+        assert_eq!(pages.len(), 1, "exactly one page kept");
+        assert_eq!(pages[0].serial, S);
+        assert_eq!(pages[0].granule, 4410);
+    }
+
+    /// Guard (green before and after): an overflow means the whole backlog is stale.
+    #[test]
+    fn relay_start_after_overflow_discards_everything() {
+        let (tx, mut rx) = mpsc::channel::<Bytes>(16);
+        queue(&tx, vec![ogg_page(4410, S, 30), ogg_page(8820, S, 30)]);
+        let snapshot = vec![Bytes::from(ogg_page(0, S, 30))];
+        let overflow = AtomicBool::new(true);
+        let (kept, discarded) = relay_start_backlog(&mut rx, &overflow, true, &snapshot);
+        assert!(kept.is_empty());
+        assert_eq!(discarded, 2);
+        assert!(!overflow.load(Ordering::Acquire), "flag cleared by the relay start");
+        assert!(rx.try_recv().is_err());
+    }
+
+    /// Guard: PCM cannot tell stale from fresh, so it keeps the total drain. (The OGG
+    /// without-snapshot half of review I-7 moved to
+    /// `relay_start_without_snapshot_keeps_pending_chunks`, quick 261109-f4r.)
+    #[test]
+    fn relay_start_without_serial_knowledge_drains_everything() {
+        let (tx, mut rx) = mpsc::channel::<Bytes>(16);
+        let overflow = AtomicBool::new(false);
+        queue(&tx, vec![vec![1, 2, 3], vec![4, 5, 6]]);
+        let (kept, discarded) = relay_start_backlog(&mut rx, &overflow, false, &[]);
+        assert!(kept.is_empty());
+        assert_eq!(discarded, 2, "PCM: total drain");
+    }
+
+    /// Quick 261109-f4r (D), RED before the fix: an OGG stream without a header snapshot
+    /// (the header wait timed out on a slow session start) must NOT discard what is queued.
+    /// The sink clears its header buffer on start(), so whatever is queued now belongs to the
+    /// current stream, and a header chunk that lands between the wait's timeout and this drain
+    /// would otherwise be thrown away and leave the connection headerless until the next serial.
+    /// Nothing is forwarded out of order: the chunks go out as queued, right after the
+    /// (non-existent) replay. Replaces the review I-7 half of the guard above, which asserted
+    /// the opposite for this one case; PCM and the overflow case keep the total drain.
+    #[test]
+    fn relay_start_without_snapshot_keeps_pending_chunks() {
+        let (tx, mut rx) = mpsc::channel::<Bytes>(16);
+        let overflow = AtomicBool::new(false);
+        queue(&tx, vec![ogg_page(0, S, 30), ogg_page(4410, S, 30)]);
+        let (kept, discarded) = relay_start_backlog(&mut rx, &overflow, true, &[]);
+        assert_eq!(kept.len(), 2, "both queued chunks are kept (discarded {discarded})");
+        assert_eq!(granule_of(&kept[0]), 0, "header chunk first, in queue order");
+        assert_eq!(granule_of(&kept[1]), 4410);
+        assert_eq!(discarded, 0);
+        assert!(rx.try_recv().is_err(), "channel is empty afterwards");
+    }
+
+    /// Guard (green before and after): the overflow flag still means everything is stale,
+    /// snapshot or not.
+    #[test]
+    fn relay_start_without_snapshot_after_overflow_still_discards() {
+        let (tx, mut rx) = mpsc::channel::<Bytes>(16);
+        let overflow = AtomicBool::new(true);
+        queue(&tx, vec![ogg_page(0, S, 30), ogg_page(4410, S, 30)]);
+        let (kept, discarded) = relay_start_backlog(&mut rx, &overflow, true, &[]);
+        assert!(kept.is_empty());
+        assert_eq!(discarded, 2);
+    }
+
+    /// Review test 6: the relay-start step clears the flag before it drains; a flag
+    /// set afterwards (sink Full during/after the drain) costs exactly one more
+    /// Idle pass and then live data flows (documents I-1).
+    #[test]
+    fn relay_start_clears_overflow_before_drain() {
+        let (tx, mut rx) = mpsc::channel::<Bytes>(16);
+        let overflow = AtomicBool::new(true);
+        queue(&tx, vec![ogg_page(4410, S, 30)]);
+        let _ = relay_start_backlog(&mut rx, &overflow, true, &[]);
+        assert!(!overflow.load(Ordering::Acquire));
+        overflow.store(true, Ordering::Release); // Full right after the drain
+        queue(&tx, vec![ogg_page(8820, S, 30)]);
+        let mut cur = RelayCursor { passthrough: true, last_serial: S, headers: None };
+        assert!(matches!(relay_step(&mut rx, &overflow, &mut cur), RelayStep::Idle), "one extra drain pass");
+        queue(&tx, vec![ogg_page(13230, S, 30)]);
+        assert!(matches!(relay_step(&mut rx, &overflow, &mut cur), RelayStep::Chunk(_)), "then live");
+    }
+
+    fn headers_of(r: &Rig) -> RelayHeaders {
+        RelayHeaders {
+            buf: Arc::clone(&r.header_buf),
+            serial: Arc::clone(&r.header_serial),
+            complete: Arc::clone(&r.headers_complete),
+        }
+    }
+
+    /// W-2, RED before the fix: an overflow that spans a track boundary on a
+    /// surviving connection. The new serial's header pages were dropped (channel
+    /// full); the relay must replay them before any live page of that serial.
+    #[test]
+    fn overflow_across_serial_change_replays_headers_to_same_reader() {
+        let mut r = rig(2, 0, true);
+        r.sink.start().unwrap();
+        write_raw(&mut r.sink, ogg_page(0, S, 30)); // fills slot 1
+        write_raw(&mut r.sink, ogg_page(4410, S, 30)); // fills slot 2
+        write_raw(&mut r.sink, ogg_page(0, S + 1, 30)); // dropped: new track headers
+        write_raw(&mut r.sink, ogg_page(4410, S + 1, 30)); // dropped
+        assert!(r.overflow.load(Ordering::Acquire));
+        // the connection had forwarded serial S before the reader stalled
+        let mut cur = RelayCursor { passthrough: true, last_serial: S, headers: Some(headers_of(&r)) };
+        let mut delivered: Vec<Vec<u8>> = Vec::new();
+        let mut collect = |step: RelayStep| match step {
+            RelayStep::Chunk(b) => delivered.push(b.to_vec()),
+            RelayStep::Replay(pages) => delivered.extend(pages.into_iter().map(|p| p.to_vec())),
+            RelayStep::Idle => {}
+        };
+        collect(relay_step(&mut r.rx, &r.overflow, &mut cur)); // overflow pass
+        write_raw(&mut r.sink, ogg_page(8820, S + 1, 30)); // live audio of the new serial
+        collect(relay_step(&mut r.rx, &r.overflow, &mut cur));
+        assert!(!delivered.is_empty(), "something must reach the reader");
+        assert_eq!(serial_of(&delivered[0]), S + 1);
+        assert_eq!(granule_of(&delivered[0]), 0, "headers of the new serial come first, got granule {}", granule_of(&delivered[0]));
+        assert_eq!(cur.last_serial, S + 1);
+    }
+
+    /// W-2 guard: the serial did not change across the overflow, so the headers must
+    /// NOT be replayed (a second BOS of the same serial would re-open the link).
+    #[test]
+    fn overflow_same_serial_does_not_replay_headers() {
+        let mut r = rig(2, 0, true);
+        r.sink.start().unwrap();
+        write_raw(&mut r.sink, ogg_page(0, S, 30));
+        write_raw(&mut r.sink, ogg_page(4410, S, 30));
+        write_raw(&mut r.sink, ogg_page(8820, S, 30)); // dropped
+        assert!(r.overflow.load(Ordering::Acquire));
+        let mut cur = RelayCursor { passthrough: true, last_serial: S, headers: Some(headers_of(&r)) };
+        assert!(matches!(relay_step(&mut r.rx, &r.overflow, &mut cur), RelayStep::Idle));
+        assert!(matches!(relay_step(&mut r.rx, &r.overflow, &mut cur), RelayStep::Idle));
     }
 }

@@ -1721,6 +1721,85 @@ Plugins::SpotOn::Unified::DaemonManager->init();
         $setup->('', 'ldd (GNU libc) 2.40.1');
         is($DM->glibcVersion(), undef, "79-55 R1 G4: 'ldd (GNU libc) 2.40.1' is not read as 40.1 (token anchor)");
 
+        # 261109-ev4 (forum post 356, piCorePlayer): a probe program that does not
+        # exist must be skipped silently. Perl prints "Can't exec" as a warning for
+        # the failed list-form open, so the probe is checked for existence first.
+        {
+            # The list-form open forks first; the failed exec is reported by the CHILD,
+            # so a __WARN__ handler in the parent never sees it. Capture fd 2 itself.
+            my @warn;
+            my $errFile = "$pdir/stderr-capture.txt";
+            my $probeRun = sub {
+                my @probes = @_;
+                @Plugins::SpotOn::Unified::DaemonManager::GLIBC_PROBES = @probes;
+                $DM->_resetGlibcCache();
+                open(my $saved, '>&', \*STDERR) or die "dup stderr: $!";
+                open(STDERR, '>', $errFile) or die "capture stderr: $!";
+                my ($v, $died);
+                { local $@; $v = eval { $DM->glibcVersion() }; $died = $@; }
+                close STDERR;
+                open(STDERR, '>&', $saved) or die "restore stderr: $!";
+                close $saved;
+                open(my $in, '<', $errFile) or die "read capture: $!";
+                @warn = <$in>;
+                close $in;
+                die $died if $died;
+                return $v;
+            };
+
+            # absolute missing path, then a bare name not on PATH, then a working probe
+            my $v = $probeRun->(
+                [ "$pdir/no-such-getconf-abs", 'GNU_LIBC_VERSION' ],
+                [ 'spoton-no-such-tool-ev4', '--version' ],
+                [ $fake->('glibc 2.41') ],
+            );
+            is($v, '2.41', "261109-ev4 E1: missing absolute and missing bare probes are skipped, the next probe gives 2.41");
+            is(scalar(@warn), 0, "261109-ev4 E1: no warning for missing probe programs")
+                or diag("warnings: @warn");
+
+            # unchanged: one existing fake probe is still used
+            $v = $probeRun->([ $fake->('glibc 2.39') ]);
+            is($v, '2.39', "261109-ev4 E2: a single existing probe is still used");
+            is(scalar(@warn), 0, "261109-ev4 E2: no warning for an existing probe");
+
+            # all probes missing: undef, no warning, no die
+            $v = eval {
+                $probeRun->(
+                    [ "$pdir/no-such-getconf-abs", 'GNU_LIBC_VERSION' ],
+                    [ 'spoton-no-such-tool-ev4', '--version' ],
+                );
+            };
+            is($@, '', "261109-ev4 E3: all probes missing does not die");
+            is($v, undef, "261109-ev4 E3: all probes missing gives undef (no guess)");
+            is(scalar(@warn), 0, "261109-ev4 E3: all probes missing prints no warning")
+                or diag("warnings: @warn");
+
+            # exists but not executable: skipped, no warning
+            my $noexec = "$pdir/probe-noexec.sh";
+            open(my $nfh, '>', $noexec) or die "noexec: $!";
+            print $nfh "#!/bin/sh\nprintf '%s\\n' 'glibc 2.10'\n";
+            close $nfh;
+            chmod 0644, $noexec;
+            $v = $probeRun->([ $noexec ], [ $fake->('glibc 2.42') ]);
+            is($v, '2.42', "261109-ev4 E4: a non-executable probe file is skipped, the next probe gives 2.42");
+            is(scalar(@warn), 0, "261109-ev4 E4: a non-executable probe prints no warning")
+                or diag("warnings: @warn");
+
+            # a bare name is resolved over PATH (executable file in a PATH directory)
+            my $bin = "$pdir/pathbin";
+            mkdir $bin or die "mkdir: $!";
+            open(my $bfh, '>', "$bin/ev4-probe") or die "bin: $!";
+            print $bfh "#!/bin/sh\nprintf '%s\\n' 'glibc 2.43'\n";
+            close $bfh;
+            chmod 0755, "$bin/ev4-probe";
+            {
+                local $ENV{PATH} = join(':', '', "$pdir/nonexistent-dir", $bin);
+                $v = $probeRun->([ 'ev4-probe' ]);
+            }
+            is($v, '2.43', "261109-ev4 E5: a bare probe name is found on PATH (empty and missing PATH entries skipped)");
+            is(scalar(@warn), 0, "261109-ev4 E5: no warning when a bare probe is found on PATH");
+        }
+
         # the message is a message only: the start path decisions stay
         $setup->('glibc 2.36', '');
         is($DM->backendName(), 'soloist', "74b-03 D-09: backendName stays soloist on an old glibc (no automatic fallback)");

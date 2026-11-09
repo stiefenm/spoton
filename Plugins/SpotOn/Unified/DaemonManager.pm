@@ -2438,6 +2438,25 @@ sub _resetGlibcCache {
     ($glibcProbed, $glibcCached) = (0, undef);
 }
 
+# _probeProgramFound($program) -- true when the probe program is an executable
+# regular file: a name with a '/' is checked as given, a bare name is searched in
+# the directories of $ENV{PATH} (empty entries skipped). No shell. 261109-ev4:
+# the list-form open forks before it execs, so a missing program is reported by
+# the child as a "Can't exec" warning on stderr (piCorePlayer has no getconf);
+# checking first keeps that out of the server log.
+sub _probeProgramFound {
+    my ($program) = @_;
+    return 0 unless defined $program && length $program;
+    return (-f $program && -x _) ? 1 : 0 if index($program, '/') >= 0;
+
+    for my $dir (split /:/, ($ENV{PATH} // '')) {
+        next unless length $dir;
+        my $candidate = "$dir/$program";
+        return 1 if -f $candidate && -x _;
+    }
+    return 0;
+}
+
 # glibcVersion() -- "MAJOR.MINOR" of the system C library, or undef (musl, a
 # missing tool, unparsable output: no entry and no guess). Cached for the
 # process lifetime; the library does not change under a running LMS.
@@ -2446,6 +2465,7 @@ sub glibcVersion {
 
     my $version;
     PROBE: for my $argv (@GLIBC_PROBES) {
+        next PROBE unless _probeProgramFound($argv->[0]);
         my $line = eval {
             open(my $fh, '-|', @$argv) or die "open failed: $!\n";
             my $first = <$fh>;

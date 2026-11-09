@@ -983,6 +983,9 @@ if ($elapsed_helper) {
 }
 
 my @startoffset_writers = $connect =~ /my \$elapsed = _streamElapsedSeconds\(\$client\);\s*\n\s*\$song->startOffset\(/g;
+# GH #201 round 2 (quick 261109-f4r, P1): the resume writer reads the helper BEFORE the unpause
+# (`$elapsedBeforeUnpause = _streamElapsedSeconds($client)`) and writes `my $elapsed = $elapsedBeforeUnpause`
+push @startoffset_writers, $connect =~ /\$elapsedBeforeUnpause = _streamElapsedSeconds\(\$client\);.*?my \$elapsed = \$elapsedBeforeUnpause;[^\n]*\n\s*\$song->startOffset\(/sg;
 cmp_ok(scalar(@startoffset_writers), '>=', 3,
     '84-02 C4: seek, resume and the CON-17 progress path compute startOffset through _streamElapsedSeconds');
 

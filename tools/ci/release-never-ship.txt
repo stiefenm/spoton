@@ -36,3 +36,7 @@ credentials.json
 .npmrc
 # forum monitor, moved to private CI (D-33 FULL-5 CR-01 follow-up)
 .github/workflows/forum-monitor.yml
+# private VM measurement rig (phases 86 and 87), not part of any public release
+tools/vm-rig/
+# rig-only helper that sources the rig ports, ships only with the rig
+tools/uat/rig-target.sh
