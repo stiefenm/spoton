@@ -4156,3 +4156,55 @@ PLUGIN_SPOTON_DISCOVER_INVALID
 	NO	Filen i mappen __DISCOVER__ er ikke en gyldig credentials.json og ble latt urørt. Se TROUBLESHOOTING.md.
 	PL	Plik w folderze __DISCOVER__ nie jest prawidłowym plikiem credentials.json i pozostawiono go bez zmian. Zobacz TROUBLESHOOTING.md.
 	SV	Filen i mappen __DISCOVER__ är inte en giltig credentials.json och lämnades orörd. Se TROUBLESHOOTING.md.
+
+PLUGIN_SPOTON_SONG_RADIO
+	CS	Rádio skladby
+	DA	Sangradio
+	DE	Song-Radio
+	EN	Song radio
+	ES	Radio de la canción
+	FR	Radio du titre
+	IT	Radio del brano
+	NL	Nummerradio
+	NO	Sangradio
+	PL	Radio utworu
+	SV	Låtradio
+
+PLUGIN_SPOTON_ARTIST_RADIO
+	CS	Rádio interpreta
+	DA	Kunstnerradio
+	DE	Künstler-Radio
+	EN	Artist radio
+	ES	Radio del artista
+	FR	Radio de l'artiste
+	IT	Radio dell'artista
+	NL	Artiestenradio
+	NO	Artistradio
+	PL	Radio wykonawcy
+	SV	Artistradio
+
+PLUGIN_SPOTON_PLAYLIST_RADIO
+	CS	Rádio playlistu
+	DA	Playlisteradio
+	DE	Playlist-Radio
+	EN	Playlist radio
+	ES	Radio de la lista
+	FR	Radio de la playlist
+	IT	Radio della playlist
+	NL	Afspeellijstradio
+	NO	Spillelisteradio
+	PL	Radio playlisty
+	SV	Spellisteradio
+
+PLUGIN_SPOTON_RADIO_UNAVAILABLE
+	CS	Spotify pro tuto položku nenabízí žádné rádio.
+	DA	Spotify har ingen radio til dette.
+	DE	Spotify bietet hierfür kein Radio an.
+	EN	Spotify has no radio for this.
+	ES	Spotify no ofrece radio para esto.
+	FR	Spotify ne propose pas de radio pour cet élément.
+	IT	Spotify non offre una radio per questo elemento.
+	NL	Spotify heeft hiervoor geen radio.
+	NO	Spotify har ingen radio for dette.
+	PL	Spotify nie oferuje radia dla tej pozycji.
+	SV	Spotify har ingen radio för detta.

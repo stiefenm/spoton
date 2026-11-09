@@ -315,6 +315,12 @@ sub initPlugin {
     Slim::Control::Request::addDispatch(['spotoninfo', 'items', '_index', '_quantity'],
                                                                 [0, 1, 1, \&_trackInfoItemsCLI]
     );
+
+    # GH #82: the More menu of album and playlist items (their `info`
+    # itemAction) -- the radio entry, which a paged track list cannot carry.
+    Slim::Control::Request::addDispatch(['spotonradio', 'items', '_index', '_quantity'],
+                                                                [0, 1, 1, \&_radioMenuCLI]
+    );
 }
 
 sub shutdownPlugin {
@@ -986,6 +992,7 @@ sub trackInfoMenu {
                 type        => 'link',
             };
         }
+        push @items, _radioItems($client, $id, $meta->{artistId});
         push @items, {
             name        => cstring($client, 'PLUGIN_SPOTON_MANAGE_LIKE'),
             url         => \&SpotOnManageLike,
@@ -1366,6 +1373,7 @@ sub _trackItem {
             type        => 'link',
         };
     }
+    push @contextItems, _radioItems($client, $track->{id}, ($track->{artists} && @{ $track->{artists} }) ? $track->{artists}[0]{id} : undef);
 
     if ($track->{uri} && $track->{uri} =~ /^spotify:track:[A-Za-z0-9]+$/) {
         my $accountId = _getAccountId($client);
@@ -1516,6 +1524,7 @@ sub _albumItem {
         line2         => $line2,
         favorites_url => $album_spoton,
         type          => 'playlist',
+        _radioMenuAction("spotify:album:" . ($album->{id} // '')),
     };
 }
 
@@ -1551,6 +1560,7 @@ sub _playlistItem {
         line2         => $playlist->{owner}{display_name} // '',
         favorites_url => $pl_spoton,
         type          => 'playlist',
+        _radioMenuAction("spotify:playlist:" . ($playlist->{id} // '')),
     };
 }
 
@@ -3089,6 +3099,161 @@ sub _recentSearchesCLI {
 }
 
 # _trackInfoItemsCLI($request)
+# ============================================================
+# Radio (GH #82)
+# ============================================================
+# Spotify's own radios (SpClient getRadio / getRadioStationTracks): a song
+# radio and an artist radio in a track's More menu, an artist radio on the
+# artist page, and in the More menu of album items (Spotify answers an album
+# seed with its artist's radio) and playlist items (a station). Every entry is
+# lazy -- building a menu sends no request; opening a radio costs the seed
+# request (cached 6 h) plus what the playlist or station feed needs.
+
+# Label per seed type. An album seed yields the artist radio, so it is named so.
+my %RADIO_LABEL = (
+    track    => 'PLUGIN_SPOTON_SONG_RADIO',
+    artist   => 'PLUGIN_SPOTON_ARTIST_RADIO',
+    album    => 'PLUGIN_SPOTON_ARTIST_RADIO',
+    playlist => 'PLUGIN_SPOTON_PLAYLIST_RADIO',
+);
+
+# _radioSeedType($seedUri) -> 'track' | 'artist' | 'album' | 'playlist' or
+# undef: the shape check of the menu side (pure, no SpClient needed to build a
+# menu). SpClient->radioSeedType repeats it before any request.
+sub _radioSeedType {
+    my ($seed) = @_;
+    return undef unless defined $seed && !ref $seed;
+    return $seed =~ /\Aspotify:(track|artist|album|playlist):[0-9A-Za-z]{22}\z/ ? $1 : undef;
+}
+
+# _radioItem($client, $seedUri) -> the radio entry for a seed, or () when the
+# seed is not a valid spotify:<track|artist|album|playlist>:<base62 id>.
+# type 'playlist' gives it the Play / Add / Play next actions (GH #161
+# convention); the list itself is read only when the entry is opened or played.
+sub _radioItem {
+    my ($client, $seed) = @_;
+    my $type = _radioSeedType($seed) or return ();
+    return {
+        name        => cstring($client, $RADIO_LABEL{$type}),
+        url         => \&_radioFeed,
+        passthrough => [{ seed => $seed }],
+        type        => 'playlist',
+        image       => 'plugins/SpotOn/html/images/playlist.png',
+    };
+}
+
+# _radioItems($client, $trackId, $artistId) -> song radio, then artist radio
+# (each only for a valid id): the pair of a track's More menu.
+sub _radioItems {
+    my ($client, $trackId, $artistId) = @_;
+    return (
+        (defined $trackId  ? _radioItem($client, "spotify:track:$trackId")   : ()),
+        (defined $artistId ? _radioItem($client, "spotify:artist:$artistId") : ()),
+    );
+}
+
+# _radioMenuAction($seedUri) -> (itemActions => ...) for album and playlist
+# items: their More menu opens ['spotonradio','items'] with the seed. () for an
+# invalid seed, so the item keeps LMS's default More menu.
+sub _radioMenuAction {
+    my ($seed) = @_;
+    return () unless _radioSeedType($seed);
+    return (itemActions => {
+        info => {
+            command     => ['spotonradio', 'items'],
+            fixedParams => { seed => $seed },
+        },
+    });
+}
+
+# _radioMenuCLI($request) -- ['spotonradio','items'] with a seed param: the
+# one-entry More menu of an album or playlist item.
+sub _radioMenuCLI {
+    my $request = shift;
+
+    if ($request->isNotQuery([['spotonradio'], ['items']])) {
+        $request->setStatusBadDispatch();
+        return;
+    }
+
+    my $client = $request->client;
+    my $seed   = $request->getParam('seed') // '';
+    my @items  = _radioItem($client, $seed);
+    unless (@items) {
+        $request->setStatusBadParams();
+        return;
+    }
+
+    require Slim::Control::XMLBrowser;
+    Slim::Control::XMLBrowser::cliQuery('spotonradio', { name => $items[0]{name}, items => \@items }, $request);
+}
+
+# _radioFeed($client, $callback, $args, $passthrough) -- opens a radio: a
+# radio playlist is shown by _playlistFeed (paging, play-all and caches as for
+# any playlist), a station by _radioStationFeed.
+sub _radioFeed {
+    my ($client, $callback, $args, $passthrough) = @_;
+
+    my $seed      = $passthrough->{seed} // '';
+    my $accountId = _getAccountId($client);
+
+    Plugins::SpotOn::API::SpClient->getRadio($accountId, $seed, sub {
+        my ($radio, $err) = @_;
+
+        if ($radio && $radio->{playlistId}) {
+            _playlistFeed($client, $callback, $args, { playlistId => $radio->{playlistId} });
+            return;
+        }
+        if ($radio && $radio->{station}) {
+            _radioStationFeed($client, $callback, $args, { seed => $radio->{station} });
+            return;
+        }
+
+        if ($err && ($err->{error} // '') ne 'no_radio') {
+            $callback->({ items => [ _authRequiredItem($client, $accountId, $err) ] });
+            return;
+        }
+        $callback->({ items => [{ name => cstring($client, 'PLUGIN_SPOTON_RADIO_UNAVAILABLE'), type => 'textarea' }] });
+    });
+}
+
+# _radioStationFeed($client, $callback, $args, $passthrough) -- a station's
+# tracks (radio-apollo, one list of RADIO_STATION_COUNT, cached 300 s), sliced
+# per the client's index/quantity. Play-all (no quantity, or >= 500) gets the
+# whole list.
+sub _radioStationFeed {
+    my ($client, $callback, $args, $passthrough) = @_;
+
+    my $seed      = $passthrough->{seed} // '';
+    my $accountId = _getAccountId($client);
+    my $offset    = $args->{index}    // 0;
+    my $isPlayAll = !defined($args->{quantity}) || ($args->{quantity} >= 500);
+    my $limit     = $isPlayAll ? Plugins::SpotOn::API::SpClient::RADIO_STATION_COUNT() : ($args->{quantity} || 200);
+    $offset = 0 if $isPlayAll;
+
+    Plugins::SpotOn::API::SpClient->getRadioStationTracks($accountId, $seed, { offset => $offset, limit => $limit }, sub {
+        my ($page, $err) = @_;
+
+        if (!$page) {
+            $callback->({ items => [ _authRequiredItem($client, $accountId, $err) ] });
+            return;
+        }
+
+        my @deferredMeta;
+        my @items = map  { _trackItem($client, $_->{track}, { defer_cache => \@deferredMeta }) }
+                    grep { defined $_->{track} && defined $_->{track}{name} }
+                    @{ $page->{items} || [] };
+
+        unless (@items) {
+            $callback->({ items => [{ name => cstring($client, 'PLUGIN_SPOTON_RADIO_UNAVAILABLE'), type => 'textarea' }] });
+            return;
+        }
+
+        $callback->({ items => \@items, offset => $offset, total => $page->{total} // scalar @items });
+        _flushDeferredMeta(undef, \@deferredMeta, 0) if @deferredMeta;
+    });
+}
+
 # GH #94: CLI backend for the browse items' `info` itemAction
 # (['spotoninfo','items'] with a url fixedParam). Builds the SAME feed as
 # the Now Playing More menu via Slim::Menu::TrackInfo->menu() -- LMS
@@ -3539,6 +3704,7 @@ sub _artistFeed {
     my $artistId = $passthrough->{artistId} // '';
 
     my @items = (
+        _radioItem($client, "spotify:artist:$artistId"),
         {
             name        => cstring($client, 'PLUGIN_SPOTON_ALBUMS'),
             url         => \&_artistAlbumsFeed,
@@ -3927,6 +4093,7 @@ sub _albumTrackItem {
             type        => 'link',
         };
     }
+    push @contextItems, _radioItems($client, $track->{id}, ($track->{artists} && @{ $track->{artists} }) ? $track->{artists}[0]{id} : undef);
 
     # T-04.1-01: Extract path from Spotify URI to prevent double-prefix.
     # spotify:track:ID -> track:ID; fallback preserves original URI if no match.

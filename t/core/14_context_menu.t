@@ -368,7 +368,23 @@ sub search {
     $cb->($next_search, $next_search_err);
 }
 sub pageLimit { return 10 }
+# GH #82: radio
+use constant RADIO_STATION_COUNT => 50;
+our ($next_radio, $next_radio_err, @radio_calls, $next_station, $next_station_err, @station_calls);
+sub getRadio {
+    my ($class, $accountId, $seed, $cb) = @_;
+    push @radio_calls, [$accountId, $seed];
+    $cb->($next_radio, $next_radio_err);
+}
+sub getRadioStationTracks {
+    my ($class, $accountId, $seed, $params, $cb) = @_;
+    push @station_calls, [$accountId, $seed, $params];
+    $cb->($next_station, $next_station_err);
+}
 sub reset_calls {
+    ($next_radio, $next_radio_err, $next_station, $next_station_err) = ();
+    @radio_calls   = ();
+    @station_calls = ();
     $next_top             = undef;
     $next_top_err         = undef;
     @top_calls            = ();
@@ -1264,5 +1280,101 @@ my @gone_hints = qw(PLUGIN_SPOTON_MIGRATION_REQUIRED PLUGIN_SPOTON_REAUTH_REQUIR
 }
 
 Plugins::SpotOn::API::Client::reset_queue_calls();
+
+# ============================================================
+# GH #82: Spotify radio entries -- lazy menu entries (no request while a menu is
+# built), song + artist radio for tracks, artist radio on the artist page, a
+# More-menu radio for album and playlist items, and the radio feeds.
+# ============================================================
+{
+    my $SPS    = 'Plugins::SpotOn::API::SpClient';
+    my $client = MockClient->new('player-radio');
+    my $T      = 'T' x 22;
+    my $A      = 'A' x 22;
+    my $AL     = 'L' x 22;
+    my $PL     = 'P' x 22;
+    Slim::Utils::Prefs::preferences('plugin.spoton')->set('activeAccount', 'test-account-id');
+    $SPS->reset_calls();
+
+    # trackInfoMenu (Material/jive More menu of every SpotOn track)
+    Slim::Utils::Cache->new()->set('spoton_meta_' . md5_hex("spoton://track:$T"), {
+        _spoton_fmt => 2, title => 'Radio Song', artist => 'Radio Artist', artistId => $A, albumId => $AL,
+    });
+    my $menu  = Plugins::SpotOn::Plugin::trackInfoMenu($client, "spoton://track:$T", {}, {});
+    my %radio = map { $_->{name} => $_ } grep { ref $_->{url} && $_->{url} == \&Plugins::SpotOn::Plugin::_radioFeed } @$menu;
+    is_deeply([ sort keys %radio ], [ 'PLUGIN_SPOTON_ARTIST_RADIO', 'PLUGIN_SPOTON_SONG_RADIO' ], 'RADIO-01: a track\'s More menu offers song radio and artist radio');
+    is($radio{PLUGIN_SPOTON_SONG_RADIO}{passthrough}[0]{seed}, "spotify:track:$T", 'RADIO-01: song radio is seeded with the track');
+    is($radio{PLUGIN_SPOTON_ARTIST_RADIO}{passthrough}[0]{seed}, "spotify:artist:$A", 'RADIO-01: artist radio is seeded with the first artist');
+    is($radio{PLUGIN_SPOTON_SONG_RADIO}{type}, 'playlist', 'RADIO-01: type playlist (Play / Add / Play next actions)');
+    is(scalar(@Plugins::SpotOn::API::SpClient::radio_calls), 0, 'RADIO-01: building the menu sends no radio request');
+
+    my $short = Plugins::SpotOn::Plugin::trackInfoMenu($client, 'spoton://track:ABC123', {}, {});
+    ok(!(grep { ref $_->{url} && $_->{url} == \&Plugins::SpotOn::Plugin::_radioFeed } @{ $short || [] }), 'RADIO-02: no radio entry for an id that is not a Spotify id');
+
+    # _trackItem default-skin drill-down
+    my $item = Plugins::SpotOn::Plugin::_trackItem($client, {
+        id => $T, name => 'Radio Song', uri => "spotify:track:$T", duration_ms => 1000,
+        artists => [ { id => $A, name => 'Radio Artist' } ], album => { id => $AL, name => 'Radio Album', images => [] },
+    });
+    is_deeply([ map { $_->{name} } grep { ref $_->{url} && $_->{url} == \&Plugins::SpotOn::Plugin::_radioFeed } @{ $item->{items} || [] } ],
+        [ 'PLUGIN_SPOTON_SONG_RADIO', 'PLUGIN_SPOTON_ARTIST_RADIO' ], 'RADIO-03: _trackItem drill-down carries song radio, then artist radio');
+
+    # artist page
+    my $artistFeed;
+    Plugins::SpotOn::Plugin::_artistFeed($client, sub { $artistFeed = shift }, {}, { artistId => $A });
+    is($artistFeed->{items}[0]{name}, 'PLUGIN_SPOTON_ARTIST_RADIO', 'RADIO-04: the artist page starts with the artist radio');
+    is($artistFeed->{items}[0]{passthrough}[0]{seed}, "spotify:artist:$A", 'RADIO-04: seeded with the artist');
+    Plugins::SpotOn::Plugin::_artistFeed($client, sub { $artistFeed = shift }, {}, { artistId => 'bad' });
+    is($artistFeed->{items}[0]{name}, 'PLUGIN_SPOTON_ALBUMS', 'RADIO-04: no radio entry for an invalid artist id');
+
+    # album and playlist items: More menu -> spotonradio
+    my $albumItem = Plugins::SpotOn::Plugin::_albumItem($client, { id => $AL, name => 'Radio Album', artists => [] });
+    is_deeply($albumItem->{itemActions}{info}, { command => ['spotonradio', 'items'], fixedParams => { seed => "spotify:album:$AL" } },
+        'RADIO-05: album items open the radio More menu with the album seed');
+    my $plItem = Plugins::SpotOn::Plugin::_playlistItem($client, { id => $PL, name => 'Radio Playlist', owner => {} });
+    is_deeply($plItem->{itemActions}{info}, { command => ['spotonradio', 'items'], fixedParams => { seed => "spotify:playlist:$PL" } },
+        'RADIO-05: playlist items open the radio More menu with the playlist seed');
+    ok(!exists Plugins::SpotOn::Plugin::_playlistItem($client, { id => 'x', name => 'n', owner => {} })->{itemActions},
+        'RADIO-05: no radio More menu for an invalid playlist id');
+    is(Plugins::SpotOn::Plugin::_radioItem($client, "spotify:album:$AL")->{name}, 'PLUGIN_SPOTON_ARTIST_RADIO',
+        'RADIO-05: an album seed is labelled artist radio (Spotify answers it with the artist radio)');
+    is(Plugins::SpotOn::Plugin::_radioItem($client, "spotify:playlist:$PL")->{name}, 'PLUGIN_SPOTON_PLAYLIST_RADIO', 'RADIO-05: playlist radio label');
+
+    open(my $fh, '<', "$project_dir/Plugins/SpotOn/Plugin.pm") or die $!;
+    my $src = do { local $/; <$fh> };
+    close($fh);
+    like($src, qr/addDispatch\(\s*\[\s*'spotonradio',\s*'items'[^\]]*\][^;]*?_radioMenuCLI/s, 'RADIO-05: spotonradio/items is registered against _radioMenuCLI');
+
+    # _radioFeed: a radio playlist is shown by _playlistFeed
+    $SPS->reset_calls();
+    $Plugins::SpotOn::API::SpClient::next_radio = { playlistId => 'R' x 22, uri => 'spotify:playlist:' . ('R' x 22) };
+    $Plugins::SpotOn::API::SpClient::next_playlist_items = { items => [ { track => {
+        id => $T, name => 'Radio Song', uri => "spotify:track:$T", duration_ms => 1000, artists => [ { id => $A, name => 'Radio Artist' } ], album => { id => $AL, name => 'Radio Album', images => [] },
+    } } ], total => 1 };
+    my $feed;
+    Plugins::SpotOn::Plugin::_radioFeed($client, sub { $feed = shift }, { index => 0, quantity => 50 }, { seed => "spotify:track:$T" });
+    is_deeply([ map { $_->[1] } @Plugins::SpotOn::API::SpClient::radio_calls ], [ "spotify:track:$T" ], 'RADIO-06: opening the radio asks for the seed\'s radio');
+    is($Plugins::SpotOn::API::SpClient::playlist_items_calls[0][1], 'R' x 22, 'RADIO-06: the radio playlist is read like any playlist');
+    is($feed->{items}[0]{title}, 'Radio Song', 'RADIO-06: its tracks are listed');
+
+    # _radioFeed: a station (playlist seed) is read through radio-apollo
+    $SPS->reset_calls();
+    $Plugins::SpotOn::API::SpClient::next_radio   = { station => "spotify:playlist:$PL" };
+    $Plugins::SpotOn::API::SpClient::next_station = { items => [ { track => {
+        id => $T, name => 'Station Song', uri => "spotify:track:$T", duration_ms => 1000, artists => [ { id => $A, name => 'Radio Artist' } ], album => { id => $AL, name => 'Radio Album', images => [] },
+    } }, { track => { id => 'X' x 22, uri => 'spotify:track:' . ('X' x 22), name => undef } } ], total => 2 };
+    Plugins::SpotOn::Plugin::_radioFeed($client, sub { $feed = shift }, {}, { seed => "spotify:playlist:$PL" });
+    is($Plugins::SpotOn::API::SpClient::station_calls[0][1], "spotify:playlist:$PL", 'RADIO-07: a station is read through getRadioStationTracks');
+    is($Plugins::SpotOn::API::SpClient::station_calls[0][2]{limit}, 50, 'RADIO-07: play-all asks for the whole station');
+    is_deeply([ map { $_->{title} } @{ $feed->{items} } ], [ 'Station Song' ], 'RADIO-07: unnamed tracks (stubs) are left out');
+
+    # _radioFeed: no radio / request error
+    $SPS->reset_calls();
+    $Plugins::SpotOn::API::SpClient::next_radio_err = { error => 'no_radio' };
+    Plugins::SpotOn::Plugin::_radioFeed($client, sub { $feed = shift }, {}, { seed => "spotify:track:$T" });
+    is($feed->{items}[0]{name}, 'PLUGIN_SPOTON_RADIO_UNAVAILABLE', 'RADIO-08: no radio -> a plain "no radio" line');
+    is(scalar @Plugins::SpotOn::API::SpClient::playlist_items_calls, 0, 'RADIO-08: nothing else is requested');
+    $SPS->reset_calls();
+}
 
 done_testing();
