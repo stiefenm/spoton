@@ -212,6 +212,17 @@ sub initPlugin {
         Plugins::SpotOn::DontStopTheMusic->init();
     }
 
+    # GH #32: LMS online library integration (Importer.pm runs in the scanner).
+    # On by default like every other provider: the Online Library plugin
+    # initialises enable_PLUGIN_SPOTON_NAME to 1 in its postinitPlugin. The
+    # switch is the "SpotOn" entry under Settings > Online Music Library
+    # Integration. The emblem marks SpotOn rows in the library views.
+    if ( Slim::Utils::PluginManager->isEnabled('Slim::Plugin::OnlineLibrary::Plugin')
+        && Slim::Plugin::OnlineLibrary::Plugin->can('addLibraryIconProvider') )
+    {
+        Slim::Plugin::OnlineLibrary::Plugin->addLibraryIconProvider('spoton', '/plugins/SpotOn/html/images/SpotOn_MTL_svg_spoton.png');
+    }
+
     if (main::WEBUI) {
         require Plugins::SpotOn::Settings;
         Plugins::SpotOn::Settings->new();
@@ -390,6 +401,26 @@ sub postinitPlugin {
         eval { require Plugins::SpotOn::HomeExtras; };
         $log->error("Could not load SpotOn Home Extras: $@") if $@;
     }
+}
+
+# onlineLibraryNeedsUpdate($class, $cb) -- GH #32. The Online Library plugin
+# lists every enabled plugin that can this as a library provider, and calls
+# it from an hourly poll to decide whether to start an online-library scan.
+# SpotOn imports only inside scans LMS runs anyway (#32: no background
+# polling), so the answer is always "no change" and the poll sends no
+# Spotify request. A rescan picks up library changes.
+sub onlineLibraryNeedsUpdate {
+    my ($class, $cb) = @_;
+    $cb->(0) if $cb && ref $cb eq 'CODE';
+}
+
+# getLibraryStats($class) -- the SpotOn block of Settings > Information
+# (Online Library plugin's systemInfoMenu): counts of the imported rows.
+sub getLibraryStats {
+    my ($class) = @_;
+    return unless eval { require Plugins::SpotOn::Importer; Plugins::SpotOn::Importer->can('getLibraryStats') };
+    my $totals = Plugins::SpotOn::Importer->getLibraryStats();
+    return wantarray ? ('PLUGIN_SPOTON_NAME', $totals) : $totals;
 }
 
 # Material Skin resolves app icons via /material/svg/{tag} from its own

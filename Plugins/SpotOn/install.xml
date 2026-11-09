@@ -8,6 +8,8 @@
 	<category>musicservices</category>
 	<id>7fdb8daa-2ff3-4725-8464-753478541deb</id>
 	<module>Plugins::SpotOn::Plugin</module>
+	<importmodule>Plugins::SpotOn::Importer</importmodule>
+	<onlineLibrary>true</onlineLibrary>
 	<optionsURL>plugins/SpotOn/settings/basic.html</optionsURL>
 	<icon>plugins/SpotOn/html/images/SpotOn_MTL_svg_spoton.png</icon>
 	<targetApplication>
