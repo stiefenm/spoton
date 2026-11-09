@@ -4158,43 +4158,43 @@ PLUGIN_SPOTON_DISCOVER_INVALID
 	SV	Filen i mappen __DISCOVER__ är inte en giltig credentials.json och lämnades orörd. Se TROUBLESHOOTING.md.
 
 PLUGIN_SPOTON_SONG_RADIO
-	CS	Rádio skladby
-	DA	Sangradio
-	DE	Song-Radio
-	EN	Song radio
-	ES	Radio de la canción
-	FR	Radio du titre
-	IT	Radio del brano
-	NL	Nummerradio
-	NO	Sangradio
-	PL	Radio utworu
-	SV	Låtradio
+	CS	SpotOn: Rádio skladby
+	DA	SpotOn: Sangradio
+	DE	SpotOn: Song-Radio
+	EN	SpotOn: Song radio
+	ES	SpotOn: Radio de la canción
+	FR	SpotOn: Radio du titre
+	IT	SpotOn: Radio del brano
+	NL	SpotOn: Nummerradio
+	NO	SpotOn: Sangradio
+	PL	SpotOn: Radio utworu
+	SV	SpotOn: Låtradio
 
 PLUGIN_SPOTON_ARTIST_RADIO
-	CS	Rádio interpreta
-	DA	Kunstnerradio
-	DE	Künstler-Radio
-	EN	Artist radio
-	ES	Radio del artista
-	FR	Radio de l'artiste
-	IT	Radio dell'artista
-	NL	Artiestenradio
-	NO	Artistradio
-	PL	Radio wykonawcy
-	SV	Artistradio
+	CS	SpotOn: Rádio interpreta
+	DA	SpotOn: Kunstnerradio
+	DE	SpotOn: Künstler-Radio
+	EN	SpotOn: Artist radio
+	ES	SpotOn: Radio del artista
+	FR	SpotOn: Radio de l'artiste
+	IT	SpotOn: Radio dell'artista
+	NL	SpotOn: Artiestenradio
+	NO	SpotOn: Artistradio
+	PL	SpotOn: Radio wykonawcy
+	SV	SpotOn: Artistradio
 
 PLUGIN_SPOTON_PLAYLIST_RADIO
-	CS	Rádio playlistu
-	DA	Playlisteradio
-	DE	Playlist-Radio
-	EN	Playlist radio
-	ES	Radio de la lista
-	FR	Radio de la playlist
-	IT	Radio della playlist
-	NL	Afspeellijstradio
-	NO	Spillelisteradio
-	PL	Radio playlisty
-	SV	Spellisteradio
+	CS	SpotOn: Rádio playlistu
+	DA	SpotOn: Playlisteradio
+	DE	SpotOn: Playlist-Radio
+	EN	SpotOn: Playlist radio
+	ES	SpotOn: Radio de la lista
+	FR	SpotOn: Radio de la playlist
+	IT	SpotOn: Radio della playlist
+	NL	SpotOn: Afspeellijstradio
+	NO	SpotOn: Spillelisteradio
+	PL	SpotOn: Radio playlisty
+	SV	SpotOn: Spellisteradio
 
 PLUGIN_SPOTON_RADIO_UNAVAILABLE
 	CS	Spotify pro tuto položku nenabízí žádné rádio.
