@@ -278,11 +278,24 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # TEMPORARY WORKAROUND (2026-11-11, for v4.0.0-beta.8): the Ubuntu mirrors'
+      # DNS (azure.archive / archive / security.ubuntu.com) did not resolve on the
+      # hosted runners, see actions/runner-images#15296 and #15297, and apt hung
+      # for 15+ minutes. kernel.org carries the same signed archive under a name
+      # that does not depend on Canonical's DNS. Revert this step to a plain
+      # `sudo apt-get update` / `sudo apt-get install -y` once beta.8 is published
+      # and the outage is over.
       - name: Install glibc cross-toolchain
         if: matrix.cross_gcc_package != ''
+        timeout-minutes: 10
+        env:
+          APT_OPTS: -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20
+          PRIMARY_MIRROR: https://mirrors.edge.kernel.org/ubuntu/
+          FALLBACK_MIRROR: http://archive.ubuntu.com/ubuntu/
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ${{ matrix.cross_gcc_package }}
+          printf '%s\tpriority:%s\n' "$PRIMARY_MIRROR" 1 "$FALLBACK_MIRROR" 2 | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+          sudo apt-get update $APT_OPTS
+          sudo apt-get install -y $APT_OPTS ${{ matrix.cross_gcc_package }}
 
       - name: Build libpulse.so.0
         run: |
