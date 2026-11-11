@@ -520,8 +520,8 @@ require_ok('Plugins::SpotOn::Backend::Soloist')
     is_deeply(
         \@args,
         [ '/fake/soloist', '-n', 'Living Room', '-k', 'the-spak-key',
-          '-D', '/fake/data', '-C', '/fake/cache', '-w', '127.0.0.1:0', '-i', 40 ],
-        "_spawnArgs() builds the expected argv (D-05, T-73-01 -- hard-coded 127.0.0.1:0 bind)"
+          '-D', '/fake/data', '-C', '/fake/cache', '-z', 1024, '-w', '127.0.0.1:0', '-i', 40 ],
+        "j58 argv: _spawnArgs() builds the expected argv (D-05, T-73-01 -- hard-coded 127.0.0.1:0 bind, -z 1024 per GH #208)"
     );
 }
 

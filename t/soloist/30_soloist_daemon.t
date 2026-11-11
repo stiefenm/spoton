@@ -434,8 +434,8 @@ require_ok('Plugins::SpotOn::Unified::SoloistDaemon')
     is_deeply(
         \@args,
         [ '/fake/soloist', '-n', 'Living Room', '-k', 'the-spak-key',
-          '-D', $dataDir, '-C', $cacheDir, '-w', '127.0.0.1:0', '-i', 40 ],
-        "_spawnArgs() builds the expected argv, carrying -w 127.0.0.1:0 and both per-player dirs (D-05)"
+          '-D', $dataDir, '-C', $cacheDir, '-z', 1024, '-w', '127.0.0.1:0', '-i', 40 ],
+        "j58 argv: _spawnArgs() builds the expected argv, carrying -z 1024, -w 127.0.0.1:0 and both per-player dirs (D-05, GH #208)"
     );
 }
 
@@ -444,7 +444,7 @@ require_ok('Plugins::SpotOn::Unified::SoloistDaemon')
 # '-v' appended as the LAST element when the daemon runs with
 # diagnosticMode on (D-03 measurement need, RESEARCH Sec 1: -v is a pure
 # log-level switch, CHANGELOG-1.3.8.68.md's only CLI addition). Existing
-# twelve-element ordering must stay unchanged so t/28 and the 6-arg case
+# fourteen-element ordering must stay unchanged so t/28 and the 6-arg case
 # above keep passing.
 # ============================================================
 {
@@ -459,8 +459,8 @@ require_ok('Plugins::SpotOn::Unified::SoloistDaemon')
     is_deeply(
         \@args,
         [ '/fake/soloist', '-n', 'Living Room', '-k', 'the-spak-key',
-          '-D', $dataDir, '-C', $cacheDir, '-w', '127.0.0.1:0', '-i', 40, '-v' ],
-        "_spawnArgs() with verbose=1 appends '-v' as the 14th and last element (D-03)"
+          '-D', $dataDir, '-C', $cacheDir, '-z', 1024, '-w', '127.0.0.1:0', '-i', 40, '-v' ],
+        "j58 argv: _spawnArgs() with verbose=1 appends '-v' as the 16th and last element (D-03)"
     );
 }
 
@@ -476,10 +476,16 @@ require_ok('Plugins::SpotOn::Unified::SoloistDaemon')
     is_deeply(
         \@args,
         [ '/fake/soloist', '-n', 'Living Room', '-k', 'the-spak-key',
-          '-D', $dataDir, '-C', $cacheDir, '-w', '127.0.0.1:0', '-i', 40 ],
-        "_spawnArgs() with verbose=0 leaves the argv unchanged, no '-v' (D-03)"
+          '-D', $dataDir, '-C', $cacheDir, '-z', 1024, '-w', '127.0.0.1:0', '-i', 40 ],
+        "j58 argv: _spawnArgs() with verbose=0 leaves the argv unchanged, no '-v' (D-03)"
     );
 }
+
+# GH #208 (quick 261111-j58): the cache-size limit is a named constant; the
+# literal 1024 is used on purpose so a changed constant is caught.
+is( Plugins::SpotOn::Unified::SoloistDaemon->can('SOLOIST_CACHE_LIMIT_MB')
+        ? Plugins::SpotOn::Unified::SoloistDaemon->SOLOIST_CACHE_LIMIT_MB : undef,
+    1024, 'j58 argv: SOLOIST_CACHE_LIMIT_MB is 1024 (GH #208)' );
 
 # ============================================================
 # CR-S3 (Phase 77 Plan 02, RESEARCH Pitfall 4): first-ever coverage for
@@ -1114,6 +1120,13 @@ sub _fire_last_timer {
 
     is(scalar(@Slim::Networking::Select::ADD_READ_CALLS), 1,
         "smokeTest: found -- addRead registered exactly once");
+
+    {
+        my @sargs = @{ $Proc::Background::NEW_CALLS[-1]{args} };
+        my ($zi) = grep { $sargs[$_] eq '-z' } 0 .. $#sargs - 1;
+        ok(defined $zi && $sargs[$zi + 1] eq '1024',
+            'j58 argv: smokeTest spawns with -z 1024 (GH #208)');
+    }
 
     my $proc = $Proc::Background::NEW_CALLS[-1]{proc};
     my $wfh  = $proc->write_handle;
@@ -2188,6 +2201,227 @@ sub _fire_last_timer {
     @dirs = grep { -d $_ } glob("$tmpRoot/smoke/*");
     is(scalar(@dirs), 0, '79-61 WR-01 (d): ... and the throwaway data dir is removed');
     @Slim::Utils::Timers::TIMERS = ();
+}
+
+# ============================================================
+# GH #208 (quick 261111-j58): _pruneSoloistCache() deletes the oldest files of
+# the Soloist audio cache (<cacheDir>/cache/<2 hex>/<40 hex>.file, format
+# string "%s%.2x/%s.file" of the binary) until the total is at or below the
+# limit. Full scan (not budgeted), then at least one unlink and at most
+# SOLOIST_PRUNE_BUDGET_S seconds of deletions per call. The sub returns
+# (deleted, freed, incomplete). Fixtures live in fresh tempdirs only; files
+# are sparse (truncate). Names carry "j58 prune: <ID> " (the gate greps by ID).
+# A missing sub fails by name (-1 triple), it never kills the test file.
+# ============================================================
+{
+    require Fcntl;
+    require Time::HiRes;
+    my $CLS = 'Plugins::SpotOn::Unified::SoloistDaemon';
+    my $P   = $CLS->can('_pruneSoloistCache');
+
+    my $pid = sub { my ($pfx, $n) = @_; return $pfx . sprintf('%038x', $n) };
+    my $pf  = sub { my ($pfx, $n) = @_; return $pid->($pfx, $n) . '.file' };
+    my $mk  = sub {
+        my ($path, $bytes, $mtime) = @_;
+        make_path(dirname($path));
+        open(my $fh, '>:raw', $path) or die "mk $path: $!";
+        truncate($fh, $bytes) or die "truncate $path: $!";
+        close($fh);
+        utime($mtime, $mtime, $path) if defined $mtime;
+    };
+    my $call = sub {
+        my @r = eval { $P ? $P->($CLS, @_) : (-1, -1, -1) };
+        return $@ ? ("DIED: $@") : @r;
+    };
+    # fresh player cache dir: $pc = <player>/cache, $root = <pc>/cache
+    my $fresh = sub {
+        my $player = tempdir(CLEANUP => 1);
+        return ($player, "$player/cache", "$player/cache/cache");
+    };
+    my $now = time();
+    my $K = 614400;
+
+    ok(defined $P, 'j58 prune: P1 _pruneSoloistCache exists');
+    is($CLS->can('SOLOIST_PRUNE_BUDGET_S') ? $CLS->SOLOIST_PRUNE_BUDGET_S : undef, 2,
+        'j58 prune: P2 SOLOIST_PRUNE_BUDGET_S is 2');
+
+    # ---- A: oldest first across two sub dirs
+    {
+        my ($player, $pc, $root) = $fresh->();
+        my @f = ("$root/ab/" . $pf->('ab', 1), "$root/cd/" . $pf->('cd', 2), "$root/ab/" . $pf->('ab', 3));
+        $mk->($f[0], $K, $now - 300); $mk->($f[1], $K, $now - 200); $mk->($f[2], $K, $now - 100);
+        my @r = $call->($pc, 716800);
+        is_deeply(\@r, [ 2, 1228800, 0 ], 'j58 prune: A1 the two oldest files are deleted, (deleted, freed, incomplete) returned');
+        ok(!-e $f[0] && !-e $f[1], 'j58 prune: A2 the two oldest files are gone');
+        ok(-e $f[2], 'j58 prune: A3 the newest file stays');
+    }
+
+    # ---- T: mtime tie, the lexically smaller path goes first
+    {
+        my ($player, $pc, $root) = $fresh->();
+        my @f = ("$root/ab/" . $pf->('ab', 1), "$root/cd/" . $pf->('cd', 2));
+        $mk->($f[0], $K, $now - 200); $mk->($f[1], $K, $now - 200);
+        my @r = $call->($pc, 716800);
+        is_deeply(\@r, [ 1, 614400, 0 ], 'j58 prune: T1 one file of a mtime tie is deleted');
+        ok(!-e $f[0], 'j58 prune: T2 the lexically smaller path (ab) is the one that is gone');
+        ok(-e $f[1], 'j58 prune: T3 the larger path (cd) stays');
+    }
+
+    # ---- B: default limit (1 GiB) and default budget
+    {
+        my ($player, $pc, $root) = $fresh->();
+        my @f = map { "$root/0$_/" . $pf->("0$_", $_) } 1 .. 3;
+        $mk->($f[$_], 419430400, $now - 300 + $_ * 100) for 0 .. 2;
+        my @r = $call->($pc, undef, undef);
+        is_deeply(\@r, [ 1, 419430400, 0 ], 'j58 prune: B1 undef limit means 1 GiB, undef budget does not stop it');
+        ok(!-e $f[0] && -e $f[1] && -e $f[2], 'j58 prune: B2 only the oldest of three 400 MB files is gone');
+    }
+
+    # ---- C: only strict names in <pc>/cache/<2 hex>/ are ever deleted
+    {
+        my ($player, $pc, $root) = $fresh->();
+        my @strict = ("$root/ab/" . $pf->('ab', 1), "$root/ef/" . $pf->('ef', 2));
+        $mk->($_, 100, $now - 500) for @strict;
+        my %keep = (
+            C1 => [ "$root/ab/" . $pid->('ab', 3) . '.tmp', "$root/ab/" . $pid->('ab', 4) ],
+            C2 => [ "$root/ab/" . uc($pid->('ab', 255)) . '.file' ],
+            C3 => [ "$root/ab/" . substr($pid->('ab', 5), 1) . '.file', "$root/ab/" . $pid->('ab', 6) . '0.file' ],
+            C4 => [ "$root/ab/" . $pf->('cd', 5) ],
+            C5 => [ "$root/zz/" . $pf->('ab', 6), "$root/abc/" . $pf->('ab', 7) ],
+            C6 => [ "$root/" . $pf->('ab', 8) ],
+            C7 => [ "$pc/ab/" . $pf->('ab', 9) ],
+            C8 => [ "$player/data/cache/ab/" . $pf->('ab', 10) ],
+        );
+        $mk->($_, 100, $now - 900) for map { @$_ } values %keep;
+        my @r = $call->($pc, 1);
+        is_deeply(\@r, [ 2, 200, 0 ], 'j58 prune: C0 exactly the two strict files are deleted, limit 1');
+        my %why = (
+            C1 => 'a .tmp name and a bare 40-hex name survive',
+            C2 => 'an upper-case id survives',
+            C3 => 'a 39-hex and a 41-hex .file name survive',
+            C4 => 'a name whose prefix differs from its dir survives',
+            C5 => 'files in a non-hex dir and in a 3-char dir survive',
+            C6 => 'a file loose in the cache root survives',
+            C7 => 'a 2-hex dir directly under the player cache dir (outside cache/) survives',
+            C8 => 'the sibling data/cache store (Soloist state) is never touched',
+        );
+        for my $id (qw(C1 C2 C3 C4 C5 C6 C7 C8)) {
+            ok((scalar(grep { -e $_ } @{ $keep{$id} }) == scalar(@{ $keep{$id} })), "j58 prune: $id $why{$id}");
+        }
+    }
+
+    # ---- D: symlinks are never followed
+    {
+        my ($player, $pc, $root) = $fresh->();
+        my $outside = tempdir(CLEANUP => 1);
+        $mk->("$outside/cd/" . $pf->('cd', 1), 100, $now - 800);
+        $mk->("$outside/target.file", 100, $now - 800);
+        make_path($root, "$root/ef", "$root/ab");
+        symlink("$outside/cd", "$root/cd") or die "symlink: $!";
+        symlink("$outside/target.file", "$root/ef/" . $pf->('ef', 2)) or die "symlink: $!";
+        $mk->("$root/ab/" . $pf->('ab', 3), 100, $now - 700);
+        my @r = $call->($pc, 1);
+        is_deeply(\@r, [ 1, 100, 0 ], 'j58 prune: D1 only the real file is deleted, symlinks do not count');
+        ok(-l "$root/cd" && -e "$outside/cd/" . $pf->('cd', 1), 'j58 prune: D2 a symlinked 2-hex dir is not followed, its target file is untouched');
+        ok(-l "$root/ef/" . $pf->('ef', 2) && -e "$outside/target.file", 'j58 prune: D3 a symlinked .file stays and its target is untouched');
+
+        my $pc2      = tempdir(CLEANUP => 1);
+        my $outside2 = tempdir(CLEANUP => 1);
+        my $victim   = "$outside2/ab/" . $pf->('ab', 4);
+        $mk->($victim, 100, $now - 800);
+        symlink($outside2, "$pc2/cache") or die "symlink: $!";
+        my @r2 = $call->($pc2, 1);
+        ok(eq_array(\@r2, [ 0, 0, 0 ]) && -e $victim, 'j58 prune: D4 a symlinked cache root yields (0, 0, 0) and its file is untouched');
+    }
+
+    # ---- E: edges, never die
+    {
+        my ($player, $pc, $root) = $fresh->();
+        my $f = "$root/ab/" . $pf->('ab', 1);
+        $mk->($f, 100, $now - 100);
+        my @r = $call->($pc, 1000);
+        ok(eq_array(\@r, [ 0, 0, 0 ]) && -e $f, 'j58 prune: E1 below the limit nothing is deleted');
+
+        my ($p2, $pc2, $root2) = $fresh->();
+        make_path($root2);
+        is_deeply([ $call->($pc2, 1) ], [ 0, 0, 0 ], 'j58 prune: E2 an empty cache dir returns (0, 0, 0)');
+
+        my $p3 = tempdir(CLEANUP => 1);
+        is_deeply([ $call->($p3, 1) ], [ 0, 0, 0 ], 'j58 prune: E3 a dir without a cache/ subdir returns (0, 0, 0)');
+        is_deeply([ $call->("$p3/does-not-exist", 1) ], [ 0, 0, 0 ], 'j58 prune: E4 a nonexistent dir returns (0, 0, 0) without dying');
+        is_deeply([ $call->(undef, 1) ], [ 0, 0, 0 ], 'j58 prune: E5 undef returns (0, 0, 0) without dying');
+        is_deeply([ $call->('', 1) ], [ 0, 0, 0 ], 'j58 prune: E6 the empty string returns (0, 0, 0) without dying');
+    }
+
+    # ---- G: time budget of the deletion phase
+    {
+        no warnings 'redefine';
+
+        # G1: budget 0 still deletes one file (guaranteed progress)
+        my ($player, $pc, $root) = $fresh->();
+        my @f = ("$root/ab/" . $pf->('ab', 1), "$root/ab/" . $pf->('ab', 2));
+        $mk->($f[0], $K, $now - 200); $mk->($f[1], $K, $now - 100);
+        my @r = $call->($pc, 1, 0);
+        ok(eq_array(\@r, [ 1, 614400, 1 ]) && !-e $f[0] && -e $f[1],
+            'j58 prune: G1 budget 0 still deletes the oldest file and reports incomplete');
+
+        # G2: partial run on a fake clock, exactly three reads
+        ($player, $pc, $root) = $fresh->();
+        @f = map { "$root/ab/" . $pf->('ab', $_) } 1 .. 4;
+        $mk->($f[$_], $K, $now - 400 + $_ * 100) for 0 .. 3;
+        my $fake = 0; my $reads = 0;
+        {
+            local *Time::HiRes::time = sub { $reads++; return ++$fake };
+            @r = $call->($pc, 716800, 2);
+        }
+        ok(eq_array(\@r, [ 2, 1228800, 1 ]) && !-e $f[0] && !-e $f[1] && -e $f[2] && -e $f[3] && $reads == 3,
+            'j58 prune: G2 on a fake clock two files go, the budget stops the rest, exactly three clock reads');
+
+        # G3: scan time is not charged to the deletion budget
+        ($player, $pc, $root) = $fresh->();
+        @f = map { "$root/ab/" . $pf->('ab', $_) } 1 .. 3;
+        $mk->($f[$_], $K, $now - 300 + $_ * 100) for 0 .. 2;
+        my $vt = 0;
+        {
+            local *Time::HiRes::time = sub { return $vt };
+            local *Plugins::SpotOn::Unified::SoloistDaemon::S_ISDIR = sub { $vt += 10; return Fcntl::S_ISDIR($_[0]) };
+            @r = $call->($pc, 716800, 2);
+        }
+        ok(eq_array(\@r, [ 2, 1228800, 0 ]) && !-e $f[0] && !-e $f[1] && -e $f[2],
+            'j58 prune: G3 a slow scan does not eat the deletion budget');
+
+        # G4: budget gone at the first check, still one file of progress
+        ($player, $pc, $root) = $fresh->();
+        @f = map { "$root/ab/" . $pf->('ab', $_) } 1 .. 3;
+        $mk->($f[$_], $K, $now - 300 + $_ * 100) for 0 .. 2;
+        my $v4 = 0;
+        {
+            local *Time::HiRes::time = sub { $v4 += 10; return $v4 };
+            @r = $call->($pc, 716800, 2);
+        }
+        ok(eq_array(\@r, [ 1, 614400, 1 ]) && !-e $f[0] && -e $f[1] && -e $f[2],
+            'j58 prune: G4 budget gone at the first check still deletes exactly the oldest file');
+    }
+
+    # ---- F: wiring in start(), source pins
+    {
+        open(my $fh, '<', "$project_dir/Plugins/SpotOn/Unified/SoloistDaemon.pm") or die $!;
+        my $src = do { local $/; <$fh> };
+        close($fh);
+        my ($body) = $src =~ /(\nsub start \{.*?)(?=\n(?:# [^\n]*\n)*sub \w)/s;
+        my $ok = 0;
+        if (defined $body && $body =~ /\$self->_pruneSoloistCache\(\s*\$cacheDir\s*,\s*SOLOIST_CACHE_LIMIT_MB\s*\*\s*1024\s*\*\s*1024\s*,\s*SOLOIST_PRUNE_BUDGET_S\s*\)/) {
+            my $at = $-[0];
+            $ok = rindex(substr($body, 0, $at), 'eval {') >= 0
+               && index($body, 'cacheDirForClient(') >= 0 && index($body, 'cacheDirForClient(') < $at
+               && index($body, '_spawnArgs(') > $at ? 1 : 0;
+        }
+        ok($ok, 'j58 prune: F1 start() calls _pruneSoloistCache($cacheDir, limit in bytes, budget) inside an eval, after cacheDirForClient and before _spawnArgs');
+
+        my ($sbody) = $src =~ /(\nsub smokeTest \{.*?\n\}\n)/s;
+        ok(defined $sbody && $sbody =~ /_spawnArgs\(/ && $sbody !~ /_pruneSoloistCache/,
+            'j58 prune: F2 smokeTest spawns via _spawnArgs and never prunes');
+    }
 }
 
 done_testing();

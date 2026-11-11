@@ -583,8 +583,16 @@ sub encode_rootlist_item { return Plugins::SpotOn::API::ProtobufLite::encode_fie
 sub encode_rootlist_decoration {
     my (%a) = @_;
     my $b = '';
-    if (defined $a{name}) {
-        $b .= Plugins::SpotOn::API::ProtobufLite::encode_field(2, 2, Plugins::SpotOn::API::ProtobufLite::encode_field(1, 2, $a{name}));
+    # 261110-k1b: revision (field 1), picture (attributes field 3), picture_size (attributes field 13, [[target, url], ...])
+    $b .= Plugins::SpotOn::API::ProtobufLite::encode_field(1, 2, $a{revision}) if defined $a{revision};
+    if (defined $a{name} || defined $a{picture} || $a{picture_size}) {
+        my $attrs = '';
+        $attrs .= Plugins::SpotOn::API::ProtobufLite::encode_field(1, 2, $a{name}) if defined $a{name};
+        $attrs .= Plugins::SpotOn::API::ProtobufLite::encode_field(3, 2, $a{picture}) if defined $a{picture};
+        for my $ps (@{ $a{picture_size} || [] }) {
+            $attrs .= Plugins::SpotOn::API::ProtobufLite::encode_field(13, 2, Plugins::SpotOn::API::ProtobufLite::encode_field(1, 2, $ps->[0]) . Plugins::SpotOn::API::ProtobufLite::encode_field(2, 2, $ps->[1]));
+        }
+        $b .= Plugins::SpotOn::API::ProtobufLite::encode_field(2, 2, $attrs);
     }
     $b .= Plugins::SpotOn::API::ProtobufLite::encode_field(3, 0, $a{track_count} // 0);
     $b .= Plugins::SpotOn::API::ProtobufLite::encode_field(5, 2, $a{owner}) if defined $a{owner};
@@ -605,6 +613,23 @@ my @ROOTLIST = (
     ['spotify:playlist:37i9dQZEVXbkoDWHZvXaFe', 'Release Radar'],
 );
 sub rootlist_rule { http_rule(qr{/playlist/v2/user/.+/rootlist}, rootlist_bytes(@ROOTLIST)); }
+
+# 261110-k1b: a rootlist reply from hashes { id, name, owner, revision, picture, picture_size }
+sub k1b_rootlist_bytes {
+    my (@defs) = @_;
+    my $list = '';
+    for my $d (@defs) {
+        $list .= Plugins::SpotOn::API::ProtobufLite::encode_field(3, 2, encode_rootlist_item('spotify:playlist:' . $d->{id}));
+    }
+    for my $d (@defs) {
+        $list .= Plugins::SpotOn::API::ProtobufLite::encode_field(4, 2, encode_rootlist_decoration(
+            name => $d->{name}, owner => $d->{owner}, track_count => $d->{tracks} // 5,
+            (defined $d->{revision}     ? (revision => $d->{revision})         : ()),
+            (defined $d->{picture}      ? (picture => $d->{picture})           : ()),
+            ($d->{picture_size}         ? (picture_size => $d->{picture_size}) : ())));
+    }
+    return Plugins::SpotOn::API::ProtobufLite::encode_field(5, 2, $list);
+}
 
 # run getMadeForYou to completion
 sub run_mfy {
@@ -1673,5 +1698,1258 @@ t_block('79-59 MFY list cache', sub {
     my ($f1) = run_mfy();
     ok($f1 && @{ $f1->{items} } && !defined $CK->get('spoton_mfy_list_acct1'), '79-59 cache: an answer with a failed source is not kept');
 });
+
+# ============================================================
+# 261110-is9: a Made for You entry whose Pathfinder name is empty gets its name
+# from spclient playlist/v2 (through _playlistEnvelope), else from Pathfinder
+# fetchPlaylist, else a label -- never its playlist id. Lookups are bounded
+# (13 per build, 2 in flight, 5 s budget, stop on 429) and cached (30 days, 1
+# hour negative). Helpers first; the blocks follow below.
+# ============================================================
+sub is9_setup { reset_all(); seed59(); seed_hash('fetchPlaylist', $HASH_OLD); }
+
+sub is9_mix {
+    my ($id, %o) = @_;
+    my $uri = "spotify:playlist:$id";
+    my %d = (__typename => 'Playlist', uri => $uri, format => $o{format} // 'topic-mix',
+             attributes => [ { key => 'madeFor.username', value => 'listener' } ]);
+    if    (exists $o{name}) { $d{name} = $o{name} }
+    elsif (!$o{noname})     { $d{name} = "Named $id" }
+    return { uri => $uri, content => { data => \%d } };
+}
+
+sub is9_hs_items { return $_[0]{data}{homeSections}{sections}[0]{sectionItems}{items}; }
+sub is9_topmix {
+    my (@items) = @_;
+    my $t = clone($FX59->{homeSection_topmix});
+    push @{ is9_hs_items($t) }, @items;
+    return $t;
+}
+
+sub is9_pv2 {
+    my ($names, %o) = @_;
+    http_rule(qr{/playlist/v2/playlist/}, sub {
+        my ($e) = @_;
+        my ($id) = $e->{url} =~ m{/playlist/v2/playlist/([^/?#]+)};
+        return ($o{code}, '', $o{code} == 429 ? { 'Retry-After' => 30 } : {}) if $o{code};
+        return (200, $JSON->encode({ attributes => { name => $names->{$id} } })) if defined $id && exists $names->{$id};
+        return (404, '');
+    });
+}
+
+sub is9_pf {
+    my (%o) = @_;
+    my %rest = %o; delete $rest{fetch};
+    my $base = pf59_responder(%rest);
+    http_rule(qr{pathfinder/v2/query}, sub {
+        my $req = pf_body($_[0]);
+        if (($req->{operationName} // '') eq 'fetchPlaylist') {
+            my ($id) = (($req->{variables} || {})->{uri} // '') =~ /:([^:]+)\z/;
+            my $r = (defined $id && ref($o{fetch}) eq 'HASH') ? $o{fetch}{$id} : undef;
+            return (200, defined $r ? (ref $r ? $JSON->encode($r) : $r) : '{"data":{}}');
+        }
+        return $base->($_[0]);
+    });
+}
+
+sub is9_pv2_ids {
+    return map { $_->{url} =~ m{/playlist/v2/playlist/([^/?#]+)} ? $1 : () }
+           grep { $_->{url} =~ m{/playlist/v2/playlist/} } @Slim::Networking::SimpleAsyncHTTP::requests;
+}
+sub is9_fetch_reqs { return grep { (pf_body($_)->{operationName} // '') eq 'fetchPlaylist' } pf_requests(); }
+sub is9_item {
+    my ($res, $id) = @_;
+    my ($it) = grep { $_->{id} eq $id } @{ ($res || {})->{items} || [] };
+    return $it;
+}
+sub is9_feed {
+    Slim::Utils::Prefs::preferences('plugin.spoton')->set('activeAccount', 'acct1');
+    my $client = MockClient->new('player-is9');
+    my $out;
+    Plugins::SpotOn::Plugin::_madeForYouFeed($client, sub { $out = shift }, {});
+    my @pl;
+    for my $it (@{ ($out || {})->{items} || [] }) {
+        if (ref $it->{items} eq 'ARRAY') { push @pl, @{ $it->{items} } }
+        else                             { push @pl, $it }
+    }
+    return map { [ $_->{passthrough}[0]{playlistId}, $_->{name} ] } grep { ref $_->{passthrough} eq 'ARRAY' } @pl;
+}
+sub is9_feed_name {
+    my ($id, @feed) = @_;
+    my ($e) = grep { $_->[0] eq $id } @feed;
+    return $e ? $e->[1] : undef;
+}
+
+t_block('is9 MFY name resolution', sub {
+    # --- resolve: nameless items get their name from playlist/v2 ---
+    my ($R1, $R2) = ('37i9dQZF1EQ99IS9RESxx01', '37i9dQZF1EQ99IS9RESxx02');
+    is9_setup();
+    is9_pv2({ $R1 => 'Classic Rock Mix', $R2 => 'Hip Hop Mix' });
+    is9_pf(topmix => is9_topmix(is9_mix($R1, name => ''), is9_mix($R2, noname => 1)));
+    my ($res, $err, $called) = run_mfy();
+    ok($res && !$err && $called == 1 && ($res->{source} // '') eq 'pathfinder', 'is9 T1 resolve: one pathfinder result, callback once');
+    my ($i1, $i2) = (is9_item($res, $R1), is9_item($res, $R2));
+    is($i1 ? $i1->{name} : undef, 'Classic Rock Mix', 'is9 T1 resolve: an empty name is replaced by the playlist/v2 name');
+    is($i2 ? $i2->{name} : undef, 'Hip Hop Mix', 'is9 T1 resolve: a missing name is replaced by the playlist/v2 name');
+    is_deeply([ sort { $a cmp $b } is9_pv2_ids() ], [ sort { $a cmp $b } ($R1, $R2) ], 'is9 T1 resolve: exactly one playlist/v2 request per nameless item');
+    my @pv = grep { $_->{url} =~ m{/playlist/v2/playlist/} } @Slim::Networking::SimpleAsyncHTTP::requests;
+    ok(@pv && !(grep { ($_->{headers}{Accept} // '') ne 'application/json' } @pv), 'is9 T1 resolve: every playlist/v2 request asks for application/json');
+    ok(!(grep { $_ ne $R1 && $_ ne $R2 } is9_pv2_ids()), 'is9 T1 resolve: no playlist/v2 request for an item that has a name');
+    my ($tf) = grep { $_->{title} eq 'Your top mixes' } @{ ($res && $res->{layout} || {})->{folders} || [] };
+    my @tu = $tf ? map { $_->{id} } @{ $tf->{items} } : ();
+    is_deeply([ @tu >= 2 ? @tu[-2, -1] : () ], [ $R1, $R2 ], 'is9 T1 resolve: both sit at the end of the folder Your top mixes, in order');
+
+    # --- dedup: the named copy wins, the first copy keeps its place ---
+    my $X = '37i9dQZF1EQ99IS9DUPxx03';
+    is9_setup();
+    my $home = clone($FX59->{home});
+    my ($row) = grep { $_->{uri} eq $SECTION_TOP } @{ $home->{data}{home}{sectionContainer}{sections}{items} };
+    push @{ $row->{sectionItems}{items} }, is9_mix($X, name => '');
+    my $nHome = scalar(@{ $row->{sectionItems}{items} }) - 1;
+    my $top = is9_topmix();
+    unshift @{ is9_hs_items($top) }, is9_mix($X, name => 'Named Dup');
+    is9_pf(home => $home, topmix => $top);
+    ($res) = run_mfy();
+    is(scalar(grep { $_ eq "spotify:playlist:$X" } @{ uris_of($res) }), 1, 'is9 T1 dedup: the doubly listed mix appears once');
+    my $dx = is9_item($res, $X);
+    is($dx ? $dx->{name} : undef, 'Named Dup', 'is9 T1 dedup: it shows the name of the copy that has one');
+    ($tf) = grep { $_->{title} eq 'Your top mixes' } @{ ($res && $res->{layout} || {})->{folders} || [] };
+    is($tf && $tf->{items}[$nHome] ? $tf->{items}[$nHome]{id} : undef, $X, 'is9 T1 dedup: and keeps the first copy\'s place in home\'s row');
+    is(scalar(is9_pv2_ids()), 0, 'is9 T1 dedup: no playlist/v2 request was needed');
+
+    # --- label: nothing found, never the id ---
+    my $L1 = '37i9dQZF1EQ99IS9LBLxx04';
+    is9_setup();
+    is9_pf(topmix => is9_topmix(is9_mix($L1, name => '')));
+    ($res, $err, $called) = run_mfy();
+    my $l1 = is9_item($res, $L1);
+    is($l1 ? $l1->{name} : undef, '', 'is9 T1 label: a name that cannot be found stays empty in the result');
+    ok($res && !(grep { $_->{name} eq $_->{id} } @{ $res->{items} || [] }), 'is9 T1 label: no result item carries its playlist id as the name');
+    is($called, 1, 'is9 T1 label: the callback fires once');
+    my @feed = is9_feed();
+    is(is9_feed_name($L1, @feed), 'PLUGIN_SPOTON_MFY_UNNAMED', 'is9 T1 label: the feed labels the nameless entry');
+    ok(@feed && !(grep { $_->[0] eq $_->[1] } @feed), 'is9 T1 label: no feed entry is named like its playlist id');
+    my $soulName = is9_feed_name((split /:/, $SOUL59)[2], @feed);
+    ok(defined $soulName && length $soulName && $soulName ne 'PLUGIN_SPOTON_MFY_UNNAMED', 'is9 T1 label: a named entry keeps its name');
+
+    # --- fallback: the rootlist leg labels an empty name too ---
+    my $RL = '37i9dQZF1E99IS9RLTxxx05';
+    is9_setup();
+    http_rule(qr{pathfinder/v2/query}, sub { return (500, '') });
+    http_rule(qr{/playlist/v2/user/.+/rootlist}, rootlist_bytes(@ROOTLIST, [ "spotify:playlist:$RL", '' ]));
+    ($res) = run_mfy();
+    is(($res || {})->{source}, 'rootlist-fallback', 'is9 T1 fallback: every Pathfinder source failed, the rootlist answers');
+    my $rl = is9_item($res, $RL);
+    is($rl ? $rl->{name} : undef, '', 'is9 T1 fallback: a rootlist entry without a name stays empty in the result');
+    @feed = is9_feed();
+    is(is9_feed_name($RL, @feed), 'PLUGIN_SPOTON_MFY_UNNAMED', 'is9 T1 fallback: and the feed labels it');
+
+    # --- burst: at most 13 lookups, 2 in flight ---
+    my @B = map { sprintf('37i9dQZF1EQ99IS9BURxx%02d', $_) } 1 .. 15;
+    is9_setup();
+    is9_pf(topmix => is9_topmix(map { is9_mix($_, name => '') } @B));
+    is9_pv2({ map { $B[$_ - 1] => sprintf('Burst %02d', $_) } 1 .. 15 });
+    $Slim::Networking::SimpleAsyncHTTP::hold_re = qr{/playlist/v2/playlist/};
+    ($res, $called) = (undef, 0);   # the answer arrives later: capture it by closure, not through run_mfy's return values
+    $SP->getMadeForYou('acct1', sub { ($res) = @_; $called++ });
+    ok(scalar(@Slim::Networking::SimpleAsyncHTTP::held) == 2 && !$called, 'is9 T1 burst: two lookups start, the rest waits for a free slot, the callback has not fired');
+    1 while Slim::Networking::SimpleAsyncHTTP::release_one();
+    is($Slim::Networking::SimpleAsyncHTTP::max_inflight, 2, 'is9 T1 burst: never more than 2 lookups in flight');
+    is(scalar(is9_pv2_ids()), 13, 'is9 T1 burst: 15 nameless items cost exactly 13 lookups');
+    is($called, 1, 'is9 T1 burst: the callback fires once');
+    my @got = map { my $it = is9_item($res, $_); $it ? $it->{name} : '<missing>' } @B;
+    is_deeply(\@got, [ (map { sprintf('Burst %02d', $_) } 1 .. 13), '', '' ], 'is9 T1 burst: the first 13 carry their names, the last two stay empty');
+    my ($cPar, $cMax) = ($SP->can('MFY_NAME_PARALLEL'), $SP->can('MFY_NAME_MAX_LOOKUPS'));
+    is_deeply([ $cPar ? $cPar->() : undef, $cMax ? $cMax->() : undef ], [ 2, 13 ], 'is9 T1 burst: MFY_NAME_PARALLEL is 2 and MFY_NAME_MAX_LOOKUPS is 13');
+
+    # --- coalesce: two callers during one cold run share the run ---
+    is9_setup();
+    is9_pf();
+    $Slim::Networking::SimpleAsyncHTTP::hold_re = qr{pathfinder/v2/query};
+    my @cc;
+    for my $i (0, 1) { $SP->getMadeForYou('acct1', sub { $cc[$i]++ }) }
+    1 while Slim::Networking::SimpleAsyncHTTP::release_one();
+    is_deeply([ scalar(pf_requests()), $cc[0] // 0, $cc[1] // 0 ], [ 3, 1, 1 ],
+        'is9 T1 burst: two callers during one cold run cost 3 Pathfinder requests and each callback fires once');
+});
+
+# ------------------------------------------------------------
+# is9 T2: name cache, Pathfinder fetchPlaylist step, 5 s budget, 429 stop
+# ------------------------------------------------------------
+sub is9_nkey { return 'spoton_mfy_name_' . $_[0]; }
+sub is9_fetch_for { my ($id) = @_; return scalar(grep { (pf_body($_)->{variables}{uri} // '') eq "spotify:playlist:$id" } is9_fetch_reqs()); }
+sub is9_pv2_for   { my ($id) = @_; return scalar(grep { $_ eq $id } is9_pv2_ids()); }
+sub is9_clear_requests { @Slim::Networking::SimpleAsyncHTTP::requests = (); }
+sub is9_const { my $c = $SP->can($_[0]); return $c ? $c->() : undef; }
+
+t_block('is9 MFY name cache, Pathfinder step and budget', sub {
+    # --- cache A: a found name is kept 30 days, homeSection names seed the cache, a hit sends no request ---
+    my $C1 = '37i9dQZF1EQ99IS9CACxx01';
+    is9_setup();
+    is9_pv2({ $C1 => 'Classic Rock Mix' });
+    is9_pf(topmix => is9_topmix(is9_mix($C1, name => '')));
+    my ($res) = run_mfy();
+    my $e = $CK->get(is9_nkey($C1));
+    ok(ref $e eq 'HASH' && ($e->{name} // '') eq 'Classic Rock Mix', 'is9 T2 cache: a looked-up name is kept under spoton_mfy_name_<id>');
+    is($CK->ttl(is9_nkey($C1)), 2592000, 'is9 T2 cache: for 30 days');
+    my $soulId = (split /:/, $SOUL59)[2];
+    my $soul = is9_item($res, $soulId);
+    my $se = $CK->get(is9_nkey($soulId));
+    ok($soul && length($soul->{name}) && ref $se eq 'HASH' && ($se->{name} // '') eq $soul->{name}, 'is9 T2 cache: a name homeSection delivers seeds the cache');
+    $CK->remove('spoton_mfy_list_acct1');
+    $CK->remove("spoton_spclient_plenv_acct1_$C1");    # the 300 s envelope cache must not hide a missing name cache
+    is9_clear_requests();
+    ($res) = run_mfy();
+    is(scalar(is9_pv2_ids()), 0, 'is9 T2 cache: a second build sends no playlist/v2 request (cache hit)');
+    my $c1 = is9_item($res, $C1);
+    is($c1 ? $c1->{name} : undef, 'Classic Rock Mix', 'is9 T2 cache: and still shows the name');
+
+    # --- cache B (the Pi case): named in one build, nameless in the next ---
+    my $S = '37i9dQZF1EQ99IS9CACxx05';
+    is9_setup();
+    is9_pf(topmix => is9_topmix(is9_mix($S, name => 'Seen Before')));
+    run_mfy();
+    $CK->remove('spoton_mfy_list_acct1');
+    is9_clear_requests();
+    is9_pf(topmix => is9_topmix(is9_mix($S, name => '')));
+    ($res) = run_mfy();
+    my $sb = is9_item($res, $S);
+    is($sb ? $sb->{name} : undef, 'Seen Before', 'is9 T2 cache: a mix named in one build and nameless in the next keeps its name');
+    is(is9_pv2_for($S) + is9_fetch_for($S), 0, 'is9 T2 cache: without any request');
+
+    # --- cache C: preset entries, overwrite by homeSection, negative entry ---
+    my ($C2, $N, $C3) = ('37i9dQZF1EQ99IS9CACxx02', '37i9dQZF1EQ99IS9CACxx03', '37i9dQZF1EQ99IS9CACxx04');
+    is9_setup();
+    $CK->set(is9_nkey($C2), { name => 'Cached Name' }, 2592000);
+    $CK->set(is9_nkey($N),  { name => 'Stale Name' },  2592000);
+    is9_pf(topmix => is9_topmix(is9_mix($C2, name => ''), is9_mix($N, name => 'Fresh Name'), is9_mix($C3, name => '')));
+    ($res) = run_mfy();
+    my $cc2 = is9_item($res, $C2);
+    is($cc2 ? $cc2->{name} : undef, 'Cached Name', 'is9 T2 cache: a cached name names a nameless item');
+    is(is9_pv2_for($C2) + is9_fetch_for($C2), 0, 'is9 T2 cache: and costs no request');
+    my $nn = $CK->get(is9_nkey($N));
+    ok(ref $nn eq 'HASH' && ($nn->{name} // '') eq 'Fresh Name', 'is9 T2 cache: a name homeSection delivers overwrites a stale entry');
+    my $neg = $CK->get(is9_nkey($C3));
+    ok(ref $neg eq 'HASH' && defined $neg->{name} && $neg->{name} eq '' && ($CK->ttl(is9_nkey($C3)) // 0) == 3600, 'is9 T2 cache: a failed lookup is kept as an empty entry for 1 hour');
+    $CK->remove('spoton_mfy_list_acct1');
+    is9_clear_requests();
+    run_mfy();
+    is(is9_pv2_for($C3) + is9_fetch_for($C3), 0, 'is9 T2 cache: the negative entry stops further lookups');
+    is_deeply([ is9_const('MFY_NAME_TTL'), is9_const('MFY_NAME_NEG_TTL') ], [ 2592000, 3600 ], 'is9 T2 cache: MFY_NAME_TTL is 2592000 and MFY_NAME_NEG_TTL is 3600');
+
+    # --- pathfinder: the second source ---
+    my ($F1, $F2) = ('37i9dQZF1EQ99IS9PFBxx01', '37i9dQZF1EQ99IS9PFBxx02');
+    is9_setup();
+    is9_pf(topmix => is9_topmix(is9_mix($F1, name => ''), is9_mix($F2, name => '')),
+        fetch => {
+            $F1 => { data => { playlistV2 => { __typename => 'Playlist', uri => "spotify:playlist:$F1", name => 'PF Mix' } } },
+            $F2 => { data => { playlistV2 => { __typename => 'NotFound', name => 'Not This' } } },
+        });
+    ($res) = run_mfy();
+    my ($f1, $f2) = (is9_item($res, $F1), is9_item($res, $F2));
+    is($f1 ? $f1->{name} : undef, 'PF Mix', 'is9 T2 pathfinder: playlist/v2 has no name, fetchPlaylist names the item');
+    my @fr = is9_fetch_reqs();
+    is(scalar(@fr), 2, 'is9 T2 pathfinder: exactly one fetchPlaylist request per item');
+    my ($fq) = grep { (pf_body($_)->{variables}{uri} // '') eq "spotify:playlist:$F1" } @fr;
+    my $fv = $fq ? pf_body($fq)->{variables} : {};
+    ok($fq && $fv->{offset} == 0 && $fv->{limit} == 1 && defined $fv->{enableWatchFeedEntrypoint} && !$fv->{enableWatchFeedEntrypoint},
+        'is9 T2 pathfinder: the query carries uri, offset 0, limit 1 and enableWatchFeedEntrypoint false');
+    is($f2 ? $f2->{name} : undef, '', 'is9 T2 pathfinder: an answer that is not a Playlist gives no name');
+    my $P1 = '37i9dQZF1EQ99IS9PFBxx03';
+    is9_setup();
+    is9_pv2({ $P1 => 'From PV2' });
+    is9_pf(topmix => is9_topmix(is9_mix($P1, name => '')));
+    run_mfy();
+    is(scalar(is9_fetch_reqs()), 0, 'is9 T2 pathfinder: no fetchPlaylist request when playlist/v2 names the item');
+
+    # --- budget: 5 s, the callback fires once, a cut-short build is not kept ---
+    my @G = map { sprintf('37i9dQZF1EQ99IS9BUDxx%02d', $_) } 1 .. 3;
+    is9_setup();
+    is9_pv2({ map { $G[$_ - 1] => "Name G$_" } 1 .. 3 });
+    is9_pf(topmix => is9_topmix(map { is9_mix($_, name => '') } @G));
+    $Slim::Networking::SimpleAsyncHTTP::hold_re = qr{/playlist/v2/playlist/};
+    my @timers;
+    my ($bres, $called) = (undef, 0);
+    {
+        no warnings 'redefine';
+        local *Slim::Utils::Timers::setTimer = sub { push @timers, [ $_[1], $_[2] ] };
+        $SP->getMadeForYou('acct1', sub { ($bres) = @_; $called++ });
+        my ($bt) = grep { ref $_->[1] eq 'CODE' && abs($_->[0] - (time() + 5)) <= 1.5 } @timers;
+        ok($bt && !$called, 'is9 T2 budget: a timer 5 s ahead was set and the callback has not fired');
+        $bt->[1]->() if $bt;
+        my @gn = map { my $it = is9_item($bres, $_); $it ? $it->{name} : '<missing>' } @G;
+        ok($bt && $called == 1 && !(grep { $_ ne '' } @gn), 'is9 T2 budget: the timer delivers the list, the unresolved names are empty');
+        ok($called == 1 && defined $CK->get('spoton_mfy_list_acct1') && ($CK->ttl('spoton_mfy_list_acct1') // 0) == 60, 'is9 T2 budget: a build cut short by the budget is kept in the list cache for 60 s only (nu9 W1)');
+        1 while Slim::Networking::SimpleAsyncHTTP::release_one();
+        is_deeply([ $called, scalar(is9_pv2_ids()) ], [ 1, 2 ], 'is9 T2 budget: the late answers neither call back again nor start a third lookup');
+        my @ge = map { $CK->get(is9_nkey($_)) } @G[0, 1];
+        ok(2 == grep({ ref $_ eq 'HASH' && ($_->{name} // '') =~ /\AName G[12]\z/ } @ge), 'is9 T2 budget: the late answers still fill the name cache');
+    }
+    is(is9_const('MFY_NAME_BUDGET'), 5, 'is9 T2 budget: MFY_NAME_BUDGET is 5');
+
+    # --- ratelimit: a 429 stops the build ---
+    my @RL = map { sprintf('37i9dQZF1EQ99IS9RLMxx%02d', $_) } 1 .. 3;
+    is9_setup();
+    is9_pv2({}, code => 429);
+    is9_pf(topmix => is9_topmix(map { is9_mix($_, name => '') } @RL));
+    run_mfy();
+    is_deeply([ scalar(is9_pv2_ids()), scalar(is9_fetch_reqs()) ], [ 1, 0 ], 'is9 T2 ratelimit: after a 429 no further lookup starts, from either source');
+    ok(defined $CK->get('spoton_mfy_list_acct1') && ($CK->ttl('spoton_mfy_list_acct1') // 0) == 60, 'is9 T2 ratelimit: and the build is kept in the list cache for 60 s only (nu9 W1)');
+    ok(!(grep { defined $CK->get(is9_nkey($_)) } @RL), 'is9 T2 ratelimit: the stopped items get no name cache entry, positive or negative');
+});
+
+t_block('is9 MFY empty name diagnosis', sub {
+    # --- nametype: Pathfinder says WHAT it sent in place of a name ---
+    my $mk = sub {
+        my ($id, %o) = @_;
+        my %d = (__typename => 'Playlist', uri => "spotify:playlist:$id");
+        $d{name} = $o{name} if exists $o{name};
+        return { content => { data => \%d } };
+    };
+    my $env = { data => { homeSections => { sections => [ { sectionItems => { items => [
+        $mk->('i1', name => 'Named'),
+        $mk->('i2'),
+        $mk->('i3', name => undef),
+        $mk->('i4', name => ''),
+        $mk->('i5', name => { transformedLabel => 'a', translatedBaseText => 'b' }),
+        $mk->('i6', name => ['x']),
+    ] } } ] } } };
+    my @it = @{ $PF->_extractSectionItems($env) };
+    ok(@it == 6 && !exists $it[0]{nameType}, 'is9 T2 nametype: a usable name carries no nameType');
+    is(@it > 1 ? $it[1]{nameType} : undef, 'missing', 'is9 T2 nametype: no name key is "missing"');
+    is(@it > 2 ? $it[2]{nameType} : undef, 'null', 'is9 T2 nametype: an undef name is "null"');
+    is(@it > 3 ? $it[3]{nameType} : undef, 'empty', 'is9 T2 nametype: an empty string is "empty"');
+    is(@it > 4 ? $it[4]{nameType} : undef, 'HASH{transformedLabel,translatedBaseText}', 'is9 T2 nametype: a hash names its keys, never its values');
+    is(@it > 5 ? $it[5]{nameType} : undef, 'ARRAY', 'is9 T2 nametype: an array is "ARRAY"');
+    is(@it > 1 ? $it[1]{dataKeys} : undef, '__typename,uri', 'is9 T2 nametype: dataKeys lists the key names of the item data');
+    is(@it > 4 ? $it[4]{name} : undef, '', 'is9 T2 nametype: the name stays an empty string for a reference');
+
+    # --- warn: one warning per hour that says what Spotify sent ---
+    my ($WA, $WB) = ('37i9dQZF1EQ99IS9WARNx01', '37i9dQZF1EQ99IS9WARNx02');
+    my $warns = sub { scalar grep { $_->[0] eq 'warn' && $_->[1] =~ /without a usable name/ } @Slim::Utils::Log::LOG };
+    is9_setup();
+    is9_pf(topmix => is9_topmix(is9_mix($WA, noname => 1),
+        is9_mix($WB, name => { transformedLabel => 'a', translatedBaseText => 'b' })));
+    my ($res, $err, $called) = run_mfy();
+    ok($res && !$err && $called == 1 && ($res->{source} // '') eq 'pathfinder', 'is9 T2 warn: the build answers once from pathfinder');
+    my @w = grep { $_->[0] eq 'warn' && $_->[1] =~ /without a usable name/ } @Slim::Utils::Log::LOG;
+    is(scalar(@w), 1, 'is9 T2 warn: exactly one warning for the nameless items');
+    my $w = @w ? $w[0][1] : undef;
+    ok(defined $w && index($w, 'missing=1') >= 0, 'is9 T2 warn: it counts the missing name');
+    ok(defined $w && index($w, 'HASH{transformedLabel,translatedBaseText}=1') >= 0, 'is9 T2 warn: and the hash name with its key names');
+    ok(defined $w && index($w, '37i9dQZF1EQ=2') >= 0, 'is9 T2 warn: the id family is the first 11 characters');
+    ok(defined $w && index($w, 'resolved: duplicate=0, cache=0, playlist=0, pathfinder=0, unresolved=2') >= 0, 'is9 T2 warn: and says how many lookups helped');
+    ok(defined $w && $w !~ /testuser|listener|IS9WARN/, 'is9 T2 warn: it names no user, no madeFor value and no full playlist id');
+    my ($ra, $rb) = (is9_item($res, $WA), is9_item($res, $WB));
+    ok($ra && $rb && $ra->{name} eq '' && $rb->{name} eq '', 'is9 T2 warn: the unresolved items stay empty');
+    $CK->remove('spoton_mfy_list_acct1');
+    run_mfy();
+    is($warns->(), 1, 'is9 T2 warn: a second build within the hour adds no second warning');
+    $SP->reset();
+    $CK->remove('spoton_mfy_list_acct1');
+    run_mfy();
+    is($warns->(), 2, 'is9 T2 warn: after a reset the next build warns again');
+    is(is9_const('MFY_NAME_WARN_INTERVAL'), 3600, 'is9 T2 warn: MFY_NAME_WARN_INTERVAL is 3600');
+    is9_setup();
+    http_rule(qr{pathfinder/v2/query}, pf59_responder());
+    run_mfy();
+    is($warns->(), 0, 'is9 T2 warn: a build in which every item has a name logs no such warning');
+
+    # the counts in the warning follow the sources: one name from the cache, one from playlist/v2, one duplicate, one unresolved
+    my ($WC, $WP, $WD, $WU) = map { "37i9dQZF1EQ99IS9WARNy0$_" } 1 .. 4;
+    is9_setup();
+    $CK->set(is9_nkey($WC), { name => 'Cached W' }, 2592000);
+    is9_pv2({ $WP => 'PV2 W' });
+    my $wt = is9_topmix(is9_mix($WC, name => ''), is9_mix($WP, name => ''), is9_mix($WD, name => ''), is9_mix($WU, name => ''));
+    push @{ is9_hs_items($wt) }, is9_mix($WD, name => 'Dup W');
+    is9_pf(topmix => $wt);
+    run_mfy();
+    my ($w2) = map { $_->[1] } grep { $_->[0] eq 'warn' && $_->[1] =~ /without a usable name/ } @Slim::Utils::Log::LOG;
+    ok(defined $w2 && index($w2, 'resolved: duplicate=1, cache=1, playlist=1, pathfinder=0, unresolved=1') >= 0,
+        'is9 T2 warn: the counts split the names by source (a name found by a lookup is not a duplicate)');
+});
+
+# ============================================================
+# 261110-k1b (#200) Task 1: Library > Playlists covers from the rootlist and the owner line, end to end
+# ============================================================
+t_block('k1b T1 e2e', sub {
+    reset_all();
+    seed_hash('libraryV3', $HASH_OLD);
+    # inert in Task 1 (the rootlist-only path); keeps this block rootlist-only once libraryV3 exists
+    http_rule(qr{pathfinder/v2/query}, sub { return (400, '{"errors":[]}') });
+    my $pic = 'ab67706c0000da84' . ('cc' x 12);
+    my $psz = 'https://i.scdn.co/image/ab67616d0000b273' . ('dd' x 12);
+    http_rule(qr{/playlist/v2/user/.+/rootlist}, k1b_rootlist_bytes(
+        { id => 'k1bT1e2eOwn00000000001', name => 'Own List',     owner => 'testuser',    picture => pack('H*', $pic) },
+        { id => 'k1bT1e2eSpo00000000002', name => 'Spotify List', owner => 'spotify',     picture_size => [ [ 'default', $psz ] ] },
+        { id => 'k1bT1e2eFor00000000003', name => 'Foreign List', owner => 'someoneelse' },
+    ));
+    my ($res, $err);
+    eval { Plugins::SpotOn::API::SpClient->getUserPlaylists('acct1', {}, sub { ($res, $err) = @_ }); 1 } or diag "k1b T1 e2e: died: $@";
+    my @m = map { Plugins::SpotOn::Plugin::_playlistItem(undef, $_) } @{ ($res && $res->{items}) || [] };
+    my ($own, $spo, $for) = map { $m[$_] || {} } 0 .. 2;
+    is($own->{image}, 'https://i.scdn.co/image/' . $pic, 'k1b T1 e2e: the own playlist shows its picture cover');
+    is($spo->{image}, $psz, 'k1b T1 e2e: the Spotify playlist shows its first picture_size cover');
+    is($for->{image}, 'html/images/playlists.png', 'k1b T1 e2e: a playlist without any cover keeps the generic icon');
+    is($own->{line2}, '', 'k1b T1 e2e: the own playlist has an empty second line');
+    is($spo->{line2}, 'Spotify', 'k1b T1 e2e: the Spotify playlist reads Spotify');
+    is($for->{line2}, 'someoneelse', 'k1b T1 e2e: a foreign owner shows the user name');
+});
+
+# ============================================================
+# 261110-k1b (#200) Task 2: libraryV3 covers and owner names (anonymized spike-016 replies)
+# ============================================================
+my $K1B = do {
+    my $f = "$project_dir/t/fixtures/pathfinder/k1b-libraryV3.json";
+    open(my $fh, '<:raw', $f) or BAIL_OUT("cannot read fixture $f: $!");
+    local $/; JSON::PP->new->utf8->decode(<$fh>);
+};
+my $K1B_400_BODY = '{"errors":[{"message":"invalid input value at `$features[2]`: found JSON string for GraphQL type `LibraryFeature!`","extensions":{"name":"features","code":"VALIDATION_INVALID_TYPE_VARIABLE"}}]}';
+
+sub k1b_defs {
+    my ($fx) = @_;
+    return [ map {
+        my ($id) = $_->{uri} =~ /\Aspotify:playlist:(.+)\z/;
+        +{ id => $id, name => $_->{name}, owner => $_->{owner},
+           (defined $_->{revision} ? (revision => pack('H*', $_->{revision})) : ()),
+           (defined $_->{picture}  ? (picture  => pack('H*', $_->{picture}))  : ()),
+           picture_size => $_->{picture_size} };
+    } @{ $fx->{rootlist} } ];
+}
+# the fixture's libraryV3 playlists: uri -> item data, uri -> page offset
+sub k1b_pages {
+    my ($fx) = @_;
+    my (%data, %off);
+    for my $o (0, 50) {
+        for my $it (@{ $fx->{pages}{$o}{data}{me}{libraryV3}{items} }) {
+            my $d = $it->{item}{data};
+            next unless ($d->{__typename} // '') eq 'Playlist';
+            $data{ $d->{uri} } = $d;
+            $off{ $d->{uri} }  = $o;
+        }
+    }
+    return (\%data, \%off);
+}
+sub k1b_has_cover { my ($r) = @_; return (defined $r->{picture} || @{ $r->{picture_size} || [] }) ? 1 : 0; }
+sub k1b_foreign   { my ($r) = @_; return (defined $r->{owner} && $r->{owner} ne 'testuser' && $r->{owner} ne 'spotify') ? 1 : 0; }
+
+sub k1b_empty_page {
+    my ($off, $total) = @_;
+    return { data => { me => { libraryV3 => { items => [], totalCount => $total, pagingInfo => { limit => 50, offset => $off } } } } };
+}
+# a page of 50 playlists that are in nobody's rootlist
+sub k1b_unrelated_page {
+    my ($off, $total) = @_;
+    my @items = map {
+        my $id = 'k1bUn' . sprintf('%017d', $off + $_);
+        +{ depth => 0, item => { __typename => 'PlaylistResponseWrapper', _uri => "spotify:playlist:$id", data => {
+            __typename => 'Playlist', uri => "spotify:playlist:$id", name => 'Unrelated', revisionId => 'AAAA',
+            images => { items => [ { sources => [ { url => 'https://i.scdn.co/image/' . ('0' x 40), width => undef, height => undef } ] } ] },
+            ownerV2 => { data => { __typename => 'User', username => 'testuser', name => 'Test User', uri => 'spotify:user:testuser' } },
+        } } };
+    } 0 .. 49;
+    return { data => { me => { libraryV3 => { __typename => 'LibraryPage', items => \@items, totalCount => $total, pagingInfo => { limit => 50, offset => $off } } } } };
+}
+# answers libraryV3 by variables.offset from the fixture pages, else an empty page with the same totalCount;
+# %o: all => sub($e, $offset) -> (code, body, hdrs) for every offset, override => { offset => sub($e) }
+sub k1b_pf_rule {
+    my ($fx, %o) = @_;
+    my $total = $fx->{pages}{0}{data}{me}{libraryV3}{totalCount};
+    return sub {
+        my ($e) = @_;
+        my $req = pf_body($e);
+        return (200, '{"data":{}}') unless ($req->{operationName} // '') eq 'libraryV3';
+        my $off = $req->{variables}{offset} // 0;
+        return $o{override}{$off}->($e) if $o{override} && $o{override}{$off};
+        return $o{all}->($e, $off)      if $o{all};
+        my $pg = $fx->{pages}{$off} // k1b_empty_page($off, $total);
+        return (200, $JSON->encode($pg));
+    };
+}
+# the rootlist and Pathfinder rules for one scenario; returns the fixture used
+sub k1b_setup {
+    my (%o) = @_;
+    my $fx = $o{fx} // clone($K1B);
+    reset_all();
+    seed_hash('libraryV3', $HASH_OLD) unless $o{nohash};
+    http_rule(qr{/playlist/v2/user/.+/rootlist}, k1b_rootlist_bytes(@{ $o{defs} // k1b_defs($fx) }));
+    http_rule(qr{pathfinder/v2/query}, k1b_pf_rule($fx, %o)) unless $o{nopf};
+    return $fx;
+}
+sub k1b_run {
+    my ($acct) = @_;
+    my ($res, $err, $n);
+    $SP->getUserPlaylists($acct // 'acct1', { limit => 500 }, sub { ($res, $err) = @_; $n++ });
+    return ($res, $err, $n // 0);
+}
+sub k1b_rl_reqs  { return grep { $_->{url} =~ m{/rootlist} } @Slim::Networking::SimpleAsyncHTTP::requests; }
+sub k1b_all_reqs { return scalar grep { $_->{url} !~ /apresolve/ } @Slim::Networking::SimpleAsyncHTTP::requests; }
+sub k1b_drop_lists { my ($acct) = @_; $CK->remove('spoton_spclient_libpl_' . ($acct // 'acct1')); $CK->remove('spoton_spclient_rootlist_' . ($acct // 'acct1')); }
+sub k1b_rev_key { my ($r) = @_; my ($id) = $r->{uri} =~ /\Aspotify:playlist:(.+)\z/; return "spoton_plmeta_${id}_" . ($r->{revision} // 'norev'); }
+sub k1b_stats {
+    my ($res) = @_;
+    my @it = @{ ($res && $res->{items}) || [] };
+    return {
+        n      => scalar(@it),
+        covers => scalar(grep { @{ $_->{images} || [] } } @it),
+        own    => scalar(grep { ($_->{owner}{id} // '') eq 'testuser' && ($_->{owner}{display_name} // 'x') eq '' } @it),
+        spo    => scalar(grep { ($_->{owner}{id} // '') eq 'spotify' && ($_->{owner}{display_name} // '') eq 'Spotify' } @it),
+        asuser => scalar(grep { ($_->{owner}{id} // '') !~ /\A(?:testuser|spotify)\z/ && ($_->{owner}{display_name} // '') eq ($_->{owner}{id} // '?') } @it),
+    };
+}
+
+t_block('k1b T2 page', sub {
+    my $fx = k1b_setup();
+    $Slim::Networking::SimpleAsyncHTTP::hold_re = qr{pathfinder/v2/query};
+    my ($res, $err, $n);
+    $SP->getUserPlaylists('acct1', { limit => 500 }, sub { ($res, $err) = @_; $n++ });
+    my $guard = 0;
+    while (Slim::Networking::SimpleAsyncHTTP::release_one()) { last if ++$guard > 30 }
+    my @pf = pf_requests();
+    is(scalar(@pf), 2, 'k1b T2 page: a cold open of the 97 playlist fixture sends exactly 2 Pathfinder requests');
+    is(join(',', map { pf_body($_)->{operationName} // '?' } @pf), 'libraryV3,libraryV3', 'k1b T2 page: both are libraryV3');
+    is(join(',', map { pf_body($_)->{variables}{offset} // '?' } @pf), '0,50', 'k1b T2 page: offsets 0 and 50');
+    is(join(',', map { pf_body($_)->{variables}{limit} // '?' } @pf), '50,50', 'k1b T2 page: limit 50 per page');
+    my $want = '{"expandedFolders":[],"features":["LIKED_SONGS","YOUR_EPISODES_V2"],"filters":["Playlists"],"flatten":false,"folderUri":null,'
+             . '"includeFoldersWhenFlattening":true,"limit":50,"offset":0,"order":null,"textFilter":""}';
+    is(@pf ? $JSON->encode(pf_body($pf[0])->{variables}) : '', $want, 'k1b T2 page: the variables are the measured set (booleans as JSON booleans)');
+    is($Slim::Networking::SimpleAsyncHTTP::max_inflight, 1, 'k1b T2 page: the pages go one after the other (never more than 1 in flight)');
+    ok($n == 1 && $res && $res->{total} == 97, 'k1b T2 page: the open is answered once with the 97 playlists');
+
+    # early stop: the only playlist that needs libraryV3 sits on page 0
+    my (undef, $off) = k1b_pages($fx);
+    my ($lone) = grep { !k1b_has_cover($_) && $_->{owner} eq 'testuser' && ($off->{ $_->{uri} } // -1) == 0 } @{ $fx->{rootlist} };
+    my @defs = @{ k1b_defs($fx) }[ grep { k1b_has_cover($fx->{rootlist}[$_]) && !k1b_foreign($fx->{rootlist}[$_]) } 0 .. $#{ $fx->{rootlist} } ];
+    @defs = @defs[0 .. 1];
+    my ($loneDef) = grep { 'spotify:playlist:' . $_->{id} eq ($lone ? $lone->{uri} : '') } @{ k1b_defs($fx) };
+    k1b_setup(fx => $fx, defs => [ @defs, ($loneDef ? $loneDef : ()) ]);
+    k1b_run();
+    is(scalar(pf_requests()), 1, 'k1b T2 page: it stops after page 0 when everything needed was seen there');
+
+    # page cap: a playlist that no page ever returns, 5000 entries claimed
+    # 261111-j57: the clock is a seam (the page-limit marker lives 24 h); no negative entry at the cap, an account-bound marker
+    my $T = 1_700_100_000;
+    no warnings 'redefine';
+    local *Plugins::SpotOn::API::SpClient::_libClock = sub { $T };
+    my $nameless = { id => 'k1bMissing0000000000001', name => 'Nowhere', owner => 'testuser' };
+    my $NK = 'spoton_plmeta_k1bMissing0000000000001_norev';
+    my $MK = 'spoton_libv3_capped_acct1_k1bMissing0000000000001';
+    k1b_setup(fx => $fx, defs => [ $nameless ], all => sub { my ($e, $o) = @_; return (200, $JSON->encode(k1b_unrelated_page($o, 5000))) });
+    my ($r2) = k1b_run();
+    is(scalar(pf_requests()), 10, 'k1b T2 page: at most 10 pages are fetched');
+    ok(!defined $CK->get($NK), 'j57 cap: the playlist beyond the page limit gets no negative entry');
+    my $mk = $CK->get($MK);
+    ok(ref $mk eq 'HASH' && ($mk->{at} // 0) == $T && ($CK->ttl($MK) // 0) == 86400, 'j57 cap: it gets a page-limit marker of the account for 24 h');
+    my $sc = $SP->libraryMetaStatus() || {};
+    is(join(',', $sc->{state} // '?', $sc->{missing} // '?'), 'ok,1', 'j57 cap: the status counts the never-queried playlist as missing (ok,1)');
+    is(join(',', $sc->{skipped} // '?', $sc->{limit} // '?'), '1,500', 'j57 skipped: the capped run counts the never-queried playlist as skipped and names the limit (1,500)');
+    k1b_drop_lists();
+    my $before = scalar(pf_requests());
+    my ($r3) = k1b_run();
+    is(scalar(pf_requests()) - $before, 0, 'k1b T2 page: the playlist no page returned has a page-limit marker, the next open asks for no page');
+    is(scalar(@{ ($r3 && $r3->{items}[0]{images}) || ['x'] }), 0, 'k1b T2 page: and it keeps the generic icon (no images)');
+    my $b6 = scalar(pf_requests());
+    k1b_run('acct2');
+    is(scalar(pf_requests()) - $b6, 10, 'j57 cap: the marker belongs to the account: another account still asks libraryV3 (10 pages)');
+    $T += 86400;
+    k1b_drop_lists();
+    my $b1 = scalar(pf_requests());
+    k1b_run();
+    my $mk2 = $CK->get($MK);
+    ok(scalar(pf_requests()) - $b1 == 10 && ref $mk2 eq 'HASH' && ($mk2->{at} // 0) == $T,
+        'j57 cap: after 24 h (clock seam) the next open asks libraryV3 again (10 pages) and renews the marker');
+
+    # a later run that the marker keeps from asking: the marker renewed above is valid. The rootlist is now the marked
+    # playlist plus one that sits on fixture page 0 (NOT k1b_setup: it would clear the cache and the marker)
+    my ($pgE, $offE) = k1b_pages($fx);
+    my ($recE) = grep { !k1b_has_cover($_) && ($offE->{ $_->{uri} } // -1) == 0 } @{ $fx->{rootlist} };
+    my ($defE) = grep { 'spotify:playlist:' . $_->{id} eq $recE->{uri} } @{ k1b_defs($fx) };
+    http_rule(qr{/playlist/v2/user/.+/rootlist}, k1b_rootlist_bytes($nameless, $defE));
+    http_rule(qr{pathfinder/v2/query}, k1b_pf_rule($fx, override => { 0 => sub { return (200, $JSON->encode($fx->{pages}{0})) } },
+        all => sub { my ($e, $o) = @_; return (200, $JSON->encode(k1b_unrelated_page($o, 5000))) }));
+    k1b_drop_lists();
+    my $b3 = scalar(pf_requests());
+    k1b_run();
+    my $s3 = $SP->libraryMetaStatus() || {};
+    is(join(',', scalar(pf_requests()) - $b3, $s3->{state} // '?', $s3->{missing} // '?', $s3->{skipped} // '?'), '1,ok,1,1',
+        'j57 skipped: a later run that the marker keeps from asking counts the marked playlist in missing and skipped (1 page, ok,1,1)');
+
+    # a library that ends exactly on the 10th page is read completely: negative entry, no marker
+    k1b_setup(fx => $fx, defs => [ $nameless ], all => sub { my ($e, $o) = @_; return (200, $JSON->encode(k1b_unrelated_page($o, 500))) });
+    k1b_run();
+    my $s4 = $SP->libraryMetaStatus() || {};
+    ok(scalar(pf_requests()) == 10 && defined $CK->get($NK) && !defined $CK->get($MK) && join(',', $s4->{state} // '?', $s4->{missing} // '?') eq 'ok,0',
+        'j57 cap: a library that ends on the 10th page is read completely (10 pages, negative entry, no marker, status ok,0)');
+    is($s4->{skipped} // '?', 0, 'j57 skipped: a library that ends on the 10th page skips nothing (0)');
+
+    # a hit on a page before the limit is still applied
+    my ($pg, $off) = k1b_pages($fx);
+    my ($seenRec) = grep { !k1b_has_cover($_) && ($off->{ $_->{uri} } // -1) == 0 } @{ $fx->{rootlist} };
+    my ($seenDef) = grep { 'spotify:playlist:' . $_->{id} eq $seenRec->{uri} } @{ k1b_defs($fx) };
+    k1b_setup(fx => $fx, defs => [ $nameless, $seenDef ],
+        override => { 0 => sub { return (200, $JSON->encode($fx->{pages}{0})) } },
+        all => sub { my ($e, $o) = @_; return (200, $JSON->encode(k1b_unrelated_page($o, 5000))) });
+    my ($r5) = k1b_run();
+    my $m5 = $CK->get(k1b_rev_key($seenRec));
+    my ($sid) = $seenRec->{uri} =~ /\Aspotify:playlist:(.+)\z/;
+    ok(scalar(pf_requests()) == 10 && $r5 && @{ $r5->{items}[1]{images} || [] } >= 1 && ref $m5 eq 'HASH' && @{ $m5->{images} || [] } >= 1
+        && !defined $CK->get("spoton_libv3_capped_acct1_$sid"),
+        'j57 cap: a hit on a page before the limit is still applied (cover in the list, positive entry, no marker)');
+});
+
+t_block('k1b T2 merge', sub {
+    my $fx = k1b_setup();
+    my ($res, $err, $n) = k1b_run();
+    my @it = @{ ($res && $res->{items}) || [] };
+    my ($pg) = k1b_pages($fx);
+    my $st = k1b_stats($res);
+    is(join(',', $res ? $res->{total} : 'undef', scalar(@it)), '97,97', 'k1b T2 merge: 97 playlists');
+    is_deeply([ map { $_->{uri} } @it ], [ map { $_->{uri} } @{ $fx->{rootlist} } ], 'k1b T2 merge: in rootlist order');
+    is($st->{covers}, 97, 'k1b T2 merge: a cover on 97 of 97');
+    is($st->{own}, 47, 'k1b T2 merge: the own owner line is empty on 47');
+    is($st->{spo}, 20, 'k1b T2 merge: Spotify on 20');
+    my $named = 0;
+    for my $i (0 .. $#it) {
+        my $r = $fx->{rootlist}[$i];
+        next unless k1b_foreign($r);
+        my $want = $pg->{ $r->{uri} } ? $pg->{ $r->{uri} }{ownerV2}{data}{name} : undef;
+        $named++ if defined $want && length $want && ($it[$i]{owner}{display_name} // '') eq $want;
+    }
+    is($named, 30, 'k1b T2 merge: each of the 30 foreign playlists shows the libraryV3 owner name');
+    my $eq = 0;
+    for my $r (grep { k1b_foreign($_) } @{ $fx->{rootlist} }) {
+        my $d = $pg->{ $r->{uri} } or next;
+        next unless $d->{ownerV2}{data}{name} eq $d->{ownerV2}{data}{username};
+        my $o = $CK->get('spoton_owner_name_' . $r->{owner});
+        $eq++ if ref($o) eq 'HASH' && ($o->{name} // '') eq $r->{owner} && ($CK->ttl('spoton_owner_name_' . $r->{owner}) // 0) == 604800;
+    }
+    is($eq, 11, 'k1b T2 merge: the 11 playlists whose display name equals the user name are positive owner entries');
+    ok(!(grep { !$SP->_imageUrlAllowed($_->{url}) } map { @{ $_->{images} || [] } } @it), 'k1b T2 merge: every image url is allowed (https, scdn.co or spotifycdn.com)');
+    my $cached = $CK->get('spoton_spclient_rootlist_acct1') || [];
+    my $untouched = 0;
+    for my $i (0 .. $#{ $fx->{rootlist} }) {
+        $untouched++ if !k1b_has_cover($fx->{rootlist}[$i]) && $cached->[$i] && !@{ $cached->[$i]{images} || ['x'] };
+    }
+    is($untouched, 38, 'k1b T2 merge: the cached rootlist entries of the 38 cover-less playlists still have no images (copies, no mutation)');
+});
+
+t_block('k1b T2 cache', sub {
+    my $fx = k1b_setup();
+    k1b_run();
+    my $before = k1b_all_reqs();
+    my ($res2) = k1b_run();
+    is(k1b_all_reqs() - $before, 0, 'k1b T2 cache: a second open within 60 s sends no request of any kind');
+    is($CK->ttl('spoton_spclient_libpl_acct1'), 60, 'k1b T2 cache: the merged list is kept for 60 s');
+    my (undef, $off) = k1b_pages($fx);
+    my ($cl) = grep { !k1b_has_cover($_) } @{ $fx->{rootlist} };
+    is($CK->ttl(k1b_rev_key($cl)), 86400, 'k1b T2 cache: a playlist entry is kept for 1 day, keyed with the rootlist revision');
+    my ($fo) = grep { k1b_foreign($_) } @{ $fx->{rootlist} };
+    is($CK->ttl('spoton_owner_name_' . $fo->{owner}), 604800, 'k1b T2 cache: an owner name is kept for 7 days');
+
+    k1b_drop_lists();
+    my ($r0, $p0) = (scalar(k1b_rl_reqs()), scalar(pf_requests()));
+    k1b_run();
+    is(scalar(k1b_rl_reqs()) - $r0, 1, 'k1b T2 cache: after the 60 s caches expire the open costs one rootlist request');
+    is(scalar(pf_requests()) - $p0, 0, 'k1b T2 cache: and no libraryV3 request while no revision changed');
+
+    # one playlist on page 0 gets a new revision (it changed)
+    my ($chg) = grep { !k1b_has_cover($_) && ($off->{ $_->{uri} } // -1) == 0 } @{ $fx->{rootlist} };
+    my $fx2 = clone($fx);
+    for my $r (@{ $fx2->{rootlist} }) { $r->{revision} = unpack('H*', 'k1bChangedRevisionBytes!') if $r->{uri} eq $chg->{uri}; }
+    http_rule(qr{/playlist/v2/user/.+/rootlist}, k1b_rootlist_bytes(@{ k1b_defs($fx2) }));
+    k1b_drop_lists();
+    $p0 = scalar(pf_requests());
+    k1b_run();
+    is(scalar(pf_requests()) - $p0, 1, 'k1b T2 cache: a changed revision of one playlist on page 0 costs exactly one libraryV3 request');
+
+    # a foreign owner whose libraryV3 name is empty: negative owner entry, the line keeps the user name
+    my $fx3 = clone($K1B);
+    my ($fo3) = grep { k1b_foreign($_) } @{ $fx3->{rootlist} };
+    for my $o (0, 50) {
+        for my $it (@{ $fx3->{pages}{$o}{data}{me}{libraryV3}{items} }) {
+            my $o3 = $it->{item}{data}{ownerV2}{data};
+            $o3->{name} = '' if $o3 && ($o3->{username} // '') eq $fo3->{owner};
+        }
+    }
+    k1b_setup(fx => $fx3);
+    my ($res3) = k1b_run();
+    is_deeply($CK->get('spoton_owner_name_' . $fo3->{owner}), { name => '' }, 'k1b T2 cache: an owner without a display name is a negative owner entry');
+    is($CK->ttl('spoton_owner_name_' . $fo3->{owner}), 86400, 'k1b T2 cache: kept for 1 day');
+    my ($i3) = grep { $fx3->{rootlist}[$_]{uri} eq $fo3->{uri} } 0 .. $#{ $fx3->{rootlist} };
+    is($res3 && defined $i3 ? $res3->{items}[$i3]{owner}{display_name} : undef, $fo3->{owner}, 'k1b T2 cache: and the line keeps the user name');
+});
+
+t_block('k1b T2 400', sub {
+    my $fx = k1b_setup(all => sub { return (400, $K1B_400_BODY) });
+    my ($res) = k1b_run();
+    my $st = k1b_stats($res);
+    is($st->{covers}, 59, 'k1b T2 400: a 400 leaves the rootlist covers (59 of 97)');
+    is($st->{asuser}, 30, 'k1b T2 400: the 30 foreign playlists show the user name');
+    is($st->{own}, 47, 'k1b T2 400: own lines stay empty (47)');
+    is($st->{spo}, 20, 'k1b T2 400: Spotify stays Spotify (20)');
+    is(scalar(pf_requests()), 1, 'k1b T2 400: exactly one Pathfinder request');
+    is($CK->ttl('spoton_libv3_off_acct1'), 3600, 'k1b T2 400: libraryV3 is switched off for this account for 3600 s');
+    my $keys = grep { defined $CK->get(k1b_rev_key($_)) } @{ $fx->{rootlist} };
+    is($keys, 0, 'k1b T2 400: no playlist entry is written');
+    k1b_drop_lists();
+    my $before = scalar(pf_requests());
+    k1b_run();
+    is(scalar(pf_requests()) - $before, 0, 'k1b T2 400: the next open within the hour sends no Pathfinder request');
+
+    k1b_setup(all => sub { return (429, '', { 'Retry-After' => 7 }) });
+    my ($r429) = k1b_run();
+    my $s429 = k1b_stats($r429);
+    is(join(',', @{$s429}{qw(covers asuser own spo)}), '59,30,47,20', 'k1b T2 400: a 429 gives the same values');
+    ok(!defined $CK->get('spoton_libv3_off_acct1'), 'k1b T2 400: and does not switch libraryV3 off');
+
+    k1b_setup(all => sub { return (200, '{"errors":[{"message":"x"}]}') });
+    k1b_run();
+    is($CK->ttl('spoton_libv3_off_acct1'), 3600, 'k1b T2 400: an errors[] reply switches libraryV3 off as well');
+
+    my $fx5 = k1b_setup(override => { 50 => sub { return (500, '') } });
+    my ($r500) = k1b_run();
+    my ($pg, $off) = k1b_pages($fx5);
+    my $cl0 = scalar grep { !k1b_has_cover($_) && ($off->{ $_->{uri} } // -1) == 0 } @{ $fx5->{rootlist} };
+    is(k1b_stats($r500)->{covers}, 59 + $cl0, 'k1b T2 400: a 500 on page 50 keeps what page 0 delivered, the rest stays in the rootlist state');
+    ok(!defined $CK->get('spoton_libv3_off_acct1') && !(grep { defined $CK->get(k1b_rev_key($_)) && !@{ $CK->get(k1b_rev_key($_))->{images} || [] } } @{ $fx5->{rootlist} }),
+        'k1b T2 400: a 500 sets no off key and writes no negative entry');
+});
+
+t_block('k1b T2 coalesce', sub {
+    k1b_setup();
+    $Slim::Networking::SimpleAsyncHTTP::hold_re = qr{pathfinder/v2/query};
+    my (@r1, @r2, $c1, $c2);
+    $SP->getUserPlaylists('acct1', { limit => 500 }, sub { @r1 = @_; $c1++ });
+    $SP->getUserPlaylists('acct1', { limit => 500 }, sub { @r2 = @_; $c2++ });
+    is(join(',', scalar(k1b_rl_reqs()), scalar(@Slim::Networking::SimpleAsyncHTTP::held)), '1,1',
+        'k1b T2 coalesce: two opens before any answer: one rootlist request and one parked Pathfinder request');
+    my $guard = 0;
+    while (Slim::Networking::SimpleAsyncHTTP::release_one()) { last if ++$guard > 30 }
+    is(join(',', $c1 // 0, $c2 // 0), '1,1', 'k1b T2 coalesce: each callback fires exactly once');
+    ok($r1[0] && $r2[0] && $JSON->encode($r1[0]) eq $JSON->encode($r2[0]) && $r1[0]{total} == 97, 'k1b T2 coalesce: both get the same 97 playlists');
+});
+
+t_block('k1b T2 opmissing', sub {
+    my $fx = k1b_setup(nohash => 1, nopf => 1);
+    scrape_rules();
+    my ($res, $err, $n) = k1b_run();
+    my $want = $SP->_parseRootlist(k1b_rootlist_bytes(@{ k1b_defs($fx) }), 'testuser');
+    ok($n == 1 && $res && $JSON->encode($res->{items}) eq $JSON->encode($want), 'k1b T2 opmissing: without the op the result is the rootlist state');
+    my $h = $PF->healthSnapshot();
+    ok((grep { $_ eq 'libraryV3' } @{ $h->{opsMissing} || [] }), 'k1b T2 opmissing: libraryV3 shows in opsMissing');
+});
+
+# ============================================================
+# 261110-k1b (#200) Task 3: the library metadata status (SpClient->libraryMetaStatus) and the WARN on a 400
+# ============================================================
+t_block('k1b T3 status', sub {
+    my $T = 1_700_000_000;
+    no warnings 'redefine';
+    local *Plugins::SpotOn::API::SpClient::_libClock = sub { $T };
+    my $st = sub { return $SP->can('libraryMetaStatus') ? $SP->libraryMetaStatus() : undef };
+    my $ok_rule = sub { my ($fx) = @_; http_rule(qr{pathfinder/v2/query}, k1b_pf_rule($fx)); };
+
+    # A: unknown before any run, ok after the full fixture, a merged-list hit leaves it alone
+    my $fx = k1b_setup();
+    is_deeply($st->(), { state => 'unknown', at => undef, since => undef, reason => undef, missing => undef, skipped => undef, limit => 500 },
+        'k1b T3 status: before any run the state is unknown and the other keys are empty (the limit is 500)');
+    k1b_run();
+    is_deeply($st->(), { state => 'ok', at => $T, since => undef, reason => undef, missing => 0, skipped => 0, limit => 500 },
+        'k1b T3 status: the full fixture run is ok at the run time, since empty, nothing missing (the 11 equal-name owners count as resolved)');
+    $T += 10;
+    k1b_run();
+    is(($st->() || {})->{at}, $T - 10, 'k1b T3 status: a merged-list hit leaves the time of the last real run alone');
+
+    # B: a cover-less playlist libraryV3 never returns
+    my $defs = k1b_defs($fx);
+    push @$defs, +{ id => 'k1bExtra0000000000000001', name => 'Extra', owner => 'testuser' };
+    k1b_setup(fx => $fx, defs => $defs);
+    $T = 1_700_001_000;
+    k1b_run();
+    my $b = $st->() || {};
+    # 261111-i1i UR8-3: the playlist libraryV3 never returns gets a negative entry, and a negative entry is not "missing"
+    # (Spotify has nothing); the old expectation here was ok,1
+    is(join(',', $b->{state} // '?', $b->{missing} // '?'), 'ok,0',
+        'i1i missing: a cover-less playlist libraryV3 did not return has a negative entry and is not counted (deliberate change of the k1b expectation ok,1)');
+
+    # B4: the negative entry of that earlier run still keeps the playlist out of the count (this run asks page 0 only)
+    my (undef, $offB) = k1b_pages($fx);
+    my ($chgB) = grep { !k1b_has_cover($_) && ($offB->{ $_->{uri} } // -1) == 0 } @{ $fx->{rootlist} };
+    my $fxB = clone($fx);
+    for my $r (@{ $fxB->{rootlist} }) { $r->{revision} = unpack('H*', 'k1bChangedRevisionBytes!') if $r->{uri} eq $chgB->{uri}; }
+    my $defsB = k1b_defs($fxB);
+    push @$defsB, +{ id => 'k1bExtra0000000000000001', name => 'Extra', owner => 'testuser' };
+    http_rule(qr{/playlist/v2/user/.+/rootlist}, k1b_rootlist_bytes(@$defsB));
+    k1b_drop_lists();
+    $T = 1_700_001_500;
+    k1b_run();
+    my $b4 = $st->() || {};
+    is(join(',', $b4->{state} // '?', $b4->{missing} // '?'), 'ok,0', 'i1i missing: a negative entry from an earlier run still keeps the playlist out of the count');
+
+    # B2: every playlist of an owner with a negative owner entry (libraryV3 has no display name) is excused
+    my $fxO = clone($K1B);
+    my ($foO) = grep { k1b_foreign($_) } @{ $fxO->{rootlist} };
+    for my $o (0, 50) {
+        for my $it (@{ $fxO->{pages}{$o}{data}{me}{libraryV3}{items} }) {
+            my $oO = $it->{item}{data}{ownerV2}{data};
+            $oO->{name} = '' if $oO && ($oO->{username} // '') eq $foO->{owner};
+        }
+    }
+    k1b_setup(fx => $fxO);
+    k1b_run();
+    my $b2 = $st->() || {};
+    is(join(',', $b2->{state} // '?', $b2->{missing} // '?'), 'ok,0', 'i1i missing: playlists of an owner with a negative owner entry are not counted');
+
+    # B3: a foreign playlist with a positive per-playlist entry is never looked up: no owner name and no negative entry
+    # of any kind, so it is still counted (and the own cover-less one libraryV3 does not return is excused)
+    my $fxS = clone($K1B);
+    my $defsS = k1b_defs($fxS);
+    push @$defsS, +{ id => 'k1bExtra0000000000000002', name => 'Extra', owner => 'testuser' };
+    push @$defsS, +{ id => 'k1bSeeded00000000000001', name => 'Seeded', owner => 'k1bnobodyowner',
+                     picture => pack('H*', 'ab67706c0000da84' . ('cc' x 12)) };
+    k1b_setup(fx => $fxS, defs => $defsS);
+    $CK->set('spoton_plmeta_k1bSeeded00000000000001_norev',
+        { images => [ { url => 'https://i.scdn.co/image/ab67706c0000da84' . ('cc' x 12), width => undef, height => undef } ] }, 86400);
+    k1b_run();
+    my $b3 = $st->() || {};
+    is(join(',', $b3->{state} // '?', $b3->{missing} // '?'), 'ok,1',
+        'i1i missing: a foreign playlist without owner name and without any negative entry is still counted');
+
+    # C: 400 -> fallback, a second 400 keeps since, an off-key call leaves it, an ok run ends the streak
+    k1b_setup(fx => $fx, all => sub { return (400, $K1B_400_BODY) });
+    my ($T2, $T3, $T4, $T5) = (1_700_002_000, 1_700_002_500, 1_700_002_600, 1_700_003_000);
+    $T = $T2;
+    k1b_run();
+    is_deeply($st->(), { state => 'fallback', at => $T2, since => $T2, reason => 'HTTP 400', missing => undef, skipped => undef, limit => 500 },
+        'k1b T3 status: a 400 is fallback since now, reason HTTP 400');
+    $T = $T3;
+    $CK->remove('spoton_libv3_off_acct1'); k1b_drop_lists();
+    k1b_run();
+    my $c2 = $st->() || {};
+    is(join(',', $c2->{state} // '?', $c2->{since} // '?', $c2->{at} // '?'), "fallback,$T2,$T3", 'k1b T3 status: a second 400 keeps the start of the streak');
+    $T = $T4;
+    k1b_drop_lists();
+    k1b_run();
+    is(($st->() || {})->{at}, $T3, 'k1b T3 status: a call blocked by the off key leaves the status alone');
+    $ok_rule->($fx);
+    $CK->remove('spoton_libv3_off_acct1'); k1b_drop_lists();
+    $T = $T5;
+    k1b_run();
+    is_deeply($st->(), { state => 'ok', at => $T5, since => undef, reason => undef, missing => 0, skipped => 0, limit => 500 }, 'k1b T3 status: an ok run after the fallback ends the streak');
+    my $json = $JSON->encode($st->() || {});
+    ok($json !~ /testuser|owner0|Owner Name|Playlist /, 'k1b T3 status: the status carries no user name, owner name or playlist name');
+
+    # D: a 500 names its code
+    k1b_setup(fx => $fx, all => sub { return (500, '') });
+    $T = 1_700_004_000;
+    k1b_run();
+    my $d = $st->() || {};
+    is(join(',', $d->{state} // '?', $d->{reason} // '?', $d->{since} // '?'), "fallback,HTTP 500,$T", 'k1b T3 status: a 500 is fallback with the reason HTTP 500');
+});
+
+t_block('k1b T3 warn', sub {
+    my $T = 1_700_000_000;
+    no warnings 'redefine';
+    local *Plugins::SpotOn::API::SpClient::_libClock = sub { $T };
+    my $warns = sub { return grep { $_->[0] eq 'warn' && $_->[1] =~ /libraryV3/ && $_->[1] =~ /HTTP 400/ } @Slim::Utils::Log::LOG };
+
+    my $fx = k1b_setup(all => sub { return (400, $K1B_400_BODY) });
+    k1b_run();
+    is(scalar($warns->()), 1, 'k1b T3 warn: the first 400 writes one warning');
+    $T += 100;
+    $CK->remove('spoton_libv3_off_acct1'); k1b_drop_lists();
+    k1b_run();
+    is(scalar($warns->()), 1, 'k1b T3 warn: a second 400 within the hour writes none');
+    $T += 3501;
+    $CK->remove('spoton_libv3_off_acct1'); k1b_drop_lists();
+    k1b_run();
+    is(scalar($warns->()), 2, 'k1b T3 warn: a 400 an hour later writes the next one');
+    http_rule(qr{pathfinder/v2/query}, k1b_pf_rule($fx, all => sub { return (500, '') }));
+    $T += 4000;
+    $CK->remove('spoton_libv3_off_acct1'); k1b_drop_lists();
+    k1b_run();
+    is(scalar($warns->()), 2, 'k1b T3 warn: a 500 writes no such warning');
+    ok(!(grep { $_->[0] eq 'warn' && $_->[1] =~ /testuser|owner0|Owner Name/ } @Slim::Utils::Log::LOG), 'k1b T3 warn: no warning carries a user name or an owner name');
+});
+
+# ============================================================
+# 261110-k1b (#200) real material, env-gated: SPOTON_K1B_REAL names a directory with rootlist.bin and the libraryV3
+# replies pf-libv3-b.out (offset 0) and pf-libv3-c.out (offset 50) of spike 016. The material holds real user names:
+# the assertions carry counts only, never a name, an id or a url.
+# ============================================================
+SKIP: {
+    my $real = $ENV{SPOTON_K1B_REAL};
+    skip 'SPOTON_K1B_REAL is not set', 12 unless defined $real && length($real) && -d $real;
+    t_block('k1b real', sub {
+        my $slurp = sub { open(my $fh, '<:raw', $_[0]) or die "cannot read $_[0]: $!"; local $/; return scalar <$fh>; };
+        my $bytes = $slurp->("$real/rootlist.bin");
+        my %page  = map { my $t = $slurp->("$real/$_->[1]"); $t =~ s/^[^{]*//s; ($_->[0] => $t) } ([ 0 => 'pf-libv3-b.out' ], [ 50 => 'pf-libv3-c.out' ]);
+        my $total = JSON::PP->new->utf8->decode($page{0})->{data}{me}{libraryV3}{totalCount};
+
+        # the account's user name: the most frequent rootlist owner
+        my %cnt;
+        $cnt{ $_->{owner}{id} }++ for grep { $_->{owner} } @{ $SP->_parseRootlist($bytes, undef) || [] };
+        my ($self) = sort { $cnt{$b} <=> $cnt{$a} || $a cmp $b } keys %cnt;
+
+        # the expected owner name per playlist, from the two pages
+        my %want;
+        for my $o (0, 50) {
+            for my $it (@{ JSON::PP->new->utf8->decode($page{$o})->{data}{me}{libraryV3}{items} }) {
+                my $d = $it->{item}{data};
+                next unless ($d->{__typename} // '') eq 'Playlist';
+                $want{ $d->{uri} } = $d->{ownerV2}{data}{name};
+            }
+        }
+
+        my $setup = sub {
+            my ($pf) = @_;
+            reset_all();
+            $Plugins::SpotOn::API::Credentials::mock_creds = { username => $self, auth_data => 'ZGF0YQ==' };
+            seed_hash('libraryV3', $HASH_OLD);
+            http_rule(qr{/playlist/v2/user/.+/rootlist}, $bytes);
+            http_rule(qr{pathfinder/v2/query}, $pf);
+        };
+        my $stats = sub {
+            my ($res) = @_;
+            my @it = @{ ($res && $res->{items}) || [] };
+            my @foreign = grep { ($_->{owner}{id} // '') ne $self && ($_->{owner}{id} // '') ne 'spotify' } @it;
+            return {
+                n       => scalar(@it),
+                covers  => scalar(grep { @{ $_->{images} || [] } } @it),
+                own     => scalar(grep { ($_->{owner}{id} // '') eq $self && ($_->{owner}{display_name} // 'x') eq '' } @it),
+                spo     => scalar(grep { ($_->{owner}{id} // '') eq 'spotify' && ($_->{owner}{display_name} // '') eq 'Spotify' } @it),
+                foreign => scalar(@foreign),
+                named   => scalar(grep { length($_->{owner}{display_name} // '') } @foreign),
+                fromPg  => scalar(grep { defined $want{ $_->{uri} } && $_->{owner}{display_name} eq $want{ $_->{uri} } } @foreign),
+                asuser  => scalar(grep { $_->{owner}{display_name} eq $_->{owner}{id} } @foreign),
+            };
+        };
+
+        # success leg
+        $setup->(sub {
+            my ($e) = @_;
+            my $off = pf_body($e)->{variables}{offset} // 0;
+            return (200, $page{$off}) if $page{$off};
+            return (200, $JSON->encode(k1b_empty_page($off, $total)));
+        });
+        my ($res) = k1b_run();
+        my $s = $stats->($res);
+        is($s->{n}, 97, 'k1b real: 97 playlists');
+        is($s->{covers}, 97, 'k1b real: a cover on 97 of 97');
+        is($s->{own}, 47, 'k1b real: an empty owner line on 47 own playlists');
+        is($s->{spo}, 20, 'k1b real: Spotify on 20');
+        is($s->{named}, 30, 'k1b real: 30 foreign playlists with a non-empty owner name');
+        is($s->{fromPg}, 30, 'k1b real: 30 foreign playlists show the owner name of the libraryV3 page');
+        is(scalar(pf_requests()), 2, 'k1b real: 2 Pathfinder requests');
+        is(($SP->libraryMetaStatus() || {})->{missing}, 0, 'k1b real: the status counts 0 playlists missing a cover or an owner name');
+
+        # forced 400 leg
+        $setup->(sub { return (400, '{"errors":[]}') });
+        my ($res4) = k1b_run();
+        my $s4 = $stats->($res4);
+        is($s4->{covers}, 59, 'k1b real: with a 400 the rootlist covers remain (59 of 97)');
+        is($s4->{asuser}, 30, 'k1b real: with a 400 the 30 foreign playlists show the user name');
+        is(scalar(pf_requests()), 1, 'k1b real: with a 400 exactly one Pathfinder request');
+        my $m = $SP->libraryMetaStatus() || {};
+        is(join(',', $m->{state} // '?', $m->{reason} // '?'), 'fallback,HTTP 400', 'k1b real: with a 400 the status is fallback, reason HTTP 400');
+    });
+}
+
+# ============================================================
+# 261110-nu9 (Fable review of the beta.8 range): W1 an incomplete build keeps its
+# list for 60 s, W2 no Pathfinder lookup starts after the budget or a 429 stop.
+# ============================================================
+sub nu9_all_reqs { return scalar grep { $_->{url} !~ /apresolve/ } @Slim::Networking::SimpleAsyncHTTP::requests; }
+
+t_block('nu9 MFY short list cache and no lookup after the stop', sub {
+    is(is9_const('MFY_LIST_PARTIAL_TTL'), 60, 'nu9 W1: MFY_LIST_PARTIAL_TTL is 60');
+
+    # --- W1 complete build: unchanged 300 s ---
+    my $W0 = '37i9dQZF1EQ99NU9W1Cxx01';
+    is9_setup();
+    is9_pv2({ $W0 => 'Complete Name' });
+    is9_pf(topmix => is9_topmix(is9_mix($W0, name => '')));
+    run_mfy();
+    is($CK->ttl('spoton_mfy_list_acct1'), 300, 'nu9 W1 complete: a complete build with a lookup keeps its list for 300 s');
+
+    # --- W1 budget: cached 60 s, the second opening sends no request ---
+    my @B = map { sprintf('37i9dQZF1EQ99NU9BUDxx%02d', $_) } 1 .. 3;
+    is9_setup();
+    is9_pv2({ map { $B[$_ - 1] => "Name B$_" } 1 .. 3 });
+    is9_pf(topmix => is9_topmix(map { is9_mix($_, name => '') } @B));
+    $Slim::Networking::SimpleAsyncHTTP::hold_re = qr{/playlist/v2/playlist/};
+    my @timers;
+    my ($bres, $bcalled) = (undef, 0);
+    {
+        no warnings 'redefine';
+        local *Slim::Utils::Timers::setTimer = sub { push @timers, [ $_[1], $_[2] ] };
+        $SP->getMadeForYou('acct1', sub { ($bres) = @_; $bcalled++ });
+        my ($bt) = grep { ref $_->[1] eq 'CODE' && abs($_->[0] - (time() + 5)) <= 1.5 } @timers;
+        $bt->[1]->() if $bt;
+    }
+    ok($bcalled == 1, 'nu9 W1 budget: the budget delivered the list');
+    is($CK->ttl('spoton_mfy_list_acct1'), 60, 'nu9 W1 budget: the list of the cut-short build is cached with a TTL of 60');
+    $Slim::Networking::SimpleAsyncHTTP::hold_re = undef;
+    1 while Slim::Networking::SimpleAsyncHTTP::release_one();
+    is9_clear_requests();
+    my ($again, undef, $acalled) = run_mfy();
+    ok($acalled == 1 && $again && @{ $again->{items} || [] }, 'nu9 W1 budget: a second menu opening inside the TTL is answered');
+    is(nu9_all_reqs(), 0, 'nu9 W1 budget: and makes 0 new requests (no Pathfinder, no playlist/v2)');
+
+    # --- W1 429: cached 60 s, the second opening sends no request ---
+    my @L = map { sprintf('37i9dQZF1EQ99NU9RLMxx%02d', $_) } 1 .. 3;
+    is9_setup();
+    is9_pv2({}, code => 429);
+    is9_pf(topmix => is9_topmix(map { is9_mix($_, name => '') } @L));
+    run_mfy();
+    is($CK->ttl('spoton_mfy_list_acct1'), 60, 'nu9 W1 ratelimit: the list of the 429-stopped build is cached with a TTL of 60');
+    is9_clear_requests();
+    run_mfy();
+    is(nu9_all_reqs(), 0, 'nu9 W1 ratelimit: a second menu opening inside the TTL makes 0 new requests');
+
+    # --- W2 budget: a late playlist/v2 answer without a name starts no fetchPlaylist ---
+    my @D = map { sprintf('37i9dQZF1EQ99NU9LBDxx%02d', $_) } 1 .. 3;
+    is9_setup();
+    is9_pv2({});    # 404, no name
+    is9_pf(topmix => is9_topmix(map { is9_mix($_, name => '') } @D),
+        fetch => { map { $_ => { data => { playlistV2 => { __typename => 'Playlist', uri => "spotify:playlist:$_", name => "PF $_" } } } } @D });
+    $Slim::Networking::SimpleAsyncHTTP::hold_re = qr{/playlist/v2/playlist/};
+    @timers = ();
+    my ($dres, $dcalled) = (undef, 0);
+    {
+        no warnings 'redefine';
+        local *Slim::Utils::Timers::setTimer = sub { push @timers, [ $_[1], $_[2] ] };
+        $SP->getMadeForYou('acct1', sub { ($dres) = @_; $dcalled++ });
+        my ($bt) = grep { ref $_->[1] eq 'CODE' && abs($_->[0] - (time() + 5)) <= 1.5 } @timers;
+        $bt->[1]->() if $bt;
+        $Slim::Networking::SimpleAsyncHTTP::hold_re = undef;
+        1 while Slim::Networking::SimpleAsyncHTTP::release_one();
+    }
+    is($dcalled, 1, 'nu9 W2 budget: the callback fired once');
+    is(scalar(is9_fetch_reqs()), 0, 'nu9 W2 budget: a late playlist/v2 answer without a name starts no Pathfinder fetchPlaylist request');
+
+    # --- W2 ratelimit: another lookup caused the 429 stop, a nameless answer after it starts no fetchPlaylist ---
+    my @E = map { sprintf('37i9dQZF1EQ99NU9LRLxx%02d', $_) } 1 .. 3;
+    is9_setup();
+    http_rule(qr{/playlist/v2/playlist/}, sub {
+        my ($e) = @_;
+        my ($id) = $e->{url} =~ m{/playlist/v2/playlist/([^/?#]+)};
+        return (429, '', { 'Retry-After' => 30 }) if defined $id && $id eq $E[0];
+        return (404, '');
+    });
+    is9_pf(topmix => is9_topmix(map { is9_mix($_, name => '') } @E),
+        fetch => { map { $_ => { data => { playlistV2 => { __typename => 'Playlist', uri => "spotify:playlist:$_", name => "PF $_" } } } } @E });
+    $Slim::Networking::SimpleAsyncHTTP::hold_re = qr{/playlist/v2/playlist/};
+    my ($eres, $ecalled) = (undef, 0);
+    $SP->getMadeForYou('acct1', sub { ($eres) = @_; $ecalled++ });
+    is(scalar(@Slim::Networking::SimpleAsyncHTTP::held), 2, 'nu9 W2 ratelimit: two lookups are parked');
+    Slim::Networking::SimpleAsyncHTTP::release_one();    # the 429 one
+    Slim::Networking::SimpleAsyncHTTP::release_one();    # a 404 answer after the stop
+    $Slim::Networking::SimpleAsyncHTTP::hold_re = undef;
+    is($ecalled, 1, 'nu9 W2 ratelimit: the callback fired once after both answers');
+    is(scalar(is9_fetch_reqs()), 0, 'nu9 W2 ratelimit: a nameless playlist/v2 answer after the 429 stop starts no Pathfinder fetchPlaylist request');
+});
+
+# ============================================================
+# 261111-i1i (UR8-1): Library > Playlists answers after at most LIBV3_BUDGET (10 s); the libraryV3 chain runs on in
+# the background and fills only the caches
+# ============================================================
+t_block('i1i budget', sub {
+    # reference: the full run without any budget cut
+    k1b_setup();
+    my ($ref) = k1b_run();
+    my $refJson = $ref ? $JSON->encode($ref->{items}) : '<no reference>';
+
+    my $fx = k1b_setup();
+    my ($pg, $off) = k1b_pages($fx);
+    my $cl0 = scalar grep { !k1b_has_cover($_) && ($off->{ $_->{uri} } // -1) == 0 } @{ $fx->{rootlist} };
+    $Slim::Networking::SimpleAsyncHTTP::hold_re = qr{pathfinder/v2/query};
+    my $LK = 'spoton_spclient_libpl_acct1';
+    my $open = sub {
+        my $r = { n => 0 };
+        $SP->getUserPlaylists('acct1', { limit => 500 }, sub { ($r->{res}, $r->{err}) = @_; $r->{n}++ });
+        return $r;
+    };
+    my $st = sub { return $SP->libraryMetaStatus() };
+
+    my @timers;
+    my ($o1, $o2);
+    {
+        no warnings 'redefine';
+        local *Slim::Utils::Timers::setTimer = sub { push @timers, [ $_[1], $_[2] ] };
+        $o1 = $open->();
+        Slim::Networking::SimpleAsyncHTTP::release_one();    # page 0 answers, page 50 is requested and parked
+        my ($bt) = grep { ref $_->[1] eq 'CODE' && abs($_->[0] - (time() + 10)) <= 1.5 } @timers;
+        my @offs = map { pf_body($_)->{variables}{offset} // '?' } pf_requests();
+        ok($bt && !$o1->{n} && scalar(@Slim::Networking::SimpleAsyncHTTP::held) == 1 && join(',', @offs) eq '0,50',
+            'i1i budget: a timer 10 s ahead was set and the callback has not fired while page 50 is parked');
+
+        # the budget runs out
+        $bt->[1]->() if $bt;
+        my $res = $o1->{res};
+        ok($o1->{n} == 1 && $res && $res->{total} == 97, 'i1i budget: the timer delivers the list once with all 97 playlists');
+        is($res ? k1b_stats($res)->{covers} : -1, 59 + $cl0, 'i1i budget: the page 0 playlists show their cover, the others stay without one');
+        my @fo = grep { k1b_foreign($fx->{rootlist}[$_]) && ($off->{ $fx->{rootlist}[$_]{uri} } // -1) != 0 } 0 .. $#{ $fx->{rootlist} };
+        ok($res && @fo && !(grep { ($res->{items}[$_]{owner}{display_name} // '') ne $fx->{rootlist}[$_]{owner} } @fo),
+            'i1i budget: foreign playlists not on page 0 keep the user name');
+        my $late = grep { ($off->{ $_->{uri} } // -1) != 0 && defined $CK->get(k1b_rev_key($_)) } @{ $fx->{rootlist} };
+        ok(!$late && !defined $CK->get('spoton_libv3_off_acct1'),
+            'i1i budget: no playlist entry for a playlist not seen yet and no off key');
+        is($CK->ttl($LK), 60, 'i1i budget: the delivered list is cached for 60 s');
+        is(($st->() || {})->{state}, 'unknown', 'i1i budget: the status is not written before the background chain ends');
+
+        # a second open inside 60 s: from the list cache
+        my $p0 = scalar(pf_requests());
+        $o2 = $open->();
+        ok($o2->{n} == 1 && $o2->{res} && $o2->{res}{total} == 97 && scalar(pf_requests()) == $p0,
+            'i1i budget: a second open inside 60 s is answered at once without a libraryV3 request');
+
+        # the late answer of page 50
+        $Slim::Networking::SimpleAsyncHTTP::hold_re = undef;
+        my $g = 0;
+        while (Slim::Networking::SimpleAsyncHTTP::release_one()) { last if ++$g > 30 }
+        ok($o1->{n} == 1 && $o2->{n} == 1, 'i1i budget: the late page 50 answer calls no callback again');
+        is($res ? k1b_stats($res)->{covers} : -1, 59 + $cl0, 'i1i budget: the late answer does not change the list that was delivered');
+        my @cl = grep { !k1b_has_cover($_) && exists $off->{ $_->{uri} } } @{ $fx->{rootlist} };
+        ok(@cl && !(grep { my $m = $CK->get(k1b_rev_key($_)); !(ref $m eq 'HASH' && @{ $m->{images} || [] } >= 1) } @cl)
+                && !defined $CK->get('spoton_libv3_off_acct1'),
+            'i1i budget: the late answer fills the playlist cache and sets no off key');
+        ok(!defined $CK->get($LK), 'i1i budget: the chain end drops the delivered list from the cache');
+        my $sb = $st->() || {};
+        is(join(',', $sb->{state} // '?', $sb->{missing} // '?'), 'ok,0', 'i1i budget: the status is written at the chain end (ok, 0 missing)');
+        is($Slim::Networking::SimpleAsyncHTTP::max_inflight, 1, 'i1i budget: the background chain stays serial (never more than 1 libraryV3 request open)');
+
+        # the next open: everything from the caches
+        my $before = k1b_all_reqs();
+        my ($r16, undef, $n16) = k1b_run();
+        ok($n16 == 1 && k1b_stats($r16)->{covers} == 97 && k1b_all_reqs() == $before,
+            'i1i budget: the next open shows all 97 covers without a request');
+        ok($r16 && $JSON->encode($r16->{items}) eq $refJson, 'i1i budget: the next open shows the same list as a run without the budget');
+    }
+
+    # the 60 s ran out while the chain still runs: the open joins it and is answered with the delivered list
+    # (own scenario since 261111-j57: the main scenario above no longer removes the list key by hand, so its chain-end
+    # assertions can only pass through the removal in SpClient)
+    k1b_setup();
+    $Slim::Networking::SimpleAsyncHTTP::hold_re = qr{pathfinder/v2/query};
+    {
+        no warnings 'redefine';
+        my @t3;
+        local *Slim::Utils::Timers::setTimer = sub { push @t3, [ $_[1], $_[2] ] };
+        my $j1 = $open->();
+        Slim::Networking::SimpleAsyncHTTP::release_one();    # page 0 answers, page 50 is requested and parked
+        my ($bt) = grep { ref $_->[1] eq 'CODE' && abs($_->[0] - (time() + 10)) <= 1.5 } @t3;
+        $bt->[1]->() if $bt;                                  # the budget runs out: the list is delivered
+        # this simulates the 60 s expiry of the delivered list; nothing after it depends on the key's absence
+        $CK->remove($LK);
+        my ($rl0, $p1) = (scalar(k1b_rl_reqs()), scalar(pf_requests()));
+        my $j3 = $open->();
+        ok($bt && $j3->{n} == 1 && $j3->{res} && $j3->{res}{total} == 97 && scalar(pf_requests()) == $p1 && scalar(k1b_rl_reqs()) == $rl0,
+            'i1i budget: an open after the list cache expired joins the running chain: answered at once, 0 new libraryV3 requests');
+        $Slim::Networking::SimpleAsyncHTTP::hold_re = undef;
+        my $g = 0;
+        while (Slim::Networking::SimpleAsyncHTTP::release_one()) { last if ++$g > 30 }
+        ok($j1->{n} == 1 && $j3->{n} == 1, 'j57 harden: the late answer calls neither the first nor the joined open a second time');
+    }
+
+    # one-shot guard: the chain ends inside the budget, the timer fires afterwards
+    k1b_setup();
+    my @t2;
+    {
+        no warnings 'redefine';
+        local *Slim::Utils::Timers::setTimer = sub { push @t2, [ $_[1], $_[2] ] };
+        my $o = $open->();
+        my ($bt) = grep { ref $_->[1] eq 'CODE' && abs($_->[0] - (time() + 10)) <= 1.5 } @t2;
+        my $p0 = scalar(pf_requests());
+        $bt->[1]->() if $bt;
+        ok($bt && $o->{n} == 1 && defined $CK->get($LK) && ($st->() || {})->{state} eq 'ok' && scalar(pf_requests()) == $p0,
+            'i1i budget: a timer that fires after the chain ended changes nothing');
+    }
+
+    # 261111-j57: the same timer fires with counting wrappers around the cache: a watcher without its $done check would
+    # apply and write again (the first assertion above cannot see that: the list key is written once either way)
+    k1b_setup();
+    my @t4;
+    {
+        no warnings 'redefine';
+        local *Slim::Utils::Timers::setTimer = sub { push @t4, [ $_[1], $_[2] ] };
+        my $o = $open->();
+        my ($bt) = grep { ref $_->[1] eq 'CODE' && abs($_->[0] - (time() + 10)) <= 1.5 } @t4;
+        my ($sets, $rems) = (0, 0);
+        {
+            my $os = \&Slim::Utils::Cache::set;
+            my $or = \&Slim::Utils::Cache::remove;
+            local *Slim::Utils::Cache::set    = sub { $sets++; goto &$os };
+            local *Slim::Utils::Cache::remove = sub { $rems++; goto &$or };
+            $bt->[1]->() if $bt;
+        }
+        ok($bt && $o->{n} == 1 && $sets == 0 && $rems == 0,
+            'j57 harden: a timer that fires after the chain ended writes nothing to the cache (0 set, 0 remove)');
+    }
+
+    # 261111-j57: a libraryV3 call that answers at once (Pathfinder's local 429 short circuit does that) and then dies
+    # lands in the unless ($ok) branch of the page step, which ends the run a second time; the one-shot guard of the
+    # chain end keeps that second end from recording a fallback over the finished ok run
+    k1b_setup();
+    {
+        no warnings 'redefine';
+        local *Slim::Utils::Timers::setTimer = sub { };
+        local *Plugins::SpotOn::API::Pathfinder::libraryPlaylists = sub {
+            my $cb = $_[3];
+            $cb->({ items => [], total => 0, rawCount => 0 }, undef);
+            die "j57 test: libraryV3 died after answering\n";
+        };
+        my $o = $open->();
+        my $sh = $st->() || {};
+        ok($o->{n} == 1 && ($sh->{state} // '') eq 'ok',
+            'j57 harden: a libraryV3 call that answers at once and then dies ends the run once (one callback, status stays ok)');
+    }
+});
+
+# ============================================================
+# 261111-j57 (W2): a background chain that ends with a failure keeps the delivered list, so the next open inside its 60 s
+# is answered at once instead of starting a new chain that waits for the budget again
+# ============================================================
+for my $case ([503, {}], [429, { 'Retry-After' => 30 }]) {
+    my ($code, $hdrs) = @$case;
+    t_block("j57 bgfail $code", sub {
+        k1b_setup();
+        my $LK = 'spoton_spclient_libpl_acct1';
+        $Slim::Networking::SimpleAsyncHTTP::hold_re = qr{pathfinder/v2/query};
+        my $open = sub {
+            my $r = { n => 0 };
+            $SP->getUserPlaylists('acct1', { limit => 500 }, sub { ($r->{res}, $r->{err}) = @_; $r->{n}++ });
+            return $r;
+        };
+        my @timers;
+        no warnings 'redefine';
+        local *Slim::Utils::Timers::setTimer = sub { push @timers, [ $_[1], $_[2] ] };
+        my $o1 = $open->();
+        Slim::Networking::SimpleAsyncHTTP::release_one();    # page 0 answers, page 50 is requested and parked
+        my ($bt) = grep { ref $_->[1] eq 'CODE' && abs($_->[0] - (time() + 10)) <= 1.5 } @timers;
+        $bt->[1]->() if $bt;                                  # the budget runs out: the list is delivered
+        # the background chain now fails
+        http_rule(qr{pathfinder/v2/query}, sub { return ($code, '', $hdrs) });
+        $Slim::Networking::SimpleAsyncHTTP::hold_re = undef;
+        my $g = 0;
+        while (Slim::Networking::SimpleAsyncHTTP::release_one()) { last if ++$g > 30 }
+        ok(defined $CK->get($LK), "j57 bgfail $code: the failed background chain keeps the delivered list in the cache");
+        my $st = $SP->libraryMetaStatus() || {};
+        is(join(',', $st->{state} // '?', $st->{reason} // '?'), "fallback,HTTP $code", "j57 bgfail $code: the status reads fallback (HTTP $code)");
+
+        # the next open inside the 60 s: from the delivered list, no libraryV3 call, no rootlist request
+        $Slim::Networking::SimpleAsyncHTTP::hold_re = qr{pathfinder/v2/query};
+        my $orig  = \&Plugins::SpotOn::API::Pathfinder::libraryPlaylists;
+        my $calls = 0;
+        local *Plugins::SpotOn::API::Pathfinder::libraryPlaylists = sub { $calls++; goto &$orig };
+        my $rl0 = scalar(k1b_rl_reqs());
+        my $o2  = $open->();
+        ok($o2->{n} == 1 && $o2->{res} && $o2->{res}{total} == 97 && $calls == 0 && scalar(k1b_rl_reqs()) == $rl0,
+            "j57 bgfail $code: the next open is answered at once from the delivered list (0 libraryV3 calls, 0 rootlist requests)");
+        $Slim::Networking::SimpleAsyncHTTP::hold_re = undef;
+        $g = 0;
+        while (Slim::Networking::SimpleAsyncHTTP::release_one()) { last if ++$g > 30 }
+    });
+}
 
 done_testing();

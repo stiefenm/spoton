@@ -760,7 +760,13 @@ sub _extractSectionItems {
 # { uri, typename, name, images, format, madeFor } or undef. format is the
 # playlist's Spotify format string ('' when absent), madeFor is 1 when the
 # attributes carry madeFor.username (79-59: the value -- a user name -- is
-# never kept).
+# never kept). name is a non-empty string or ''. When the name is not usable
+# the item also carries nameType (what Spotify sent in its place: 'missing',
+# 'null', 'empty', or the reference type, a hash with its sorted key names in
+# braces) and dataKeys (the sorted key names of the item data), so the next
+# occurrence explains itself in the server log (261110-is9). Key and type
+# names only (a fixed character set, capped), never a value: the madeFor user
+# name lives in an attribute value.
 sub _sectionItem {
     my ($item) = @_;
     return undef unless ref($item) eq 'HASH';
@@ -774,6 +780,16 @@ sub _sectionItem {
     my $typename = $data->{__typename};
     $typename = $content->{__typename} unless defined $typename && !ref($typename);
     my $name   = $data->{name};
+    my %nameInfo;
+    unless (defined $name && !ref($name) && length $name) {
+        my $type = !exists $data->{name} ? 'missing'
+                 : !defined $name        ? 'null'
+                 : !ref($name)           ? 'empty'
+                 : ref($name);
+        $type = 'REF' unless $type =~ /\A[A-Za-z0-9_:]{1,40}\z/;
+        $type = 'HASH{' . join(',', _keyNames($name, 8)) . '}' if $type eq 'HASH';
+        %nameInfo = (nameType => $type, dataKeys => join(',', _keyNames($data, 16)));
+    }
     my $format = $data->{format};
     my $madeFor = (ref($data->{attributes}) eq 'ARRAY'
         && grep { ref($_) eq 'HASH' && defined $_->{key} && !ref($_->{key}) && $_->{key} eq 'madeFor.username' }
@@ -786,7 +802,47 @@ sub _sectionItem {
         images   => _imageItemsToRest($data->{images}),
         format   => (defined $format && !ref($format)) ? $format : '',
         madeFor  => $madeFor,
+        %nameInfo,
     };
+}
+
+# _keyNames($hashref, $max)
+# The sorted key names of a hash that look like identifiers (A-Za-z0-9_, 1-40
+# characters), at most $max of them.
+sub _keyNames {
+    my ($h, $max) = @_;
+    my @k = grep { /\A[A-Za-z0-9_]{1,40}\z/ } sort keys %$h;
+    splice(@k, $max) if @k > $max;
+    return @k;
+}
+
+# playlistName($class, $accountId, $playlistId, $cb)
+# 261110-is9 (spike 018): the name of one playlist through op fetchPlaylist
+# (limit 1: the smallest answer), the second source for a Made for You item
+# that playlist/v2 could not name. $cb->($name) or $cb->('', \%err); '' also
+# when the answer is not a Playlist or carries no name. The hash comes from
+# the existing bundle scrape (spike 016); a missing op shows as op_missing and
+# a rejected hash as broken on the status page, like every other op.
+sub playlistName {
+    my ($class, $accountId, $playlistId, $cb) = @_;
+
+    unless (defined $playlistId && !ref($playlistId) && $playlistId =~ /\A[A-Za-z0-9]{1,40}\z/) {
+        $cb->('', { error => 'invalid_id' });
+        return;
+    }
+
+    $class->query($accountId, 'fetchPlaylist', { uri => "spotify:playlist:$playlistId", offset => 0, limit => 1, enableWatchFeedEntrypoint => \0 }, sub {
+        my ($result, $err) = @_;
+        if ($err) {
+            $cb->('', $err);
+            return;
+        }
+        my $pl = (ref($result) eq 'HASH' && ref($result->{data}) eq 'HASH') ? $result->{data}{playlistV2} : undef;
+        my $name = (ref($pl) eq 'HASH' && defined $pl->{__typename} && !ref($pl->{__typename}) && $pl->{__typename} eq 'Playlist')
+            ? $pl->{name} : undef;
+        $cb->((defined $name && !ref($name) && $name =~ /\S/) ? $name : '');
+    });
+    return;
 }
 
 # ============================================================
@@ -877,6 +933,90 @@ sub _sourcesToRest {
         push @out, { url => $s->{url}, width => $s->{width}, height => $s->{height} };
     }
     return @out;
+}
+
+# ============================================================
+# libraryV3 (Library > Playlists: covers and owner display names, 261110-k1b / GH #200)
+# ============================================================
+
+# libraryPlaylists($class, $accountId, $params, $cb)
+# One page of the user's playlist library: up to 50 playlists with the owner's display name AND an image each
+# (spike 016/017). $params: offset (non-negative integer, default 0), limit (1..50, default 50, larger values are
+# clamped). $cb->({ items, total, rawCount, offset, limit }) on success, $cb->(undef, \%err) on failure; an
+# error of the query passes through unchanged (code kept), a reply of an unknown shape is { error => 'unknown_shape' }.
+# The variable set is the measured one of spike 016 (the first try with features[2] = "PRODUCER" answered HTTP 400
+# VALIDATION_INVALID_TYPE_VARIABLE); flatten false = folders are not expanded (their playlists are not returned,
+# open point O5 of the plan). The request goes through query(): FIFO, PF_MAX_CONCURRENT, PF_RATE_LIMIT_KEY.
+sub libraryPlaylists {
+    my ($class, $accountId, $params, $cb) = @_;
+    $params = {} unless ref($params) eq 'HASH';
+
+    my $offset = $params->{offset} // 0;
+    my $limit  = $params->{limit}  // 50;
+    unless (!ref($offset) && $offset =~ /\A\d+\z/ && !ref($limit) && $limit =~ /\A\d+\z/ && $limit >= 1) {
+        $cb->(undef, { error => 'invalid_params' });
+        return;
+    }
+    $limit = 50 if $limit > 50;
+
+    $class->query($accountId, 'libraryV3', {
+        filters                      => ['Playlists'],
+        order                        => undef,
+        textFilter                   => '',
+        features                     => ['LIKED_SONGS', 'YOUR_EPISODES_V2'],
+        limit                        => $limit + 0,
+        offset                       => $offset + 0,
+        flatten                      => \0,
+        expandedFolders              => [],
+        folderUri                    => undef,
+        includeFoldersWhenFlattening => \1,
+    }, sub {
+        my ($result, $err) = @_;
+        if ($err) {
+            $cb->(undef, $err);
+            return;
+        }
+        my $page = $class->_extractLibraryPage($result);
+        unless ($page) {
+            $log->warn('Pathfinder: libraryV3 response has no data.me.libraryV3.items -- unknown shape');
+            $cb->(undef, { error => 'unknown_shape' });
+            return;
+        }
+        $page->{offset} = $offset + 0;
+        $page->{limit}  = $limit + 0;
+        $cb->($page);
+    });
+    return;
+}
+
+# _extractLibraryPage($class, $result)
+# data.me.libraryV3 -> { items => [Web-API-shaped playlists], total, rawCount }, or undef when the reply has no
+# libraryV3 hash with an items array. total is totalCount when it is a plain integer, else undef; rawCount is the
+# number of raw entries of the page (the paging cursor counts them all). Only entries whose data.__typename is
+# 'Playlist' become items (the Liked Songs pseudo playlist, folders and errors are skipped). The owner is
+# { id => ownerV2.data.username, display_name => ownerV2.data.name } when the user name is a non-empty string.
+sub _extractLibraryPage {
+    my ($class, $result) = @_;
+    return undef unless ref($result) eq 'HASH' && ref($result->{data}) eq 'HASH' && ref($result->{data}{me}) eq 'HASH';
+    my $lib = $result->{data}{me}{libraryV3};
+    return undef unless ref($lib) eq 'HASH' && ref($lib->{items}) eq 'ARRAY';
+
+    my @items;
+    for my $raw (@{ $lib->{items} }) {
+        my $d = (ref($raw) eq 'HASH' && ref($raw->{item}) eq 'HASH' && ref($raw->{item}{data}) eq 'HASH') ? $raw->{item}{data} : undef;
+        next unless $d && ($d->{__typename} // '') eq 'Playlist';
+        my $pl = _mapPlaylist($raw) or next;
+
+        my $o = (ref($d->{ownerV2}) eq 'HASH' && ref($d->{ownerV2}{data}) eq 'HASH') ? $d->{ownerV2}{data} : undef;
+        my $username = $o ? _str($o->{username}) : '';
+        $pl->{owner} = length($username) ? { id => $username, display_name => _str($o->{name}) } : undef;
+        push @items, $pl;
+    }
+
+    my $total = $lib->{totalCount};
+    $total = (defined $total && !ref($total) && $total =~ /\A\d+\z/) ? $total + 0 : undef;
+
+    return { items => \@items, total => $total, rawCount => scalar @{ $lib->{items} } };
 }
 
 # ============================================================

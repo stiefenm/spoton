@@ -529,4 +529,53 @@ SKIP: {
     is(ref($mapEp->({ data => { %$chu, uri => 'spotify:track:AAAAAAAAAAAAAAAAAAAAAA' } })) || 'undef', 'undef', '79-71 T1 map-chapter: a non-episode uri maps to undef');
 }
 
+# ============================================================
+# 261110-k1b Task 2 (GH #200): the libraryV3 page reader on the anonymized spike-016 replies
+# (fixture t/fixtures/pathfinder/k1b-libraryV3.json: pages "0" and "50")
+# ============================================================
+{
+    require Storable;
+    my $K1B = do {
+        my $f = "$project_dir/t/fixtures/pathfinder/k1b-libraryV3.json";
+        open(my $fh, '<:raw', $f) or BAIL_OUT("cannot read fixture $f: $!");
+        local $/; JSON::PP->new->utf8->decode(<$fh>);
+    };
+    my $ext = sub {
+        my ($res) = @_;
+        return undef unless $PF->can('_extractLibraryPage');
+        return eval { $PF->_extractLibraryPage($res) };
+    };
+    ok($PF->can('libraryPlaylists'), 'k1b T2 parse: Pathfinder->libraryPlaylists exists');
+
+    my $p0 = $ext->($K1B->{pages}{0}) || {};
+    is($p0->{rawCount}, 50, 'k1b T2 parse: page 0 has 50 raw items');
+    is(scalar(@{ $p0->{items} || [] }), 49, 'k1b T2 parse: 49 playlists (the Liked Songs pseudo playlist is skipped)');
+    is($p0->{total}, 99, 'k1b T2 parse: totalCount 99');
+    my $first = ($p0->{items} || [])->[0] || {};
+    ok(defined $first->{id} && length($first->{id}) && ($first->{uri} // '') eq 'spotify:playlist:' . ($first->{id} // '')
+        && length($first->{name} // '') && length($first->{owner}{id} // '') && exists $first->{owner}{display_name},
+        'k1b T2 parse: an item has id, uri, name and an owner with id and display_name');
+    my ($mosaic) = grep { @{ $_->{images} || [] } == 3 } @{ $p0->{items} || [] };
+    is(join(',', map { $_->{width} // 'undef' } @{ ($mosaic || {})->{images} || [] }), '640,300,60',
+        'k1b T2 parse: a mosaic cover has three images of 640, 300 and 60');
+    ok(!(grep { ($_->{uri} // '') !~ /\Aspotify:playlist:/ } @{ $p0->{items} || [] }), 'k1b T2 parse: no pseudo playlist among the items');
+
+    my $copy = Storable::dclone($K1B->{pages}{0});
+    push @{ $copy->{data}{me}{libraryV3}{items} },
+        { depth => 0, item => { __typename => 'FolderResponseWrapper', _uri => 'spotify:user:x:folder:y', data => { __typename => 'Folder', uri => 'spotify:user:x:folder:y', name => 'F' } } },
+        { depth => 0, item => { __typename => 'GenericErrorWrapper', _uri => 'spotify:playlist:k1bGeneric0000000000', data => { __typename => 'GenericError', message => 'x' } } };
+    my $pc = $ext->($copy) || {};
+    is(join(',', $pc->{rawCount} // 'undef', scalar(@{ $pc->{items} || [] })), '52,49', 'k1b T2 parse: a Folder and a GenericError item are skipped, not counted as playlists');
+    ok(!defined $ext->({ data => {} }), 'k1b T2 parse: a reply without libraryV3 is undef');
+    my $bad = Storable::dclone($K1B->{pages}{0});
+    $bad->{data}{me}{libraryV3}{items} = 'nope';
+    ok(!defined $ext->($bad), 'k1b T2 parse: items that are not an array are undef');
+    my $odd = Storable::dclone($K1B->{pages}{0});
+    $odd->{data}{me}{libraryV3}{items}[1]{item}{data}{ownerV2}{data}{name} = { x => 1 };
+    my $po = $ext->($odd) || {};
+    is(join('|', ref(($po->{items} || [])->[0]{owner}) ? ($po->{items}[0]{owner}{display_name} // 'undef') : 'noowner'), '', 'k1b T2 parse: a non-string owner name is the empty string');
+    my $p50 = $ext->($K1B->{pages}{50}) || {};
+    is(join(',', $p50->{rawCount} // 'undef', scalar(@{ $p50->{items} || [] }), $p50->{total} // 'undef'), '49,49,99', 'k1b T2 parse: page 50 has 49 playlists of 99');
+}
+
 done_testing();

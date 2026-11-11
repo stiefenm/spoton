@@ -1939,12 +1939,23 @@ sub encode_rootlist_item {
     return Plugins::SpotOn::API::ProtobufLite::encode_field(1, 2, $uri);
 }
 
-# encode_rootlist_decoration(%args): { field 2 = attributes{name=1}, field 3 = track_count, field 5 = owner }
+# encode_rootlist_decoration(%args): { field 1 = revision, field 2 = attributes{name=1, picture=3, picture_size=13*},
+# field 3 = track_count, field 5 = owner }. picture is raw bytes (20 for a cover); picture_size is [[target, url], ...].
+# The attributes submessage is written when name, picture or picture_size is given; name stays its first field.
 sub encode_rootlist_decoration {
     my (%args) = @_;
     my $bytes = '';
-    if (defined $args{name}) {
-        my $attrs = Plugins::SpotOn::API::ProtobufLite::encode_field(1, 2, $args{name});
+    $bytes .= Plugins::SpotOn::API::ProtobufLite::encode_field(1, 2, $args{revision})
+        if defined $args{revision};
+    if (defined $args{name} || defined $args{picture} || $args{picture_size}) {
+        my $attrs = '';
+        $attrs .= Plugins::SpotOn::API::ProtobufLite::encode_field(1, 2, $args{name}) if defined $args{name};
+        $attrs .= Plugins::SpotOn::API::ProtobufLite::encode_field(3, 2, $args{picture}) if defined $args{picture};
+        for my $ps (@{ $args{picture_size} || [] }) {
+            my $one = Plugins::SpotOn::API::ProtobufLite::encode_field(1, 2, $ps->[0])
+                    . Plugins::SpotOn::API::ProtobufLite::encode_field(2, 2, $ps->[1]);
+            $attrs .= Plugins::SpotOn::API::ProtobufLite::encode_field(13, 2, $one);
+        }
         $bytes .= Plugins::SpotOn::API::ProtobufLite::encode_field(2, 2, $attrs);
     }
     $bytes .= Plugins::SpotOn::API::ProtobufLite::encode_field(3, 0, $args{track_count} // 0);
@@ -1995,7 +2006,10 @@ sub encode_rootlist_response {
     is($result->{items}[1]{uri}, 'spotify:playlist:' . b62id(2), 'getUserPlaylists: playlist 2 uri preserved');
     is($result->{items}[2]{uri}, 'spotify:playlist:' . b62id(3), 'getUserPlaylists: playlist 3 uri preserved');
     is($result->{items}[2]{name}, 'Nested Playlist Three', 'getUserPlaylists: playlist name decoded from decoration attributes');
-    is($result->{items}[0]{owner}{display_name}, 'testuser', 'getUserPlaylists: owner decoded from decoration field 5');
+    # 261110-k1b (#200, deliberate change of the old expectation 'testuser'): the account's own playlists
+    # leave the owner line empty, the owner id keeps the raw user name.
+    is($result->{items}[0]{owner}{display_name}, '', 'k1b T1 owner: own playlist has an empty owner line');
+    is($result->{items}[0]{owner}{id}, 'testuser', 'k1b T1 owner: owner id keeps the raw user name');
 
     my @rootlistReqs = grep { $_->{url} =~ m{/rootlist} } Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests();
     is(scalar(@rootlistReqs), 1, 'getUserPlaylists: exactly one rootlist request');
@@ -2040,6 +2054,62 @@ sub encode_rootlist_response {
         'getUserPlaylists: malformed rootlist bytes never reach Client.pm (85-15/T-75-12), no die');
     is(ref($err) eq 'HASH' ? $err->{error} : undef, 'parse_error',
         'getUserPlaylists: malformed rootlist bytes answer (undef, {error=>parse_error})');
+}
+
+# 261110-k1b Task 1 (#200): covers from the rootlist reply (picture, picture_size) and the owner line rule
+# (own -> empty, 'spotify' -> OWNER_FIXED_NAMES, other -> the user name), no new request.
+{
+    reset_all();
+    # inert in Task 1 (the rootlist-only path); keeps this block rootlist-only once libraryV3 exists
+    Slim::Utils::Cache->new()->set('spoton_pf_hash_libraryV3', 'a' x 64);
+    Slim::Networking::SimpleAsyncHTTP::set_error_for(qr{pathfinder/v2/query}, 400);
+
+    my $pic1 = 'ab67706c0000da84' . ('aa' x 12);
+    my @defs = (
+        [ b62id(1), name => 'Own With Picture', owner => 'testuser',   picture => pack('H*', $pic1) ],
+        [ b62id(2), name => 'Spotify Made',     owner => 'spotify',
+            picture_size => [ [ 'default', 'https://i.scdn.co/image/ab67616d0000b273' . ('bb' x 12) ],
+                              [ 'small',   'https://pickasso.spotifycdn.com/image/ab67c0de0000deef/dt/v1/img/x' ] ] ],
+        [ b62id(3), name => 'Foreign Plain',    owner => 'someoneelse' ],
+        [ b62id(4), name => 'Own Bad Urls',     owner => 'testuser',   picture => 'short',
+            picture_size => [ [ 'a', 'http://i.scdn.co/image/plain' ],
+                              [ 'b', 'https://evil.example/x.jpg' ],
+                              [ 'c', 'https://i.scdn.co.evil.example/x.jpg' ] ] ],
+        [ b62id(5), name => 'Prefix Owner',     owner => 'spotifyfan' ],
+    );
+    my (@items, @decos);
+    for my $d (@defs) {
+        my ($id, %a) = @$d;
+        push @items, encode_rootlist_item('spotify:playlist:' . $id);
+        push @decos, encode_rootlist_decoration(%a, track_count => 3);
+    }
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/playlist/v2/user/.+/rootlist}, encode_rootlist_response(\@items, \@decos));
+
+    my ($result, $err);
+    eval { $SP->getUserPlaylists('acct95', {}, sub { ($result, $err) = @_ }); 1 } or diag "k1b T1: getUserPlaylists died: $@";
+    my @it = @{ ($result && $result->{items}) || [] };
+    my ($p1, $p2, $p3, $p4, $p5) = map { $it[$_] || {} } 0 .. 4;
+    my @urls2 = map { $_->{url} } @{ $p2->{images} || [] };
+
+    is($p1->{images} && $p1->{images}[0] ? $p1->{images}[0]{url} : undef, 'https://i.scdn.co/image/' . $pic1,
+        'k1b T1 cover: a 20 byte picture becomes the i.scdn.co image url');
+    is(scalar(@{ $p1->{images} || [] }), 1, 'k1b T1 cover: a picture alone gives exactly one image');
+    is_deeply(\@urls2, [ 'https://i.scdn.co/image/ab67616d0000b273' . ('bb' x 12),
+                         'https://pickasso.spotifycdn.com/image/ab67c0de0000deef/dt/v1/img/x' ],
+        'k1b T1 cover: picture_size urls are kept in received order');
+    is_deeply($p3->{images}, [], 'k1b T1 cover: no picture gives no image');
+    is_deeply($p4->{images}, [], 'k1b T1 cover: a short picture, http, a foreign host and a suffix trick give no image');
+
+    is($p1->{owner}{display_name}, '', 'k1b T1 owner: own playlist has an empty owner line');
+    is($p1->{owner}{id}, 'testuser', 'k1b T1 owner: owner id keeps the raw user name');
+    is($p2->{owner}{display_name}, 'Spotify', 'k1b T1 owner: owner spotify shows Spotify');
+    is($p2->{owner}{id}, 'spotify', 'k1b T1 owner: the spotify owner id keeps the raw user name');
+    is($p3->{owner}{display_name}, 'someoneelse', 'k1b T1 owner: a foreign owner shows the user name until a name is known');
+    is($p5->{owner}{display_name}, 'spotifyfan', 'k1b T1 owner: a user name that starts with spotify is not the fixed name');
+
+    my $fixed = $SP->can('OWNER_FIXED_NAMES') ? $SP->OWNER_FIXED_NAMES : undef;
+    is_deeply([ sort keys %{ ref($fixed) eq 'HASH' ? $fixed : {} } ], [ 'spotify' ], 'k1b T1 const: OWNER_FIXED_NAMES has exactly the key spotify');
+    is(ref($fixed) eq 'HASH' ? $fixed->{spotify} : undef, 'Spotify', 'k1b T1 const: the fixed name of spotify is Spotify');
 }
 
 # Non-playlist URIs in items are skipped (e.g. start-group/end-group markers).
@@ -3328,6 +3398,41 @@ sub capture43 {
     my @masked = grep { /\$log->(?:info|warn|error|debug)\(/ && /_logPath\(\$cleanPath\)/ } split /\n/, $src;
     is(scalar(@raw) . '/' . (scalar(@masked) >= 11 ? 'ok' : scalar(@masked)), '0/ok',
         '79-43 M3: no SpClient log line prints $cleanPath unmasked (the cache-hit INFO line included); 11 lines go through _logPath');
+}
+
+# ============================================================
+# 261110-nu9 (I1): a failed playlist/v2 lookup of a Made for You list logs a shortened id, not the full account
+# bound id (37i9dQZF1E... mixes and 37i9dQZEVX... Discover Weekly / Release Radar are generated per account);
+# the request itself keeps the full id.
+# ============================================================
+{
+    my $lp = Plugins::SpotOn::API::SpClient->can('_logPath') || sub { $_[0] };
+    my $full = '37i9dQZF1EQjzt0uNuyJFR';
+    my $masked = $lp->("playlist/v2/playlist/$full");
+    ok(index($masked, '37i9dQZF1E') >= 0 && index($masked, '****') >= 0 && index($masked, $full) < 0 && index($masked, '0uNuyJFR') < 0,
+        'nu9 I1: _logPath shortens an account bound playlist id under playlist/v2/playlist/ (id family kept, rest ****)');
+    is($lp->("playlist/v2/playlist/$full"), 'playlist/v2/playlist/37i9dQZF1E****', 'nu9 I1: the shortened form is exactly the id family plus ****');
+    is($lp->('playlist/v2/playlist/0123456789abcdefABCDEF'), 'playlist/v2/playlist/0123456789abcdefABCDEF', 'nu9 I1: a playlist id of another family is unchanged');
+    is($lp->("metadata/4/track/$full"), "metadata/4/track/$full", 'nu9 I1: a path without playlist/v2/playlist/ is unchanged');
+    is($lp->("playlist/v2/user/max/rootlist"), 'playlist/v2/user/****/rootlist', 'nu9 I1: the existing user masking still holds');
+    # 261111-i1i (UR8-2): Discover Weekly / Release Radar (37i9dQZEVX...) are generated per account too
+    is($lp->('playlist/v2/playlist/37i9dQZEVXcLuBdTdkGtju'), 'playlist/v2/playlist/37i9dQZEVX****',
+        'i1i mask: a Discover Weekly or Release Radar id (37i9dQZEVX) is shortened the same way');
+    is($lp->('500 error for https://x/playlist/v2/playlist/37i9dQZEVXbkoDWHZvXaFe?y=1'), '500 error for https://x/playlist/v2/playlist/37i9dQZEVX****?y=1',
+        'i1i mask: inside an error text the EVX id is shortened too');
+    is($lp->('playlist/v2/playlist/37i9dQZF1DXcBWIGoYBM5M'), 'playlist/v2/playlist/37i9dQZF1DXcBWIGoYBM5M',
+        'i1i mask: an editorial playlist id (37i9dQZF1D) is unchanged');
+
+    # the request itself is not changed, only the logged text
+    reset_all();
+    $Plugins::SpotOn::API::Credentials::mock_creds = { username => 'testuser', auth_data => 'ZGF0YQ==' };
+    Slim::Networking::SimpleAsyncHTTP::set_error_for(qr{/playlist/v2/playlist/}, 500);
+    my @lines = capture43(sub { $SP->_playlistEnvelope('acct4390', $full, sub { }) });
+    my $all = join("\n", @lines);
+    ok(scalar(grep { m{playlist/v2/playlist/37i9dQZF1E\*\*\*\*} } @lines) >= 1, 'nu9 I1: the error log line names playlist/v2/playlist/37i9dQZF1E****');
+    unlike($all, qr/\Q$full\E|0uNuyJFR/, 'nu9 I1: no logged line carries the full playlist id');
+    ok(scalar(grep { m{/playlist/v2/playlist/\Q$full\E} } map { $_->{url} } Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests()) >= 1,
+        'nu9 I1: the request itself still goes to the full playlist id');
 }
 
 # ============================================================

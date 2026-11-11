@@ -16,6 +16,7 @@ use warnings;
 use base qw(Slim::Utils::Accessor);
 
 use File::Spec::Functions qw(catdir catfile);
+use Fcntl qw(S_ISDIR S_ISREG);
 use File::Temp qw(tempfile);
 use Scalar::Util qw(weaken);
 
@@ -59,6 +60,13 @@ use constant LOG_ROTATE_AT_START_BYTES => 10 * 1024 * 1024;
 use constant LOG_RUNTIME_CAP_BYTES     => 50 * 1024 * 1024;
 use constant LOG_KEEP_TAIL_BYTES       => 5 * 1024 * 1024;
 use constant LOG_CAP_INTERVAL          => 30;
+
+# GH #208 (quick 261111-j58): size limit of the Soloist audio cache per player,
+# in MB. The Soloist counterpart of Unified::Daemon's AUDIO_CACHE_LIMIT_BYTES
+# (74b-04, librespot only). The value goes to the binary as '-z' (MB, see
+# _spawnArgs) and, from the cache prune in start(), as the limit the existing
+# cache is pruned to before every spawn.
+use constant SOLOIST_CACHE_LIMIT_MB    => 1024;
 
 # 260914-qn1 (Signature C): originally the same size/shape as
 # Plugins::SpotOn::Soloist::Control::WS_RETRY_TTL_S (Control.pm:140), a
@@ -179,12 +187,23 @@ sub new {
 # change any playback/control behavior, so it stays within the CONTEXT
 # Phase-Boundary allowance for "an intervention that makes a measurement
 # possible in the first place" (D-03). The fail-closed version pin
-# (Soloist.pm:43) guarantees the running binary is >= 1.3.8, so an older
+# (Soloist.pm:44-50) guarantees the running binary is >= 1.3.8, so an older
 # binary lacking -v can never be spawned with it. Callers pass
 # diagnosticMode as $verbose -- the same pref that already routes stdout via
 # the existing restart hook (Plugin.pm:235-248, 'diagnosticMode' setChange)
 # for librespot/RUST_LOG; that hook already restarts every Unified daemon on
 # change, so no new restart wiring is needed here.
+#
+# GH #208: '-z <MB>' (SOLOIST_CACHE_LIMIT_MB, 1024) caps the Soloist audio cache.
+# soloist-1.3.8.68 --help prints "-z, --cache-size <MB>  Max cache size in MB
+# (min 100, 0 = no limit, default: no limit)"; the flag and its bound message
+# ("--cache-size must be 0 (no limit) or >= 100") are present in all three
+# pinned builds (x86_64 1.3.8.68, aarch64 and armhf 1.3.8.69). Without '-z' the
+# cache is unlimited, which filled the disk (11 GB, 424 files on a real
+# install). The fail-closed lower-bound version pin (Soloist.pm:44-50) keeps
+# every spawned binary at or above a build that knows '-z'. smokeTest spawns
+# with the same argv, so a later build that rejected '-z' would fail the smoke
+# test and not activate (fail-closed, accepted).
 sub _spawnArgs {
 	my ($class, $binaryPath, $key, $name, $dataDir, $cacheDir, $initialVolume, $verbose) = @_;
 
@@ -194,12 +213,118 @@ sub _spawnArgs {
 		'-k', $key,
 		'-D', $dataDir,
 		'-C', $cacheDir,
+		'-z', SOLOIST_CACHE_LIMIT_MB,
 		'-w', '127.0.0.1:0',
 		'-i', $initialVolume,
 	);
 	push @args, '-v' if $verbose;
 
 	return @args;
+}
+
+# GH #208 (quick 261111-j58): the time budget of the cache prune in start(), in
+# seconds, for the DELETION phase only. Set by the orchestrator on 2026-11-11
+# and NOT measured; neither is the unlink speed of a Pi / SD card known.
+#  - The scan before it (readdir and lstat over up to 256 dirs and about 1600
+#    files on the largest local player) is NOT budgeted: it must be complete,
+#    or the oldest-first order would be wrong. Its duration is NOT measured
+#    either.
+#  - The largest local player needs about 1400 unlinks to get under the limit.
+#  - Every start over the limit deletes at least one file, whatever the budget.
+#    The rest follows at the next start; -z bounds the binary meanwhile.
+use constant SOLOIST_PRUNE_BUDGET_S => 2;
+
+# _pruneSoloistCache($invocant, $cacheDir, $limitBytes, $budgetSeconds)
+# GH #208 (quick 261111-j58): delete the oldest audio cache files of one
+# Soloist player (by mtime, ties by path) until their total is at or below
+# $limitBytes; returns (deleted count, freed bytes, incomplete). $limitBytes
+# is in MiB * 1024 * 1024, equal to or above the binary's own -z bound
+# whichever MB base it uses, so the prune never fights the binary. incomplete
+# is 1 when the time budget stopped the deletion with the cache still over the
+# limit.
+# Layout (format string "%s%.2x/%s.file" of the binary, checked on the real
+# tree: 1609 of 1609 entries match): <cacheDir>/cache/<2 hex>/<40 hex>.file,
+# the 2-hex dir being the first two characters of the name. ONLY such files
+# count and may be deleted: the root must be a real directory, a sub dir a real
+# directory with a two-character lowercase hex name, a file a regular file
+# (lstat, symlinks are never followed at any level). Everything else stays,
+# and the sibling data/cache (Soloist state, not audio) is never touched.
+# Never dies: any error ends in the partial result.
+# W2: Soloist counts files deleted from outside as "Missing" in its startup
+# enumeration. At most 1 Missing was ever observed (live log and the
+# spoton-messdaten archive: 370 times 0, 66 times 1); the mass case (about
+# 1400 for one player) is UNTESTED until the VM-rig check.
+sub _pruneSoloistCache {
+	my ($invocant, $cacheDir, $limit, $budget) = @_;
+	$limit  = SOLOIST_CACHE_LIMIT_MB * 1024 * 1024 unless defined $limit;
+	$budget = SOLOIST_PRUNE_BUDGET_S unless defined $budget;
+
+	my ($deleted, $freed, $incomplete) = (0, 0, 0);
+	return ($deleted, $freed, $incomplete) unless defined $cacheDir && length $cacheDir;
+
+	my $root = catdir($cacheDir, 'cache');
+	eval {
+		my @rst = lstat($root);
+		return unless @rst && S_ISDIR($rst[2]);
+
+		opendir(my $dh, $root) or die "opendir $root: $!";
+		my @subdirs = grep { /\A[0-9a-f]{2}\z/ } readdir($dh);
+		closedir($dh);
+
+		my @files;
+		my $total = 0;
+		for my $sub (@subdirs) {
+			my $subPath = catdir($root, $sub);
+			my @st = lstat($subPath) or next;
+			next unless S_ISDIR($st[2]);
+
+			opendir(my $sdh, $subPath) or next;
+			my @names = grep { /\A([0-9a-f]{2})[0-9a-f]{38}\.file\z/ && $1 eq $sub } readdir($sdh);
+			closedir($sdh);
+
+			for my $name (@names) {
+				my $path = catfile($subPath, $name);
+				my @fst = lstat($path) or next;
+				next unless S_ISREG($fst[2]);
+				push @files, [ $fst[9], $path, $fst[7] ];
+				$total += $fst[7];
+			}
+		}
+
+		return if $total <= $limit;
+
+		# the clock for the deletion phase starts only now, after the scan
+		my $t0 = Time::HiRes::time();
+		my $over = sub { return Time::HiRes::time() - $t0 >= $budget };
+		my $attempts = 0;
+
+		for my $f (sort { $a->[0] <=> $b->[0] || $a->[1] cmp $b->[1] } @files) {
+			last if $total <= $limit;
+			# the first unlink of a start is never budget-checked: guaranteed progress
+			if ($attempts > 0 && $over->()) {
+				$incomplete = 1;
+				last;
+			}
+			$attempts++;
+			if (unlink $f->[1]) {
+				$total   -= $f->[2];
+				$freed   += $f->[2];
+				$deleted++;
+			}
+			else {
+				$log->warn("SpotOn Soloist daemon: cannot prune cache file $f->[1]: $!");
+			}
+		}
+		1;
+	};
+	$log->warn("SpotOn Soloist daemon: audio cache prune error: $@") if $@;
+
+	main::INFOLOG && $log->is_info && $log->info(
+		"SpotOn Soloist daemon: cache prune of $root: $deleted file(s), $freed bytes freed"
+		. ($incomplete ? ", stopped by the $budget s budget, the rest follows at the next start" : '')
+	) if $deleted || $incomplete;
+
+	return ($deleted, $freed, $incomplete);
 }
 
 # 79-55 (GH #184, forum #329): piCorePlayer's init script starts LMS as root
@@ -559,6 +684,14 @@ sub start {
 			return;
 		}
 	}
+
+	# GH #208: prune the existing audio cache before EVERY spawn. Idempotent:
+	# below the limit it deletes nothing. A cache that already grew past it
+	# (11 GB seen) shrinks over the first starts after the update: a full scan,
+	# then at least one and at most SOLOIST_PRUNE_BUDGET_S seconds of deletions
+	# each time. Never blocks the start; smokeTest does not prune.
+	eval { $self->_pruneSoloistCache($cacheDir, SOLOIST_CACHE_LIMIT_MB * 1024 * 1024, SOLOIST_PRUNE_BUDGET_S); 1 }
+		or $log->warn("SpotOn Soloist daemon: cache prune failed: " . ($@ || 'unknown error'));
 
 	# Crash-loop check (plain push -- soloist has no discovery flag to
 	# disable; DaemonManager's CRASH_BACKOFF_* is the throttle for this

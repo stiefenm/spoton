@@ -2317,7 +2317,7 @@ sub resolve_raw_route {
     {
         my $all = eval { $realCollectAll->() };
         is(ref($all), 'HASH', '79-72 T3 status: the real collectAll returns the payload hash' . ($@ ? " ($@)" : ''));
-        is_deeply([ sort keys %{ $all || {} } ], [ sort qw(daemons api errors tokens madeForYou system authHealth) ],
+        is_deeply([ sort keys %{ $all || {} } ], [ sort qw(daemons api errors tokens madeForYou libraryMeta system authHealth) ],
             '79-72 T3 status: collectAll returns the keys _statusDataHandler serves');
     }
     open(my $stfh, '<', "$project_dir/Plugins/SpotOn/Status.pm") or die $!;

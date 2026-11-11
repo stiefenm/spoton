@@ -497,6 +497,19 @@ impl UnifiedHttpStreamSink {
 /// (quick 261109-f4r, D; was 3 s). See the call site.
 const OGG_HEADER_WAIT_SECS: u64 = 10;
 
+/// Quick 261110-r38 (W2): how much audio, measured on granules behind the youngest queued
+/// page of the snapshot serial, a new `/stream` connection takes over from the backlog.
+/// 98440 frames = 2.232 s, on purpose `BURST_CREDIT_FRAMES`:
+/// - on a late reconnect the sink timeline is older than `BURST_FRESH_WINDOW`, so
+///   `maybe_grant_credit` grants nothing and the kept backlog is the only lead the player
+///   gets; 2.232 s is LMS's OGG output threshold plus one maximal page, so it still fills
+///   the threshold at once;
+/// - the #128 resync anchors the LMS clock on the LIVE position at relay start, so every
+///   kept second older than live is a second of sound behind that clock; the cap bounds
+///   that lag at 2.232 s plus at most one page (about 2.5 s).
+/// Not `2 * BURST_CREDIT_FRAMES`: that is 4.46 s and would double the lag bound.
+const RELAY_BACKLOG_MAX_FRAMES: u64 = BURST_CREDIT_FRAMES;
+
 /// Discards everything queued on the Connect channel; returns the count.
 fn drain_all(rx: &mut mpsc::Receiver<Bytes>) -> u64 {
     let mut n = 0u64;
@@ -557,13 +570,22 @@ fn last_ogg_serial(chunk: &[u8]) -> Option<u32> {
 ///
 /// - overflow flag set at relay start -> everything is stale (nobody was reading);
 /// - PCM -> no way to tell stale from fresh: total drain, as before;
-/// - OGG without a header snapshot (the header wait timed out; quick 261109-f4r) -> keep
-///   every queued chunk in order: the sink clears its header buffer on start(), so the
-///   queue is the current stream, and it may hold the header chunk itself;
+/// - OGG without a header snapshot -> keep every queued chunk in order. This is reached
+///   (a) when the header wait timed out with fewer than two header pages of the current
+///   serial (fresh daemon, slow session start: a header chunk can still sit in the queue and
+///   must go out in order; quick 261109-f4r) and (b) at the early exit of the wait (the
+///   current serial's headers are known absent: its queued audio is undecodable either way
+///   until the next BOS, and keeping the queue never drops a following serial's header
+///   chunk; quick 261110-r38);
 /// - OGG with a header snapshot -> per PAGE: keep audio pages (granule != 0) of the
 ///   snapshot's serial; discard header pages (replayed from the snapshot, a second
 ///   BOS would only confuse the decoder), pages of any other serial (pre-seek audio
-///   or the previous track) and trailing partial pages.
+///   or the previous track) and trailing partial pages. Of those, only the pages from
+///   the first one (granule > 0) that lies within `RELAY_BACKLOG_MAX_FRAMES` of the
+///   youngest queued page OF THAT SERIAL onwards are kept (quick 261110-r38, W2): older
+///   audio would play behind the LMS clock that the #128 resync sets to the live
+///   position. Granule -1 continuation pages inside the window stay, earlier ones go;
+///   pages of other serials never move the window.
 ///
 /// Returns (pages kept, in order, to forward right after the header replay;
 /// number of queued chunks that contributed nothing).
@@ -585,22 +607,42 @@ fn relay_start_backlog(
         .find_map(|p| ogg_pages(p).first().map(|pg| pg.serial));
     let serial = match (was_overflow, passthrough, snapshot_serial) {
         (false, true, Some(serial)) => serial,
-        // Quick 261109-f4r (D): OGG without a header snapshot and without an overflow. The
-        // sink clears its header buffer on start(), so the queue holds the CURRENT stream
-        // only (possibly the header chunk that landed after the header wait timed out).
-        // Keep it all, in order; there is no replay to duplicate and no serial to filter by.
+        // Quick 261109-f4r (D), premise reworded in quick 261110-r38: OGG without a header
+        // snapshot and without an overflow. Reached at a header-wait timeout with fewer than
+        // two header pages of the current serial (the queue may still hold the header chunk,
+        // which must go out in order) or at the early exit of the wait (headers known absent;
+        // keeping the queue never drops a following serial's header chunk). Keep it all, in
+        // order; there is no replay to duplicate and no serial to filter by.
         (false, true, None) => {
             return (pending, 0);
         }
         _ => return (Vec::new(), pending.len() as u64),
     };
+    // W2: youngest granule > 0 of the snapshot serial over everything queued; pages of
+    // other serials never take part. Without one there is no cap.
+    let youngest = pending
+        .iter()
+        .flat_map(|c| ogg_pages(c))
+        .filter(|pg| pg.serial == serial && pg.granule > 0)
+        .map(|pg| pg.granule)
+        .max();
+    let cutoff: Option<i64> = youngest.map(|y| y.saturating_sub(RELAY_BACKLOG_MAX_FRAMES as i64));
+    // Flips once, at the first page of `serial` with granule > 0 inside the window.
+    let mut in_window = cutoff.is_none();
+    let mut dropped_by_cap = 0u64;
     let mut kept: Vec<Bytes> = Vec::new();
     let mut discarded = 0u64;
     for chunk in pending {
         let mut chunk_kept = false;
         let mut run: Option<(usize, usize)> = None;
         for pg in ogg_pages(&chunk) {
-            if pg.serial == serial && pg.granule != 0 {
+            if !in_window && pg.serial == serial && pg.granule > 0 && Some(pg.granule) >= cutoff {
+                in_window = true;
+            }
+            if !in_window && pg.serial == serial && pg.granule != 0 {
+                dropped_by_cap += 1;
+            }
+            if in_window && pg.serial == serial && pg.granule != 0 {
                 run = Some(match run {
                     Some((start, _)) => (start, pg.range.end),
                     None => (pg.range.start, pg.range.end),
@@ -618,7 +660,92 @@ fn relay_start_backlog(
             discarded += 1;
         }
     }
+    if dropped_by_cap > 0 {
+        log::info!(
+            "[spoton/unified] /stream: relay start dropped {} audio pages more than {} ms behind the newest queued page",
+            dropped_by_cap,
+            RELAY_BACKLOG_MAX_FRAMES * 1000 / u64::from(SAMPLE_RATE)
+        );
+    }
     (kept, discarded)
+}
+
+/// The relay's wait for the sink's OGG header pages at a new `/stream` GET. Returns the
+/// header snapshot (empty if there is none). Extracted from the handler (quick 261110-r38)
+/// so the wait can be tested without a socket.
+async fn wait_for_ogg_headers(
+    buf: &std::sync::Mutex<Vec<Bytes>>,
+    complete: Option<&AtomicBool>,
+    serial: Option<&AtomicU32>,
+    wait: Duration,
+) -> Vec<Bytes> {
+    let mut header_snapshot: Vec<Bytes> = Vec::new();
+    let deadline = tokio::time::Instant::now() + wait;
+    loop {
+        // Read order matters (quick 261110-r38): buffer, then the flag, then the serial.
+        let read_buf = || {
+            let guard = buf.lock().unwrap_or_else(|e| e.into_inner());
+            let s = guard
+                .first()
+                .filter(|p| p.len() >= 18)
+                .map(|p| u32::from_le_bytes(p[14..18].try_into().unwrap_or([0; 4])))
+                .unwrap_or(0);
+            (guard.len(), s, guard.clone())
+        };
+        let (n, buf_serial, snapshot) = read_buf();
+        let headers_done = complete
+            .map(|b| b.load(Ordering::Acquire))
+            .unwrap_or(false);
+        let expected_serial = serial
+            .map(|s| s.load(Ordering::Acquire))
+            .unwrap_or(0);
+        let serial_ok = expected_serial == 0 || buf_serial == expected_serial;
+        if headers_done && n >= 2 && serial_ok {
+            header_snapshot = snapshot;
+            break;
+        }
+        // Headers of the confirmed serial are known absent: the first buffer read was empty
+        // and the flag is true, so read the buffer a second time under the lock.
+        //
+        // Proof that two empty reads around a true flag mean "no header page of the
+        // confirmed serial is buffered": (1) every emptying of the buffer is preceded by a
+        // store of `complete = false` (start() long before the first page after it; the
+        // serial-change branch of write() at its `complete` store before it clears), and
+        // (2) every header page of a serial is pushed under the mutex before the store of
+        // `complete = true` that confirms that serial (pages are processed in order, and the
+        // decoder delivers its headers and the first audio page in separate write() calls).
+        // A flag load that sees true synchronizes with that store, so the second lock
+        // acquisition sees every header push of the confirmed serial. The first read alone
+        // would admit "buffer read old and empty, flag read new and true" (the headers were
+        // pushed between the two loads); the second read closes that.
+        if n == 0 && headers_done {
+            let (n2, _, _) = read_buf();
+            if n2 == 0 {
+                log::warn!(
+                    "[spoton/unified] /stream: OGG headers of serial {} are not buffered \
+                     (first page after start() was audio) - starting without header replay",
+                    expected_serial
+                );
+                break;
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            if n >= 2 && serial_ok {
+                header_snapshot = snapshot;
+            }
+            log::warn!(
+                "[spoton/unified] /stream: OGG header wait \
+                 timeout after {}s (pages={}, done={}, serial match={}){}",
+                wait.as_secs(), n, headers_done, serial_ok,
+                if header_snapshot.is_empty() {
+                    " - skipping replay, keeping queued chunks"
+                } else { "" }
+            );
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    header_snapshot
 }
 
 /// Shared header state the relay needs to repair a stream after an overflow.
@@ -713,14 +840,14 @@ impl Sink for UnifiedHttpStreamSink {
         self.ogg_track_base_frames = 0;
         self.ogg_timeline_frames = 0;
         self.credit_frames = 0; // quick 261109-f4r (C): the credit is once per start()
-        // Phase 43 (D-03): clear the header buffer on every track start so the
-        // /stream handler always replays THIS track's headers, not a stale track's.
+        // Quick 261110-r38 (W1): a resume continues the same logical stream and the
+        // decoder does not resend its headers, so a /stream connection opened after the
+        // resume needs the pages already buffered: the buffer and its serial are kept.
+        // The first page after start() confirms them (same serial, audio page) or
+        // replaces them (new serial, or a header set), see write(). Until then
+        // `complete` is false, so the relay waits instead of taking the buffer.
         if self.passthrough {
             self.ogg_headers_complete.store(false, Ordering::Release);
-            let mut buf = self.ogg_header_buf.lock().unwrap_or_else(|e| e.into_inner());
-            buf.clear();
-            drop(buf);
-            self.ogg_header_serial.store(0, Ordering::Release);
             self.collecting_headers = true;
         }
         Ok(())
@@ -830,8 +957,30 @@ impl Sink for UnifiedHttpStreamSink {
                     // Accumulate timeline instead of resetting began_at so the
                     // rate-limiter does not re-apply buffer latency as a gap.
                     if self.ogg_serial == 0 {
-                        self.ogg_serial = serial;
-                        self.ogg_header_serial.store(serial, Ordering::Release);
+                        if granule != 0
+                            && serial == self.ogg_header_serial.load(Ordering::Acquire)
+                        {
+                            // Quick 261110-r38 (W1), keep branch: the first page after
+                            // start() is an audio page of the retained serial (a resume;
+                            // also the EOS page that opens a seek-shaped chunk). The
+                            // retained headers are confirmed. Close the collection so no
+                            // audio or granule -1 page is ever appended behind them.
+                            self.ogg_serial = serial;
+                            self.collecting_headers = false;
+                            self.ogg_headers_complete.store(true, Ordering::Release);
+                        } else {
+                            // Replace branch: another serial, or a header set (granule 0,
+                            // also a re-emission of the same serial: a second BOS behind
+                            // the retained one would re-open the link at the decoder).
+                            // `complete` is false here (start() stored it), and is stored
+                            // again before the buffer is emptied.
+                            self.ogg_serial = serial;
+                            self.ogg_headers_complete.store(false, Ordering::Release);
+                            let mut buf = self.ogg_header_buf.lock().unwrap_or_else(|e| e.into_inner());
+                            buf.clear();
+                            drop(buf);
+                            self.ogg_header_serial.store(serial, Ordering::Release);
+                        }
                     } else if serial != self.ogg_serial {
                         log::info!(
                             "[spoton/unified] OGG serial change: {} -> {} — \
@@ -1153,48 +1302,13 @@ async fn unified_http_server(
                                     // `resume` follows 2.5 s (normal) to 4 s (slow) later, so the old 3 s
                                     // bound was load-bearing against the normal case and timed out on the
                                     // slow one. squeezelite waits on the socket indefinitely.
-                                    let header_wait = Duration::from_secs(OGG_HEADER_WAIT_SECS);
-                                    let deadline = tokio::time::Instant::now() + header_wait;
-                                    loop {
-                                        let headers_done = ogg_headers_complete.as_ref()
-                                            .map(|b| b.load(Ordering::Acquire))
-                                            .unwrap_or(false);
-                                        let expected_serial = ogg_header_serial.as_ref()
-                                            .map(|s| s.load(Ordering::Acquire))
-                                            .unwrap_or(0);
-                                        let (n, buf_serial, snapshot) = {
-                                            let guard = buf.lock()
-                                                .unwrap_or_else(|e| e.into_inner());
-                                            let s = guard.first()
-                                                .filter(|p| p.len() >= 18)
-                                                .map(|p| u32::from_le_bytes(
-                                                    p[14..18].try_into().unwrap_or([0; 4])
-                                                ))
-                                                .unwrap_or(0);
-                                            (guard.len(), s, guard.clone())
-                                        };
-                                        let serial_ok = expected_serial == 0
-                                            || buf_serial == expected_serial;
-                                        if headers_done && n >= 2 && serial_ok {
-                                            header_snapshot = snapshot;
-                                            break;
-                                        }
-                                        if tokio::time::Instant::now() >= deadline {
-                                            if n >= 2 && serial_ok {
-                                                header_snapshot = snapshot;
-                                            }
-                                            log::warn!(
-                                                "[spoton/unified] /stream: OGG header wait \
-                                                 timeout after {}s (pages={}, done={}, serial match={}){}",
-                                                header_wait.as_secs(), n, headers_done, serial_ok,
-                                                if header_snapshot.is_empty() {
-                                                    " — skipping replay, keeping queued chunks"
-                                                } else { "" }
-                                            );
-                                            break;
-                                        }
-                                        tokio::time::sleep(Duration::from_millis(20)).await;
-                                    }
+                                    header_snapshot = wait_for_ogg_headers(
+                                        buf,
+                                        ogg_headers_complete.as_deref(),
+                                        ogg_header_serial.as_deref(),
+                                        Duration::from_secs(OGG_HEADER_WAIT_SECS),
+                                    )
+                                    .await;
                                 }
                             }
 
@@ -3454,10 +3568,13 @@ mod relay_recovery_tests {
     }
 
     /// Quick 261109-f4r (D), RED before the fix: an OGG stream without a header snapshot
-    /// (the header wait timed out on a slow session start) must NOT discard what is queued.
-    /// The sink clears its header buffer on start(), so whatever is queued now belongs to the
-    /// current stream, and a header chunk that lands between the wait's timeout and this drain
-    /// would otherwise be thrown away and leave the connection headerless until the next serial.
+    /// must NOT discard what is queued. The state is reached at a header-wait timeout with
+    /// fewer than two header pages of the current serial (fresh daemon, slow session start:
+    /// a header chunk can still sit in the queue, or land between the wait's timeout and this
+    /// drain, and would otherwise be thrown away and leave the connection headerless until
+    /// the next serial) and, since quick 261110-r38, at the early exit of the wait (headers
+    /// of the current serial known absent: the queued audio is undecodable either way until
+    /// the next BOS, and keeping the queue never drops a following serial's header chunk).
     /// Nothing is forwarded out of order: the chunks go out as queued, right after the
     /// (non-existent) replay. Replaces the review I-7 half of the guard above, which asserted
     /// the opposite for this one case; PCM and the overflow case keep the total drain.
@@ -3554,5 +3671,242 @@ mod relay_recovery_tests {
         let mut cur = RelayCursor { passthrough: true, last_serial: S, headers: Some(headers_of(&r)) };
         assert!(matches!(relay_step(&mut r.rx, &r.overflow, &mut cur), RelayStep::Idle));
         assert!(matches!(relay_step(&mut r.rx, &r.overflow, &mut cur), RelayStep::Idle));
+    }
+
+    // ---- quick 261110-r38 (W1): header buffer across sink stop()/start() ----
+
+    /// The decoder's real header shape: ONE chunk holding the BOS and the setup page.
+    fn header_chunk(serial: u32, body_a: usize, body_b: usize) -> Vec<u8> {
+        let mut c = ogg_page(0, serial, body_a);
+        c.extend(ogg_page(0, serial, body_b));
+        c
+    }
+
+    async fn wait_headers(r: &Rig, secs: u64) -> (Vec<Bytes>, Duration) {
+        let t = Instant::now();
+        let got = wait_for_ogg_headers(
+            &*r.header_buf,
+            Some(&*r.headers_complete),
+            Some(&*r.header_serial),
+            Duration::from_secs(secs),
+        )
+        .await;
+        (got, t.elapsed())
+    }
+
+    /// Sink state of a track that was paused and resumed: headers + audio, stop(), start(),
+    /// then the first page after the resume (an audio page: the decoder keeps its serial and
+    /// does not resend the headers).
+    fn paused_and_resumed(r: &mut Rig) {
+        r.sink.start().unwrap();
+        write_raw(&mut r.sink, header_chunk(S, 30, 31));
+        write_raw(&mut r.sink, ogg_page(4410, S, 30));
+        r.sink.stop().unwrap();
+        r.sink.start().unwrap();
+        write_raw(&mut r.sink, ogg_page(8820, S, 30));
+    }
+
+    /// W1, RED before the fix: a pause/resume must not lose the header pages.
+    #[test]
+    fn resume_keeps_header_buffer_for_reconnect() {
+        let mut r = rig(256, 0, true);
+        paused_and_resumed(&mut r);
+        let buf = r.header_buf.lock().unwrap();
+        assert_eq!(buf.len(), 2, "both header pages survive stop()/start()");
+        assert!(buf.iter().all(|p| serial_of(p) == S && granule_of(p) == 0));
+        assert_eq!(r.header_serial.load(Ordering::Acquire), S);
+        assert!(r.headers_complete.load(Ordering::Acquire));
+    }
+
+    /// W1, RED before the fix: a /stream GET after the resume gets the headers at once,
+    /// not after the full wait bound.
+    #[tokio::test]
+    async fn reconnect_after_resume_gets_buffered_headers_at_once() {
+        let mut r = rig(256, 0, true);
+        paused_and_resumed(&mut r);
+        let (got, took) = wait_headers(&r, 2).await;
+        assert!(took < Duration::from_millis(500), "header wait took {took:?}");
+        assert_eq!(got.len(), 2, "the two header pages of S");
+        assert!(got.iter().all(|p| serial_of(p) == S && granule_of(p) == 0));
+    }
+
+    /// W1, RED before the fix: the headers of the current serial are known absent (first
+    /// page after start() was audio, nothing buffered): the wait ends at once and the
+    /// queued audio page is kept (None arm unchanged).
+    #[tokio::test]
+    async fn header_wait_ends_at_once_when_headers_are_known_absent() {
+        let mut r = rig(256, 0, true);
+        r.sink.start().unwrap();
+        write_raw(&mut r.sink, ogg_page(4410, S, 30));
+        assert!(r.headers_complete.load(Ordering::Acquire));
+        assert!(r.header_buf.lock().unwrap().is_empty());
+        let (got, took) = wait_headers(&r, 2).await;
+        assert!(took < Duration::from_millis(500), "header wait took {took:?}");
+        assert!(got.is_empty());
+        let (kept, discarded) = relay_start_backlog(&mut r.rx, &r.overflow, true, &got);
+        assert_eq!(kept.len(), 1, "the queued audio page is kept (discarded {discarded})");
+        assert_eq!(granule_of(&kept[0]), 4410);
+    }
+
+    /// W1 guard (mutation a): a new track after a pause replaces the retained headers.
+    #[test]
+    fn track_change_after_pause_replaces_buffered_headers() {
+        let mut r = rig(256, 0, true);
+        r.sink.start().unwrap();
+        write_raw(&mut r.sink, header_chunk(S, 30, 31));
+        write_raw(&mut r.sink, ogg_page(4410, S, 30));
+        r.sink.stop().unwrap();
+        r.sink.start().unwrap();
+        assert!(
+            !r.headers_complete.load(Ordering::Acquire),
+            "start() must reopen the wait until the first page decides"
+        );
+        write_raw(&mut r.sink, header_chunk(S + 1, 30, 31));
+        write_raw(&mut r.sink, ogg_page(4410, S + 1, 30));
+        let buf = r.header_buf.lock().unwrap();
+        assert_eq!(buf.len(), 2, "only the headers of the new serial");
+        assert!(buf.iter().all(|p| serial_of(p) == S + 1));
+        assert_eq!(r.header_serial.load(Ordering::Acquire), S + 1);
+        assert!(r.headers_complete.load(Ordering::Acquire));
+    }
+
+    /// W1 guard (mutation b): the same serial re-emitting its header set after start()
+    /// (granule 0) replaces the retained set; it is neither stacked behind it nor ignored.
+    /// The re-emitted pages carry other body sizes (40/41) so a kept stale set is visible.
+    #[test]
+    fn same_serial_header_reemission_after_start_is_not_duplicated() {
+        let mut r = rig(256, 0, true);
+        r.sink.start().unwrap();
+        write_raw(&mut r.sink, header_chunk(S, 30, 31));
+        write_raw(&mut r.sink, ogg_page(4410, S, 30));
+        r.sink.stop().unwrap();
+        r.sink.start().unwrap();
+        write_raw(&mut r.sink, header_chunk(S, 40, 41));
+        assert!(
+            !r.headers_complete.load(Ordering::Acquire),
+            "a header page does not close the collection"
+        );
+        write_raw(&mut r.sink, ogg_page(13230, S, 30));
+        let buf = r.header_buf.lock().unwrap();
+        assert_eq!(buf.len(), 2, "exactly one header set");
+        assert_eq!(buf[0].len(), 28 + 40, "the re-emitted BOS replaced the retained one");
+        assert_eq!(buf[1].len(), 28 + 41);
+        assert!(r.headers_complete.load(Ordering::Acquire));
+    }
+
+    /// W1 guard (mutation c): a seek-shaped chunk right after start() (seek while paused, the
+    /// `same` row, every tap): [EOS of the old serial][BOS][setup][first audio page of S + 1].
+    /// The reader must end with exactly the two S + 1 pages, never the old serial's headers.
+    #[tokio::test]
+    async fn seek_shaped_chunk_after_resume_replaces_buffered_headers() {
+        let mut r = rig(256, 0, true);
+        r.sink.start().unwrap();
+        write_raw(&mut r.sink, header_chunk(S, 30, 31));
+        write_raw(&mut r.sink, ogg_page(4410, S, 30));
+        r.sink.stop().unwrap();
+        r.sink.start().unwrap();
+        let mut chunk = ogg_page(1_300_000, S, 30); // EOS page of the old serial
+        chunk.extend(ogg_page(0, S + 1, 40)); // BOS new serial
+        chunk.extend(ogg_page(0, S + 1, 50)); // setup new serial
+        chunk.extend(ogg_page(5000, S + 1, 30)); // first audio page new serial
+        write_raw(&mut r.sink, chunk);
+        {
+            let buf = r.header_buf.lock().unwrap();
+            assert_eq!(buf.len(), 2, "exactly the two new-serial header pages");
+            assert!(buf.iter().all(|p| serial_of(p) == S + 1));
+        }
+        assert_eq!(r.header_serial.load(Ordering::Acquire), S + 1);
+        assert!(r.headers_complete.load(Ordering::Acquire));
+        let (got, took) = wait_headers(&r, 2).await;
+        assert!(took < Duration::from_millis(500), "header wait took {took:?}");
+        assert_eq!(got.len(), 2);
+        assert!(got.iter().all(|p| serial_of(p) == S + 1 && granule_of(p) == 0));
+    }
+
+    // ---- quick 261110-r38 (W2): age cap of the relay-start backlog ----
+
+    /// Pages of serial `serial` at granules `8820 * k`, chunked `per_chunk` pages each.
+    fn audio_chunks(serial: u32, ks: std::ops::RangeInclusive<i64>, per_chunk: usize) -> Vec<Vec<u8>> {
+        let pages: Vec<Vec<u8>> = ks.map(|k| ogg_page(8820 * k, serial, 30)).collect();
+        pages.chunks(per_chunk).map(|c| c.concat()).collect()
+    }
+
+    fn kept_pages(kept: &[Bytes]) -> Vec<(u32, i64)> {
+        let all: Vec<u8> = kept.iter().flat_map(|b| b.to_vec()).collect();
+        ogg_pages(&all).iter().map(|p| (p.serial, p.granule)).collect()
+    }
+
+    /// W2, RED before the fix: only the last BURST_CREDIT_FRAMES of audio behind the newest
+    /// queued page survive, cut by page inside a chunk.
+    #[test]
+    fn relay_start_backlog_keeps_only_the_last_credit_of_audio() {
+        let (tx, mut rx) = mpsc::channel::<Bytes>(64);
+        queue(&tx, audio_chunks(S, 1..=30, 4));
+        let snapshot = vec![Bytes::from(ogg_page(0, S, 30))];
+        let overflow = AtomicBool::new(false);
+        let (kept, discarded) = relay_start_backlog(&mut rx, &overflow, true, &snapshot);
+        let pages = kept_pages(&kept);
+        let granules: Vec<i64> = pages.iter().map(|p| p.1).collect();
+        let want: Vec<i64> = (19..=30).map(|k| 8820 * k).collect();
+        assert_eq!(granules, want, "exactly k = 19..30 survive");
+        assert_eq!(granules[0], 167_580);
+        assert_eq!(*granules.last().unwrap(), 264_600);
+        assert!(granules.iter().all(|g| *g >= 264_600 - BURST_CREDIT_FRAMES as i64));
+        assert_eq!(discarded, 4, "the four chunks before the window contribute nothing");
+    }
+
+    /// W2, RED before the fix: the cut is by position. The window starts at the first page
+    /// of the serial with granule > 0 inside it; a granule -1 continuation page before that
+    /// goes, one inside stays.
+    #[test]
+    fn relay_start_backlog_cap_starts_at_the_first_page_inside_the_window() {
+        let (tx, mut rx) = mpsc::channel::<Bytes>(64);
+        let mut pages: Vec<Vec<u8>> = Vec::new();
+        pages.extend(audio_chunks(S, 1..=3, 1));
+        pages.push(ogg_page(-1, S, 30));
+        pages.extend(audio_chunks(S, 4..=15, 1));
+        pages.push(ogg_page(-1, S, 30));
+        pages.extend(audio_chunks(S, 16..=20, 1));
+        assert_eq!(pages.len(), 22);
+        queue(&tx, pages);
+        let snapshot = vec![Bytes::from(ogg_page(0, S, 30))];
+        let overflow = AtomicBool::new(false);
+        let (kept, discarded) = relay_start_backlog(&mut rx, &overflow, true, &snapshot);
+        let got = kept_pages(&kept);
+        assert_eq!(got.len(), 13, "k = 9..15, the second -1 page, k = 16..20");
+        assert_eq!(got[0].1, 79_380, "first kept granule (k = 9)");
+        let neg: Vec<usize> = got.iter().enumerate().filter(|(_, p)| p.1 == -1).map(|(i, _)| i).collect();
+        assert_eq!(neg.len(), 1, "exactly one granule -1 page");
+        assert_eq!(got[neg[0] - 1].1, 132_300);
+        assert_eq!(got[neg[0] + 1].1, 141_120);
+        assert_eq!(discarded, 9);
+    }
+
+    /// Guard (mutation d): a backlog younger than the cap is kept whole.
+    #[test]
+    fn relay_start_backlog_keeps_a_young_backlog_whole() {
+        let (tx, mut rx) = mpsc::channel::<Bytes>(64);
+        queue(&tx, audio_chunks(S, 1..=10, 1));
+        let snapshot = vec![Bytes::from(ogg_page(0, S, 30))];
+        let overflow = AtomicBool::new(false);
+        let (kept, discarded) = relay_start_backlog(&mut rx, &overflow, true, &snapshot);
+        assert_eq!(kept_pages(&kept).len(), 10, "span 79380 < cap, nothing dropped");
+        assert_eq!(discarded, 0);
+    }
+
+    /// Guard (mutation e): the window is anchored on the snapshot serial only. A foreign
+    /// serial deep into its length (the previous track) must not discard the new track.
+    #[test]
+    fn relay_start_backlog_window_ignores_foreign_serials() {
+        let (tx, mut rx) = mpsc::channel::<Bytes>(64);
+        queue(&tx, vec![ogg_page(8_000_000, S - 1, 30), ogg_page(8_008_820, S - 1, 30)]);
+        queue(&tx, audio_chunks(S, 1..=10, 1));
+        let snapshot = vec![Bytes::from(ogg_page(0, S, 30))];
+        let overflow = AtomicBool::new(false);
+        let (kept, discarded) = relay_start_backlog(&mut rx, &overflow, true, &snapshot);
+        let got = kept_pages(&kept);
+        assert_eq!(got.len(), 10, "all audio of the new serial survives");
+        assert!(got.iter().all(|p| p.0 == S));
+        assert_eq!(discarded, 2, "the two foreign-serial chunks");
     }
 }

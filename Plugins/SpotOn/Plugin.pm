@@ -1754,21 +1754,28 @@ sub _madeForYouFeed {
         # 79-59 (GH #180): with the whole home, the fixed lists on top, the
         # lists of untitled rows below them, then one folder per Spotify row
         # (Spotify's title, Spotify's order; the folder holds its lists inline).
+        # 261110-is9: a list whose name is unknown (name '') shows a generic label, never its id. The
+        # items of the result stay untouched (they may sit in the list cache).
+        my $mfyItem = sub {
+            my $it = _playlistItem($client, $_[0]);
+            $it->{name} = cstring($client, 'PLUGIN_SPOTON_MFY_UNNAMED') unless length($it->{name} // '');
+            return $it;
+        };
         my $layout = (ref $result->{layout} eq 'HASH') ? $result->{layout} : undef;
         if ($layout) {
-            push @items, map { _playlistItem($client, $_) } @{ $layout->{top} || [] }, @{ $layout->{loose} || [] };
+            push @items, map { $mfyItem->($_) } @{ $layout->{top} || [] }, @{ $layout->{loose} || [] };
             for my $f (@{ $layout->{folders} || [] }) {
                 next unless ref $f eq 'HASH' && ref $f->{items} eq 'ARRAY' && @{ $f->{items} };
                 push @items, {
                     name  => $f->{title},
                     type  => 'link',
                     image => 'html/images/playlists.png',
-                    items => [ map { _playlistItem($client, $_) } @{ $f->{items} } ],
+                    items => [ map { $mfyItem->($_) } @{ $f->{items} } ],
                 };
             }
         }
         else {
-            push @items, map { _playlistItem($client, $_) } @sorted;
+            push @items, map { $mfyItem->($_) } @sorted;
         }
 
         $callback->({ items => \@items });

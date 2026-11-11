@@ -535,6 +535,16 @@ footer {
         body.appendChild(createMetricRow('Missing operations', ops.length ? ops.join(', ') : 'None'));
     }
 
+    // Library metadata (261110-k1b, GH #200): one passive row from collectAll()'s libraryMeta (the last real libraryV3
+    // run behind Library > Playlists). It joins the Made for You card; no request, no button.
+    function renderLibraryMeta(data) {
+        var lm = data.libraryMeta;
+        if (!lm || !lm.label) return;
+        var body = document.getElementById('mfy-body');
+        var cls = lm.level === 'ok' ? 'dot-alive' : (lm.level === 'warn' ? 'dot-warn' : 'dot-unknown');
+        body.appendChild(createMetricRow(lm.title || '', lm.label, cls));
+    }
+
     function render(data) {
         renderDaemon(data);
         renderApi(data);
@@ -542,6 +552,7 @@ footer {
         renderSystem(data);
         renderAuthHealth(data);
         renderMadeForYou(data);
+        renderLibraryMeta(data);
     }
 
     function poll() {

@@ -141,6 +141,12 @@ SKIP: {
         PLUGIN_SPOTON_ACCOUNT_NEEDS_PAIRING
         PLUGIN_SPOTON_DISCOVER_IMPORTED
         PLUGIN_SPOTON_DISCOVER_INVALID
+        PLUGIN_SPOTON_STATUS_LIBMETA
+        PLUGIN_SPOTON_STATUS_LIBMETA_NOT_CHECKED
+        PLUGIN_SPOTON_STATUS_LIBMETA_OK
+        PLUGIN_SPOTON_STATUS_LIBMETA_OK_PARTIAL
+        PLUGIN_SPOTON_STATUS_LIBMETA_FALLBACK
+        PLUGIN_SPOTON_STATUS_LIBMETA_OK_CAPPED
     );
 
     # Obsolete keys that must NOT be present
@@ -363,6 +369,20 @@ SKIP: {
         is(scalar(keys %{ $langs_of{$key} || {} }), 11, "79-69 T2 e: $key has exactly the eleven shipped languages");
         my @dash = grep { $langs_of{$key}{$_} =~ /[\x{2013}\x{2014}]/ } keys %{ $langs_of{$key} || {} };
         is(scalar(@dash), 0, "79-69 T2 e: $key carries no em or en dash");
+    }
+
+    # 261110-is9 T1: the label of a Made for You entry whose name is unknown (never its playlist id), in all
+    # eleven languages. No `use utf8` in this file: the German umlaut is written as an escape.
+    {
+        my $key = 'PLUGIN_SPOTON_MFY_UNNAMED';
+        for my $lang (qw(CS DA DE EN ES FR IT NL NO PL SV)) {
+            ok(defined $langs_of{$key}{$lang} && length $langs_of{$key}{$lang}, "is9 T1 strings: $key has a $lang translation");
+        }
+        is(scalar(keys %{ $langs_of{$key} || {} }), 11, "is9 T1 strings: $key has exactly the eleven shipped languages");
+        is($langs_of{$key}{EN}, 'Mix (name not available)', "is9 T1 strings: $key EN text");
+        is($langs_of{$key}{DE}, "Mix (Name nicht verf\x{fc}gbar)", "is9 T1 strings: $key DE text");
+        my @dash = grep { $langs_of{$key}{$_} =~ /[\x{2013}\x{2014}]/ } keys %{ $langs_of{$key} || {} };
+        is(scalar(@dash), 0, "is9 T1 strings: $key carries no em or en dash");
     }
 
     # 79-72 (D-45, D-45b, item 6): the diagnostic page text comes from the ONE list module. Walk its section list,

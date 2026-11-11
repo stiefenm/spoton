@@ -1558,6 +1558,19 @@ PLUGIN_SPOTON_MFY_HASH_BROKEN
 	PL	Made for You jest teraz niedostępne. Szczegóły na stronie stanu SpotOn.
 	SV	Made for You är inte nåbart just nu. Detaljer på SpotOns statussida.
 
+PLUGIN_SPOTON_MFY_UNNAMED
+	CS	Mix (název není k dispozici)
+	DA	Mix (navn ikke tilgængeligt)
+	DE	Mix (Name nicht verfügbar)
+	EN	Mix (name not available)
+	ES	Mezcla (nombre no disponible)
+	FR	Mix (nom indisponible)
+	IT	Mix (nome non disponibile)
+	NL	Mix (naam niet beschikbaar)
+	NO	Miks (navn ikke tilgjengelig)
+	PL	Miks (nazwa niedostępna)
+	SV	Mix (namn inte tillgängligt)
+
 PLUGIN_SPOTON_TOP_TRACKS_UNAVAILABLE
 	CS	Nejposlouchanější skladby jsou právě nedostupné. Podrobnosti na stavové stránce SpotOn.
 	DA	Dine mest afspillede numre kan ikke nås lige nu. Detaljer på SpotOn-statussiden.
@@ -3806,6 +3819,30 @@ PLUGIN_SPOTON_STATUS_PAGE_DESC
 	NO	Åpne SpotOn statusdashbordet i en ny fane.
 	PL	Otwórz panel stanu SpotOn w nowej karcie.
 	SV	Öppna SpotOn statusdashboard i en ny flik.
+
+PLUGIN_SPOTON_STATUS_LIBMETA
+	DE	Bibliotheks-Metadaten
+	EN	Library metadata
+
+PLUGIN_SPOTON_STATUS_LIBMETA_NOT_CHECKED
+	DE	noch nicht geprüft
+	EN	not checked yet
+
+PLUGIN_SPOTON_STATUS_LIBMETA_OK
+	DE	ok (zuletzt %s)
+	EN	ok (last %s)
+
+PLUGIN_SPOTON_STATUS_LIBMETA_OK_PARTIAL
+	DE	ok (zuletzt %s), Cover oder Besitzername fehlt bei %s Playlists
+	EN	ok (last %s), cover or owner name missing for %s playlists
+
+PLUGIN_SPOTON_STATUS_LIBMETA_OK_CAPPED
+	DE	ok (zuletzt %s), Cover oder Besitzername fehlt bei %s Playlists, davon %s jenseits der Grenze von %s Playlists
+	EN	ok (last %s), cover or owner name missing for %s playlists, %s of them beyond the limit of %s playlists
+
+PLUGIN_SPOTON_STATUS_LIBMETA_FALLBACK
+	DE	Rückfall aktiv seit %s (%s)
+	EN	Fallback active since %s (%s)
 
 PLUGIN_SPOTON_ADD_TO_PLAYLIST
 	CS	SpotOn: Přidat do playlistu

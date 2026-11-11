@@ -5,6 +5,35 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.0.0-beta.8] - 2026-11-11
+
+**Installing this beta.** Same beta repository URL as before (`https://stiefenm.github.io/spoton/beta/repo.xml`); the Plugins page offers SpotOn 4.0.0beta8 as an update over 4.0.0beta7. Restart LMS after the update. The Connect fixes below are for the librespot backend.
+
+### Fixed
+
+- Made for You: mixes that Spotify lists without a name now show their name; SpotOn looks it up once and remembers it. If no name can be found, the entry reads "Mix (name not available)" instead of a playlist ID.
+- Made for You: when Spotify lists a mix twice and only one copy carries a name, that name is shown.
+- Library > Playlists: every playlist shows its cover again instead of the generic playlist icon, including the covers Spotify assembles from album art. The first opening after a change can take a few seconds longer while the covers are loaded; later openings use the saved values. ([#200](https://github.com/stiefenm/spoton/issues/200))
+- Library > Playlists: the second line shows the owner's name as Spotify displays it instead of the Spotify user name. Your own playlists leave the line empty, and playlists by Spotify read "Spotify". ([#200](https://github.com/stiefenm/spoton/issues/200))
+- Library > Playlists: the list appears after at most about 10 seconds, even when Spotify is slow to send the covers and owner names. Covers and owner names that have not arrived by then show the next time you open the list. ([#200](https://github.com/stiefenm/spoton/issues/200))
+- Connect (librespot): when LMS opens the stream again after you paused and resumed playback, for example when a sync group restarts, SpotOn now sends the stream at once. Before, it waited about 10 seconds and then sent a stream the player could not play until the next track.
+- Connect (librespot): when LMS reconnects to the stream late, the first audio SpotOn sends is at most about 2.5 seconds older than what Spotify is playing at that moment. Before, it could be up to about a minute old, and the sound then stayed behind the position LMS showed.
+- Soloist: the audio cache of each player no longer grows without limit and can no longer fill the disk. SpotOn now tells Soloist to keep it at 1 GB. Before Soloist starts for a player, SpotOn also deletes the oldest cached tracks until the cache is below 1 GB. Each time it deletes at least one track and spends at most about 2 seconds deleting, so a cache that has already grown shrinks over the next starts. ([#208](https://github.com/stiefenm/spoton/issues/208))
+
+### Known issues
+
+- Made for You: names that SpotOn has to look up itself can come in English even when your Spotify account uses another language, so the list may mix languages.
+- Made for You: why Spotify sometimes sends mixes without a name is not known yet. SpotOn now writes one warning to the server log (at most once an hour, starting with "SpClient: Made for You") that describes what Spotify sent. If you see "Mix (name not available)", please attach the diagnostic report.
+- Library > Playlists: if Spotify rejects the request that delivers these covers and owner names, SpotOn uses the plain playlist list for one hour: playlists without their own picture show the generic icon, and other users' playlists show the owner's user name. The status page shows this in the line "Library metadata". ([#200](https://github.com/stiefenm/spoton/issues/200))
+- Library > Playlists: playlists inside folders, and in libraries with more than 500 playlists some of the others, can keep the generic icon and the owner's user name. In such large libraries the line "Library metadata" on the status page shows how many playlists lie beyond this limit; SpotOn asks Spotify about them again at most once a day. This has not been tested with a real library of more than 500 playlists. ([#200](https://github.com/stiefenm/spoton/issues/200))
+- Library > Playlists: a playlist for which Spotify has no cover at all keeps the generic playlist icon; SpotOn does not draw a replacement cover. ([#200](https://github.com/stiefenm/spoton/issues/200))
+- Connect (librespot): in a rare case where LMS pauses the player while Spotify keeps playing on it, and you then choose another track in the Spotify app, the time LMS shows can stay at 0 or be wrong for about as long as the previous track had played. The sound itself is right. This is tracked for a later release.
+- Connect (librespot): if a player stops taking its stream for a few minutes without disconnecting and continues exactly while a new track starts, that track can stay silent until the following track. This is tracked for a later release.
+- Connect (librespot): tapping the same track again after a pause can still stall for about 3 seconds before it plays. This is tracked for a later release. ([#201](https://github.com/stiefenm/spoton/issues/201))
+- Connect (librespot): if the connection between the SpotOn daemon and Spotify drops during playback, the current track plays on, but after it the player turns inactive and LMS pauses; playing from LMS is then refused until the daemon is restarted. This is tracked for a later release. ([#207](https://github.com/stiefenm/spoton/issues/207))
+
+Everything else is as in 4.0.0-beta.7 below.
+
 ## [4.0.0-beta.7] - 2026-11-09
 
 **Installing this beta.** Same beta repository URL as before (`https://stiefenm.github.io/spoton/beta/repo.xml`); the Plugins page offers SpotOn 4.0.0beta7 as an update over 4.0.0beta6. Restart LMS after the update. The fixes below are for the librespot backend.

@@ -661,7 +661,7 @@ require Plugins::SpotOn::Plugin;
 # Tests
 # ============================================================
 
-plan tests => 77;   # 79-81 D-54: +1 (Audio Keys not_used branch); 79-63 R1: +1 (Status.pm names no backend-side module); 79-60: +7 (Connect row render, English labels, librespot match); 74b WR-01: +3 hasError level cells; 84-09: 57 before the split; 21 Soloist cells moved to t/soloist/13_status_page_soloist.t
+plan tests => 91;   # 261111-j57: +2 (capped ok run, skipped 0 keeps the partial text); 261110-k1b: +12 (Library metadata row: 7 collectAll cells, 4 node cells, 1 render order);  79-81 D-54: +1 (Audio Keys not_used branch); 79-63 R1: +1 (Status.pm names no backend-side module); 79-60: +7 (Connect row render, English labels, librespot match); 74b WR-01: +3 hasError level cells; 84-09: 57 before the split; 21 Soloist cells moved to t/soloist/13_status_page_soloist.t
 
 # Test 1: Status.pm compiles
 require_ok('Plugins::SpotOn::Status');
@@ -1135,4 +1135,60 @@ SKIP: {
     is_deeply(\@got, [ [ 'Not used (Soloist)', 'metric-value dot-unknown' ], [ 'Denied', 'metric-value dot-dead' ], [ 'Throttled', 'metric-value dot-warn' ], [ 'OK', 'metric-value dot-alive' ] ],
         "D54-B6 (D-54, GH #188): status.html maps audioKey.state not_used to 'Not used (Soloist)' / dot-unknown, denied/throttled/ok unchanged")
         or diag(JSON::PP->new->canonical->encode(\@got));
+}
+
+# 261110-k1b Task 3 (GH #200): the passive "Library metadata" row. SpClient->libraryMetaStatus (seven plain keys, no
+# name) -> collectAll()->{libraryMeta} { title, label, level } -> status.html renderLibraryMeta appends one row to
+# the Made for You card. No request of its own, no start test, no button.
+{
+    no warnings 'redefine';
+    my $epoch = 1_700_000_000;
+    my $hhmm  = sprintf('%02d:%02d', (localtime($epoch))[2, 1]);
+    my $collect = sub {
+        my ($stat) = @_;
+        local *Plugins::SpotOn::API::SpClient::libraryMetaStatus = ref($stat) eq 'CODE' ? $stat : sub { return { %$stat } };
+        local *Slim::Utils::Strings::string = sub { return join('|', @_) };
+        return eval { Plugins::SpotOn::Status::collectAll() } || {};
+    };
+    my $base = { state => 'ok', at => $epoch, since => undef, reason => undef, missing => 0 };
+    my $ok   = $collect->($base)->{libraryMeta} || {};
+    is_deeply([ sort keys %$ok ], [ qw(label level title) ], 'k1b T3 page: libraryMeta carries exactly the keys level, label and title');
+    is($ok->{title}, 'PLUGIN_SPOTON_STATUS_LIBMETA', 'k1b T3 page: the title is the PLUGIN_SPOTON_STATUS_LIBMETA string');
+    my $unk = $collect->({ state => 'unknown', at => undef, since => undef, reason => undef, missing => undef })->{libraryMeta} || {};
+    is(join('/', $unk->{label} // '?', $unk->{level} // '?'), 'PLUGIN_SPOTON_STATUS_LIBMETA_NOT_CHECKED/unknown', 'k1b T3 page: before the first run it reads "not checked yet" in the unknown level');
+    is(join('/', $ok->{label} // '?', $ok->{level} // '?'), "PLUGIN_SPOTON_STATUS_LIBMETA_OK|$hhmm/ok", 'k1b T3 page: an ok run with nothing missing reads "ok (last HH:MM)"');
+    my $part = $collect->({ %$base, missing => 3 })->{libraryMeta} || {};
+    is(join('/', $part->{label} // '?', $part->{level} // '?'), "PLUGIN_SPOTON_STATUS_LIBMETA_OK_PARTIAL|$hhmm|3/warn", 'k1b T3 page: an ok run with 3 missing names the count in the warn level');
+    my $fb = $collect->({ state => 'fallback', at => $epoch + 60, since => $epoch, reason => 'HTTP 400', missing => undef })->{libraryMeta} || {};
+    is(join('/', $fb->{label} // '?', $fb->{level} // '?'), "PLUGIN_SPOTON_STATUS_LIBMETA_FALLBACK|$hhmm|HTTP 400/warn", 'k1b T3 page: a fallback names the start of the streak and the reason');
+    # 261111-j57: an ok run with playlists beyond the libraryV3 page limit names them and the limit
+    my $cap = $collect->({ %$base, missing => 12, skipped => 10, limit => 500 })->{libraryMeta} || {};
+    is(join('/', $cap->{label} // '?', $cap->{level} // '?'), "PLUGIN_SPOTON_STATUS_LIBMETA_OK_CAPPED|$hhmm|12|10|500/warn",
+        'j57 skipped page: a capped ok run names missing, skipped and the limit in the warn level');
+    my $nocap = $collect->({ %$base, missing => 3, skipped => 0, limit => 500 })->{libraryMeta} || {};
+    is(join('/', $nocap->{label} // '?', $nocap->{level} // '?'), "PLUGIN_SPOTON_STATUS_LIBMETA_OK_PARTIAL|$hhmm|3/warn",
+        'j57 skipped page: skipped 0 keeps the partial text');
+    my $dead = $collect->(sub { die "boom\n" });
+    ok(ref($dead->{libraryMeta}) eq 'HASH' && !%{ $dead->{libraryMeta} } && ref($dead->{madeForYou}) eq 'HASH',
+        'k1b T3 page: a failing libraryMetaStatus leaves libraryMeta empty and the Made for You data in place');
+}
+
+SKIP: {
+    skip 'node unavailable (Test 28 reported it)', 4 unless $NODE;
+    my $payload = sub { my ($level, $label) = @_; return { libraryMeta => { title => 'Library metadata', label => $label, level => $level } } };
+    my $r = eval { run_page_render('renderLibraryMeta',
+        $payload->('ok', 'ok (last 10:00)'),
+        $payload->('warn', 'Fallback active since 10:00 (HTTP 400)'),
+        $payload->('unknown', 'not checked yet'),
+        {},
+    ) } || do { diag("renderLibraryMeta: $@"); [ [], [], [], [] ] };
+    my ($rok, $rwarn, $runk, $rnone) = @$r;
+    is_deeply($rok->[0], [ 'Library metadata', 'ok (last 10:00)', 'metric-value dot-alive' ], 'k1b T3 page: level ok renders one row with the alive dot');
+    is_deeply($rwarn->[0], [ 'Library metadata', 'Fallback active since 10:00 (HTTP 400)', 'metric-value dot-warn' ], 'k1b T3 page: level warn renders the warn dot');
+    is_deeply($runk->[0], [ 'Library metadata', 'not checked yet', 'metric-value dot-unknown' ], 'k1b T3 page: level unknown renders the unknown dot');
+    is(scalar(@{ $rnone || [] }), 0, 'k1b T3 page: without libraryMeta no row is rendered');
+}
+{
+    my $render = eval { extract_js_function($page_js, 'render') } // '';
+    ok($render =~ /renderMadeForYou\(data\);\s*renderLibraryMeta\(data\);/, 'k1b T3 page: render() calls renderLibraryMeta(data) right after renderMadeForYou(data)');
 }

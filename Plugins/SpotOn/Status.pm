@@ -154,8 +154,8 @@ sub _statusDataHandler {
     _jsonResponse($httpClient, $response, collectAll());
 }
 
-# collectAll() -- the payload of /plugins/SpotOn/status/data: daemons, api, errors, tokens, madeForYou, system,
-# authHealth. Each collector is eval-guarded so a broken module or missing method at startup returns partial
+# collectAll() -- the payload of /plugins/SpotOn/status/data: daemons, api, errors, tokens, madeForYou, libraryMeta,
+# system, authHealth. Each collector is eval-guarded so a broken module or missing method at startup returns partial
 # data rather than crashing the caller (CR-01).
 sub collectAll {
     my %data;
@@ -203,6 +203,14 @@ sub collectAll {
         main::INFOLOG && $log->is_info && $log->info("Status: madeForYouStatus failed: $@");
     }
 
+    # --- Library metadata (261110-k1b, GH #200): the last real libraryV3 run behind Library > Playlists, as one
+    # passive row in the Made for You card. SpClient->libraryMetaStatus carries seven plain keys (no name, no id);
+    # no request is made here.
+    $data{libraryMeta} = eval { _libraryMetaRow(Plugins::SpotOn::API::SpClient->libraryMetaStatus()) } // {};
+    if ($@) {
+        main::INFOLOG && $log->is_info && $log->info("Status: libraryMetaStatus failed: $@");
+    }
+
     # --- System info (D-05: cached, computed once) ---
     $data{system} = eval { _systemInfo() } // {};
     if ($@) {
@@ -227,6 +235,44 @@ sub collectAll {
     $data{authHealth} = \%authHealth;
 
     return \%data;
+}
+
+# _libraryMetaRow($status)
+# 261110-k1b: the "Library metadata" row { title, label, level } from SpClient->libraryMetaStatus: not checked yet
+# (unknown), ok (last HH:MM) (ok), the same with the number of playlists still missing a cover or owner name (warn),
+# the same with how many of them lie beyond the libraryV3 page limit and the limit (warn, 261111-j57), or Fallback
+# active since HH:MM (HTTP code) (warn). The texts are in strings.txt; the row holds no name.
+sub _libraryMetaRow {
+    my ($st) = @_;
+    return {} unless ref($st) eq 'HASH';
+
+    require Slim::Utils::Strings;
+    my $hhmm = sub {
+        my ($epoch) = @_;
+        return '?' unless defined $epoch && $epoch =~ /\A\d+\z/;
+        return sprintf('%02d:%02d', (localtime($epoch))[2, 1]);
+    };
+
+    my $title = Slim::Utils::Strings::string('PLUGIN_SPOTON_STATUS_LIBMETA');
+    my $state = $st->{state} // 'unknown';
+
+    if ($state eq 'ok') {
+        my $missing = $st->{missing} // 0;
+        my $skipped = $st->{skipped} // 0;
+        return { title => $title, level => 'warn',
+                 label => Slim::Utils::Strings::string('PLUGIN_SPOTON_STATUS_LIBMETA_OK_CAPPED', $hhmm->($st->{at}), $missing, $skipped, $st->{limit} // '?') }
+            if $skipped > 0;
+        return $missing
+            ? { title => $title, level => 'warn',
+                label => Slim::Utils::Strings::string('PLUGIN_SPOTON_STATUS_LIBMETA_OK_PARTIAL', $hhmm->($st->{at}), $missing) }
+            : { title => $title, level => 'ok',
+                label => Slim::Utils::Strings::string('PLUGIN_SPOTON_STATUS_LIBMETA_OK', $hhmm->($st->{at})) };
+    }
+    if ($state eq 'fallback') {
+        return { title => $title, level => 'warn',
+                 label => Slim::Utils::Strings::string('PLUGIN_SPOTON_STATUS_LIBMETA_FALLBACK', $hhmm->($st->{since}), $st->{reason} // '?') };
+    }
+    return { title => $title, level => 'unknown', label => Slim::Utils::Strings::string('PLUGIN_SPOTON_STATUS_LIBMETA_NOT_CHECKED') };
 }
 
 # ============================================================

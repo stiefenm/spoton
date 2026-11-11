@@ -122,6 +122,43 @@ use constant SET_MAP => {
 use constant ROOTLIST_DECORATE     => 'revision,attributes,length,owner,timestamp';
 use constant ROOTLIST_LIST_TTL     => 60;    # CLAUDE.md: library-item lists = 60s
 use constant ROOTLIST_MAX_DEPTH    => 10;    # T-75-16/V5: bounded folder recursion
+
+# 261110-k1b (#200): owners that are named without a lookup. Evidence: spike 016 raw libraryV3 data, user name
+# spotify -> display name Spotify on 20 of 20 Spotify-owned playlists. A further entry only with its own measured
+# evidence, one per entry. The account's own playlists are not in here (they compare against the user name).
+use constant OWNER_FIXED_NAMES    => { spotify => 'Spotify' };
+
+# 261110-k1b (#200): Library > Playlists gets its covers and owner display names from Pathfinder libraryV3 (50
+# playlists per request) for the playlists the rootlist leaves without cover or with a foreign owner.
+#   LIBRARY_LIST_*    merged list per account, the library-item-list tier (CLAUDE.md: 60 s)
+#   PL_META_*         per playlist, key <id>_<rootlist revision hex or 'norev'>; the rootlist revision IS the libraryV3
+#                     revisionId (measured on 96 of 96 matched playlists), so a changed playlist misses the key
+#   OWNER_NAME_*      per owner user name; a name is kept 7 days, "no name" (negative) 1 day
+#   LIBV3_PAGE_LIMIT  entries per libraryV3 page (the measured maximum)
+#   LIBV3_MAX_PAGES   500 entries, the measured-safe bound per run
+#   LIBV3_OFF_*       a structural libraryV3 failure (HTTP 400, errors[], unknown shape) pauses it for the account
+#   LIBV3_BUDGET      261111-i1i: seconds from the first libraryV3 request until Library > Playlists is answered with what
+#                     the pages read so far brought; the chain then runs on and fills only the caches
+#   LIBV3_CAPPED_*    261111-j57: per account and playlist id, "never asked because the run stopped at LIBV3_MAX_PAGES";
+#                     value { at => epoch of _libClock }, kept 24 h; it keeps the playlist from asking libraryV3 again. It
+#                     carries no images key, so it is never read as a negative entry ("Spotify has nothing"). It is bound
+#                     to the account on purpose (PL_META is not yet, GH #209)
+use constant LIBRARY_LIST_KEY     => 'spoton_spclient_libpl_';
+use constant LIBRARY_LIST_TTL     => 60;
+use constant PL_META_KEY          => 'spoton_plmeta_';
+use constant PL_META_TTL          => 86400;
+use constant OWNER_NAME_KEY       => 'spoton_owner_name_';
+use constant OWNER_NAME_TTL       => 7 * 86400;
+use constant OWNER_NAME_NEG_TTL   => 86400;
+use constant LIBV3_PAGE_LIMIT     => 50;
+use constant LIBV3_MAX_PAGES      => 10;
+use constant LIBV3_OFF_KEY        => 'spoton_libv3_off_';
+use constant LIBV3_OFF_TTL        => 3600;
+use constant LIBV3_RUN_STALE      => 300;   # a run older than this is not joined (a stuck run cannot block the account)
+use constant LIBV3_BUDGET         => 10;
+use constant LIBV3_WARN_INTERVAL  => 3600;   # at most one "libraryV3 answered HTTP 400" warning per hour
+use constant LIBV3_CAPPED_KEY     => 'spoton_libv3_capped_';
+use constant LIBV3_CAPPED_TTL     => 86400;
 use constant PLAYLIST_ENVELOPE_TTL => 300;   # CLAUDE.md: playlist tracks = 300s tier
 
 # Page limits (85-09, D-12): fixed values replace the Web-API endpoint probe.
@@ -162,6 +199,27 @@ my $lastErrorAt    = undef;
 # the short reason of a failed section (never a token or a URL).
 my %_mfy = (source => undef, mixCount => 0);
 
+# 261110-is9: one Made for You run per account at a time. The first caller starts the run, a caller that arrives
+# while it is still running only queues its callback ({ at => start time, cbs => [...] }); the one delivery
+# answers every queued callback. Without it two menu openings during a cold build would start two runs (2 x 3
+# Pathfinder requests and up to 2 x 13 name lookups, because the name cache is written when an answer arrives).
+my %_mfyRuns;
+
+# 261110-is9: when the last "item without a usable name" warning was written (unix time); the warning is
+# process-wide and at most one per MFY_NAME_WARN_INTERVAL. reset() sets it back to 0.
+my $_mfyNameWarnAt = 0;
+
+# 261110-k1b: one libraryV3 merge per account at a time (account id -> { at => start time, cbs => [callbacks] });
+# a second Library > Playlists opening during a cold run only queues its callback.
+my %_libRuns;
+
+# 261110-k1b: the last real libraryV3 run of any account, for libraryMetaStatus (the status page row). Plain values
+# only: state (unknown | ok | fallback), at (epoch), since (start of the current fallback streak), reason, missing,
+# skipped (261111-j57: the playlists in missing that lie beyond the libraryV3 page limit).
+my %_libMeta = (state => 'unknown');
+# when the last "libraryV3 answered HTTP 400" warning was written (epoch); at most one per LIBV3_WARN_INTERVAL
+my $_libWarnAt;
+
 # 79-27 D-19: metadata/4/track hits that are due for renewal wait here (cache key -> the cached hash, FIFO
 # in @_renewOrder, deduplicated by key) until the drain timer writes them back. $_renewTimerArmed keeps it at
 # ONE timer however many hits queue up.
@@ -185,6 +243,11 @@ sub reset {
     $lastErrorClass = undef;
     $lastErrorAt = undef;
     %_mfy = (source => undef, mixCount => 0);
+    %_mfyRuns = ();
+    $_mfyNameWarnAt = 0;
+    %_libRuns = ();
+    %_libMeta = (state => 'unknown');
+    $_libWarnAt = undef;
     %_renewPending = ();
     @_renewOrder = ();
     $_renewTimerArmed = 0;
@@ -548,13 +611,17 @@ sub noteRateLimit {
 }
 
 # _logPath($path) -- 79-43 (D-33 FULL-3 WR-01): the request path as it may appear in a log line. The username
-# (profile/<u>, spotify:user:<u>, /user/<u>, raw or URI-escaped) and everything after spotify:search: are masked;
+# (profile/<u>, spotify:user:<u>, /user/<u>, raw or URI-escaped), everything after spotify:search: and the
+# account bound id of a 37i9dQZF1E or 37i9dQZEVX playlist under playlist/v2/playlist/ are masked;
 # the request path, the cache key and the request itself are never changed - only what is logged.
 sub _logPath {
     my ($p) = @_;
     return '' unless defined $p;
     $p =~ s{(profile/|spotify:user:|/user/)[^/:?]+}{$1****}g;
     $p =~ s{spotify:search:.*}{spotify:search:****}s;
+    # 261110-nu9 (I1), 261111-i1i (UR8-2): the Made for You mixes (37i9dQZF1E...) and Discover Weekly / Release Radar
+    # (37i9dQZEVX...) are generated per account, their id is account bound
+    $p =~ s{(playlist/v2/playlist/37i9dQZ(?:F1E|EVX))[A-Za-z0-9]+}{$1****}g;
     return $p;
 }
 
@@ -2459,7 +2526,7 @@ sub _rootlistPlaylists {
             return;
         }
 
-        my $playlists = $class->_parseRootlist($raw);
+        my $playlists = $class->_parseRootlist($raw, $username);
         unless ($playlists) {
             $cb->(undef, { error => 'parse_error' });
             return;
@@ -2470,15 +2537,30 @@ sub _rootlistPlaylists {
     });
 }
 
-# _parseRootlist($class, $bytes)
+# _imageUrlAllowed($url)
+# 261110-k1b (T-k1b-01): an image URL from the rootlist or libraryV3 becomes a fetch of LMS' image proxy, so only
+# https on a *.scdn.co or *.spotifycdn.com host is accepted (not http, not a foreign host, not a suffix trick
+# such as i.scdn.co.evil.example).
+sub _imageUrlAllowed {
+    my ($class, $url) = @_;
+    return 0 unless defined $url && !ref($url);
+    return $url =~ m{\Ahttps://[A-Za-z0-9.-]+\.(?:scdn\.co|spotifycdn\.com)/} ? 1 : 0;
+}
+
+# _parseRootlist($class, $bytes, $selfUsername)
 # Decodes the rootlist response. The live server wraps the actual item list
 # in field 5 (ListContent), NOT in field 1 (which is a 24-byte revision
 # hash). Items are flat in field 5.3 (each with URI in sub-field 1);
 # decorated metadata is in field 5.4 (name in .2.1, owner in .5, length
 # in .3), paired by index. Returns undef on parse failure; an absent or
 # empty item list returns an empty arrayref.
+# 261110-k1b (#200): covers from the attributes: picture (field 3, exactly 20 bytes -> i.scdn.co/image/<hex>) and
+# picture_size (field 13, url in sub-field 2; kept in received order, only when _imageUrlAllowed). The owner line:
+# the account's own playlists (owner == $selfUsername) leave display_name empty, a user name in OWNER_FIXED_NAMES
+# shows its fixed name, every other owner shows the user name until the libraryV3 merge (_libraryPlaylists) knows
+# the display name. owner.id keeps the raw user name. Mosaic covers and display names are not in the rootlist.
 sub _parseRootlist {
-    my ($class, $bytes) = @_;
+    my ($class, $bytes, $selfUsername) = @_;
 
     my $fields = Plugins::SpotOn::API::ProtobufLite::parse_fields($bytes);
     return undef unless $fields;
@@ -2501,15 +2583,26 @@ sub _parseRootlist {
         next unless defined $uri && $uri =~ /^spotify:playlist:(.+)$/;
         my $id = $1;
 
-        my ($name, $ownerUsername, $trackCount);
+        my ($name, $ownerUsername, $trackCount, $picture, $revision, @pictureSizes);
         if ($i <= $#decorations) {
             my $decoFields = Plugins::SpotOn::API::ProtobufLite::parse_fields($decorations[$i]);
             if ($decoFields) {
                 $ownerUsername = Plugins::SpotOn::API::ProtobufLite::field_first($decoFields, 5);
                 $trackCount   = Plugins::SpotOn::API::ProtobufLite::field_first($decoFields, 3);
+                # the playlist's revision (field 1): lowercase hex, it keys the per-playlist libraryV3 cache
+                my $rev = Plugins::SpotOn::API::ProtobufLite::field_first($decoFields, 1);
+                $revision = lc(unpack('H*', $rev)) if defined $rev && length($rev) >= 1 && length($rev) <= 64;
                 if (defined(my $attrBytes = Plugins::SpotOn::API::ProtobufLite::field_first($decoFields, 2))) {
                     my $attrFields = Plugins::SpotOn::API::ProtobufLite::parse_fields($attrBytes);
-                    $name = Plugins::SpotOn::API::ProtobufLite::field_first($attrFields, 1) if $attrFields;
+                    if ($attrFields) {
+                        $name    = Plugins::SpotOn::API::ProtobufLite::field_first($attrFields, 1);
+                        $picture = Plugins::SpotOn::API::ProtobufLite::field_first($attrFields, 3);
+                        for my $psBytes (@{ $attrFields->{13} || [] }) {
+                            my $psFields = Plugins::SpotOn::API::ProtobufLite::parse_fields($psBytes) or next;
+                            my $psUrl    = Plugins::SpotOn::API::ProtobufLite::field_first($psFields, 2);
+                            push @pictureSizes, $psUrl if defined $psUrl;
+                        }
+                    }
                 }
             }
         }
@@ -2519,13 +2612,32 @@ sub _parseRootlist {
         utf8::decode($name)          if defined $name;
         utf8::decode($ownerUsername) if defined $ownerUsername;
 
+        my @images;
+        if (defined $picture && length($picture) == 20) {
+            push @images, { url => 'https://i.scdn.co/image/' . lc(unpack('H*', $picture)) };
+        }
+        for my $url (@pictureSizes) {
+            next unless $class->_imageUrlAllowed($url);
+            next if grep { $_->{url} eq $url } @images;
+            push @images, { url => $url };
+        }
+
+        my $owner;
+        if ($ownerUsername) {
+            my $shown = (defined $selfUsername && $ownerUsername eq $selfUsername) ? ''
+                      : exists OWNER_FIXED_NAMES->{$ownerUsername}                 ? OWNER_FIXED_NAMES->{$ownerUsername}
+                      :                                                              $ownerUsername;
+            $owner = { id => $ownerUsername, display_name => $shown };
+        }
+
         push @playlists, {
-            id     => $id,
-            uri    => $uri,
-            name   => $name // '',
-            owner  => $ownerUsername ? { display_name => $ownerUsername } : undef,
-            tracks => { total => $trackCount // 0 },
-            images => [],
+            id       => $id,
+            uri      => $uri,
+            name     => $name // '',
+            owner    => $owner,
+            tracks   => { total => $trackCount // 0 },
+            images   => \@images,
+            revision => $revision,
         };
     }
 
@@ -2592,6 +2704,389 @@ sub _normalizePlaylistMeta {
     };
 }
 
+# _allowedImages(\@images)
+# The images of a libraryV3 playlist (or of a cached entry) that pass _imageUrlAllowed, as fresh hashes.
+sub _allowedImages {
+    my ($class, $images) = @_;
+    return () unless ref($images) eq 'ARRAY';
+    return map { +{ url => $_->{url}, width => $_->{width}, height => $_->{height} } }
+           grep { ref($_) eq 'HASH' && $class->_imageUrlAllowed($_->{url}) } @$images;
+}
+
+# _libraryPlaylists($class, $accountId, $cb)
+# 261110-k1b (#200): the account's playlists as _rootlistPlaylists delivers them, plus what only Pathfinder libraryV3
+# knows: a cover for every playlist the rootlist has none for (the covers Spotify assembles from album art) and the
+# owner's display name for every other user's playlist. cb->(\@playlists, undef) or cb->(undef, $err) (the rootlist's).
+#   - a hit of the 60 s merged list answers at once; a second opening during a cold run joins it (one run per account)
+#   - the rootlist entries are never changed (they are cached): every playlist is a copy with its own images and owner
+#   - a playlist "needs" libraryV3 when it has no cover and no per-playlist cache entry, or when it is a foreign
+#     playlist with neither an owner name nor a per-playlist entry; with nothing needed (or libraryV3 switched off)
+#     there is no request at all
+#   - pages of 50 one after the other through Pathfinder->libraryPlaylists (its queue and its own 429 pool), until
+#     everything needed was seen, the library ends, or LIBV3_MAX_PAGES pages were read
+#   - any failure keeps what was applied and leaves the rest in the rootlist state; no negative entries are written
+#     after a failure; a structural one (HTTP 400, errors[], unknown shape) also switches libraryV3 off for an hour
+#   - 261111-j57: no negative entries at the page limit either: the playlists a run stopped at LIBV3_MAX_PAGES never
+#     asked for get a page-limit marker instead (24 h, per account). It keeps them from asking again and lets them count
+#     as missing in the status
+#   - 261111-i1i: LIBV3_BUDGET seconds after the first libraryV3 request the open is answered with the pages read so
+#     far (no negative entry, no off key). The chain runs on, one page after the other, and writes only the caches,
+#     never the delivered list. The run stays registered meanwhile: a further open is answered at once with the
+#     delivered list and starts no second chain (LIBV3_RUN_STALE stays the emergency brake). At the chain end without
+#     a failure the list key is removed and the run released, so the next open builds the full list from the caches;
+#     after a failure (261111-j57) the key stays for the rest of its 60 s, so a further open is answered at once and
+#     does not wait for the budget again. The status row is written at the chain end. The timer starts only after the
+#     rootlist answered: a hanging rootlist request is not covered by the budget.
+# Logs carry counts only, never a name or an id.
+sub _libraryPlaylists {
+    my ($class, $accountId, $cb) = @_;
+
+    my $listKey = LIBRARY_LIST_KEY . $accountId;
+    if (my $cached = $cache->get($listKey)) {
+        $cb->($cached, undef);
+        return;
+    }
+
+    my $now = $class->_libClock();
+    my $run = $_libRuns{$accountId};
+    if ($run && ($now - $run->{at}) < LIBV3_RUN_STALE) {
+        if ($run->{list}) {
+            # the budget already delivered: answer with that list, the chain in the background stays the only one
+            eval { $cb->($run->{list}, undef); 1 } or $log->error("SpClient: library playlists callback died: $@");
+            return;
+        }
+        push @{ $run->{cbs} }, $cb;
+        return;
+    }
+    $run = $_libRuns{$accountId} = { at => $now, cbs => [ $cb ] };
+
+    my $answer = sub {
+        my @args = @_;
+        my @waiters = splice @{ $run->{cbs} };
+        for my $waiter (@waiters) {
+            eval { $waiter->(@args); 1 } or $log->error("SpClient: library playlists callback died: $@");
+        }
+    };
+    my $deliver = sub {
+        my @args = @_;
+        delete $_libRuns{$accountId} if ($_libRuns{$accountId} // 0) == $run;
+        $answer->(@args);
+    };
+    # the budget ran out: answer the waiters, keep the run registered (the chain is still going)
+    my $early = sub {
+        my ($list) = @_;
+        $run->{list} = $list;
+        $answer->($list, undef);
+    };
+    # the chain ended after the budget: only unregister
+    my $release = sub {
+        delete $_libRuns{$accountId} if ($_libRuns{$accountId} // 0) == $run;
+    };
+
+    my $started = eval {
+        $class->_rootlistPlaylists($accountId, sub {
+            my ($playlists, $err) = @_;
+            if ($err) {
+                $deliver->(undef, $err);
+                return;
+            }
+            $class->_libraryMerge($accountId, $playlists, $listKey, $deliver, $early, $release);
+        });
+        1;
+    };
+    unless ($started) {
+        $log->error("SpClient: library playlists failed to start: $@");
+        $deliver->(undef, { error => 'internal_error' });
+    }
+    return;
+}
+
+# _libCapKey($class, $accountId, $playlistId): the page-limit marker key (the only place that builds it)
+sub _libCapKey { my ($class, $accountId, $id) = @_; return LIBV3_CAPPED_KEY . $accountId . '_' . $id; }
+
+# _libClock($class): the clock of the library run (a seam for tests)
+sub _libClock { return time(); }
+
+# _libraryMerge($class, $accountId, \@rootlist, $listKey, $deliver, $early, $release)
+# The second half of _libraryPlaylists (see there): classify, serve from the caches, page through libraryV3,
+# apply, cache, deliver. Exactly one of: $deliver->(\@merged, undef) once when the chain ends inside the budget, or
+# $early->(\@copy) once at the budget plus $release->() once when the chain ends later.
+sub _libraryMerge {
+    my ($class, $accountId, $playlists, $listKey, $deliver, $early, $release) = @_;
+
+    my $self = $class->_username($accountId);
+    $self = '' unless defined $self;
+    my $now = $class->_libClock();
+
+    my @out;       # the copies, in rootlist order
+    my %need;      # playlist id -> [ index in @out ] of the playlists that need libraryV3
+    my %kind;      # index -> self | fixed | foreign | none
+    my %negMeta;   # index -> 1 when this playlist's per-playlist entry is negative (no cover: Spotify has nothing)
+    my %capIdx;    # index -> 1 when this playlist lies beyond the libraryV3 page limit (261111-j57): kept from asking by a
+                   # marker, or never asked by this run because it stopped at LIBV3_MAX_PAGES
+    for my $pl (@$playlists) {
+        my %c = %$pl;
+        $c{images} = [ map { +{ %$_ } } @{ $pl->{images} || [] } ];
+        $c{owner}  = $pl->{owner} ? { %{ $pl->{owner} } } : undef;
+        my $ownerId = $c{owner} ? ($c{owner}{id} // '') : '';
+        my $kind = !length($ownerId)                  ? 'none'
+                 : $ownerId eq $self                  ? 'self'
+                 : exists OWNER_FIXED_NAMES->{$ownerId} ? 'fixed'
+                 :                                      'foreign';
+
+        my $meta  = $cache->get(PL_META_KEY . $pl->{id} . '_' . ($pl->{revision} // 'norev'));
+        my $owner = $kind eq 'foreign' ? $cache->get(OWNER_NAME_KEY . $ownerId) : undef;
+        if (!@{ $c{images} } && ref($meta) eq 'HASH') {
+            $c{images} = [ $class->_allowedImages($meta->{images}) ];
+        }
+        if (ref($owner) eq 'HASH' && length($owner->{name} // '')) {
+            $c{owner}{display_name} = $owner->{name};
+        }
+
+        push @out, \%c;
+        $kind{$#out} = $kind;
+        $negMeta{$#out} = 1 if ref($meta) eq 'HASH' && !@{ $meta->{images} || [] };   # a negative entry of an earlier run
+        # 261111-j57: a playlist the last run never asked because it stopped at LIBV3_MAX_PAGES carries a page-limit
+        # marker (24 h) and stays out of %need; the marker is read only when libraryV3 would be asked otherwise
+        my $wantsLib = ((!@{ $c{images} } && !$meta) || ($kind eq 'foreign' && !$owner && !$meta)) ? 1 : 0;
+        my $capMark  = $wantsLib ? $cache->get($class->_libCapKey($accountId, $pl->{id})) : undef;
+        my $capOk = ref($capMark) eq 'HASH' && defined($capMark->{at}) && ($now - $capMark->{at}) < LIBV3_CAPPED_TTL;
+        $capIdx{$#out} = 1 if $capOk;
+        if ($wantsLib && !$capOk) {
+            push @{ $need{ $pl->{id} } }, $#out;
+        }
+    }
+
+    my $finishList = sub {
+        $cache->set($listKey, \@out, LIBRARY_LIST_TTL);
+        $deliver->(\@out, undef);
+    };
+
+    if (!%need || $cache->get(LIBV3_OFF_KEY . $accountId)) {
+        main::INFOLOG && $log->info('SpClient: library playlists: ' . scalar(@out) . ' entries, ' . scalar(keys %need)
+            . ' need libraryV3, ' . ($cache->get(LIBV3_OFF_KEY . $accountId) ? 'libraryV3 is paused' : 'no request'));
+        $finishList->();
+        return;
+    }
+
+    require Plugins::SpotOn::API::Pathfinder;
+
+    my (%seen, $failure);
+    my ($offset, $pages) = (0, 0);
+    my ($done, $cut, $budgetCb, $capped);
+
+    # $apply->($partial): $partial is the budget cut: what the pages read so far brought, nothing negative (the pages
+    # not read yet may still know the playlist) and no off key / end-of-run log (the chain is not over). Also nothing
+    # negative when $capped (the run stopped at LIBV3_MAX_PAGES): those playlists get the page-limit marker instead
+    my $apply = sub {
+        my ($partial) = @_;
+        for my $id (keys %need) {
+            for my $idx (@{ $need{$id} }) {
+                my $c   = $out[$idx];
+                my $key = PL_META_KEY . $id . '_' . ($playlists->[$idx]{revision} // 'norev');
+                if (my $it = $seen{$id}) {
+                    my @img = $class->_allowedImages($it->{images});
+                    $c->{images} = [ map { +{ %$_ } } @img ] unless @{ $c->{images} };
+                    my $name = ref($it->{owner}) eq 'HASH' ? ($it->{owner}{display_name} // '') : '';
+                    $c->{owner}{display_name} = $name if $kind{$idx} eq 'foreign' && length $name;
+                    $cache->set($key, { images => [ @img ] }, PL_META_TTL);
+                    $negMeta{$idx} = 1 unless @img;   # the entry just written is negative (no allowed image)
+                }
+                elsif (!$failure && !$partial && $capped) {
+                    # the run stopped at LIBV3_MAX_PAGES and never asked for this playlist: no negative entry (Spotify may
+                    # well have it), but a page-limit marker so the next open does not ask the same 10 pages again
+                    $cache->set($class->_libCapKey($accountId, $id), { at => $class->_libClock() }, LIBV3_CAPPED_TTL);
+                    $capIdx{$idx} = 1;
+                }
+                elsif (!$failure && !$partial) {
+                    $cache->set($key, { images => [] }, PL_META_TTL);   # the library has no such playlist (negative)
+                    $negMeta{$idx} = 1;
+                }
+            }
+        }
+        return if $partial;
+        if ($failure) {
+            my $code = ref($failure) eq 'HASH' ? ($failure->{code} // 0) : 0;
+            my $name = ref($failure) eq 'HASH' ? ($failure->{error} // '') : '';
+            if ($code == 400 || $name =~ /\A(?:graphql_error|unknown_shape|parse_error)\z/) {
+                $cache->set(LIBV3_OFF_KEY . $accountId, 1, LIBV3_OFF_TTL);
+            }
+            main::INFOLOG && $log->info('SpClient: library playlists: libraryV3 failed (' . ($code ? "HTTP $code" : _plainError($failure))
+                . ") after $pages page(s), the rootlist state stays for the rest");
+        }
+        else {
+            main::INFOLOG && $log->info('SpClient: library playlists: ' . scalar(@out) . ' entries, ' . scalar(keys %need)
+                . " needed libraryV3, $pages page(s)" . ($capped ? ', stopped at the page limit' : ''));
+        }
+    };
+
+    my $finish = sub {
+        return if $done++;
+        Slim::Utils::Timers::killTimers(undef, $budgetCb) if $budgetCb;
+        undef $budgetCb;
+        $apply->();
+        my ($missing, $skipped) = (0, 0);
+        unless ($failure) {
+            for my $idx (0 .. $#out) {
+                my $c = $out[$idx];
+                my ($named, $ownerNeg) = (1, 0);
+                if (($kind{$idx} // '') eq 'foreign') {
+                    my $o = $cache->get(OWNER_NAME_KEY . $c->{owner}{id});
+                    $named    = (ref($o) eq 'HASH' && length($o->{name} // '')) ? 1 : 0;
+                    $ownerNeg = (ref($o) eq 'HASH' && defined($o->{name}) && !length($o->{name})) ? 1 : 0;
+                }
+                # a negative entry (Spotify has nothing) is not "missing": 261111-i1i UR8-3
+                my $neg = $negMeta{$idx} ? 1 : 0;
+                my $isMissing = ((!@{ $c->{images} } && !$neg) || (!$named && !$ownerNeg && !$neg)) ? 1 : 0;
+                $missing++ if $isMissing;
+                $skipped++ if $isMissing && $capIdx{$idx};   # a subset of missing: the part beyond the page limit
+            }
+        }
+        $class->_libRecord($failure, $missing, $skipped);
+        if ($cut) {
+            # the budget already delivered a list: without a failure it is dropped, so the next open builds the full one
+            # from the caches. After a failure (261111-j57) it stays until its LIBRARY_LIST_TTL runs out: a further open is
+            # answered at once instead of starting a new chain that waits up to LIBV3_BUDGET again
+            $cache->remove($listKey) unless $failure;
+            main::INFOLOG && $log->info('SpClient: library playlists: background chain ended after ' . $pages . ' page(s), '
+                . scalar(grep { $seen{$_} } keys %need) . ' of ' . scalar(keys %need) . ' playlists needing libraryV3 were seen');
+            $release->();
+        }
+        else {
+            $finishList->();
+        }
+    };
+
+    # The budget: LIBV3_BUDGET seconds after the first page was requested the waiters get what the pages read so far
+    # brought. The delivered list is a copy: the chain goes on with its private @out and writes only the caches.
+    $budgetCb = sub {
+        return if $done || $cut;
+        $cut = 1;
+        eval { $apply->(1); 1 } or $log->error("SpClient: library playlists budget apply failed: $@");
+        my @copy = map {
+            my %c = %$_;
+            $c{images} = [ map { +{ %$_ } } @{ $_->{images} || [] } ];
+            $c{owner}  = $_->{owner} ? { %{ $_->{owner} } } : undef;
+            \%c;
+        } @out;
+        $cache->set($listKey, \@copy, LIBRARY_LIST_TTL);
+        main::INFOLOG && $log->info('SpClient: library playlists: budget reached after ' . $pages . ' page(s), '
+            . scalar(grep { $seen{$_} } keys %need) . ' of ' . scalar(keys %need) . ' playlists needing libraryV3 were seen, '
+            . 'the rest follows in the background');
+        $early->(\@copy);
+    };
+
+    my $step;
+    $step = sub {
+        my $ok = eval {
+            Plugins::SpotOn::API::Pathfinder->libraryPlaylists($accountId, { offset => $offset, limit => LIBV3_PAGE_LIMIT }, sub {
+                my ($page, $err) = @_;
+                $pages++;
+                my $handled = eval {
+                    if ($err || !$page) {
+                        $failure = $err || { error => 'no_page' };
+                        $step = undef;
+                        $finish->();
+                        return 1;
+                    }
+                    for my $it (@{ $page->{items} || [] }) {
+                        $seen{ $it->{id} } //= $it;
+                        my $o   = ref($it->{owner}) eq 'HASH' ? $it->{owner} : next;
+                        my $oid = $o->{id} // '';
+                        next if !length($oid) || $oid eq $self || exists OWNER_FIXED_NAMES->{$oid};
+                        my $nm  = $o->{display_name} // '';
+                        if (length $nm) {
+                            $cache->set(OWNER_NAME_KEY . $oid, { name => $nm }, OWNER_NAME_TTL);
+                        }
+                        else {
+                            my $cur = $cache->get(OWNER_NAME_KEY . $oid);
+                            $cache->set(OWNER_NAME_KEY . $oid, { name => '' }, OWNER_NAME_NEG_TTL)
+                                unless ref($cur) eq 'HASH' && length($cur->{name} // '');
+                        }
+                    }
+                    $offset += LIBV3_PAGE_LIMIT;
+                    my $open = grep { !$seen{$_} } keys %need;
+                    my $libEnded = (!$page->{rawCount} || (defined $page->{total} && $offset >= $page->{total})) ? 1 : 0;
+                    if (!$open || $libEnded || $pages >= LIBV3_MAX_PAGES) {
+                        # 261111-j57: stopped by the page limit only when something is still open and the library goes on
+                        $capped = 1 if $open && !$libEnded;
+                        $step = undef;
+                        $finish->();
+                        return 1;
+                    }
+                    $step->();
+                    1;
+                };
+                unless ($handled) {
+                    $log->error("SpClient: library playlists page handling failed: $@");
+                    $failure ||= { error => 'internal_error' };
+                    if ($step) { $step = undef; $finish->(); }
+                }
+            });
+            1;
+        };
+        unless ($ok) {
+            $log->error("SpClient: library playlists request failed: $@");
+            $failure ||= { error => 'internal_error' };
+            $step = undef;
+            $finish->();
+        }
+    };
+    # started after the rootlist answered: a hanging rootlist request is not covered by the budget
+    Slim::Utils::Timers::setTimer(undef, Time::HiRes::time() + LIBV3_BUDGET, $budgetCb);
+    $step->();
+    return;
+}
+
+# _libRecord($class, $failure, $missing, $skipped)
+# Notes the end of a run that called libraryV3 for libraryMetaStatus: ok (with the number of playlists still without
+# cover or owner name that carry no negative entry: what Spotify has nothing for is not missing; and skipped, the part
+# of those that lies beyond the page limit: never asked by this run or kept from asking by a marker, a subset of missing)
+# or fallback (since = the start of the streak, reason = 'HTTP <code>' or the plain error name).
+# A 400 also writes the one warning per hour. No name and no id is ever stored or logged.
+sub _libRecord {
+    my ($class, $failure, $missing, $skipped) = @_;
+    my $now = $class->_libClock();
+
+    unless ($failure) {
+        %_libMeta = (state => 'ok', at => $now, since => undef, reason => undef, missing => $missing // 0, skipped => $skipped // 0);
+        return;
+    }
+
+    my $code   = ref($failure) eq 'HASH' ? ($failure->{code} // 0) : 0;
+    my $reason = $code ? "HTTP $code" : _plainError($failure);
+    my $since  = (($_libMeta{state} // '') eq 'fallback' && defined $_libMeta{since}) ? $_libMeta{since} : $now;
+    %_libMeta = (state => 'fallback', at => $now, since => $since, reason => $reason, missing => undef, skipped => undef);
+
+    if ($code == 400 && (!defined $_libWarnAt || ($now - $_libWarnAt) >= LIBV3_WARN_INTERVAL)) {
+        $_libWarnAt = $now;
+        $log->warn('SpClient: Library playlists -- libraryV3 answered HTTP 400; covers and owner names come from the '
+            . 'playlist list only, for one hour (at most one such warning per hour)');
+    }
+    return;
+}
+
+# libraryMetaStatus($class)
+# The status page row "Library metadata": exactly seven plain keys, no name, no id, no token. state is 'unknown'
+# (no libraryV3 run yet), 'ok' or 'fallback'; at the epoch of the last real run; since the start of the current
+# fallback streak (fallback only); reason 'HTTP <code>' or a plain error name (fallback only); missing the number of
+# playlists still without cover or resolved owner name after the last ok run; skipped (261111-j57) how many of those
+# lie beyond the page limit (never asked or kept from asking by a marker, a subset of missing, ok only); limit the
+# number of library entries one run reads (LIBV3_MAX_PAGES x LIBV3_PAGE_LIMIT). Counts only. Process-wide: the last
+# run of any account. A call served from a cache or blocked by the off key does not change it.
+sub libraryMetaStatus {
+    my ($class) = @_;
+    return {
+        state   => $_libMeta{state} // 'unknown',
+        at      => $_libMeta{at},
+        since   => $_libMeta{since},
+        reason  => $_libMeta{reason},
+        missing => $_libMeta{missing},
+        skipped => $_libMeta{skipped},
+        limit   => LIBV3_MAX_PAGES * LIBV3_PAGE_LIMIT,
+    };
+}
+
 # getUserPlaylists($class, $accountId, $params, $cb)
 # cb contract: ({ items => [...], total, offset, limit }) or (undef, $err).
 # No login5-capable creds -> no_credentials (D-06). A rootlist request/parse
@@ -2609,7 +3104,7 @@ sub getUserPlaylists {
         return;
     }
 
-    $class->_rootlistPlaylists($accountId, sub {
+    $class->_libraryPlaylists($accountId, sub {
         my ($playlists, $err) = @_;
 
         if ($err) {
@@ -3115,9 +3610,36 @@ use constant MFY_RADIO_FORMAT => 'inspiredby-mix';
 # every request (rows come and go, one-item rows rotate) -- without a cache a
 # folder or list opened from the menu could be a different one than the one
 # shown. A complete answer is kept for the browse tier (CLAUDE.md: 300 s);
-# an answer with a failed source is not kept, the next open asks again.
+# an answer with a failed source is not kept, the next open asks again;
+# an answer whose name lookups were cut short is kept for MFY_LIST_PARTIAL_TTL.
 use constant MFY_LIST_TTL     => 300;
+# 261110-nu9: a build cut short by the budget or a 429 stop is kept for this short time, so reopening the menu
+# does not repeat the three Pathfinder requests and the lookups at once (a pathfinder failure keeps nothing)
+use constant MFY_LIST_PARTIAL_TTL => 60;
 use constant MFY_LIST_KEY     => 'spoton_mfy_list_';
+# 261110-is9 (spike 018): a list Pathfinder sends without a name is looked up by id, bounded. At most
+# MFY_NAME_PARALLEL lookups are in flight (SpClient's own MAX_CONCURRENT_REQUESTS, so a build never takes more
+# than the shared pool) and one build starts at most MFY_NAME_MAX_LOOKUPS (the most nameless entries expected
+# per view, the 13 "Your top mixes"; it bounds a cold view even if Spotify drops every name).
+use constant MFY_NAME_PARALLEL    => 2;
+use constant MFY_NAME_MAX_LOOKUPS => 13;
+# a run that has not answered after this long is not joined any more (a stuck run must not block the account)
+use constant MFY_RUN_STALE        => 60;
+# The name cache, key spoton_mfy_name_<playlist id> -> { name }. A found name lives 30 days: the name of a
+# generated list id is stable (spike 018: identical across repeats), and the plugin already keeps metadata
+# that long (TRACK_META_TTL, PF_SHOWKIND_TTL, Pathfinder's PF_HASH_TTL); a 3600 s tier would repeat up to 13
+# lookups an hour on exactly the accounts that need them. 2592000 s is the largest value DbCache still reads
+# as relative. A failed lookup is kept for 1 hour, so a list that cannot be named is not asked for on every
+# menu opening. No account and no locale in the key: playlist ids are global, and a locale in the key would
+# ask again after every per-read language flip. Every name homeSection delivers seeds or overwrites the entry.
+use constant MFY_NAME_KEY           => 'spoton_mfy_name_';
+use constant MFY_NAME_TTL           => 30 * 86400;
+use constant MFY_NAME_NEG_TTL       => 3600;
+# the menu is delivered after this many seconds even when lookups are still out (a hanging network must not
+# hold the menu; REQUEST_TIMEOUT is 30 s per request)
+use constant MFY_NAME_BUDGET        => 5;
+# at most one "item without a usable name" warning per this many seconds, process-wide
+use constant MFY_NAME_WARN_INTERVAL => 3600;
 
 # getMadeForYou($class, $accountId, $cb)
 # cb->({ items => [{ id, uri, name, images }, ...], source => 'pathfinder' |
@@ -3125,7 +3647,9 @@ use constant MFY_LIST_KEY     => 'spoton_mfy_list_';
 # folders => [{ title, items => [...] }] } }) or cb->(undef, $err). items is
 # the flat menu order; layout is present only when op home answered with rows.
 # No login5 credentials answer (undef, { error => 'no_credentials' }) without
-# a request.
+# a request. A name of '' means "unknown" (the feed labels it, 261110-is9):
+# the id is never used as a name; an item that arrives without a name is
+# looked up by _resolveMfyNames before the list is delivered.
 sub getMadeForYou {
     my ($class, $accountId, $cb) = @_;
 
@@ -3142,6 +3666,22 @@ sub getMadeForYou {
             return;
         }
     }
+
+    # 261110-is9: join a run that is already building this account's list
+    my $run = $_mfyRuns{$accountId};
+    if ($run && time() - $run->{at} < MFY_RUN_STALE) {
+        push @{ $run->{cbs} }, $cb;
+        return;
+    }
+    $run = $_mfyRuns{$accountId} = { at => time(), cbs => [ $cb ] };
+    my $answered = 0;
+    $cb = sub {
+        return if $answered++;
+        delete $_mfyRuns{$accountId} if ($_mfyRuns{$accountId} || 0) == $run;
+        for my $waiting (@{ $run->{cbs} }) {
+            eval { $waiting->(@_); 1 } or $log->error("SpClient: a Made for You callback died: $@");
+        }
+    };
 
     require Plugins::SpotOn::API::Pathfinder;
     my $djUri    = Plugins::SpotOn::API::Pathfinder::DJ_URI();
@@ -3173,7 +3713,7 @@ sub getMadeForYou {
             return {
                 id     => $id,
                 uri    => $uri,
-                name   => (defined $it->{name} && length $it->{name}) ? $it->{name} : $id,
+                name   => (defined $it->{name} && !ref($it->{name}) && length $it->{name}) ? $it->{name} : '',
                 images => $it->{images} || [],
                 format => $it->{format} // '',
             };
@@ -3203,11 +3743,32 @@ sub getMadeForYou {
             push @{ $row->{entries} }, [ $_, 0 ] for @{ $got[$i] || [] };
         }
 
-        my (@merged, %seen, @placed);
+        # Each list appears once, at its first place (79-59 dedupe invariant). A later copy
+        # that carries a name gives it to a first copy that has none (261110-is9).
+        my (@merged, %kept, @placed, %recorded, @noName);
         for my $row (@rows) {
             for my $e (@{ $row->{entries} }) {
                 my $m = $usable->($e->[0], $e->[1]) or next;
-                next if $seen{ $m->{uri} }++;
+                # what Pathfinder sent in place of a name, kept once per list for the warning below
+                if (!length $m->{name} && !$recorded{ $m->{uri} }++) {
+                    my $src = $e->[0];
+                    my $t = $src->{nameType} // 'unknown';
+                    my $k = $src->{dataKeys} // '';
+                    push @noName, {
+                        uri    => $m->{uri},
+                        family => substr($m->{id}, 0, 11),
+                        type   => ($t =~ /\A[A-Za-z0-9_:{},]{1,400}\z/ ? $t : 'unknown'),
+                        keys   => ($k =~ /\A[A-Za-z0-9_,]{0,400}\z/ ? $k : ''),
+                    };
+                }
+                if (my $first = $kept{ $m->{uri} }) {
+                    if (!length $first->{name} && length $m->{name}) {
+                        $first->{name} = $m->{name};
+                        $first->{images} = $m->{images} if !@{ $first->{images} } && @{ $m->{images} };
+                    }
+                    next;
+                }
+                $kept{ $m->{uri} } = $m;
                 push @placed, [ $m, $row ];
             }
         }
@@ -3255,10 +3816,31 @@ sub getMadeForYou {
         my $lastError = @failed ? $failed[0][0] . ' ' . _plainError($failed[0][1]) : undef;
 
         if (@merged) {
-            %_mfy = (source => 'pathfinder', mixCount => scalar(@merged), lastError => $lastError);
-            my $result = { items => \@merged, source => 'pathfinder', ($layout ? (layout => $layout) : ()) };
-            $cache->set($listKey, $result, MFY_LIST_TTL) unless $pfFailed;
-            $cb->($result);
+            # delivery: the list is kept when every source answered (300 s when every lookup ended, 60 s when cut short)
+            # recorded lists that the dedup already named (a later copy carried the name), counted before any lookup
+            my $dupCount = scalar(grep { length $kept{ $_->{uri} }{name} } @noName);
+            my $deliver = sub {
+                my ($complete, $counts) = @_;
+                $counts ||= {};
+                $class->_warnNamelessMfy(\@noName, $dupCount, $counts);
+                %_mfy = (source => 'pathfinder', mixCount => scalar(@merged), lastError => $lastError);
+                my $result = { items => \@merged, source => 'pathfinder', ($layout ? (layout => $layout) : ()) };
+                $cache->set($listKey, $result, $complete ? MFY_LIST_TTL : MFY_LIST_PARTIAL_TTL) if !$pfFailed;
+                $cb->($result);
+            };
+            # every name homeSection delivers seeds or overwrites its name cache entry (no request)
+            for my $m (grep { length $_->{name} } @merged) {
+                my $c = $cache->get(MFY_NAME_KEY . $m->{id});
+                next if ref($c) eq 'HASH' && defined $c->{name} && $c->{name} eq $m->{name};
+                $cache->set(MFY_NAME_KEY . $m->{id}, { name => $m->{name} }, MFY_NAME_TTL);
+            }
+            my @nameless = grep { !length $_->{name} } @merged;
+            if (@nameless) {
+                $class->_resolveMfyNames($accountId, \@nameless, sub { $deliver->(@_) });
+            }
+            else {
+                $deliver->(1);
+            }
             return;
         }
 
@@ -3283,7 +3865,7 @@ sub getMadeForYou {
                 push @mixes, {
                     id     => $pl->{id},
                     uri    => $pl->{uri},
-                    name   => (defined $pl->{name} && length $pl->{name}) ? $pl->{name} : $pl->{id},
+                    name   => (defined $pl->{name} && length $pl->{name}) ? $pl->{name} : '',
                     images => [],
                 };
             }
@@ -3308,6 +3890,148 @@ sub getMadeForYou {
             $finish->() if --$remaining == 0;
         });
     }
+    return;
+}
+
+# _resolveMfyNames($class, $accountId, $items, $done)
+# 261110-is9 (spike 018): names for the items Pathfinder sent without one.
+# Order per item: the name cache (a found name; a failed lookup of the last
+# hour leaves the item unnamed without a request), then spclient
+# playlist/v2/playlist/{id} as JSON, attributes.name, read through
+# _playlistEnvelope (the measured request: Accept application/json, the shared
+# gate, the 429 key and the 300 s envelope cache, so the envelope a lookup
+# fetched also serves a list the user opens within 300 s), then Pathfinder
+# playlistName (op fetchPlaylist). Bounds: the first MFY_NAME_MAX_LOOKUPS
+# cache misses form the queue, at most MFY_NAME_PARALLEL are in flight and each
+# starts only when a slot frees; the rest stay ''. A 429 from either source
+# stops the build (nothing new starts, neither the next queue entry nor the
+# Pathfinder step of an answer that arrives later; no cache entry for the
+# stopped items).
+# One timer ends the wait after MFY_NAME_BUDGET seconds. $done->($complete,
+# \%counts) fires exactly once (counts: cache, playlist, pathfinder);
+# $complete is 0 when the budget or a 429 cut the build short. After $done has
+# fired no lookup starts (neither a queue entry nor a Pathfinder step), and an
+# answer still out only writes the name cache, never the delivered items.
+sub _resolveMfyNames {
+    my ($class, $accountId, $items, $done) = @_;
+
+    my %counts = (cache => 0, playlist => 0, pathfinder => 0);
+    my @queue;
+    for my $item (@$items) {
+        my $c = $cache->get(MFY_NAME_KEY . $item->{id});
+        if (ref($c) eq 'HASH' && defined $c->{name} && !ref($c->{name})) {
+            if (length $c->{name}) {
+                $item->{name} = $c->{name};
+                $counts{cache}++;
+            }
+            next;
+        }
+        push @queue, $item;
+    }
+    splice(@queue, MFY_NAME_MAX_LOOKUPS) if @queue > MFY_NAME_MAX_LOOKUPS;
+
+    unless (@queue) {
+        $done->(1, \%counts);
+        return;
+    }
+
+    my ($active, $finished, $stopped, $next, $budgetCb) = (0, 0, 0);
+    my $finish = sub {
+        my ($complete) = @_;
+        return if $finished++;
+        Slim::Utils::Timers::killTimers(undef, $budgetCb) if $budgetCb;
+        undef $budgetCb;
+        undef $next;    # breaks the closure cycle
+        $done->($complete, \%counts);
+    };
+    $budgetCb = sub { $finish->(0) };
+    Slim::Utils::Timers::setTimer(undef, Time::HiRes::time() + MFY_NAME_BUDGET, $budgetCb);
+
+    # a lookup ended: free its slot and start the next one
+    my $settle = sub { $active--; $next->() if $next; };
+    # a name was found: the cache always, the item only while the build is still open
+    my $named = sub {
+        my ($item, $name, $source) = @_;
+        $cache->set(MFY_NAME_KEY . $item->{id}, { name => $name }, MFY_NAME_TTL);
+        return if $finished;
+        $item->{name} = $name;
+        $counts{$source}++;
+    };
+    my $usableName = sub { return (defined $_[0] && !ref($_[0]) && $_[0] =~ /\S/) ? 1 : 0 };
+
+    $next = sub {
+        return if $finished;
+        my $item = $stopped ? undef : shift @queue;
+        unless ($item) {
+            $finish->($stopped ? 0 : 1) unless $active;
+            return;
+        }
+        $active++;
+        $class->_playlistEnvelope($accountId, $item->{id}, sub {
+            my ($env, $err) = @_;
+            my $attr = (ref($env) eq 'HASH' && ref($env->{attributes}) eq 'HASH') ? $env->{attributes} : {};
+            if ($usableName->($attr->{name})) {
+                $named->($item, $attr->{name}, 'playlist');
+                $settle->();
+                return;
+            }
+            if (ref($err) eq 'HASH' && ($err->{code} // 0) == 429) {
+                $stopped = 1;
+                $settle->();
+                return;
+            }
+            # the budget or a 429 ended the build while this answer was out: no new request
+            if ($finished || $stopped) {
+                $settle->();
+                return;
+            }
+            Plugins::SpotOn::API::Pathfinder->playlistName($accountId, $item->{id}, sub {
+                my ($pname, $perr) = @_;
+                if ($usableName->($pname)) {
+                    $named->($item, $pname, 'pathfinder');
+                }
+                elsif (ref($perr) eq 'HASH' && ($perr->{code} // 0) == 429) {
+                    $stopped = 1;
+                }
+                else {
+                    $cache->set(MFY_NAME_KEY . $item->{id}, { name => '' }, MFY_NAME_NEG_TTL);
+                }
+                $settle->();
+            });
+        });
+    };
+    for (1 .. MFY_NAME_PARALLEL) {
+        last if $finished || !$next;
+        $next->();
+    }
+    return;
+}
+
+# _warnNamelessMfy($class, $noName, $dupCount, $counts)
+# 261110-is9 (A1): one warning, at most once per MFY_NAME_WARN_INTERVAL
+# (process-wide), when Pathfinder sent items without a usable name: the raw
+# name types, the 11-character id families, the data key names of the first
+# item and how the name resolution went. Type, key and family names and counts
+# only: never a user name, a token or a full playlist id.
+sub _warnNamelessMfy {
+    my ($class, $noName, $dupCount, $counts) = @_;
+    return unless @$noName;
+    return if time() - $_mfyNameWarnAt < MFY_NAME_WARN_INTERVAL;
+    $_mfyNameWarnAt = time();
+
+    my (%types, %families);
+    $types{ $_->{type} }++       for @$noName;
+    $families{ $_->{family} }++  for @$noName;
+    my ($cache_n, $pl_n, $pf_n) = map { $counts->{$_} // 0 } qw(cache playlist pathfinder);
+    my $unresolved = scalar(@$noName) - $dupCount - $cache_n - $pl_n - $pf_n;
+    $unresolved = 0 if $unresolved < 0;
+
+    $log->warn('SpClient: Made for You -- ' . scalar(@$noName) . ' item(s) without a usable name from Pathfinder; raw name types: '
+        . join(', ', map { "$_=$types{$_}" } sort keys %types)
+        . '; id families: ' . join(', ', map { "$_=$families{$_}" } sort keys %families)
+        . '; data keys: ' . $noName->[0]{keys}
+        . "; resolved: duplicate=$dupCount, cache=$cache_n, playlist=$pl_n, pathfinder=$pf_n, unresolved=$unresolved"
+        . ' (next such warning at the earliest in ' . MFY_NAME_WARN_INTERVAL . ' s)');
     return;
 }
 
