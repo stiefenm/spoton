@@ -149,9 +149,14 @@ sub bufferThreshold {
     };
     return EARLY_END_BUFFER_KB if $continues;
 
-    my $controller = ($client && blessed($client) && $client->can('controller')) ? $client->controller : undef;
-    my $song       = $controller ? $controller->song : undef;
-    my $bitrate    = $song ? $song->streambitrate : undef;
+    # The song LMS is about to stream (Squeezebox.pm play() reads it from its SongStreamController;
+    # here only the client's StreamingController is at hand: streamingSong). Never dies: this runs
+    # inside LMS's stream start.
+    my $bitrate = eval {
+        my $controller = ($client && blessed($client) && $client->can('controller')) ? $client->controller : undef;
+        my $song = ($controller && $controller->can('streamingSong')) ? $controller->streamingSong : undef;
+        $song ? $song->streambitrate : undef;
+    };
     return 20 unless $bitrate;
 
     my $bufferSecs = $serverPrefs->get('bufferSecs') || 3;
