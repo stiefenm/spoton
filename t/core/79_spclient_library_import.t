@@ -426,4 +426,34 @@ my $albumJson = JSON::PP::encode_json({
     ok(!defined $parsed->[1]{revision}, 'rootlist: no revision -> undef');
 }
 
+# ============================================================
+# getPlaylistIndex: the rootlist alone, no libraryV3 merge (#200)
+# ============================================================
+{
+    reset_all();
+    my $plA = 'A' x 22;
+    my $items = enc(3, 2, enc(1, 2, "spotify:playlist:$plA"));
+    my $metas = enc(4, 2, enc(1, 2, "\x0a\x0b") . enc(2, 2, enc(1, 2, 'Mix')));
+    rule('GET', qr{/rootlist\?}, enc(5, 2, $items . $metas));
+
+    my ($list, $err);
+    $SP->getPlaylistIndex('acct1', sub { ($list, $err) = @_ });
+    ok(!$err, 'getPlaylistIndex: no error');
+    is(ref $list, 'ARRAY', 'getPlaylistIndex: answers the bare list');
+    is($list->[0]{id}, $plA, 'getPlaylistIndex: playlist id');
+    is($list->[0]{revision}, '0a0b', 'getPlaylistIndex: revision');
+    my @sent = reqs();
+    is(scalar @sent, 1, 'getPlaylistIndex: exactly one request');
+    like($sent[0]{url} // '', qr{/rootlist\?}, 'getPlaylistIndex: the request is the rootlist');
+
+    $SP->getPlaylistIndex('acct1', sub { ($list, $err) = @_ });
+    is(scalar(reqs()), 1, 'getPlaylistIndex: a second call inside 60 s is served from the cache');
+
+    reset_all();
+    $Plugins::SpotOn::API::Credentials::mock_creds = undef;
+    $SP->getPlaylistIndex('acct1', sub { ($list, $err) = @_ });
+    is($err && $err->{error}, 'no_credentials', 'getPlaylistIndex: no credentials -> no_credentials');
+    is(scalar(reqs()), 0, 'getPlaylistIndex: no credentials -> no request');
+}
+
 done_testing();

@@ -3237,6 +3237,23 @@ sub getPlaylistItems {
 # requests Browse already sends, through the same _request pipeline (own rate
 # key, 401 remint, concurrency cap, response caches).
 
+# getPlaylistIndex($class, $accountId, $cb)
+# The account's playlists straight from the rootlist (60 s cache): id, uri,
+# name, owner and revision in library order -- cb->(\@playlists) or
+# cb->(undef, $err). Unlike getUserPlaylists it never runs the libraryV3
+# cover and owner-name merge (#200): the importer needs neither, and the merge
+# would page Pathfinder from the scanner. One request per account and scan.
+sub getPlaylistIndex {
+    my ($class, $accountId, $cb) = @_;
+
+    unless ($class->_hasLogin5Creds($accountId)) {
+        $cb->(undef, { error => 'no_credentials' });
+        return;
+    }
+
+    $class->_rootlistPlaylists($accountId, $cb);
+}
+
 # getSavedAlbumUris($class, $accountId, $cb)
 # The complete Saved Albums list without enrichment: cb->([{ uri, added_at },
 # ...]) in collection order, or cb->(undef, $err). The 60 s list cache is
