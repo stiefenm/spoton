@@ -4245,12 +4245,15 @@ sub ee_skips {
     is($ctl->observed->{earlyEnd}{uri}, $EE_NEXT, "EE-3: the wait for the daemon's own change is armed");
     is($ctl->observed->{prefetchWish}, 1, "EE-3: the prefetch wish for the title after it is raised");
     is($ctl->wanted->{uri}, $EE_NEXT, "EE-3: wanted is the next title");
+    is($ctl->earlyEndContinues('spoton://track:eeNextTitle0000000000'), 1, "EE-3: earlyEndContinues is 1 for the awaited title (spoton:// url)");
+    is($ctl->earlyEndContinues('spoton://track:eeOtherTitle00000000'), 0, "EE-3: and 0 for any other title");
 
     # the daemon changes by itself: the wait ends, still nothing sent
     my $tc = d50_clone($fx->[0][1]);
     $tc->{item}{uri} = $EE_NEXT;
     d50_at($onset + 3.0, sub { $ctl->onEvent($tc); });
     ok(!$ctl->observed->{earlyEnd}, "EE-3: the daemon's track_changed to it ends the wait");
+    is($ctl->earlyEndContinues('spoton://track:eeNextTitle0000000000'), 0, "EE-3: earlyEndContinues is 0 once the wait ended");
     is($ctl->observed->{track}, $EE_NEXT, "EE-3: the daemon is on the next title");
     d50_fire($onset + 6.0);
     is(scalar(ee_skips($ws, $n)), 0, "EE-3: and the fallback never sends anything afterwards");

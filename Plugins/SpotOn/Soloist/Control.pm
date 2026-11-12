@@ -5765,6 +5765,18 @@ sub _earlyEndPlan {
     return \@intents;
 }
 
+# earlyEndContinues($self, $url) -- end-gap early EOF: 1 while Control waits for the daemon's own
+# change to $url after answering LMS's early request for it (_earlyEndPlan), else 0. Read by
+# ProtocolHandler::bufferThreshold for the stream LMS opens for that title (a gapless continuation).
+sub earlyEndContinues {
+    my ($self, $url) = @_;
+    return 0 unless $self->mode eq 'browse';
+    my $ee = $self->observed->{earlyEnd};
+    return 0 unless ref($ee) eq 'HASH' && defined $ee->{uri};
+    my $uri = _normalizeUri($url);
+    return (defined $uri && $uri eq $ee->{uri}) ? 1 : 0;
+}
+
 # _earlyEndFallback($self) -- end-gap early EOF: the daemon did not change to the title LMS asked
 # for in time. Back to the path that runs without the early EOF: reconcile once more, skipping
 # the early-end case (skip_next to the queue head, or play).
