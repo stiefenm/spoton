@@ -4156,3 +4156,55 @@ PLUGIN_SPOTON_DISCOVER_INVALID
 	NO	Filen i mappen __DISCOVER__ er ikke en gyldig credentials.json og ble latt urørt. Se TROUBLESHOOTING.md.
 	PL	Plik w folderze __DISCOVER__ nie jest prawidłowym plikiem credentials.json i pozostawiono go bez zmian. Zobacz TROUBLESHOOTING.md.
 	SV	Filen i mappen __DISCOVER__ är inte en giltig credentials.json och lämnades orörd. Se TROUBLESHOOTING.md.
+
+PLUGIN_SPOTON_SONG_RADIO
+	CS	SpotOn: Rádio skladby
+	DA	SpotOn: Sangradio
+	DE	SpotOn: Song-Radio
+	EN	SpotOn: Song radio
+	ES	SpotOn: Radio de la canción
+	FR	SpotOn: Radio du titre
+	IT	SpotOn: Radio del brano
+	NL	SpotOn: Nummerradio
+	NO	SpotOn: Sangradio
+	PL	SpotOn: Radio utworu
+	SV	SpotOn: Låtradio
+
+PLUGIN_SPOTON_ARTIST_RADIO
+	CS	SpotOn: Rádio interpreta
+	DA	SpotOn: Kunstnerradio
+	DE	SpotOn: Künstler-Radio
+	EN	SpotOn: Artist radio
+	ES	SpotOn: Radio del artista
+	FR	SpotOn: Radio de l'artiste
+	IT	SpotOn: Radio dell'artista
+	NL	SpotOn: Artiestenradio
+	NO	SpotOn: Artistradio
+	PL	SpotOn: Radio wykonawcy
+	SV	SpotOn: Artistradio
+
+PLUGIN_SPOTON_PLAYLIST_RADIO
+	CS	SpotOn: Rádio playlistu
+	DA	SpotOn: Playlisteradio
+	DE	SpotOn: Playlist-Radio
+	EN	SpotOn: Playlist radio
+	ES	SpotOn: Radio de la lista
+	FR	SpotOn: Radio de la playlist
+	IT	SpotOn: Radio della playlist
+	NL	SpotOn: Afspeellijstradio
+	NO	SpotOn: Spillelisteradio
+	PL	SpotOn: Radio playlisty
+	SV	SpotOn: Spellisteradio
+
+PLUGIN_SPOTON_RADIO_UNAVAILABLE
+	CS	Spotify pro tuto položku nenabízí žádné rádio.
+	DA	Spotify har ingen radio til dette.
+	DE	Spotify bietet hierfür kein Radio an.
+	EN	Spotify has no radio for this.
+	ES	Spotify no ofrece radio para esto.
+	FR	Spotify ne propose pas de radio pour cet élément.
+	IT	Spotify non offre una radio per questo elemento.
+	NL	Spotify heeft hiervoor geen radio.
+	NO	Spotify har ingen radio for dette.
+	PL	Spotify nie oferuje radia dla tej pozycji.
+	SV	Spotify har ingen radio för detta.

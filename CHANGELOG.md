@@ -5,6 +5,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Spotify Radio ([#82](https://github.com/stiefenm/spoton/issues/82)): a track's More menu now offers "Song radio" and "Artist radio", each artist page starts with "Artist radio", and the More menu of albums and playlists offers their radio. These are Spotify's own radios: a song or artist radio is the radio playlist Spotify makes for it (50 tracks), and a playlist radio is Spotify's station for that playlist. Albums get their artist's radio, which is what Spotify answers for an album. The menus send no request; opening a radio asks Spotify once per seed (remembered for 6 hours) and then reads the radio like any playlist. #82 was closed because the Web API's recommendations endpoint is gone; SpotOn 4.0 reaches the radios through Spotify's own client endpoints instead.
+
 ## [4.0.0-beta.9] - 2026-11-12
 
 **Installing this beta.** Same beta repository URL as before (`https://stiefenm.github.io/spoton/beta/repo.xml`); the Plugins page offers SpotOn 4.0.0beta9 as an update over 4.0.0beta8. Restart LMS after the update. The fix below is for the Soloist backend.
