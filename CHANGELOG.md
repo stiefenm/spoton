@@ -5,6 +5,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Soloist: the first title change after you start, skip or seek no longer leaves a gap of silence (about 1.5 s on a single player, about 5 s in a sync group). At the end of a title Soloist waits about 3 seconds for its audio to drain before it starts the next title; LMS only opened the next stream after that wait, and right after a start, skip or seek the player's buffer is too short to cover both. SpotOn now ends the old stream as soon as the title's last audio has been sent, so LMS opens the next title during the wait. `SPOTON_FAKEPULSE_EARLY_END_GAP_MS=0` switches this off.
+
 ## [4.0.0] - 2026-11-15
 
 **SpotOn 4.0 is a large update over 3.5.x.** It no longer uses the Spotify Web API, needs no Spotify Developer App or client ID, and adds a second playback backend, Soloist (Spotify's own client, Linux only), next to librespot. The plugin manager offers it as an update over 3.5.8 and over every 4.0 beta. Restart LMS after the update. The sections below summarise what changes when you come from 3.5.x; the 4.0 beta entries further down list every change in detail.
