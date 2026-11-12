@@ -5,6 +5,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.0.0-beta.10] - 2026-11-12
+
+**Installing this beta.** Same beta repository URL as before (`https://stiefenm.github.io/spoton/beta/repo.xml`); the Plugins page offers SpotOn 4.0.0beta10 as an update over 4.0.0beta9. Restart LMS after the update. Both fixes below are for the Soloist backend.
+
+### Fixed
+
+- Soloist: the audio quality you chose could stay at 160 kbit/s even though the settings said Lossless. A player that had been given its quality before it was paired with your Spotify account kept the lower quality until you changed the setting again. SpotOn now sets the quality once, right after a player is paired and logged in. Players that already exist get this one write after the update. After that, SpotOn does not touch the quality again, so a change you make in the Spotify app stays.
+- Soloist: a player set to "global" or without its own quality now starts with the global quality. When the global quality changes while a player is offline, the player picks it up when it comes back.
+- Soloist: after a title changed by itself, the progress bar in the LMS web interface (for example Material) could jump into the middle of the title and correct itself a few seconds later. SpotOn now holds back the display update for a moment until the player reports the new title's position. As a price, the new title and cover can appear up to about 2 seconds later than before, usually about 1 second.
+
 ## [4.0.0-beta.9] - 2026-11-12
 
 **Installing this beta.** Same beta repository URL as before (`https://stiefenm.github.io/spoton/beta/repo.xml`); the Plugins page offers SpotOn 4.0.0beta9 as an update over 4.0.0beta8. Restart LMS after the update. The fix below is for the Soloist backend.

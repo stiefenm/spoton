@@ -1048,15 +1048,17 @@ sub _pollWsPort {
 			# for a 90-day clock.
 			$self->_parseExpiryDays;
 
-			# 83.3-02 (D-12b/D-13): first-start write of the Spotify
-			# streaming-quality setting -- the daemon is demonstrably up
-			# and .device_id exists at this point (RESEARCH Q1).
-			# onDaemonReady() itself gates on soloistQualityInitialised/
-			# soloistQualityPending, so every start after the first is a
-			# no-op call, not a repeated write (D-12: never fight the app).
-			# Consequence: on the first daemon start after this release,
-			# every existing player is initialised once and its app-side
-			# setting is overwritten once with Automatic (D-13, accepted).
+			# 83.3-02 (D-12b/D-13), reworked by quick 261112-ca5 (R1): start
+			# occasion of the Spotify streaming-quality reconcile. The daemon is
+			# not logged in yet at this point, so onDaemonReady() posts NOTHING (a
+			# write before the login never reaches the daemon, which takes the
+			# level only from the server push a write on a paired, logged-in
+			# device triggers); it only notes an open player as Pending. The write
+			# itself comes from the WS login flank (SoloistWS auth_state logged_in
+			# 0 -> 1, once per daemon start and right after a pairing), once and
+			# unconditionally, for a confirmed pairing only. A verified paired
+			# player costs no request on any later start (D-12: never fight the
+			# app).
 			eval {
 				require Plugins::SpotOn::Soloist::Quality;
 				Plugins::SpotOn::Soloist::Quality->onDaemonReady($self->mac);

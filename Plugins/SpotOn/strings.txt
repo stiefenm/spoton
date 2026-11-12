@@ -1038,6 +1038,19 @@ PLUGIN_SPOTON_SOLOIST_QUALITY_SET_IN_APP
 	PL	%s (ustawiona w aplikacji Spotify)
 	SV	%s (inställd i Spotify-appen)
 
+PLUGIN_SPOTON_SOLOIST_QUALITY_SERVER_DIFFERS
+	CS	%s: Spotify momentálně používá %s, ne zde zvolenou úroveň.
+	DA	%s: Spotify bruger i øjeblikket %s, ikke det niveau, der er valgt her.
+	DE	%s: Bei Spotify gilt gerade %s, nicht die hier gewählte Stufe.
+	EN	%s: Spotify currently applies %s, not the level chosen here.
+	ES	%s: Spotify aplica actualmente %s, no el nivel elegido aquí.
+	FR	%s : Spotify applique actuellement %s, et non le niveau choisi ici.
+	IT	%s: Spotify applica attualmente %s, non il livello scelto qui.
+	NL	%s: Spotify gebruikt momenteel %s, niet het hier gekozen niveau.
+	NO	%s: Spotify bruker for øyeblikket %s, ikke nivået som er valgt her.
+	PL	%s: Spotify obecnie stosuje %s, a nie poziom wybrany tutaj.
+	SV	%s: Spotify använder just nu %s, inte den nivå som valts här.
+
 PLUGIN_SPOTON_SOLOIST_QUALITY_REJECTED
 	CS	Spotify nepřijalo hodnotu %s - nastavení bylo obnoveno na %s.
 	DA	Spotify accepterede ikke %s - indstillingen er nulstillet til %s.
@@ -1050,6 +1063,19 @@ PLUGIN_SPOTON_SOLOIST_QUALITY_REJECTED
 	NO	Spotify godtok ikke %s - innstillingen er tilbakestilt til %s.
 	PL	Spotify nie zaakceptowało %s - ustawienie przywrócono do %s.
 	SV	Spotify accepterade inte %s - inställningen återställdes till %s.
+
+PLUGIN_SPOTON_SOLOIST_QUALITY_REJECTED_KEPT
+	CS	Spotify nepřevzalo hodnotu %s - tam platí dál %s.
+	DA	Spotify overtog ikke %s - dér gælder fortsat %s.
+	DE	Spotify hat %s nicht übernommen - dort gilt weiter %s.
+	EN	Spotify did not take over %s - %s still applies there.
+	ES	Spotify no adoptó %s - allí sigue vigente %s.
+	FR	Spotify n'a pas repris %s - c'est toujours %s là-bas.
+	IT	Spotify non ha recepito %s - lì resta in vigore %s.
+	NL	Spotify heeft %s niet overgenomen - daar geldt nog steeds %s.
+	NO	Spotify overtok ikke %s - der gjelder fortsatt %s.
+	PL	Spotify nie przyjęło %s - tam nadal obowiązuje %s.
+	SV	Spotify tog inte över %s - där gäller fortsatt %s.
 
 PLUGIN_SPOTON_SOLOIST_QUALITY_UNREACHABLE
 	CS	Spotify nebylo dosažitelné - pokus se zopakuje při další změně nebo spuštění démona.

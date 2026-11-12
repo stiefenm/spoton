@@ -1100,6 +1100,93 @@ SKIP: {
 }
 
 # ============================================================
+# ca5 (CTX-6, quick 261112-ca5): the global settings page lists every player
+# that FOLLOWS the global level (no own level; an own level 0 = Automatic is
+# an own level, W4) whose server-side level differs from the wanted one, and
+# basic.html renders the hint inside the quality WRAPPER. R1: only a PAIRED
+# player is listed (an unpaired one cannot be fixed by the user and its server
+# level says nothing about what the daemon plays).
+# ============================================================
+SKIP: {
+    skip "Settings.pm/Soloist.pm module required for the ca5-hint test", 6
+        unless eval { require Plugins::SpotOn::Settings; require Plugins::SpotOn::Soloist; require Plugins::SpotOn::Soloist::Quality;
+                      require Plugins::SpotOn::Backend::Soloist; 1 };
+    my $prefs = Slim::Utils::Prefs::preferences('plugin.spoton');
+    my $backendBefore = $prefs->get('backend');
+    my $globalBefore  = $prefs->get('soloistQuality');
+    $prefs->set('backend', 'soloist');
+    $prefs->set('soloistQuality', 5);
+
+    {
+        package T09::HintClientA;
+        sub new  { return bless { id => 'aa:ca:51:00:00:01' }, shift }
+        sub id   { return $_[0]->{id} }
+        sub name { return 'hint-player-A' }
+        package T09::HintClientB;
+        sub new  { return bless { id => 'aa:ca:51:00:00:02' }, shift }
+        sub id   { return $_[0]->{id} }
+        sub name { return 'hint-player-B' }
+        package T09::HintClientC;
+        sub new  { return bless { id => 'aa:ca:51:00:00:03' }, shift }
+        sub id   { return $_[0]->{id} }
+        sub name { return 'hint-player-C' }
+    }
+    my $ca = T09::HintClientA->new;    # follows global
+    my $cb = T09::HintClientB->new;    # own level 4
+    my $cc = T09::HintClientC->new;    # own level 0 (Automatic)
+    $prefs->client($cb)->set('soloistQuality', 4);
+    $prefs->client($cc)->set('soloistQuality', 0);
+    Slim::Player::Client::set_mock_clients($ca, $cb, $cc);
+
+    my $serverLevel = 2;
+    no warnings 'redefine', 'once';
+    local *Plugins::SpotOn::Soloist::Quality::refreshEffective = sub { };
+    local *Plugins::SpotOn::Soloist::Quality::effectiveCached  = sub { return { level => $serverLevel, checked_at => time() } };
+    local *Plugins::SpotOn::Soloist::Quality::noticeFor        = sub { return undef };
+    local *Plugins::SpotOn::Soloist::activeVersion = sub { return '1.3.8.70' };
+    local *Plugins::SpotOn::Soloist::get = sub { die "ca5-hint: the settings render must not call the activating get()" };
+    my %paired = (map { $_->id => 1 } ($ca, $cb, $cc));
+    local *Plugins::SpotOn::Soloist::isPairedForClient = sub { return $paired{ $_[0] // '' } ? 1 : 0 };
+
+    my $params = {};
+    my $lived = eval { Plugins::SpotOn::Settings->handler(undef, $params, sub { }, undef, undef); 1 };
+    ok($lived, 'ca5-hint: the soloist settings render lives') or diag($@);
+    my @d = @{ $params->{soloistQualityServerDiffers} || [] };
+    is(scalar(@d), 1, 'ca5-hint: exactly one entry (the player on global; own level 4 and own level 0 are not listed)');
+    is(($d[0] || {})->{name}, 'hint-player-A', 'ca5-hint: the entry is the player that follows the global level');
+
+    $paired{ $ca->id } = 0;
+    $params = {};
+    eval { Plugins::SpotOn::Settings->handler(undef, $params, sub { }, undef, undef); 1 };
+    is(scalar(@{ $params->{soloistQualityServerDiffers} || [] }), 0, 'ca5-hint (R1): an UNPAIRED player that follows the global level is not listed');
+    $paired{ $ca->id } = 1;
+
+    $serverLevel = 5;
+    $params = {};
+    eval { Plugins::SpotOn::Settings->handler(undef, $params, sub { }, undef, undef); 1 };
+    is(scalar(@{ $params->{soloistQualityServerDiffers} || [] }), 0, 'ca5-hint: server level == global wish -> zero entries (own-level players are not listed)');
+
+    # The template renders the hint inside the quality WRAPPER, after the select.
+    open(my $fh, '<:encoding(UTF-8)', "$project_dir/Plugins/SpotOn/HTML/EN/plugins/SpotOn/settings/basic.html")
+        or die "cannot read basic.html: $!";
+    my $html = do { local $/; <$fh> };
+    close($fh);
+    my $from  = index($html, 'name="pref_soloistQuality"');
+    my $to    = $from >= 0 ? index($html, '</div>', $from) : -1;
+    my $slice = ($from >= 0 && $to > $from) ? substr($html, $from, $to - $from) : '';
+    my $selEnd = index($slice, '</select>');
+    my $varAt  = index($slice, 'soloistQualityServerDiffers');
+    my $keyAt  = index($slice, 'PLUGIN_SPOTON_SOLOIST_QUALITY_SERVER_DIFFERS');
+    my $endAt  = rindex($slice, '[% END %]');
+    ok($selEnd >= 0 && $varAt > $selEnd && $keyAt > $varAt && $endAt > $keyAt,
+        'ca5-hint: basic.html renders the hint (variable and string key) inside the quality WRAPPER after the select');
+
+    Slim::Player::Client::set_mock_clients();
+    $prefs->set('backend', $backendBefore);
+    $prefs->set('soloistQuality', $globalBefore);
+}
+
+# ============================================================
 # Phase 83.3 plan 03 (D-05): handler() template param soloistInfoLine --
 # neutral "Soloist <version>, expires in N days" line, formatted from the
 # real Soloist::expiryDaysRemaining() (not a duplicated inline arithmetic).

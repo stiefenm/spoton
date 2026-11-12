@@ -8,17 +8,24 @@ package Plugins::SpotOn::Soloist::Quality;
 # module header note below).
 #
 # D-12: the app can change this server-side value at any time. SpotOn only
-# writes (a) when the LMS setting is actually changed and (b) once, on a
-# player's very first Soloist daemon start (the onDaemonReady hook) -- never
-# on any later start, so this module never fights the app. D-13: the
-# first-start default is Automatic (level 0). D-14: a write is verified with
-# a one-second read-back; a "rejected" answer (grpc-status != 0, an HTTP
-# error code, or a read-back that differs from what was written) resets the
-# supplying pref to the effective value and shows a notice; an "unreachable"
-# answer (no HTTP status at all, or a login5 mint failure) keeps the pref
-# and retries on the next occasion. D-15: the settings page states a change
-# takes effect from the next track (not applied by this module -- Perl
-# module logic only).
+# writes (a) when the LMS setting is actually changed and (b) once after the
+# first CONFIRMED pairing AND login of a device (quick 261112-ca5, reworked by
+# R1): the logged_in 0 -> 1 flank writes the wished level once and
+# UNCONDITIONALLY -- also when the server already reads it, because the daemon
+# takes the level only from the server push such a write triggers -- and
+# soloistQualityVerifiedPaired (carrying the device id) closes it. Never
+# again, so this module never fights the app. D-13: the default is Automatic
+# (level 0). D-14: a write is verified with a one-second read-back; a
+# "rejected" answer (grpc-status != 0, an HTTP error code, or a read-back that
+# differs from what was written) shows a notice and, ONLY on a settings change
+# (not on the reconcile) and ONLY for a confirmed pairing, resets the supplying
+# pref to the effective value (the reconcile counts the rejection instead and
+# stops after RECONCILE_REJECT_CAP); an "unreachable" answer (no HTTP status at
+# all, or a login5 mint failure) keeps the pref and retries on the next
+# occasion; after the logged_in flank an "unreachable" write is also retried
+# (WR-01), bounded: UNREACHABLE_RETRY_S waits, three attempts, one-shot timers,
+# every request through SpClient->gate. D-15: the settings page states a change takes effect from the next
+# track (not applied by this module -- Perl module logic only).
 #
 # Deliberately self-contained: no coupling to any other SpotOn playback
 # control module -- Phase 84 relocates this file behind a backend
@@ -45,6 +52,19 @@ use constant PLAYBACK_SETTINGS_URL =>
 use constant REQUEST_TIMEOUT      => 15;
 use constant READBACK_DELAY_S     => 1;
 use constant EFFECTIVE_TTL        => 300;
+# ca5 reconcile: cap of rejected reconcile writes per device, settle and retry
+# timing of the logged_in flank, stale limit of the serial queue.
+use constant RECONCILE_REJECT_CAP => 3;
+use constant LOGIN_SETTLE_S       => 3;
+use constant LOGIN_RETRY_MAX      => 3;
+use constant LOGIN_RETRY_S        => 5;
+use constant RECONCILE_STALE_S    => 120;
+# WR-01: bounded retry of a reconcile write that ended "unreachable" (429, login5
+# throttle, 5xx, network) -- three one-shot attempts, no permanent timer. A
+# 429-class failure (gate lock, login5 throttle) waits at least
+# UNREACHABLE_RATE_MIN_S: the retry must not land inside the lock.
+use constant UNREACHABLE_RETRY_S    => (60, 300, 900);
+use constant UNREACHABLE_RATE_MIN_S => 300;
 use constant FIELD_AUDIO_QUALITY  => 1;    # the settings-message field id identifying the AUDIO_QUALITY setting
 use constant LEVEL_LOSSLESS       => 5;    # write 5 for Lossless -- never 6 (binary clamps 6->5 anyway)
 use constant SUPPORTED_LEVELS     => (0, 2, 3, 4, 5);    # offered in Settings: Low(1) is never surfaced
@@ -75,6 +95,17 @@ my $prefs = preferences('plugin.spoton');
 # M5: cache version lives in Plugin.pm (single source of truth). Plugin.pm is
 # always compiled first in production (this module is runtime-require'd).
 my $cache = Slim::Utils::Cache->new('spoton', Plugins::SpotOn::Plugin::SPOTON_CACHE_VERSION());
+
+# ca5: serial reconcile queue (one player at a time against the shared rate
+# limit), per-mac flank retry budget, busy marker with a stale limit.
+my @RECONCILE_QUEUE;
+my %RECONCILE_QUEUED;
+my %FLANK_RETRIES;
+my %UNREACH_TRIES;    # mac -> retries of the unreachable write used so far (WR-01)
+my %UNREACH_TIMER;    # mac -> the pending retry timer's callback (killable)
+my $RECONCILE_BUSY_SINCE = 0;
+my $RECONCILE_BUSY_MAC;
+my $RECONCILE_GEN = 0;
 
 # ============================================================
 # Pure helpers
@@ -254,7 +285,8 @@ sub _classifyGrpcStatus {
 # retry). A login5 throttle (getToken detail throttled => 1 or code 429: the
 # HTTP 429 and the protobuf TIMEOUT/TOO_MANY_ATTEMPTS/TRY_AGAIN_LATER answers,
 # live or damped replay) is 'unreachable' too, because a throttle is transient
-# and the user's authorization is fine (quick-261018-ife, WR-18); every other
+# and the user's authorization is fine (quick-261018-ife, WR-18), and so is a
+# minting failure login5 marks transient (network, 5xx; R4 WR-02); every other
 # token failure stays 'no_token'. Never logs the token, headers, or body -- method name + outcome
 # class only (T-02-10 idiom).
 #
@@ -291,6 +323,17 @@ sub _requestUngated {
             if ($detail && ref $detail eq 'HASH' && ($detail->{throttled} || ($detail->{code} // 0) == 429)) {
                 main::INFOLOG && $log->info("Soloist::Quality: $method class=unreachable (login5 throttle)");
                 $cb->(undef, { class => 'unreachable', http => ($detail->{code} // undef), source => 'login5', reason => $reason });
+                return;
+            }
+            # R4 WR-02: login5 itself marks a minting failure that is the network or a 5xx
+            # (Login5.pm:343-348, detail->{transient}) as transient: nothing is wrong with
+            # the user's authorization, so it is 'unreachable' like the throttle -- but with
+            # its own source, so the 300 s minimum of a throttle does not apply (login5
+            # damps an ordinary failed attempt for 15 s only). Directly after an LMS start
+            # the token has to be minted first, i.e. exactly at the login flank.
+            if ($detail && ref $detail eq 'HASH' && $detail->{transient}) {
+                main::INFOLOG && $log->info("Soloist::Quality: $method class=unreachable (login5 transient)");
+                $cb->(undef, { class => 'unreachable', source => 'login5_transient', reason => $reason });
                 return;
             }
             main::INFOLOG && $log->info("Soloist::Quality: $method class=no_token");
@@ -480,42 +523,133 @@ sub _setScopePref {
     }
 }
 
+# _pairedNow($class, $mac) -> 1 only when the pairing folder confirms a paired
+# device at THIS moment, 0 when it is confirmed unpaired, undef when unknown.
+# Only 1 counts as paired (CTX-3): an unregistered device must never write or
+# tip a pref.
+sub _pairedNow {
+    my ($class, $mac) = @_;
+    my $paired = eval {
+        require Plugins::SpotOn::Soloist;
+        Plugins::SpotOn::Soloist::isPairedForClient($mac);
+    };
+    return undef unless defined $paired;
+    return $paired == 1 ? 1 : 0;
+}
+
 # _markInitialised($class, $mac) -- the server has answered AND an effective
-# value is known: the first-start condition (D-12b/D-13) is satisfied and
-# must never write again on a later daemon start.
+# value is known. It is only a marker, WRITE-ONLY since ca5: no production code
+# reads soloistQualityInitialised any more -- closing the reconcile is
+# soloistQualityVerifiedPaired's job (_markVerified). It is still written so a
+# downgrade to beta.9 (which reads it) keeps seeing an initialised player.
 sub _markInitialised {
     my ($class, $mac) = @_;
     my $client = Slim::Player::Client::getClient($mac) or return;
     $prefs->client($client)->set('soloistQualityInitialised', 1);
-    $prefs->client($client)->set('soloistQualityPending', 0);
 }
 
+# _loggedInNow($class, $mac) -> 1 only when this player's OWN Soloist daemon is
+# alive and logged in at this moment, else 0 (fail closed). The daemon takes the
+# quality only from the server push a write on a paired AND logged-in device
+# triggers (spike, Rig 2026-11-12), so a write without that daemon reaches
+# nobody. helperForClient falls back to the Sync master for a slave
+# (DaemonManager.pm:3542-3549); that daemon is another player's, hence the MAC
+# comparison.
+# A failure INSIDE the lookup (a renamed accessor, another return format, a
+# failing require) also answers 0, but is logged (R4 WR-01): the guard stops every
+# write, so it must not do that in silence. A plain absence (no daemon) is a
+# state, not a failure, and is not logged here. The names it reads are bound to
+# the real classes by t/soloist/53.
+sub _loggedInNow {
+    my ($class, $mac) = @_;
+    my $ok = eval {
+        require Plugins::SpotOn::Unified::DaemonManager;
+        my $h = Plugins::SpotOn::Unified::DaemonManager->helperForClient($mac);
+        ($h && $h->alive && lc($h->mac // '') eq lc($mac // '') && $h->can('_ws') && $h->_ws
+            && (($h->_ws->authState || {})->{logged_in})) ? 1 : 0;
+    };
+    if (my $err = $@) {
+        $err =~ s/\s+\z//;
+        $log->warn("Soloist::Quality: login state of " . ($mac // '?') . " unknown: $err");
+    }
+    return $ok ? 1 : 0;
+}
+
+# _markVerified($class, $mac, $level) -- the server holds the wanted level.
+# Only when the device is confirmed paired at this moment AND its own daemon is
+# logged in (the push reached it) the reconcile is closed (VerifiedPaired);
+# otherwise it is just noted (Pending) and the next logged_in flank writes
+# again (BL-01: the read-back says nothing about the daemon).
 sub _markVerified {
     my ($class, $mac, $level) = @_;
     $class->_storeEffectiveCache($mac, $level);
     $class->clearNotice($mac);
     $class->_markInitialised($mac);
+
+    my $client = Slim::Player::Client::getClient($mac) or return;
+    if (($class->_pairedNow($mac) // 0) == 1 && $class->_loggedInNow($mac)) {
+        # WR-07: the server value lives per DEVICE ID, so the flag carries it --
+        # a new .device_id is a new device and is reconciled again.
+        $prefs->client($client)->set('soloistQualityVerifiedPaired', $class->deviceIdForMac($mac) || 1);
+        $prefs->client($client)->set('soloistQualityPending', 0);
+        $prefs->client($client)->set('soloistQualityRejectCount', 0);
+        $class->_cancelUnreachableRetry($mac);
+    }
+    else {
+        $prefs->client($client)->set('soloistQualityPending', 1);
+    }
 }
 
-# _handleRejected($class, $mac, $wanted, $scope, $effective, $err) -- D-14
-# "rejected": the server refused $wanted SEMANTICALLY AND a known effective
-# level exists (a read-back, or a fresh read after a semantic HTTP/grpc
-# refusal). $effective undefined means the refusal could not be corrected --
-# there is nothing to reset to -- so this delegates to _handleUnreachable:
-# keep the pref, mark pending, and NEVER mark this player initialised
-# without an effective value (T-83.3-31).
+# _handleRejected($class, $mac, $wanted, $scope, $effective, $err, $opts) --
+# D-14 "rejected": the server refused $wanted SEMANTICALLY AND a known
+# effective level exists (a read-back, or a fresh read after a semantic
+# HTTP/grpc refusal). $effective undefined means the refusal could not be
+# corrected -- there is nothing to reset to -- so this delegates to
+# _handleUnreachable: keep the pref, mark pending (T-83.3-31); on the reconcile
+# path the refusal is still counted against the cap (WR-04).
+# ca5 (CTX-4/W3): the pref is reset to $effective ONLY on a non-reconcile path
+# AND when the device is confirmed paired; an unconfirmed device must never tip
+# the global wish. Every other case keeps the pref and marks pending. The
+# reconcile path additionally counts the rejection (cap per device). A
+# rejection never closes the reconcile.
 sub _handleRejected {
-    my ($class, $mac, $wanted, $scope, $effective, $err) = @_;
+    my ($class, $mac, $wanted, $scope, $effective, $err, $opts) = @_;
 
     unless (defined $effective) {
-        $class->_handleUnreachable($mac, $err // { class => 'unreachable' });
+        # WR-04: a refused write whose read-back failed too is still a refusal --
+        # on the reconcile path it counts against the cap (else every flank writes
+        # again without limit). Without an effective value there is nothing to
+        # say "rejected" about, so the notice is the plain unreachable one.
+        if ($opts && $opts->{reconcile} && (my $client = Slim::Player::Client::getClient($mac))) {
+            my $count = $prefs->client($client)->get('soloistQualityRejectCount') || 0;
+            $prefs->client($client)->set('soloistQualityRejectCount', $count + 1);
+        }
+        my %e = %{ $err || {} };
+        $e{class} = 'unreachable' if !$e{class} || $e{class} eq 'rejected';
+        $class->_handleUnreachable($mac, \%e);
         return;
     }
 
-    $class->_setScopePref($scope, $effective);
+    my $reconcile = ($opts && $opts->{reconcile}) ? 1 : 0;
+    my $client    = Slim::Player::Client::getClient($mac);
+    my $didReset  = (!$reconcile && ($class->_pairedNow($mac) // 0) == 1) ? 1 : 0;
+
+    if ($didReset) {
+        $class->_setScopePref($scope, $effective);
+    }
+    elsif ($client) {
+        $prefs->client($client)->set('soloistQualityPending', 1);
+    }
+    if ($reconcile && $client) {
+        my $count = $prefs->client($client)->get('soloistQualityRejectCount') || 0;
+        $prefs->client($client)->set('soloistQualityRejectCount', $count + 1);
+    }
+
     $class->_storeEffectiveCache($mac, $effective);
-    $class->_setNotice($mac, { kind => 'rejected', wanted => $wanted, effective => $effective, at => time() });
-    $class->_markInitialised($mac);
+    # WR-03: the notice says whether the pref really was reset, so the text
+    # never claims a reset that did not happen.
+    $class->_setNotice($mac, { kind => 'rejected', wanted => $wanted, effective => $effective,
+                               reset => $didReset, at => time() });
 }
 
 # _handleUnreachable($class, $mac, $err) -- D-14 "unreachable"/no_token: no
@@ -531,12 +665,13 @@ sub _handleUnreachable {
     $class->_setNotice($mac, { kind => $kind, at => time() });
 }
 
-# _writeAndVerify($class, $mac, $level, $scope, $cb) -- write, then a
+# _writeAndVerify($class, $mac, $level, $scope, $cb, $opts) -- write, then a
 # READBACK_DELAY_S read-back to classify the D-14 outcome. $scope names the
 # pref this $level came from ({ kind => 'global' } or { kind => 'client',
-# client => $c }), so a rejection can be corrected at the source.
+# client => $c }), so a rejection can be corrected at the source. $opts is
+# forwarded to _handleRejected ({ reconcile => 1 }: reset no pref, count it).
 sub _writeAndVerify {
-    my ($class, $mac, $level, $scope, $cb) = @_;
+    my ($class, $mac, $level, $scope, $cb, $opts) = @_;
 
     $class->write($mac, $level, sub {
         my ($ok, $err) = @_;
@@ -550,7 +685,7 @@ sub _writeAndVerify {
                 # effective level the server actually holds.
                 $class->read($mac, sub {
                     my ($readLevel, $readErr) = @_;
-                    $class->_handleRejected($mac, $level, $scope, $readLevel, $readErr);
+                    $class->_handleRejected($mac, $level, $scope, $readLevel, $readErr, $opts);
                     if (defined $readLevel) {
                         $cb->(1) if $cb;
                     }
@@ -581,7 +716,7 @@ sub _writeAndVerify {
                     # rejection (symmetric with the rejected-write branch
                     # above: only a defined effective level reaches
                     # _handleRejected).
-                    $class->_handleRejected($mac, $level, $scope, $readLevel);
+                    $class->_handleRejected($mac, $level, $scope, $readLevel, undef, $opts);
                     $cb->(1) if $cb;
                     return;
                 }
@@ -614,20 +749,41 @@ sub applyChange {
         my $client = $o{client};
         my $mac    = $client->id;
         return unless $class->deviceIdForMac($mac);    # first-start hook will write once it exists
+        $prefs->client($client)->set('soloistQualityRejectCount', 0);
         $class->_writeAndVerify($mac, $level, { kind => 'client', client => $client });
         return;
     }
 
     my @macs;
+    my %online;
     for my $c (Slim::Player::Client::clients()) {
+        $online{ $c->id } = 1;
         my $stored = $prefs->client($c)->get('soloistQuality');
         next if defined $stored && $stored ne 'global';    # this player has its own override
 
         my $mac = $c->id;
         next unless $class->deviceIdForMac($mac);          # first-start hook will write once it exists
 
+        $prefs->client($c)->set('soloistQualityRejectCount', 0);
         push @macs, $mac;
     }
+
+    # ca5 (CTX-5): a player that is not connected cannot be written now. Mark
+    # every stored player without an own level pending, so its next start or
+    # login flank reconciles it. An own level (0 = Automatic included) stays.
+    eval {
+        for my $cp ($prefs->allClients) {
+            my $id = $cp && $cp->{clientid};
+            next if !defined $id || $online{$id};
+            my $own = $cp->get('soloistQuality');
+            next if defined $own && $own ne 'global';
+            $cp->set('soloistQualityPending', 1);
+            $cp->set('soloistQualityRejectCount', 0);
+        }
+        1;
+    } or do {
+        $log->warn("Soloist::Quality: offline pending marking failed: $@");
+    };
     # 79-61 (FULL-3 WR-03): one player at a time -- the next write starts
     # when the previous write-and-verify has finished, instead of a burst of
     # one write (plus read-backs) per player against the shared rate limit.
@@ -643,28 +799,280 @@ sub _applyGlobalSerial {
     });
 }
 
-# onDaemonReady($class, $mac) -- D-12(b)/D-13: the ONLY other write
-# occasion, called once per daemon start from SoloistDaemon's on_found. Never
-# writes on a start where the server has already answered once for this
-# player (soloistQualityInitialised) UNLESS a prior attempt never reached
-# the server at all (soloistQualityPending) -- D-12: no fighting the app.
+# _needsReconcile($class, $client) -- does this player still need the
+# reconcile write? Not once it is verified paired FOR ITS CURRENT DEVICE ID and
+# nothing is pending (D-12: never fight the app; a flag without the current id,
+# e.g. the 1 an interim build stored, counts as open); not once the rejection
+# cap is reached.
+sub _needsReconcile {
+    my ($class, $client) = @_;
+
+    my $verified = $prefs->client($client)->get('soloistQualityVerifiedPaired');
+    my $deviceId = $class->deviceIdForMac($client->id);
+    my $sameDevice = (defined $verified && length $verified && defined $deviceId && $verified eq $deviceId) ? 1 : 0;
+    my $pending    = $prefs->client($client)->get('soloistQualityPending') ? 1 : 0;
+    return 0 if $sameDevice && !$pending;    # ca5 gate: verified_paired
+
+    my $rejects = $prefs->client($client)->get('soloistQualityRejectCount') || 0;
+    if ($rejects >= RECONCILE_REJECT_CAP) {
+        main::INFOLOG && $log->is_info && $log->info(
+            "SpotOn quality reconcile (mac=" . ($client->id // '?') . "): cap reached ($rejects), no request"
+        );
+        return 0;
+    }
+    return 1;
+}
+
+# onDaemonReady($class, $mac) -- called once per daemon start from
+# SoloistDaemon's on_found. R1 (quick 261112-ca5 rework): the daemon is not
+# logged in at this point, so this occasion posts NOTHING -- a write before the
+# login never reaches the daemon (it takes the level only from the server push
+# a write on a paired, logged-in device triggers). It only notes an open player
+# as Pending; the logged_in flank (onLoginFlank) does the work.
 sub onDaemonReady {
     my ($class, $mac) = @_;
 
     return unless (($prefs->get('backend') || 'librespot') eq 'soloist');
 
     my $client = Slim::Player::Client::getClient($mac) or return;
+    return unless $class->_needsReconcile($client);
 
-    my $initialised = $prefs->client($client)->get('soloistQualityInitialised') ? 1 : 0;
-    my $pending      = $prefs->client($client)->get('soloistQualityPending') ? 1 : 0;
-    return if $initialised && !$pending;
+    $prefs->client($client)->set('soloistQualityPending', 1);
+}
 
+# onLoginFlank($class, $mac) -- the one occasion that writes: the daemon's
+# logged_in went 0 -> 1 (SoloistWS), right after a pairing or on a start of an
+# already paired daemon. The pairing folder may lag behind the flank, so wait
+# LOGIN_SETTLE_S, and a result "still unpaired" is retried up to LOGIN_RETRY_MAX
+# times, LOGIN_RETRY_S apart (no permanent timer).
+sub onLoginFlank {
+    my ($class, $mac) = @_;
+
+    return unless (($prefs->get('backend') || 'librespot') eq 'soloist');
+
+    my $client = Slim::Player::Client::getClient($mac) or return;
+    return unless $class->_needsReconcile($client);
+
+    $FLANK_RETRIES{$mac} = LOGIN_RETRY_MAX;
+    $class->_cancelUnreachableRetry($mac);    # a new flank is a new occasion with a fresh budget
+    Slim::Utils::Timers::setTimer($class, Time::HiRes::time() + LOGIN_SETTLE_S, sub {
+        $class->_attemptReconcile($mac);
+    });
+}
+
+# _attemptReconcile($class, $mac) -- queue one reconcile attempt, unless the
+# player is gone, the backend changed, the reconcile closed meanwhile, or the
+# player has no logged-in daemon of its own any more (a write would reach
+# nobody; the next flank writes -- BL-01); then the flank's retry budgets are
+# dropped as well (they must not be inherited by a later run of the same player).
+sub _attemptReconcile {
+    my ($class, $mac) = @_;
+
+    my $client = Slim::Player::Client::getClient($mac);
+    my $applies = $client
+        && (($prefs->get('backend') || 'librespot') eq 'soloist')
+        && $class->_needsReconcile($client);
+    my $loggedIn = $applies ? $class->_loggedInNow($mac) : 0;
+    if (!$applies || !$loggedIn) {
+        # R4 WR-01: an attempt that is dropped ONLY for want of a login is the one
+        # that would otherwise leave no trace at all (0 requests, 0 lines).
+        $class->_logReconcile($mac, undef, undef, 'skipped_no_login') if $applies;
+        delete $FLANK_RETRIES{$mac};
+        $class->_cancelUnreachableRetry($mac);
+        return;
+    }
+    $class->_enqueueReconcile($mac);
+}
+
+# _scheduleUnreachableRetry($class, $mac, $err) -- WR-01: a reconcile write that
+# ended "unreachable" (and only that: a rejection is the cap's business, a missing
+# token or device id is not transient) gets at most UNREACHABLE_RETRY_S attempts,
+# one one-shot timer at a time. _attemptReconcile re-checks player, backend, need
+# and login, so a retry that no longer applies simply ends.
+sub _scheduleUnreachableRetry {
+    my ($class, $mac, $err) = @_;
+
+    return unless $err && ($err->{class} || '') eq 'unreachable';
+
+    my @wait = (UNREACHABLE_RETRY_S);
+    my $n    = $UNREACH_TRIES{$mac} // 0;
+    return if $n >= @wait;
+    $UNREACH_TRIES{$mac} = $n + 1;
+
+    my $delay = $wait[$n];
+    if ((($err->{http} // 0) == 429 || ($err->{source} // '') eq 'login5') && $delay < UNREACHABLE_RATE_MIN_S) {
+        $delay = UNREACHABLE_RATE_MIN_S;
+    }
+
+    $class->_killUnreachableTimer($mac);
+    my $cb = sub {
+        delete $UNREACH_TIMER{$mac};
+        $class->_attemptReconcile($mac);
+    };
+    $UNREACH_TIMER{$mac} = $cb;
+    Slim::Utils::Timers::setTimer($class, Time::HiRes::time() + $delay, $cb);
+}
+
+sub _killUnreachableTimer {
+    my ($class, $mac) = @_;
+    if (my $t = delete $UNREACH_TIMER{$mac}) {
+        Slim::Utils::Timers::killTimers($class, $t);
+    }
+}
+
+sub _cancelUnreachableRetry {
+    my ($class, $mac) = @_;
+    delete $UNREACH_TRIES{$mac};
+    $class->_killUnreachableTimer($mac);
+}
+
+# _expireStaleReconcile($class) -- a run that never reported back (a lost
+# answer, a swallowed die) must not block the queue for good (WR-01): after
+# RECONCILE_STALE_S the busy marker is dropped, the player's dedupe mark with
+# it, and the abandoned run's generation is void, so its late answer cannot
+# touch the queue any more. Called BEFORE the dedupe mark is consulted -- the
+# mark of the stuck player itself would otherwise hide the stale run for good.
+sub _expireStaleReconcile {
+    my ($class) = @_;
+
+    return unless $RECONCILE_BUSY_SINCE;
+    return if (Time::HiRes::time() - $RECONCILE_BUSY_SINCE) < RECONCILE_STALE_S;
+
+    $log->warn("Soloist::Quality: reconcile of " . ($RECONCILE_BUSY_MAC // '?') . " did not finish in "
+        . RECONCILE_STALE_S . "s, moving on");
+    delete $RECONCILE_QUEUED{$RECONCILE_BUSY_MAC} if defined $RECONCILE_BUSY_MAC;
+    $RECONCILE_BUSY_SINCE = 0;
+    $RECONCILE_BUSY_MAC   = undef;
+    $RECONCILE_GEN++;    # the late callback of the abandoned run is void from now on
+}
+
+sub _enqueueReconcile {
+    my ($class, $mac) = @_;
+
+    $class->_expireStaleReconcile;
+    unless ($RECONCILE_QUEUED{$mac}) {
+        push @RECONCILE_QUEUE, $mac;
+        $RECONCILE_QUEUED{$mac} = 1;
+    }
+    $class->_drainReconcile;
+}
+
+sub _drainReconcile {
+    my ($class) = @_;
+
+    $class->_expireStaleReconcile;
+    return if $RECONCILE_BUSY_SINCE;
+
+    my $mac = shift @RECONCILE_QUEUE;
+    return unless defined $mac;
+
+    $RECONCILE_BUSY_SINCE = Time::HiRes::time();
+    $RECONCILE_BUSY_MAC   = $mac;
+    my $gen      = ++$RECONCILE_GEN;
+    my $finished = 0;
+
+    my $finish = sub {
+        return if $finished++;
+        return if $gen != $RECONCILE_GEN;    # a stale run finishing late must not touch the queue
+        delete $RECONCILE_QUEUED{$mac};
+        $RECONCILE_BUSY_SINCE = 0;
+        $RECONCILE_BUSY_MAC   = undef;
+        $class->_drainReconcile;
+    };
+
+    # A synchronous die inside the run (a name lookup, a stub) must free the
+    # queue at once instead of after RECONCILE_STALE_S.
+    eval { $class->_reconcileOne($mac, $finish); 1 } or do {
+        $log->warn("Soloist::Quality: reconcile of $mac died: $@");
+        $finish->();
+    };
+}
+
+# Test hook: the flank retry budget left for a player (undef = none).
+sub _flankRetriesFor { return $FLANK_RETRIES{ $_[1] } }
+
+# Test hook: the unreachable retries a player has used so far (undef = none).
+sub _unreachableTriesFor { return $UNREACH_TRIES{ $_[1] } }
+
+# Test hook: forget queue, busy marker, flank retries and unreachable retries.
+sub _resetReconcileQueue {
+    @RECONCILE_QUEUE      = ();
+    %RECONCILE_QUEUED     = ();
+    %FLANK_RETRIES        = ();
+    %UNREACH_TRIES        = ();
+    %UNREACH_TIMER        = ();
+    $RECONCILE_BUSY_SINCE = 0;
+    $RECONCILE_BUSY_MAC   = undef;
+    $RECONCILE_GEN++;    # a callback of the forgotten run is stale from now on
+}
+
+sub _logReconcile {
+    my ($class, $mac, $wanted, $paired, $action) = @_;
+    main::INFOLOG && $log->is_info && $log->info(sprintf(
+        'SpotOn quality reconcile (mac=%s): wanted=%s paired=%s -> %s',
+        $mac, defined $wanted ? $wanted : '?',
+        defined $paired ? $paired : 'unknown', $action
+    ));
+}
+
+# _reconcileOne($class, $mac, $done) -- R1: no read first. Only a device that
+# is confirmed paired (called from the logged_in flank, so the login is given)
+# gets the wished level written ONCE UNCONDITIONALLY, also when the server
+# already reads it (the daemon takes the level only from the push such a write
+# triggers), read-back verified by _writeAndVerify. An unconfirmed pairing
+# posts nothing, only Pending. A write that ends "unreachable" is retried, bounded
+# (_scheduleUnreachableRetry). $done runs exactly once per branch.
+sub _reconcileOne {
+    my ($class, $mac, $done) = @_;
+
+    my $client = Slim::Player::Client::getClient($mac);
+    unless ($client) {
+        delete $FLANK_RETRIES{$mac};
+        $done->();
+        return;
+    }
+    # Re-check at dequeue time: an earlier run may have closed it meanwhile.
+    unless ($class->_needsReconcile($client)) {
+        delete $FLANK_RETRIES{$mac};
+        $done->();
+        return;
+    }
+
+    my $paired = $class->_pairedNow($mac);
+    unless (defined $paired && $paired == 1) {
+        $prefs->client($client)->set('soloistQualityPending', 1);
+        $class->_logReconcile($mac, undef, $paired, 'deferred_unpaired');
+
+        # A flank that found the device unpaired tries again a few times (the
+        # pairing folder may lag the login).
+        if (($FLANK_RETRIES{$mac} // 0) > 0) {
+            $FLANK_RETRIES{$mac}--;
+            $done->();    # first: the queue dedupe would swallow the retry otherwise
+            Slim::Utils::Timers::setTimer($class, Time::HiRes::time() + LOGIN_RETRY_S, sub {
+                $class->_attemptReconcile($mac);
+            });
+            return;
+        }
+        delete $FLANK_RETRIES{$mac};
+        $done->();
+        return;
+    }
+
+    # The wish is formed here, immediately before the write (WR-02): nothing
+    # asynchronous sits between this line and the write call.
+    my $wanted       = $class->effectiveLevelForClient($client);
     my $clientStored = $prefs->client($client)->get('soloistQuality');
     my $scope = (defined $clientStored && $clientStored ne 'global' && $class->isStorableLevel($clientStored))
         ? { kind => 'client', client => $client }
         : { kind => 'global' };
 
-    $class->_writeAndVerify($mac, $class->effectiveLevelForClient($client), $scope);
+    $class->_logReconcile($mac, $wanted, $paired, 'write');
+    delete $FLANK_RETRIES{$mac};
+    $class->_writeAndVerify($mac, $wanted, $scope, sub {
+        my ($ok, $err) = @_;
+        $done->();    # first: the queue dedupe would swallow the retry otherwise
+        $class->_scheduleUnreachableRetry($mac, $err) unless $ok;
+    }, { reconcile => 1 });
 }
 
 1;

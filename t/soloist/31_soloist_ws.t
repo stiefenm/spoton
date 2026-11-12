@@ -162,6 +162,15 @@ sub mk_accessor {
 1;
 END
 
+# ca5: Quality is only stubbed here -- SoloistWS must call onLoginFlank on the
+# logged_in 0 -> 1 flank when (and only when) the module offers it.
+write_stub($stub_dir, 'Plugins::SpotOn::Soloist::Quality', <<'END');
+package Plugins::SpotOn::Soloist::Quality;
+our @FLANK;
+sub onLoginFlank { push @FLANK, $_[1] }
+1;
+END
+
 BEGIN {
     no warnings 'redefine';
     *main::INFOLOG  = sub () { 0 };
@@ -172,6 +181,8 @@ unshift @INC, $stub_dir, $project_dir;
 
 require_ok('Plugins::SpotOn::Unified::SoloistWS')
     or BAIL_OUT("Failed to load Plugins::SpotOn::Unified::SoloistWS");
+
+require Plugins::SpotOn::Soloist::Quality;
 
 require JSON::PP;
 
@@ -477,6 +488,31 @@ sub write_port_file {
     is($ws->authState->{logged_in}, 1, "auth_state updates the authState mirror: logged_in");
     is($ws->authState->{is_active}, 0, "auth_state updates the authState mirror: is_active");
     is($ws->authState->{device_name}, 'Living Room', "auth_state updates the authState mirror: device_name");
+}
+
+# ============================================================
+# ca5 (CTX-3): the logged_in 0 -> 1 flank calls Quality->onLoginFlank
+# ============================================================
+{
+    @Plugins::SpotOn::Soloist::Quality::FLANK = ();
+    my $ws = new_ws();
+
+    $ws->_onMessage('{"type":"auth_state","logged_in":false,"is_active":false,"device_name":"Living Room"}');
+    is(scalar(@Plugins::SpotOn::Soloist::Quality::FLANK), 0, "ca5-flank: logged_in:false records no onLoginFlank call");
+
+    $ws->_onMessage('{"type":"auth_state","logged_in":true,"is_active":false,"device_name":"Living Room"}');
+    is_deeply(\@Plugins::SpotOn::Soloist::Quality::FLANK, ['aa:bb:cc:dd:ee:ff'],
+        "ca5-flank: logged_in false->true calls onLoginFlank exactly once with the mac");
+
+    $ws->_onMessage('{"type":"auth_state","logged_in":true,"is_active":true,"device_name":"Living Room"}');
+    is(scalar(@Plugins::SpotOn::Soloist::Quality::FLANK), 1, "ca5-flank: logged_in true->true records no further call");
+
+    # A frame whose device_name mismatches is dropped before the flank (T-73-04).
+    @Plugins::SpotOn::Soloist::Quality::FLANK = ();
+    my $daemon = Test::FakeDaemon->new(name => 'Living Room', alive => 1);
+    my $ws2 = Plugins::SpotOn::Unified::SoloistWS->new(daemon => $daemon, mac => 'aa:bb:cc:dd:ee:ff', port => 45678);
+    $ws2->_onMessage('{"type":"auth_state","logged_in":true,"is_active":false,"device_name":"Someone Else"}');
+    is(scalar(@Plugins::SpotOn::Soloist::Quality::FLANK), 0, "ca5-flank: a device_name mismatch frame records no onLoginFlank call");
 }
 
 # ============================================================

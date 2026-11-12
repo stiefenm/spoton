@@ -1026,12 +1026,20 @@ sub _formatQualityNotice {
     my $string = \&Slim::Utils::Strings::string;
     my $Q      = 'Plugins::SpotOn::Soloist::Quality';
 
-    if ($notice->{kind} eq 'rejected') {
+    # WR-04: a rejected notice without values (an earlier build stored them, TTL never)
+    # has nothing to say about "wanted" and "effective" -- it reads as unreachable.
+    if ($notice->{kind} eq 'rejected' && defined $notice->{wanted}) {
         my $wantedLabel    = $string->($Q->labelFor($notice->{wanted}));
         my $effectiveLabel = defined $notice->{effective}
             ? $string->($Q->labelFor($notice->{effective}))
             : '?';
-        return sprintf($string->('PLUGIN_SPOTON_SOLOIST_QUALITY_REJECTED'), $wantedLabel, $effectiveLabel);
+        # WR-03: a notice that records "no reset" (reconcile path, unconfirmed
+        # pairing) must not say the setting was reset. An old notice without
+        # the key keeps the old text.
+        my $key = (defined $notice->{reset} && !$notice->{reset})
+            ? 'PLUGIN_SPOTON_SOLOIST_QUALITY_REJECTED_KEPT'
+            : 'PLUGIN_SPOTON_SOLOIST_QUALITY_REJECTED';
+        return sprintf($string->($key), $wantedLabel, $effectiveLabel);
     }
     if ($notice->{kind} eq 'no_token') {
         return $string->('PLUGIN_SPOTON_SOLOIST_QUALITY_NO_TOKEN');
@@ -1221,6 +1229,10 @@ sub settingsInfo {
     # when backend=soloist (avoids iterating every connected client + a
     # cache lookup per player on a pure-librespot install).
     $paramRef->{soloistPlayers} = [];
+    # ca5 (CTX-6): players whose server-side level differs from the level the
+    # global page wants them to have -- only players that follow the global
+    # setting (an own level, 0 = Automatic included, is the player page's job).
+    $paramRef->{soloistQualityServerDiffers} = [];
     return 'ok' unless (($prefs->get('backend') || 'librespot') eq 'soloist');
 
     require Slim::Utils::Cache;
@@ -1272,16 +1284,26 @@ sub settingsInfo {
         my $qEffective = $qCached ? $qCached->{level} : undef;
         my $qWanted    = $Q->effectiveLevelForClient($c);
 
+        my $qLabel = defined $qEffective ? $string->($Q->labelFor($qEffective)) : '';
+        # W4: defined-check, not qualityInfo's `|| 'global'` -- that turns an own
+        # level 0 into 'global'. The same effective/wanted comparison as the row.
+        # R1: only a PAIRED player is listed -- an unpaired one cannot be fixed by
+        # the user and its server level says nothing about what the daemon plays.
+        my $qOwn    = $prefs->client($c)->get('soloistQuality');
+        my $qPaired = Plugins::SpotOn::Soloist::isPairedForClient($mac) ? 1 : 0;
+        if ($qPaired && (!defined $qOwn || $qOwn eq 'global') && defined $qEffective && $qEffective != $qWanted) {
+            push @{ $paramRef->{soloistQualityServerDiffers} }, { name => $c->name, effectiveLabel => $qLabel };
+        }
+
         push @{ $paramRef->{soloistPlayers} }, {
             name        => $c->name,
             mac         => $mac,
-            paired      => Plugins::SpotOn::Soloist::isPairedForClient($mac) ? 1 : 0,
+            paired      => $qPaired,
             daemonAlive => $daemonAlive,
             loggedIn    => ($wsState && $wsState->{logged_in}) ? 1 : 0,
             isActive    => ($wsState && $wsState->{is_active}) ? 1 : 0,
             qualityEffective      => $qEffective,
-            qualityEffectiveLabel => defined $qEffective
-                ? $string->($Q->labelFor($qEffective)) : '',
+            qualityEffectiveLabel => $qLabel,
             qualityDiffers        => (defined $qEffective && $qEffective != $qWanted) ? 1 : 0,
             qualityNotice         => _formatQualityNotice($Q->noticeFor($mac)),
             # Phase 83.3 plan 04 (D-02/D-07): switch-pending indicator +

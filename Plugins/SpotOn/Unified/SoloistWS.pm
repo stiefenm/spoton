@@ -349,11 +349,25 @@ sub _onMessage {
 		}
 		# Best-effort mirror for Settings/Debug -- Control (82-03) owns the
 		# cache snapshot and the get_state reconnect-resync dispatch now.
+		my $wasLoggedIn = ($self->authState || {})->{logged_in} ? 1 : 0;
 		$self->authState({
 			logged_in   => $msg->{logged_in} ? 1 : 0,
 			is_active   => $msg->{is_active} ? 1 : 0,
 			device_name => $msg->{device_name},
 		});
+
+		# ca5 (CTX-3), R1: the logged_in 0 -> 1 flank is THE occasion that writes the
+		# streaming-quality level (once per daemon start, and right after a pairing
+		# without a restart). No require here: SoloistDaemon.pm:1061 loads Quality before it
+		# creates (1069) and connects (1106) this WS, so can() is the whole check
+		# and unrelated WS tests stay free of the real Quality.pm.
+		if (!$wasLoggedIn && $msg->{logged_in}
+			&& Plugins::SpotOn::Soloist::Quality->can('onLoginFlank'))
+		{
+			eval { Plugins::SpotOn::Soloist::Quality->onLoginFlank($self->mac); 1 } or do {
+				$log->warn("SoloistWS: quality onLoginFlank failed (" . ($self->mac // '?') . "): $@");
+			};
+		}
 	}
 	elsif ($type eq 'error') {
 		# T-73-09: names which command failed via lastCommand. Still

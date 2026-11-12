@@ -170,6 +170,9 @@
 				[% END %]
 			</select>
 			<p style="margin:6px 0 0 0; font-size:0.85em; opacity:0.7">[% 'PLUGIN_SPOTON_SOLOIST_QUALITY_NEXT_TRACK' | string %]</p>
+			[% FOREACH d IN soloistQualityServerDiffers %]
+			<p style="margin:4px 0 0 0; font-size:0.85em; color: orange">&#9679; [% 'PLUGIN_SPOTON_SOLOIST_QUALITY_SERVER_DIFFERS' | string(d.name, d.effectiveLabel) | html %]</p>
+			[% END %]
 		[% END %]
 	</div>
 

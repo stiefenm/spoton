@@ -35,6 +35,10 @@ my %_pauseRequestedAt;
 # 79-32 (D-27): [playlist index, url] of the playing song at the moment the guard armed, per player id; compared in
 # _pauseGuardCheck so a pause is never re-applied once the song changed after the pause request.
 my %_pauseRequestedSong;
+# 261112-d2m: ids of players with a pending _newSongClockCheck (cleanup in shutdownPlugin and on every newsong)
+my %_clockWait;
+# 261112-d2m WR-01: master id -> weak ref to the song object of the last newsong (a repeated newsong carries the same object)
+my %_clockLastSong;
 sub _evictPlayAllCache {
     my $now = time();
     delete @_playAllItemCache{ grep { $now - $_playAllItemCache{$_}{ts} > 120 } keys %_playAllItemCache };
@@ -251,6 +255,9 @@ sub initPlugin {
     Slim::Control::Request::subscribe(\&_onNewSongWatchdog, [['playlist'], ['newsong']]);
     # 79-27 D-20: a Browse track that starts playing is fetched fresh and its NowPlaying record rewritten.
     Slim::Control::Request::subscribe(\&_onNewSongRefreshMeta, [['playlist'], ['newsong']]);
+    # 261112-d2m: a Soloist Browse title that starts with the previous title's elapsed time is not pushed to the
+    # subscribers until the player reports a fresh time (the stale push never leaves).
+    Slim::Control::Request::subscribe(\&_onNewSongStaleClock, [['playlist'], ['newsong']]);
     Slim::Control::Request::subscribe(\&_onModeChange, [['playlist'], ['pause']]);
     Slim::Control::Request::subscribe(\&_onPauseCommand, [['pause']]);
 
@@ -337,8 +344,16 @@ sub shutdownPlugin {
     # accumulation across plugin reloads (each reload calls shutdown then init).
     Slim::Control::Request::unsubscribe(\&_onNewSongWatchdog);
     Slim::Control::Request::unsubscribe(\&_onNewSongRefreshMeta);
+    Slim::Control::Request::unsubscribe(\&_onNewSongStaleClock);
     Slim::Control::Request::unsubscribe(\&_onModeChange);
     Slim::Control::Request::unsubscribe(\&_onPauseCommand);
+
+    for my $id (keys %_clockWait) {
+        my $client = Slim::Player::Client::getClient($id);
+        Slim::Utils::Timers::killTimers($client, \&_newSongClockCheck) if $client;
+    }
+    %_clockWait = ();
+    %_clockLastSong = ();
 
     for my $id (keys %_pauseRequestedAt) {
         next if $id eq '_reapplying';
@@ -4498,6 +4513,106 @@ sub _refreshMetaForClient {
         $fresh{cover} = $fresh{icon} = $image if $image;
         $cache->set($key, \%fresh, 604800);
     }, { refresh => 1 });
+}
+
+# ============================================================
+# Stale clock at a Soloist Browse title start (261112-d2m)
+# ============================================================
+# After a natural PCM title change LMS shows startOffset(0) + songElapsedSeconds. squeezelite reports the PREVIOUS
+# title's elapsed time in the new title's start STAT and LMS holds that value until the next STAT (0.08 to 1.08 s
+# later), but the subscriber push (Material's status poll) leaves 0.3 s after newsong: the bar starts at the previous
+# title's end and corrects itself only at the next poll (.planning/debug/resolved/beta9-balken-springt-mitte.md).
+# Lever A: every relevant notify on a player kills its pending subscriber push and re-arms it at now + 0.3 s
+# (Request.pm 2093-2099). While the clock is stale (more than NEWSONG_CLOCK_STALE_S, no seek) the plugin therefore
+# checks every NEWSONG_CLOCK_POLL_S (0.1 s margin below LMS's 0.3 s) and sends a newmetadata notify on stale checks
+# 1..9 plus one on the first fresh value, so the stale push never leaves. At most NEWSONG_CLOCK_CHECKS checks (the
+# last push at most newsong + 2.3 s), no permanent timer. A fresh clock at newsong (seek, Connect, other backends)
+# starts nothing, and neither does a repeated newsong for the song object that is already playing (WR-01). One notify
+# on the master reaches the subscribers of every active sync member (Queries.pm 3935-3937, Request.pm 2032-2033,
+# Bug 10064), so the master is the only target.
+# Price: the title/cover change reaches all subscribers later by the window length (mostly under 1.2 s).
+use constant NEWSONG_CLOCK_STALE_S => 3;     # above this at newsong the elapsed time is the previous title's
+use constant NEWSONG_CLOCK_POLL_S  => 0.2;   # check cadence (LMS's own push is due 0.3 s after newsong)
+use constant NEWSONG_CLOCK_CHECKS  => 10;    # at most this many checks per title start
+
+sub _onNewSongStaleClock {
+    my $request = shift;
+    my $client = $request->client() || return;
+    $client = $client->master || $client;
+    my $id = $client->id;
+
+    # A repeated newsong for the song object that is already playing is not a title start (LMS creates a new
+    # Slim::Player::Song per title start): its elapsed time is real, so nothing is deferred. A chain of that same title
+    # that is still running is left alone.
+    my $song = $client->playingSong();
+    if ($song) {
+        my $prev   = $_clockLastSong{$id};
+        my $repeat = ($prev && Scalar::Util::refaddr($prev) == Scalar::Util::refaddr($song)) ? 1 : 0;
+        Scalar::Util::weaken($_clockLastSong{$id} = $song);
+        return if $repeat;
+    }
+    else {
+        delete $_clockLastSong{$id};
+    }
+
+    # A new newsong ends any earlier wait for this player, whatever the new title is.
+    Slim::Utils::Timers::killTimers($client, \&_newSongClockCheck);
+    delete $_clockWait{$id};
+
+    return unless _isSoloistBackend();
+    return unless $song;
+    my $url  = ($song->track && $song->track->url) || '';
+    return unless $url =~ m{^spoton://(?!connect-)};
+    # spoton://track: urls do not discriminate Browse from Connect (D-04): same guard as the watchdog above.
+    require Plugins::SpotOn::Connect;
+    return if Plugins::SpotOn::Connect->isSpotifyConnect($client);
+    return if $song->startOffset;   # a seek: the offset carries the position, the elapsed time is fresh
+
+    my $elapsed = $client->songElapsedSeconds() // 0;
+    return unless $elapsed > NEWSONG_CLOCK_STALE_S;
+
+    $_clockWait{$id} = 1;
+    main::INFOLOG && $log->is_info && $log->info("Track start clock: $id reports ${elapsed}s at newsong - deferring the status push");
+    # No notify here: check 1 at +0.2 s re-arms LMS's own push, which is due at +0.3 s.
+    Slim::Utils::Timers::setTimer($client, Time::HiRes::time() + NEWSONG_CLOCK_POLL_S, \&_newSongClockCheck, $song, 1, $elapsed);
+}
+
+sub _newSongClockCheck {
+    my ($client, $song, $n, $stale) = @_;
+    my $id  = $client->id;
+    my $cur = $client->playingSong;
+
+    # The title changed, or the player stopped (the elapsed time of a stopped player reads 0 and is not a fresh value).
+    if (!$cur || Scalar::Util::refaddr($cur) != Scalar::Util::refaddr($song) || !$client->isPlaying(1)) {
+        delete $_clockWait{$id};
+        main::DEBUGLOG && $log->is_debug && $log->debug("Track start clock: $id title changed or stopped - check $n dropped");
+        return;
+    }
+
+    my $elapsed = $client->songElapsedSeconds() // 0;
+    if ($elapsed <= NEWSONG_CLOCK_STALE_S) {
+        _newSongClockPush($client);
+        delete $_clockWait{$id};
+        main::INFOLOG && $log->is_info && $log->info("Track start clock: $id fresh (${elapsed}s, was ${stale}s) after " . ($n * NEWSONG_CLOCK_POLL_S) . "s - status pushed");
+        return;
+    }
+
+    if ($n < NEWSONG_CLOCK_CHECKS) {
+        _newSongClockPush($client);
+        main::DEBUGLOG && $log->is_debug && $log->debug("Track start clock: $id still ${elapsed}s at check $n - push re-armed");
+        Slim::Utils::Timers::setTimer($client, Time::HiRes::time() + NEWSONG_CLOCK_POLL_S, \&_newSongClockCheck, $song, $n + 1, $stale);
+        return;
+    }
+
+    delete $_clockWait{$id};
+    main::INFOLOG && $log->is_info && $log->info("Track start clock: $id no fresh STAT after 2 s - giving up");
+}
+
+# The only newmetadata notify of Plugin.pm (the CLI command has no function, Request.pm 661): it re-arms the pending
+# subscriber push of the player.
+sub _newSongClockPush {
+    my $client = shift;
+    Slim::Control::Request::notifyFromArray($client, ['newmetadata']);
 }
 
 sub _onModeChange {

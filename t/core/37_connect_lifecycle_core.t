@@ -291,9 +291,10 @@ SKIP: {
     # 79-27 D-20 adds ONE reviewed site on top of the six: _refreshMetaForClient (the playlist newsong refresh
     # subscriber) skips Connect sessions with the same guard, because Connect.pm _fetchTrackMetadata refreshes those
     # track starts itself and spoton://track: urls do not discriminate Browse from Connect either (D-04).
+    # 261112-d2m adds ONE reviewed site: _onNewSongStaleClock skips Connect sessions
     my $isspotifyconnect_count = () = $plugin =~ /isSpotifyConnect/g;
-    is($isspotifyconnect_count, 7,
-        '83.1-07: Plugin.pm has exactly 7 isSpotifyConnect call sites (6 D-C3 group B KEEP + the 79-27 D-20 refresh guard)');
+    is($isspotifyconnect_count, 8,
+        '83.1-07: Plugin.pm has exactly 8 isSpotifyConnect call sites (6 D-C3 group B KEEP + the 79-27 D-20 refresh guard + the 261112-d2m stale clock guard)');
 }
 
 

@@ -844,6 +844,18 @@ is($S->new($MAC)->query('wantedPositionMs'), undef, "soloist query('wantedPositi
     is($qi->{deviceKnown}, 1, 'soloist qualityInfo($client): deviceKnown from deviceIdForMac');
     is($qi->{noticeText}, 'REJ[S:Q5>S:Q3]', 'soloist qualityInfo($client): noticeText already formatted (labels resolved in the role)');
     ok(defined &Plugins::SpotOn::Backend::Soloist::_formatQualityNotice, 'the notice formatter lives on as the role-private Backend::Soloist::_formatQualityNotice');
+    # WR-03 (R2): a rejection that did NOT reset the pref must not say "reset"
+    {
+        local $Slim::Utils::Strings::S{PLUGIN_SPOTON_SOLOIST_QUALITY_REJECTED_KEPT} = 'KEPT[%s>%s]';
+        $Plugins::SpotOn::Soloist::Quality::NOTICE = { kind => 'rejected', wanted => 5, effective => 3, reset => 0 };
+        is(eval { $S->qualityInfo($qc)->{noticeText} }, 'KEPT[S:Q5>S:Q3]', 'soloist noticeText: rejected with reset 0 renders the "kept" text, not "reset"');
+        $Plugins::SpotOn::Soloist::Quality::NOTICE = { kind => 'rejected', wanted => 5, effective => 3, reset => 1 };
+        is(eval { $S->qualityInfo($qc)->{noticeText} }, 'REJ[S:Q5>S:Q3]', 'soloist noticeText: rejected with reset 1 renders the "reset" text');
+    }
+    # WR-04 (R3): a rejected notice without values (stored by an earlier build, TTL never) must
+    # not render a sentence about "?" -- it reads as the plain unreachable text.
+    $Plugins::SpotOn::Soloist::Quality::NOTICE = { kind => 'rejected', at => 1 };
+    is(eval { $S->qualityInfo($qc)->{noticeText} }, 'S:PLUGIN_SPOTON_SOLOIST_QUALITY_UNREACHABLE', 'soloist noticeText: a rejected notice without wanted renders the unreachable text');
     $Plugins::SpotOn::Soloist::Quality::NOTICE = { kind => 'no_token' };
     is(eval { $S->qualityInfo($qc)->{noticeText} }, 'S:PLUGIN_SPOTON_SOLOIST_QUALITY_NO_TOKEN', 'soloist noticeText: no_token');
     $Plugins::SpotOn::Soloist::Quality::NOTICE = undef;
