@@ -674,10 +674,13 @@ static long g_early_end_gap_ms = EARLY_END_GAP_MS_DEFAULT;
  * not reported the new title yet still carries the play point of the OLD
  * stream, so the apparent deviation equals that stream's played length, and
  * LMS corrects deviations up to MAX_DEVIATION_ADJUST (10 s) by skipping the
- * players ahead -- after a seek into a title's last seconds the next title
- * then lost its first seconds (measured: skipAhead 4075 ms on both players).
- * A stream younger than this keeps the old behaviour (the player underruns
- * and rebuffers, which resyncs the group cleanly). */
+ * players ahead: after a stream shorter than that the next title can lose its
+ * first seconds. That is LMS's own behaviour and happens on the old path too
+ * (measured 8672/5533 ms with this guard in force); there the short stream
+ * usually underruns at its end and the rebuffer resyncs the group, which hides
+ * it. An early end removes that underrun and made the skip certain (measured
+ * 4075 ms on both players). A stream younger than this keeps the old path; the
+ * short-stream case is not fixed here. */
 #define EARLY_END_MIN_STREAM_MS 12000
 static long g_early_end_min_stream_ms = EARLY_END_MIN_STREAM_MS;
 static volatile int64_t  g_client_attach_ms  = 0;    /* when the current client was promoted (HTTP thread) */
