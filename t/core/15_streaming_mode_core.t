@@ -754,9 +754,9 @@ subtest 'i18n: PLUGIN_SPOTON_STREAMING_MODE* keys have all 11 locales' => sub {
     package EESong;
     sub new           { my ($c, $br) = @_; return bless { br => $br }, $c; }
     sub streambitrate { return $_[0]{br}; }
-    package EEController;
-    sub new  { my ($c, $song) = @_; return bless { song => $song }, $c; }
-    sub song { return $_[0]{song}; }
+    package EEController;    # like Slim::Player::StreamingController: streamingSong, NO song method
+    sub new           { my ($c, $song) = @_; return bless { song => $song }, $c; }
+    sub streamingSong { return $_[0]{song}; }
     package EEClient;
     sub new        { my ($c, $br) = @_; return bless { ctl => EEController->new(EESong->new($br)) }, $c; }
     sub controller { return $_[0]{ctl}; }
@@ -784,6 +784,8 @@ subtest 'i18n: PLUGIN_SPOTON_STREAMING_MODE* keys have all 11 locales' => sub {
     is($PH->bufferThreshold(EEClient->new(705600), $url), 255, 'early-end: a backend without an opinion (librespot) -> LMS\'s value');
     $be = undef;
     is($PH->bufferThreshold(EEClient->new(705600), $url), 255, 'early-end: no backend role at all -> LMS\'s value');
+    my $bare = bless {}, 'EEClientNoController';
+    is($PH->bufferThreshold($bare, $url), 20, 'early-end: a client without a controller -> 20, no die');
 }
 
 done_testing();
