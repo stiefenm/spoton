@@ -669,6 +669,18 @@ static volatile int64_t g_boundary_client_generation = NO_CLIENT_GENERATION;
 #define EARLY_END_GAP_MS_DEFAULT 400
 #define EARLY_END_GAP_MS_MAX     5000
 static long g_early_end_gap_ms = EARLY_END_GAP_MS_DEFAULT;
+/* The stream must have been attached this long before it may end early. LMS
+ * compares the sync players' play points at a title start; a slave that has
+ * not reported the new title yet still carries the play point of the OLD
+ * stream, so the apparent deviation equals that stream's played length, and
+ * LMS corrects deviations up to MAX_DEVIATION_ADJUST (10 s) by skipping the
+ * players ahead -- after a seek into a title's last seconds the next title
+ * then lost its first seconds (measured: skipAhead 4075 ms on both players).
+ * A stream younger than this keeps the old behaviour (the player underruns
+ * and rebuffers, which resyncs the group cleanly). */
+#define EARLY_END_MIN_STREAM_MS 12000
+static long g_early_end_min_stream_ms = EARLY_END_MIN_STREAM_MS;
+static volatile int64_t  g_client_attach_ms  = 0;    /* when the current client was promoted (HTTP thread) */
 static volatile int64_t  g_near_end_gen      = NO_CLIENT_GENERATION;
 static volatile int64_t  g_near_end_until_ms = 0;
 static volatile uint64_t g_near_end_epoch    = 0;
@@ -2420,6 +2432,16 @@ static void _early_end_check(int client_fd) {
         return;
     }
     if (g_boundary_at_pushed >= 0) return;   /* a marker is already in force */
+    if (now - g_client_attach_ms < (int64_t)g_early_end_min_stream_ms) {
+        g_near_end_gen = NO_CLIENT_GENERATION;   /* too short a stream: keep the old behaviour */
+        if (g_debug_trace) {
+            char _ts[32];
+            _trace_ts(_ts, sizeof(_ts));
+            fprintf(stderr, "[fakepulse %s] early-end: not used, the stream is only %lld ms old\n",
+                    _ts, (long long)(now - g_client_attach_ms));
+        }
+        return;
+    }
     if (atomic_load(&g_flush_disconnect) || atomic_load(&g_seek_flush_armed) > 0
         || atomic_load(&g_flush_keep_pending) || _flush_decide_open()) {
         return;                              /* a seek/skip is being decided */
@@ -3059,6 +3081,7 @@ static void *_http_thread_fn(void *arg) {
                  * g_boundary_client_generation's doc comment above
                  * g_boundary_at_pushed. */
                 g_client_generation++;
+                g_client_attach_ms = _hold_now_ms();   /* end-gap early EOF: the stream's age */
                 /* boundary-trifft-nachfolgeclient REOPENED fix: a live
                  * attach means the story has moved on -- any unconsumed
                  * departed-generation record from further back (a client
@@ -7351,6 +7374,7 @@ static int _test_ee_open(pa_stream *s, int port, int *gotA) {
     g_boundary_at_pushed = -1;
     g_early_end_at = -1;
     g_near_end_gen = NO_CLIENT_GENERATION;
+    g_early_end_min_stream_ms = 0;   /* the cells attach and end at once; EE-short covers the age */
     *gotA = 0;
     int fd = _test_hold_attach(port);
     if (fd >= 0) {
@@ -7366,6 +7390,7 @@ static void _test_ee_cleanup(pa_stream *s, int port) {
     g_early_end_at = -1;
     g_near_end_gen = NO_CLIENT_GENERATION;
     g_early_end_gap_ms = EARLY_END_GAP_MS_DEFAULT;
+    g_early_end_min_stream_ms = EARLY_END_MIN_STREAM_MS;
     _test_vsink_cork(s, 0);
     _test_hold_cleanup(port);
     _test_vsink_env(0);
@@ -7516,6 +7541,24 @@ static void _test_ee_off(pa_stream *s, int port, int *failures) {
     _test_ee_cleanup(s, port);
 }
 
+static void _test_ee_short_stream(pa_stream *s, int port, int *failures) {
+    const char *name = "early-end: a stream younger than EARLY_END_MIN_STREAM_MS is not ended early (LMS sync skipAhead guard)";
+    int gotA = 0, eof = 0;
+    char nbody[256];
+    int fd = _test_ee_open(s, port, &gotA);
+    g_early_end_min_stream_ms = EARLY_END_MIN_STREAM_MS;   /* the real guard: the client is a few ms old */
+    size_t got = 0;
+    if (fd >= 0 && gotA) {
+        (void)_test_post_control_body(port, "/near-end?ms=2000", nbody, sizeof(nbody));
+        got = _test_hold_read_window(fd, 1500, &eof);
+    }
+    if (fd >= 0) close(fd);
+    char facts[160];
+    snprintf(facts, sizeof(facts), "gotA=%d bytes=%zu eof=%d (want 0)", gotA, got, eof);
+    _test_hold_verdict(failures, gotA && got == 0 && !eof, name, facts);
+    _test_ee_cleanup(s, port);
+}
+
 static void _test_early_end_cases(pa_stream *s, int port, int *failures) {
     pa_sample_format_t saved = s->sample_spec.format;
     s->sample_spec.format = PA_SAMPLE_FLOAT32LE;
@@ -7524,6 +7567,7 @@ static void _test_early_end_cases(pa_stream *s, int port, int *failures) {
     _test_ee_flushed(s, port, failures);
     _test_ee_corked(s, port, failures);
     _test_ee_off(s, port, failures);
+    _test_ee_short_stream(s, port, failures);
     s->sample_spec.format = saved;
 }
 

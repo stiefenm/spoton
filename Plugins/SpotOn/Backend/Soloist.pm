@@ -755,6 +755,13 @@ sub query {
         my $ctl = $self->_ctl or return undef;
         return $ctl->seekable($args{url}) ? 1 : 0;
     }
+    # End-gap early EOF: 'earlyEndContinues' (url => $url) -> 1 while Control waits for the
+    # daemon's own change to that title after LMS opened it during the old title's end gap
+    # (ProtocolHandler::bufferThreshold gives that continuation stream a small threshold), else 0.
+    if ($what eq 'earlyEndContinues') {
+        my $ctl = $self->_ctl or return undef;
+        return $ctl->earlyEndContinues($args{url}) ? 1 : 0;
+    }
     if ($what eq 'consumeRestartAllowance') {
         my $ctl = $self->_ctl or return undef;
         return $ctl->consumeRestartAllowance($args{url}) ? 1 : 0;

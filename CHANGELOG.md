@@ -7,7 +7,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- Soloist: the first title change after you start, skip or seek no longer leaves a gap of silence (about 1.5 s on a single player, about 5 s in a sync group). At the end of a title Soloist waits about 3 seconds for its audio to drain before it starts the next title; LMS only opened the next stream after that wait, and right after a start, skip or seek the player's buffer is too short to cover both. SpotOn now ends the old stream as soon as the title's last audio has been sent, so LMS opens the next title during the wait. `SPOTON_FAKEPULSE_EARLY_END_GAP_MS=0` switches this off.
+- Soloist: the first title change after you start, skip or seek no longer leaves a gap of silence (about 1.5 s on a single player, about 5 s in a sync group). At the end of a title Soloist waits about 3 seconds for its audio to drain before it starts the next title; LMS only opened the next stream after that wait, and right after a start, skip or seek the player's buffer is too short to cover both. SpotOn now ends the old stream as soon as the title's last audio has been sent, so LMS opens the next title during the wait, and lets the player start decoding that next title at once instead of waiting for about 2 seconds of it. After a seek into the last 12 seconds of a title the old behaviour stays, because LMS would otherwise skip the first seconds of the next title in a sync group. `SPOTON_FAKEPULSE_EARLY_END_GAP_MS=0` switches this off.
 
 ## [4.0.0-beta.10] - 2026-11-12
 
