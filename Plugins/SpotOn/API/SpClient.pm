@@ -3229,6 +3229,252 @@ sub getPlaylistItems {
 }
 
 # ============================================================
+# Library import facades (GH #32)
+# ============================================================
+# Read by the LMS online-library importer (Importer.pm), which runs in the
+# scanner process. They add no new request type: collection/v2 paging,
+# metadata/4/album, playlist/v2 and the batched extended-metadata POST are the
+# requests Browse already sends, through the same _request pipeline (own rate
+# key, 401 remint, concurrency cap, response caches).
+
+# getPlaylistIndex($class, $accountId, $cb)
+# The account's playlists straight from the rootlist (60 s cache): id, uri,
+# name, owner and revision in library order -- cb->(\@playlists) or
+# cb->(undef, $err). Unlike getUserPlaylists it never runs the libraryV3
+# cover and owner-name merge (#200): the importer needs neither, and the merge
+# would page Pathfinder from the scanner. One request per account and scan.
+sub getPlaylistIndex {
+    my ($class, $accountId, $cb) = @_;
+
+    unless ($class->_hasLogin5Creds($accountId)) {
+        $cb->(undef, { error => 'no_credentials' });
+        return;
+    }
+
+    $class->_rootlistPlaylists($accountId, $cb);
+}
+
+# getSavedAlbumUris($class, $accountId, $cb)
+# The complete Saved Albums list without enrichment: cb->([{ uri, added_at },
+# ...]) in collection order, or cb->(undef, $err). The 60 s list cache is
+# skipped on read (a scan wants the current list) and refreshed on write
+# (_collectionAll's $noCache).
+sub getSavedAlbumUris {
+    my ($class, $accountId, $cb) = @_;
+
+    unless ($class->_hasLogin5Creds($accountId)) {
+        main::INFOLOG && $log->info('SpClient: getSavedAlbumUris without stored credentials');
+        $cb->(undef, { error => 'no_credentials' });
+        return;
+    }
+
+    $class->_collectionAll($accountId, SET_MAP->{albums}, sub {
+        my ($list, $err) = @_;
+
+        if ($err) {
+            $cb->(undef, $err);
+            return;
+        }
+
+        $cb->([ grep { ($_->{uri} // '') =~ /^spotify:album:[0-9A-Za-z]{22}\z/ } @{ $list || [] } ]);
+    }, 1);
+}
+
+# getAlbumWithTracks($class, $accountId, $albumId, $cb)
+# One album with its complete track list: the _normalizeAlbum shape plus
+# album_type (Album.type in lower case: album | single | compilation | ep)
+# and tracks.items in disc order. metadata/4/album lists the track gids per
+# disc but no names (S-04), and a track entity carries no position, so
+# disc_number/track_number come from the disc layout. The tracks are named by
+# _enrichTracks (90-day per-track cache, one extended-metadata POST per
+# TRACK_BATCH_SIZE misses). A slot that stays a stub (failed chunk, missing
+# entity) is left out, while tracks.total keeps the album's track count, so a
+# caller can tell an incomplete album. cb->($album) or cb->(undef, $err).
+sub getAlbumWithTracks {
+    my ($class, $accountId, $albumId, $cb) = @_;
+
+    unless ($class->_hasLogin5Creds($accountId)) {
+        main::INFOLOG && $log->info('SpClient: getAlbumWithTracks without stored credentials');
+        $cb->(undef, { error => 'no_credentials' });
+        return;
+    }
+
+    my $hexId = $class->idToHex($albumId);
+    unless ($hexId) {
+        $cb->(undef, { error => 'invalid_id' });
+        return;
+    }
+
+    $class->_spFacade(
+        "metadata/4/album/$hexId",
+        { _accountId => $accountId, _accept => 'application/json' },
+        sub {
+            my ($meta, $fcb) = @_;
+
+            my $album = $class->_normalizeAlbum($meta);
+            unless ($album && $album->{id}) {
+                $fcb->(undef, { error => 'parse_error' });
+                return;
+            }
+            $album->{album_type} = (defined $meta->{type} && !ref $meta->{type}) ? lc $meta->{type} : '';
+
+            my ($ids, $positions) = $class->_albumTrackLayout($meta);
+            my @ids = @$ids;
+            my @positions = @$positions;
+
+            $class->_enrichTracks($accountId, \@ids, sub {
+                my ($tracks) = @_;
+                my @items;
+                for my $i (0 .. $#ids) {
+                    my $t = $tracks->[$i];
+                    next unless $t && defined $t->{name} && length $t->{name};
+                    push @items, { %$t, disc_number => $positions[$i][0], track_number => $positions[$i][1] };
+                }
+                $album->{tracks} = { items => \@items, total => scalar @ids };
+                $fcb->($album);
+            });
+        },
+        $cb,
+    );
+}
+
+# getAlbumTrackIds($class, $accountId, $albumId, $cb)
+# The album's track ids in disc order, from metadata/4/album alone (no
+# track naming): cb->(\@trackIds) or cb->(undef, $err). The album response
+# lands in the 3600 s response cache, so a getAlbumWithTracks right after
+# costs no second album request. The importer reads the layouts of all new
+# albums first, names their tracks in full TRACK_BATCH_SIZE batches across
+# albums (prefetchTracks), and only then builds the albums from the caches --
+# one extended-metadata POST per 200 tracks instead of one per album.
+sub getAlbumTrackIds {
+    my ($class, $accountId, $albumId, $cb) = @_;
+
+    unless ($class->_hasLogin5Creds($accountId)) {
+        $cb->(undef, { error => 'no_credentials' });
+        return;
+    }
+
+    my $hexId = $class->idToHex($albumId);
+    unless ($hexId) {
+        $cb->(undef, { error => 'invalid_id' });
+        return;
+    }
+
+    $class->_spFacade(
+        "metadata/4/album/$hexId",
+        { _accountId => $accountId, _accept => 'application/json' },
+        sub {
+            my ($meta, $fcb) = @_;
+            unless ($meta && ref($meta) eq 'HASH') {
+                $fcb->(undef, { error => 'parse_error' });
+                return;
+            }
+            my ($ids) = $class->_albumTrackLayout($meta);
+            $fcb->($ids);
+        },
+        $cb,
+    );
+}
+
+# _albumTrackLayout($class, $meta) -> (\@trackIds, \@positions) from a
+# metadata/4/album response, in disc order; $positions->[$i] is
+# [disc_number, track_number] of $trackIds->[$i]. A disc without a usable
+# number counts on from the previous one; a track entry without a gid keeps
+# its position (the next track's number stays right) but yields no id.
+sub _albumTrackLayout {
+    my ($class, $meta) = @_;
+
+    my (@ids, @positions);
+    my $discNumber = 0;
+    for my $disc (@{ (ref($meta) eq 'HASH' ? $meta->{disc} : undef) || [] }) {
+        next unless ref($disc) eq 'HASH';
+        $discNumber = (defined $disc->{number} && $disc->{number} =~ /\A[1-9][0-9]*\z/)
+            ? $disc->{number} + 0 : $discNumber + 1;
+        my $position = 0;
+        for my $track (@{ $disc->{track} || [] }) {
+            $position++;
+            my $id = (ref($track) eq 'HASH' && $track->{gid}) ? $class->hexToId($track->{gid}) : undef;
+            next unless $id;
+            push @ids, $id;
+            push @positions, [$discNumber, $position];
+        }
+    }
+
+    return (\@ids, \@positions);
+}
+
+# getPlaylistTrackUris($class, $accountId, $playlistId, $cb)
+# The track uris of one playlist in playlist order, from the playlist/v2
+# envelope (300 s cache); episodes and local files are left out, the filter
+# getPlaylistItems applies. No enrichment. cb->(\@uris) or cb->(undef, $err).
+sub getPlaylistTrackUris {
+    my ($class, $accountId, $playlistId, $cb) = @_;
+
+    unless ($class->_hasLogin5Creds($accountId)) {
+        main::INFOLOG && $log->info('SpClient: getPlaylistTrackUris without stored credentials');
+        $cb->(undef, { error => 'no_credentials' });
+        return;
+    }
+
+    # WR-04: the id is spliced into the request path and the cache key.
+    unless (defined $playlistId && $playlistId =~ /^[0-9A-Za-z]{22}$/) {
+        $cb->(undef, { error => 'invalid_id' });
+        return;
+    }
+
+    $class->_playlistEnvelope($accountId, $playlistId, sub {
+        my ($envelope, $err) = @_;
+
+        if ($err) {
+            $cb->(undef, $err);
+            return;
+        }
+
+        my @contentItems = ($envelope && ref($envelope) eq 'HASH' && ref($envelope->{contents}) eq 'HASH')
+            ? @{ $envelope->{contents}{items} || [] } : ();
+        $cb->([ grep { /^spotify:track:[0-9A-Za-z]{22}\z/ }
+                map  { $_->{uri} } grep { ref($_) eq 'HASH' && defined $_->{uri} } @contentItems ]);
+    });
+}
+
+# prefetchTracks($class, $accountId, \@trackIds, $cb)
+# Puts the named metadata of the given tracks into the per-track cache via
+# _enrichTracks: cached tracks cost nothing, the misses travel in batches of
+# TRACK_BATCH_SIZE. cb->($named), the number of tracks that have a name
+# afterwards. The importer warms the cache for imported playlists, so a
+# playlist opened later is named from the cache (ProtocolHandler's refetch
+# goes through getTrack, which reads the same key) instead of one metadata
+# request per track.
+sub prefetchTracks {
+    my ($class, $accountId, $trackIds, $cb) = @_;
+
+    unless ($class->_hasLogin5Creds($accountId)) {
+        $cb->(0);
+        return;
+    }
+
+    $class->_enrichTracks($accountId, $trackIds || [], sub {
+        my ($tracks) = @_;
+        $cb->(scalar grep { $_ && defined $_->{name} && length $_->{name} } @{ $tracks || [] });
+    });
+}
+
+# rateLimitedFor($class) -> seconds left of the current spclient 429 backoff,
+# 0 when there is none. The importer stops at a backoff instead of waiting
+# behind it, and leaves the rest of the library for the next scan.
+sub rateLimitedFor {
+    my ($class) = @_;
+    my $until = $cache->get(SPCLIENT_RATE_LIMIT_KEY) or return 0;
+    my $left  = $until - Time::HiRes::time();
+    return $left > 0 ? $left : 0;
+}
+
+# requestCount($class) -> spclient requests dispatched by this process so far
+# (the counter statusSnapshot reports as apiRequestCount). The importer paces
+# itself only after calls that went to the network, not after cache hits.
+sub requestCount { return $requestCount }
+
+# ============================================================
 # Pathfinder-backed feeds and removed Web-API methods
 # ============================================================
 # 85-15 (D-01, D-08): the former Web-API-only passthroughs are gone. getMe
