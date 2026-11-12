@@ -213,7 +213,11 @@ sub getAlbumWithTracks   { _answer('album',     $_[2], $_[3]) }
 sub getAlbumTrackIds     { _answer('albumids',  $_[2], $_[3]) }
 our $batchSize = 200;
 sub trackBatchSize       { $batchSize }
-sub getUserPlaylists     { _answer('playlists', $_[1], $_[3]) }
+# the fixtures keep the page shape ({ items => [...] }); getPlaylistIndex answers the bare list
+sub getPlaylistIndex {
+    my $cb = $_[2];
+    _answer('playlists', $_[1], sub { my ($page, $err) = @_; $cb->($page ? $page->{items} : undef, $err) });
+}
 sub getPlaylistTrackUris { _answer('pltracks',  $_[2], $_[3]) }
 sub prefetchTracks       { _answer('prefetch',  scalar @{ $_[2] }, $_[3]) }
 sub rateLimitedFor { $rateLimitedFor || 0 }

@@ -425,18 +425,18 @@ sub scanPlaylists { if (main::SCANNER) {
     for my $accountId (@$accounts) {
         $progress->update(string('PLUGIN_SPOTON_PROGRESS_READ_PLAYLISTS'));
 
-        my ($page, $err) = $run->{stopped} ? (undef, { error => $run->{stopped} })
+        my ($list, $err) = $run->{stopped} ? (undef, { error => $run->{stopped} })
                                            : $class->_call(sub {
-            Plugins::SpotOn::API::SpClient->getUserPlaylists($accountId, { offset => 0, limit => 100_000 }, $_[0]);
+            Plugins::SpotOn::API::SpClient->getPlaylistIndex($accountId, $_[0]);
         });
 
-        unless ($page && ref $page->{items} eq 'ARRAY') {
+        unless (ref $list eq 'ARRAY') {
             $class->_noteError($run, $err, 'playlist list');
             $complete = 0;
             next;
         }
 
-        my @playlists = grep { $_->{id} && $_->{id} =~ /^[0-9A-Za-z]{22}$/ } @{ $page->{items} };
+        my @playlists = grep { $_->{id} && $_->{id} =~ /^[0-9A-Za-z]{22}$/ } @$list;
         $progress->total($progress->total + scalar @playlists);
 
         my (@toStore, %prefetch);
