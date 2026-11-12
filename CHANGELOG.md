@@ -5,6 +5,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.0.0-beta.9] - 2026-11-12
+
+**Installing this beta.** Same beta repository URL as before (`https://stiefenm.github.io/spoton/beta/repo.xml`); the Plugins page offers SpotOn 4.0.0beta9 as an update over 4.0.0beta8. Restart LMS after the update. The fix below is for the Soloist backend.
+
+### Fixed
+
+- Soloist: at the natural end of a title in a playlist, a fraction of a second of the old title could be heard again right before the next title started. It happened with FLAC through the proxy and with PCM, since 4.0.0-beta.6. The hang watchdog took the short stall at the very end of a title for a hang and replayed the last seconds of the old title into the stream. The watchdog now ignores a stall in the last 6 seconds of a title when SpotOn knows the title length. A real hang in the middle of a title is still replayed as before.
+
 ## [4.0.0-beta.8] - 2026-11-11
 
 **Installing this beta.** Same beta repository URL as before (`https://stiefenm.github.io/spoton/beta/repo.xml`); the Plugins page offers SpotOn 4.0.0beta8 as an update over 4.0.0beta7. Restart LMS after the update. The Connect fixes below are for the librespot backend.

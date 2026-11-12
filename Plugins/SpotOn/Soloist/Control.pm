@@ -77,10 +77,33 @@ use constant FROZEN_POSITION_TOLERANCE_MS => 500;
 #    the command, so 5 s covers them and suppresses no measured stall.
 #  - HANG_REPLAY_MAX: "once or twice" (FABLE-2 2.2(b)); a hung retry costs
 #    nothing extra, the title is already stalled.
+#  - HANG_END_MARGIN_MS: no replay when the stall frame sits in the last 6 s of
+#    a title with a known duration (261111-vi4). At a natural title end the
+#    daemon reports `buffering` with the position standing about 3 s before the
+#    end (the sink's lead: 400 Hz 56771 of 59754, Africa 292316 of 295282); a
+#    replay there plays the old title's last ~3 s again into the same stream
+#    before the boundary (diagnosis beta8-titelwechsel-altrest). 6 s is twice
+#    that lead. Unknown duration: the old behaviour. A title shorter than about
+#    15 s effectively gets no replay (head file 9-10 s plus the margin); that
+#    loses nothing measured, every M1 stall sat in a 228-239 s title.
+#    Known risk, accepted on purpose: a REAL stall in the last 6 s of a title is
+#    not repaired either (the first speed-0 frame sets the status to paused,
+#    so no later frame of that stall arms again: status_buffering fails, and a
+#    new burst out of paused fails burst_from_playing). That is the price for
+#    no tail replay at every natural title end (65 WARN lines in the diagnosis
+#    rig log); the prefetch watchdog and the self-heal remain. Visible with
+#    plugin.spoton at DEBUG only: a line `hang watch not armed (near end)` /
+#    `hang replay skipped (near end)` marks it, once per stall, so a field
+#    report "title hangs just before the end" can be told from "the watchdog
+#    saw nothing". The line reads "guards 1 to 7 held and the position lies in
+#    the margin", not "near_end alone prevented a watch": near_end is guard 8,
+#    playing_seen, suppress and seek_pre_burst come after it. Without DEBUG a
+#    stall in the last 6 s leaves no line.
 use constant HANG_REPLAY_DEADLINE_MS => 2250;
 use constant HANG_MIN_PLAYING_S      => 1;
 use constant HANG_SUPPRESS_S         => 5;
 use constant HANG_REPLAY_MAX         => 2;
+use constant HANG_END_MARGIN_MS      => 6000;
 
 # 84-02 C4-c: how old (seconds) the last real position before a zero reset
 # frame may be and still stand in for the transfer-in position.
@@ -5591,9 +5614,22 @@ sub _hangTrackChanged {
     return;
 }
 
+# _hangNearEnd($self, $uri, $posMs) -- 79-78 D-50 / 261111-vi4: 1 when the title's duration is known
+# (observed.meta, seconds) and $posMs lies within HANG_END_MARGIN_MS of its end, else 0. An unknown
+# duration (no meta entry, no duration, 0) or an undefined uri/position is 0: the old behaviour.
+sub _hangNearEnd {
+    my ($self, $uri, $posMs) = @_;
+
+    return 0 unless defined $uri && defined $posMs;
+    my $meta = $self->observed->{meta};
+    my $dur  = (ref($meta) eq 'HASH' && ref($meta->{$uri}) eq 'HASH') ? $meta->{$uri}{duration} : undef;
+    return 0 unless defined $dur && $dur > 0;
+    return ($posMs >= $dur * 1000 - HANG_END_MARGIN_MS) ? 1 : 0;
+}
+
 # _armHangWatch($self, $p) -- 79-78 D-50: called from the speed-0 branch of _onFramePositionSync
 # (before observed.status is overwritten) with the frame's position hash. Arms the stall watch
-# only when ALL twelve guards hold; every guard line carries a trailing comment of the form
+# only when ALL thirteen guards hold; every guard line carries a trailing comment of the form
 # `D-50 guard` colon, one space, the tag name (runners/hang-replay-gate.sh mirrors exactly this tag set,
 # one rule per tag). The watch is a
 # timer HANG_REPLAY_DEADLINE_MS ahead; _hangReplayFire re-checks and replays.
@@ -5613,6 +5649,12 @@ sub _armHangWatch {
     my $wantedUri = $self->wanted->{uri};
     return unless defined $o->{track} && defined $wantedUri && $o->{track} eq $wantedUri;    # D-50 guard: own_title
     return unless defined $p->{position_ms} && $p->{position_ms} > 0;    # D-50 guard: pos_positive
+    if ($self->_hangNearEnd($o->{track}, $p->{position_ms})) {    # D-50 guard: near_end
+        main::DEBUGLOG && $log->is_debug && $log->debug(
+            "Control: hang watch not armed (near end) $o->{track} pos=$p->{position_ms} (" . ($self->mac // '?') . ")"
+        );
+        return;
+    }
     my $ps = $o->{playingSince};
     return unless ref($ps) eq 'HASH' && defined $ps->{uri} && $ps->{uri} eq $o->{track}
         && ($now - $ps->{at}) >= HANG_MIN_PLAYING_S;    # D-50 guard: playing_seen
@@ -5647,7 +5689,8 @@ sub _cancelHangWatch {
 
 # _hangReplayFire($self) -- 79-78 D-50: the deadline timer. Re-checks the situation (the stall is
 # still there, nothing of Control's own is in flight, the title is still the wanted one, the budget
-# is not used up) and sends exactly the S2 action: an armed `play uri` of the same title with a
+# is not used up, the stall position is not within HANG_END_MARGIN_MS of a duration known by now -
+# noteDuration may have delivered it during the watch) and sends exactly the S2 action: an armed `play uri` of the same title with a
 # seek to the stall frame's own position_ms (M1: within 0.6 s of what the listener heard; never the
 # wall-clock projection, which the spike used and which repeats 2-3 s).
 sub _hangReplayFire {
@@ -5664,6 +5707,12 @@ sub _hangReplayFire {
     my $wantedUri = $self->wanted->{uri};
     return unless defined $wantedUri && $wantedUri eq $uri;
     return if ($o->{status} // '') eq 'playing';
+    if ($self->_hangNearEnd($uri, $w->{position_ms})) {
+        main::DEBUGLOG && $log->is_debug && $log->debug(
+            "Control: hang replay skipped (near end) $uri pos=$w->{position_ms} (" . ($self->mac // '?') . ")"
+        );
+        return;
+    }
     my $n = ($o->{hangReplays} || {})->{$uri} // 0;
     return if $n >= HANG_REPLAY_MAX;
 

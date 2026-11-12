@@ -3988,6 +3988,219 @@ sub d50_plant_stall {
 }
 
 # ============================================================
+# 261111-vi4 D-50 near_end: no replay in the last HANG_END_MARGIN_MS of a known duration
+# (diagnosis beta8-titelwechsel-altrest). At a natural title end the daemon reports `buffering`
+# about 3 s before the end with the position standing still; a replay there repeats the old
+# title's tail. The real 9195 ms frames are reused with a duration that puts the stall at the
+# end. Edge values are binary-exact (15.125, 15.25, 60) on purpose.
+# ============================================================
+
+# --- D50-19 (the measured end shape): duration 12.195 s, the real 9195 stall sits 3.0 s before the end.
+{
+    my @fx = d50_frames('d50-hang-midtitle.frames');
+    my $onset = $fx[13][0];
+    my ($ctl, $daemon, $ws) = d50_session('aa:bb:cc:dd:ee:93', $D50_HM, $fx[0][0] - 0.05,
+        observed => { meta => { $D50_HM => { duration => 12.195 } } });
+    d50_feed($ctl, \@fx, 0, 13);
+    is($ctl->observed->{track}, $D50_HM, "D50-19 setup: the echo and the frames put the daemon on the title");
+    ok(!$ctl->observed->{hangWatch}, "D50-19: a stall 3.0 s before the known end arms no watch (near_end)");
+    my $n = scalar @{ $ws->sent };
+    @Slim::Utils::Log::WARNINGS = ();
+    d50_fire($onset + 2.25 + 0.01);
+    is(scalar(d50_plays($ws, $n)), 0, "D50-19: no replay play at a title end");
+    is(scalar(grep { /Control: hang replay/ } @Slim::Utils::Log::WARNINGS), 0, "D50-19: no `Control: hang replay` WARN line");
+    d50_done($ctl);
+}
+
+# --- D50-20 (inside the edge): duration 15.125 s, threshold 9125 ms <= 9195 (70 ms inside the margin).
+{
+    my @fx = d50_frames('d50-hang-midtitle.frames');
+    my $onset = $fx[13][0];
+    my ($ctl, $daemon, $ws) = d50_session('aa:bb:cc:dd:ee:94', $D50_HM, $fx[0][0] - 0.05,
+        observed => { meta => { $D50_HM => { duration => 15.125 } } });
+    d50_feed($ctl, \@fx, 0, 13);
+    ok(!$ctl->observed->{hangWatch}, "D50-20: a stall 70 ms inside the margin arms no watch (near_end)");
+    my $n = scalar @{ $ws->sent };
+    d50_fire($onset + 2.25 + 0.01);
+    is(scalar(d50_plays($ws, $n)), 0, "D50-20: and no replay play");
+    d50_done($ctl);
+}
+
+# --- D50-21 (fire-time re-check): the watch armed with an unknown duration; noteDuration delivers it
+# 1.0 s into the watch and puts the stall inside the margin -> the fire re-check stops the replay.
+# The hand-deleted duration stands in for a daemon whose frames carry none: with the real frame order the playback_state
+# of the same burst (frame 12) would already have delivered it (Control.pm _onFramePlaybackState), so this state is
+# reachable only through such a daemon or an LMS-side noteDuration after the arming.
+{
+    my @fx = d50_frames('d50-hang-midtitle.frames');
+    my $onset = $fx[13][0];
+    my ($ctl, $daemon, $ws) = d50_session('aa:bb:cc:dd:ee:95', $D50_HM, $fx[0][0] - 0.05);
+    d50_feed($ctl, \@fx, 0, 12);
+    delete $ctl->observed->{meta}{$D50_HM}{duration};
+    d50_feed($ctl, \@fx, 13, 13);
+    ok($ctl->observed->{hangWatch}, "D50-21 setup: with the duration unknown the stall armed the watch");
+    d50_at($onset + 1.0, sub { $ctl->noteDuration($D50_HM, 12.195); });
+    my $n = scalar @{ $ws->sent };
+    @Slim::Utils::Log::WARNINGS = ();
+    d50_fire($onset + 2.25 + 0.01);
+    is(scalar(d50_plays($ws, $n)), 0, "D50-21: the duration learned during the watch stops the replay");
+    is(scalar(grep { /Control: hang replay/ } @Slim::Utils::Log::WARNINGS), 0, "D50-21: no hang replay WARN line");
+    ok(!$ctl->observed->{hangWatch}, "D50-21: no watch is left");
+    ok(!defined(($ctl->observed->{hangReplays} || {})->{$D50_HM}), "D50-21: the replay budget is untouched");
+    d50_done($ctl);
+}
+
+# --- D50-21b (261111-vi4 IN-03b): the fire-time re-check reads the STALL FRAME's own position, not the live anchor.
+# A later speed-0 position_sync inside the watch moves observed.anchor to 5000 ms; the known duration 12.195 s puts only
+# the stall position (9195) inside the margin (threshold 6195), so reading the anchor would replay. The watch outlives
+# that frame (status is `paused` by then, so no second watch arms).
+# The duration is deleted by hand as in D50-21 (see the note there).
+{
+    my @fx = d50_frames('d50-hang-midtitle.frames');
+    my $onset = $fx[13][0];
+    my ($ctl, $daemon, $ws) = d50_session('aa:bb:cc:dd:ee:99', $D50_HM, $fx[0][0] - 0.05);
+    d50_feed($ctl, \@fx, 0, 12);
+    delete $ctl->observed->{meta}{$D50_HM}{duration};
+    d50_feed($ctl, \@fx, 13, 13);
+    ok($ctl->observed->{hangWatch}, "D50-21b setup: with the duration unknown the stall armed the watch");
+    my $later = d50_clone($fx[13][1]);
+    $later->{position} = { position_ms => 5000, timestamp_ms => int(($onset + 0.5) * 1000), speed => 0 };
+    d50_at($onset + 0.5, sub { $ctl->onEvent($later); });
+    is($ctl->observed->{anchor}{position_ms}, 5000, "D50-21b setup: the live anchor moved to 5000 ms");
+    ok($ctl->observed->{hangWatch}, "D50-21b setup: the watch is still armed");
+    is($ctl->observed->{hangWatch}{position_ms}, 9195, "D50-21b setup: and still holds the stall frame's position");
+    d50_at($onset + 1.0, sub { $ctl->noteDuration($D50_HM, 12.195); });
+    my $n = scalar @{ $ws->sent };
+    @Slim::Utils::Log::WARNINGS = ();
+    d50_fire($onset + 2.25 + 0.01);
+    is(scalar(d50_plays($ws, $n)), 0, "D50-21b: the stall position (9195) decides, not the moved anchor (5000): no replay");
+    is(scalar(grep { /Control: hang replay/ } @Slim::Utils::Log::WARNINGS), 0, "D50-21b: no hang replay WARN line");
+    d50_done($ctl);
+}
+
+# --- D50-21c (261111-vi4 IN-04, the other direction of D50-21b): the duration 15.5 s is known from the start (threshold 9500),
+# the stall at 9195 lies OUTSIDE the margin and arms. A later speed-0 position_sync at 9700 moves observed.anchor INTO the
+# margin; the fire-time re-check must still read the stall frame's position, so the replay goes out and seeks to 9195, not
+# to the anchor. Same shape as the gate's case i2, no hand-deleted duration and no backwards-running position.
+{
+    my @fx = d50_frames('d50-hang-midtitle.frames');
+    my $onset = $fx[13][0];
+    my ($ctl, $daemon, $ws) = d50_session('aa:bb:cc:dd:ee:9a', $D50_HM, $fx[0][0] - 0.05,
+        observed => { meta => { $D50_HM => { duration => 15.5 } } });
+    d50_feed($ctl, \@fx, 0, 13);
+    ok($ctl->observed->{hangWatch}, "D50-21c setup: the stall at 9195 (threshold 9500) armed the watch");
+    my $later = d50_clone($fx[13][1]);
+    $later->{position} = { position_ms => 9700, timestamp_ms => int(($onset + 0.5) * 1000), speed => 0 };
+    d50_at($onset + 0.5, sub { $ctl->onEvent($later); });
+    is($ctl->observed->{anchor}{position_ms}, 9700, "D50-21c setup: the live anchor moved to 9700 ms, inside the margin");
+    is($ctl->observed->{hangWatch}{position_ms}, 9195, "D50-21c setup: the watch still holds the stall frame's position");
+    my $n = scalar @{ $ws->sent };
+    @Slim::Utils::Log::WARNINGS = ();
+    d50_fire($onset + 2.25 + 0.01);
+    is(scalar(d50_plays($ws, $n)), 1, "D50-21c: the stall position (9195) decides, not the moved anchor (9700): the replay goes out");
+    is(($ctl->pending || {})->{postSeek}, 9195, "D50-21c: and it seeks to the stall frame's position, not to the anchor");
+    is(scalar(grep { /Control: hang replay \S+ pos=9195 / } @Slim::Utils::Log::WARNINGS), 1, "D50-21c: one hang replay WARN line at pos=9195");
+    d50_done($ctl);
+}
+
+# --- D50-22 (helper table): _hangNearEnd on the edges and the unknown-duration shapes.
+{
+    my $T1 = 'spotify:track:nearEndTitle1';
+    my $T2 = 'spotify:track:nearEndTitle2';
+    my $T3 = 'spotify:track:nearEndTitle3';
+    my $T5 = 'spotify:track:nearEndTitle5';
+    my $EP = 'spotify:episode:4rOoJ6Egrf8K2IrywzwOMk';
+    my ($ctl) = fresh_control(
+        mac      => 'aa:bb:cc:dd:ee:96',
+        mode     => 'browse',
+        observed => { meta => {
+            $T1 => { duration => 12.195 },
+            $T2 => { duration => 200 },
+            $T3 => { duration => 60 },
+            $EP => { duration => 60 },
+            $T5 => { duration => 5 },
+            'spotify:track:nearEndNoDur'  => { seekable => 1 },
+            'spotify:track:nearEndZeroDur' => { duration => 0 },
+        } },
+    );
+    if (ok($ctl->can('_hangNearEnd'), "D50-22: Control has _hangNearEnd")) {
+        my @rows = (
+            [ 'track 12.195 s at 9195',                $T1, 9195,  1 ],
+            [ '200 s at 9195',                         $T2, 9195,  0 ],
+            [ '60 s at 54000 (exactly the margin)',    $T3, 54000, 1 ],
+            [ '60 s at 53999',                         $T3, 53999, 0 ],
+            [ 'episode 60 s at 57000',                 $EP, 57000, 1 ],
+            [ 'a 5 s title at 1 (shorter than the margin)', $T5, 1, 1 ],
+            [ 'uri without a meta entry',              'spotify:track:nearEndNoMeta', 9195, 0 ],
+            [ 'meta entry without a duration',         'spotify:track:nearEndNoDur', 9195, 0 ],
+            [ 'duration 0',                            'spotify:track:nearEndZeroDur', 9195, 0 ],
+            [ 'undef position',                        $T1, undef, 0 ],
+        );
+        for my $r (@rows) {
+            my ($name, $uri, $pos, $want) = @$r;
+            is($ctl->_hangNearEnd($uri, $pos), $want, "D50-22: $name -> $want");
+        }
+    }
+    else {
+        fail("D50-22: row $_ skipped, _hangNearEnd is missing") for 1 .. 10;
+    }
+}
+
+# --- D50-22b (261111-vi4 IN-02): an undefined uri or position is the old behaviour (0) AND raises no Perl warning.
+# `undef >= x` is false by itself, so the return value alone cannot tell the `defined` guard from its absence; the
+# warning stream can (use warnings is on in Control.pm).
+{
+    my ($ctl) = fresh_control(
+        mac      => 'aa:bb:cc:dd:ee:9a',
+        mode     => 'browse',
+        observed => { meta => { 'spotify:track:nearEndWarn' => { duration => 12.195 } } },
+    );
+    if (ok($ctl->can('_hangNearEnd'), "D50-22b: Control has _hangNearEnd")) {
+        my @warned;
+        local $SIG{__WARN__} = sub { push @warned, $_[0]; };
+        is($ctl->_hangNearEnd('spotify:track:nearEndWarn', undef), 0, "D50-22b: undef position -> 0");
+        is($ctl->_hangNearEnd(undef, 9195), 0, "D50-22b: undef uri -> 0");
+        is(scalar(@warned), 0, "D50-22b: neither undef raised a Perl warning (the defined guards hold)")
+            or diag(join('', @warned));
+    }
+    else {
+        fail("D50-22b: row $_ skipped, _hangNearEnd is missing") for 1 .. 3;
+    }
+}
+
+# --- D50-23 (outside the edge): duration 15.25 s, threshold 9250 ms > 9195 (55 ms outside) -> the replay stays.
+{
+    my @fx = d50_frames('d50-hang-midtitle.frames');
+    my $onset = $fx[13][0];
+    my ($ctl, $daemon, $ws) = d50_session('aa:bb:cc:dd:ee:97', $D50_HM, $fx[0][0] - 0.05,
+        observed => { meta => { $D50_HM => { duration => 15.25 } } });
+    d50_feed($ctl, \@fx, 0, 13);
+    ok($ctl->observed->{hangWatch}, "D50-23: a stall 55 ms outside the margin arms the watch");
+    my $n = scalar @{ $ws->sent };
+    d50_fire($onset + 2.25 + 0.01);
+    is_deeply([ d50_plays($ws, $n) ], [ [ 'play', { uri => $D50_HM } ] ], "D50-23: and is replayed exactly once");
+    is(($ctl->pending || {})->{postSeek}, 9195, "D50-23: the pending play carries postSeek 9195");
+    d50_done($ctl);
+}
+
+# --- D50-24 (duration unknown = the old behaviour): armed and replayed exactly as before.
+{
+    my @fx = d50_frames('d50-hang-midtitle.frames');
+    my $onset = $fx[13][0];
+    my ($ctl, $daemon, $ws) = d50_session('aa:bb:cc:dd:ee:98', $D50_HM, $fx[0][0] - 0.05);
+    d50_feed($ctl, \@fx, 0, 12);
+    delete $ctl->observed->{meta}{$D50_HM}{duration};
+    d50_feed($ctl, \@fx, 13, 13);
+    ok(!defined($ctl->observed->{meta}{$D50_HM}{duration}), "D50-24 setup: the duration is unknown at the onset");
+    ok($ctl->observed->{hangWatch}, "D50-24: the unknown duration still arms the watch");
+    my $n = scalar @{ $ws->sent };
+    d50_fire($onset + 2.25 + 0.01);
+    is_deeply([ d50_plays($ws, $n) ], [ [ 'play', { uri => $D50_HM } ] ], "D50-24: and is replayed exactly once");
+    is(($ctl->pending || {})->{postSeek}, 9195, "D50-24: the pending play carries postSeek 9195");
+    d50_done($ctl);
+}
+
+# ============================================================
 # Phase 82 Plan 06, Task 2: X-1 -- the seven session flags
 # (sessionActive/sessionStarted/sessionPaused/deactivating/skipInitiated/
 # pendingPlayConfirm/soloistBrowseActive) have ZERO hits, code AND comment,
