@@ -127,6 +127,43 @@ sub contentType { Plugins::SpotOn::Unified::DaemonManager->backendClass->capabil
 
 sub isRemote    { 1 }
 
+# End-gap early EOF (Soloist): the stream LMS opens for the queued next title DURING the end gap
+# of the old one (fake-libpulse ended the old stream early, Control::_earlyEndPlan answered the
+# request) is a gapless continuation: the players are still playing the old title's tail from their
+# buffers. LMS's remote-stream start threshold (255 KB for FLAC, ~2.3 s of audio) would hold the
+# decoder until real-time data had accumulated past the daemon's ~1.5 s prebuffer burst, and the old
+# tail runs out first (measured: STMo with 262144 bytes waiting in the decoder). That one stream
+# gets EARLY_END_BUFFER_KB. Every other stream gets exactly what Squeezebox.pm play() computes when
+# a handler has no bufferThreshold: bitrate/8 * bufferSecs / 1000 KB, at most 255, 20 without a
+# known bitrate.
+use constant EARLY_END_BUFFER_KB => 20;
+
+sub bufferThreshold {
+    my ($class, $client, $url) = @_;
+
+    # Asked through the backend role (the librespot role has no opinion: undef).
+    my $continues = eval {
+        require Plugins::SpotOn::Unified::DaemonManager;
+        my $be = Plugins::SpotOn::Unified::DaemonManager->backendFor($client);
+        $be ? $be->query('earlyEndContinues', url => $url) : undef;
+    };
+    return EARLY_END_BUFFER_KB if $continues;
+
+    # The song LMS is about to stream (Squeezebox.pm play() reads it from its SongStreamController;
+    # here only the client's StreamingController is at hand: streamingSong). Never dies: this runs
+    # inside LMS's stream start.
+    my $bitrate = eval {
+        my $controller = ($client && blessed($client) && $client->can('controller')) ? $client->controller : undef;
+        my $song = ($controller && $controller->can('streamingSong')) ? $controller->streamingSong : undef;
+        $song ? $song->streambitrate : undef;
+    };
+    return 20 unless $bitrate;
+
+    my $bufferSecs = $serverPrefs->get('bufferSecs') || 3;
+    my $threshold  = (int($bitrate / 8) * $bufferSecs) / 1000;
+    return $threshold > 255 ? 255 : $threshold;
+}
+
 sub trackGain {
     my ($class, $client, $url) = @_;
 

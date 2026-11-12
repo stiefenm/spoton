@@ -637,6 +637,61 @@ static volatile int64_t g_boundary_at_pushed = -1;
 static volatile int64_t g_client_generation = 0;
 static volatile int64_t g_boundary_client_generation = NO_CLIENT_GENERATION;
 
+/* End-gap early EOF. At a natural title end Soloist has written the old
+ * title's last frame, the HTTP client has drained the ring, and the daemon
+ * then waits until the virtual sink is empty (about T, the vsink depth)
+ * before it writes the next title. LMS only learns that the old stream is
+ * over when the boundary is planted after that wait, and then still needs
+ * 1-2 s to finish the old stream, open the next one and get it decoding --
+ * time the player has to cover from its buffer on top of the T-second data
+ * gap. After any (re)start the player holds roughly T plus LMS's pre-start
+ * buffering, so the next title change underruns (a 1.4 s rebuffer for one
+ * player, about 5 s for a sync group).
+ *
+ * Control marks the current title as being at its end (POST /near-end, sent
+ * from the near-end `buffering` frame Soloist reports at exactly that
+ * moment). With the mark in force for THIS client, the shim ends the old
+ * stream as soon as the end gap is certain: the ring is empty, nothing was
+ * pushed for EARLY_END_GAP_MS, the virtual sink still holds audio and is
+ * running (not corked). It plants the bounding marker at total_pushed (= the
+ * old title's last byte, everything is popped), so the drain loop closes the
+ * client on its next tick and LMS reopens DURING the gap. Soloist's own
+ * timing is unchanged: it still changes title when the sink has drained.
+ * Control's /boundary for that title change then finds the early marker and
+ * plants nothing (the new client streams the next title from its start).
+ *
+ * The mark is one-shot and bound to the client generation and the ring's
+ * flush epoch at the time it was set: a seek, skip, takeover or new client
+ * voids it. All of these globals are read and written only by the HTTP
+ * thread (the control handlers and the drain loop), like their siblings;
+ * EARLY_END_GAP_MS is read once by the constructor
+ * (SPOTON_FAKEPULSE_EARLY_END_GAP_MS, 0 = off). */
+#define EARLY_END_GAP_MS_DEFAULT 400
+#define EARLY_END_GAP_MS_MAX     5000
+static long g_early_end_gap_ms = EARLY_END_GAP_MS_DEFAULT;
+/* The stream must have been attached this long before it may end early. LMS
+ * compares the sync players' play points at a title start; a slave that has
+ * not reported the new title yet still carries the play point of the OLD
+ * stream, so the apparent deviation equals that stream's played length, and
+ * LMS corrects deviations up to MAX_DEVIATION_ADJUST (10 s) by skipping the
+ * players ahead: after a stream shorter than that the next title can lose its
+ * first seconds. That is LMS's own behaviour and happens on the old path too
+ * (measured 8672/5533 ms with this guard in force); there the short stream
+ * usually underruns at its end and the rebuffer resyncs the group, which hides
+ * it. An early end removes that underrun and made the skip certain (measured
+ * 4075 ms on both players). A stream younger than this keeps the old path; the
+ * short-stream case is not fixed here. */
+#define EARLY_END_MIN_STREAM_MS 12000
+static long g_early_end_min_stream_ms = EARLY_END_MIN_STREAM_MS;
+static volatile int64_t  g_client_attach_ms  = 0;    /* when the current client was promoted (HTTP thread) */
+static volatile int64_t  g_near_end_gen      = NO_CLIENT_GENERATION;
+static volatile int64_t  g_near_end_until_ms = 0;
+static volatile uint64_t g_near_end_epoch    = 0;
+static volatile int64_t  g_early_end_at      = -1;   /* marker planted early; -1 = none */
+static volatile int64_t  g_early_end_gen     = NO_CLIENT_GENERATION;
+static volatile int64_t  g_early_end_ms      = 0;
+static volatile uint64_t g_early_end_epoch   = 0;
+
 /* boundary-trifft-nachfolgeclient REOPENED (.planning/debug/
  * boundary-trifft-nachfolgeclient.md, "WIEDERERÖFFNET" section): the fix
  * above only covers ONE of two orderings in which a boundary can be
@@ -1794,6 +1849,59 @@ static void _serve_boundary(pending_conn_t *p, int client_fd) {
         atomic_store(&g_flush_decide_deadline, 0);
     }
     /* D-34 R2_PROMOTE_END */
+    /* End-gap early EOF (see g_early_end_gap_ms): the /boundary of the title
+     * change whose old stream the shim already ended plants NOTHING -- the
+     * marker did its work, the old client is gone, and the client attached
+     * since streams the next title from its first byte (a marker now would
+     * cut that stream). One-shot; only within T + 5 s of the early plant,
+     * with no flush since and no skip pending; otherwise the early record is
+     * stale and the plant below runs as before. */
+    if (g_early_end_at >= 0) {
+        int64_t ee_at  = g_early_end_at;
+        int64_t ee_gen = g_early_end_gen;
+        g_early_end_at = -1;
+        hold_rel_t ehrel;
+        ehrel.active = 0;
+        pthread_mutex_lock(&g_ring.lock);
+        int fresh = (!flush_pending && g_ring.flush_epoch == g_early_end_epoch
+                     && _hold_now_ms() - g_early_end_ms <= (int64_t)g_vsink.t_ms + 5000);
+        size_t  ee_fill   = g_ring.fill;
+        int64_t ee_pushed = g_ring.total_pushed;
+        int64_t ee_popped = g_ring.total_popped;
+        int64_t ee_drops  = g_ring.drops_total;
+        if (fresh && g_ring.hold_at >= 0) {
+            _hold_release_locked(&g_ring, "plain", &ehrel);
+        }
+        pthread_mutex_unlock(&g_ring.lock);
+        if (fresh) {
+            _hold_log_release(&ehrel);
+            char ee_body[320];
+            int ee_body_len = snprintf(ee_body, sizeof(ee_body),
+                "via=live boundary=%lld anchor=early ring_fill=%zu total_pushed=%lld total_popped=%lld drops=%lld gen=%lld hold=none hold_at=-1\n",
+                (long long)ee_at, ee_fill, (long long)ee_pushed, (long long)ee_popped,
+                (long long)ee_drops, (long long)ee_gen);
+            if (ee_body_len < 0) {
+                ee_body_len = 0;
+                ee_body[0] = '\0';
+            } else if ((size_t)ee_body_len >= sizeof(ee_body)) {
+                ee_body_len = (int)sizeof(ee_body) - 1;
+            }
+            char ee_reply[512];
+            int ee_reply_len = snprintf(ee_reply, sizeof(ee_reply),
+                "HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
+                ee_body_len, ee_body);
+            if (ee_reply_len > 0 && (size_t)ee_reply_len < sizeof(ee_reply)) {
+                _http_write_all(p->fd, (const unsigned char *)ee_reply, (size_t)ee_reply_len);
+            }
+            close(p->fd);
+            p->fd = -1;
+            p->len = 0;
+            BOUNDARY("boundary_early: nothing planted, the early marker at=%lld (gen=%lld) ended the old stream",
+                     (long long)ee_at, (long long)ee_gen);
+            return;
+        }
+        BOUNDARY("early_end_stale: at=%lld gen=%lld -- planting as before", (long long)ee_at, (long long)ee_gen);
+    }
     pthread_mutex_lock(&g_ring.lock);
     int64_t pushed_now = g_ring.total_pushed;
     int64_t popped_now = g_ring.total_popped;
@@ -2245,6 +2353,142 @@ static void _serve_seek_keep(pending_conn_t *p, int client_fd) {
  * it was one (served and closed), 0 otherwise (a stream request or an unread
  * head: untouched). The one classification the settle, the in-place newcomer
  * rule and the write loop share. */
+/* End-gap early EOF (see g_early_end_gap_ms): POST /near-end?ms=<remaining>
+ * marks the CURRENT client's title as being at its end. Loopback only (403
+ * before any state is touched, like its siblings). The mark holds for the
+ * remaining time Control reports plus 3 s, for this client generation and
+ * flush epoch only. Reply: `near_end=armed gen=.. gap_ms=.. until_ms=..`, or
+ * `near_end=off reason=..` (switched off, or no client attached). */
+static void _serve_near_end(pending_conn_t *p, int client_fd) {
+    if (!p->from_loopback) {
+        static const char forbidden_resp[] =
+            "HTTP/1.0 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        _http_write_all(p->fd, (const unsigned char *)forbidden_resp,
+                         sizeof(forbidden_resp) - 1);
+        close(p->fd);
+        p->fd = -1;
+        p->len = 0;
+        return;
+    }
+    long ms = 0;
+    {
+        const char *eol = strstr(p->buf, "\r\n");
+        const char *hit = strstr(p->buf, "ms=");
+        if (hit != NULL && (eol == NULL || hit < eol)) {
+            ms = strtol(hit + 3, NULL, 10);
+            if (ms < 0) ms = 0;
+            if (ms > 20000) ms = 20000;
+        }
+    }
+    char body[200];
+    if (g_early_end_gap_ms <= 0) {
+        snprintf(body, sizeof(body), "near_end=off reason=disabled\n");
+    } else if (client_fd < 0) {
+        g_near_end_gen = NO_CLIENT_GENERATION;
+        snprintf(body, sizeof(body), "near_end=off reason=no_client\n");
+    } else {
+        pthread_mutex_lock(&g_ring.lock);
+        g_near_end_epoch = g_ring.flush_epoch;
+        pthread_mutex_unlock(&g_ring.lock);
+        g_near_end_gen = g_client_generation;
+        g_near_end_until_ms = _hold_now_ms() + (int64_t)ms + 3000;
+        snprintf(body, sizeof(body), "near_end=armed gen=%lld gap_ms=%ld until_ms=%lld\n",
+                 (long long)g_near_end_gen, g_early_end_gap_ms, (long long)g_near_end_until_ms);
+    }
+    char reply[320];
+    int reply_len = snprintf(reply, sizeof(reply),
+        "HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
+        (int)strlen(body), body);
+    if (reply_len > 0 && (size_t)reply_len < sizeof(reply)) {
+        _http_write_all(p->fd, (const unsigned char *)reply, (size_t)reply_len);
+    }
+    close(p->fd);
+    p->fd = -1;
+    p->len = 0;
+    BOUNDARY("near_end: %s", body);
+    if (g_debug_trace) {
+        char _ts[32];
+        _trace_ts(_ts, sizeof(_ts));
+        fprintf(stderr, "[fakepulse %s] near-end: %s", _ts, body);
+    }
+}
+
+/* End-gap early EOF: the per-tick decision (HTTP thread, after the drain and
+ * the underflow edge of the tick). Plants the bounding marker at the old
+ * title's last byte once the end gap is certain; the drain loop then closes
+ * the client on its next tick ("bounded EOF at track boundary"). */
+static void _early_end_check(int client_fd) {
+    if (g_early_end_gap_ms <= 0 || client_fd < 0) return;
+    if (g_near_end_gen == NO_CLIENT_GENERATION) return;
+    if (g_near_end_gen != g_client_generation) {
+        g_near_end_gen = NO_CLIENT_GENERATION;   /* another client: the mark is void */
+        return;
+    }
+    int64_t now = _hold_now_ms();
+    if (now > g_near_end_until_ms) {
+        g_near_end_gen = NO_CLIENT_GENERATION;
+        if (g_debug_trace) {
+            char _ts[32];
+            _trace_ts(_ts, sizeof(_ts));
+            fprintf(stderr, "[fakepulse %s] early-end: mark expired unused\n", _ts);
+        }
+        return;
+    }
+    if (g_boundary_at_pushed >= 0) return;   /* a marker is already in force */
+    if (now - g_client_attach_ms < (int64_t)g_early_end_min_stream_ms) {
+        g_near_end_gen = NO_CLIENT_GENERATION;   /* too short a stream: keep the old behaviour */
+        if (g_debug_trace) {
+            char _ts[32];
+            _trace_ts(_ts, sizeof(_ts));
+            fprintf(stderr, "[fakepulse %s] early-end: not used, the stream is only %lld ms old\n",
+                    _ts, (long long)(now - g_client_attach_ms));
+        }
+        return;
+    }
+    if (atomic_load(&g_flush_disconnect) || atomic_load(&g_seek_flush_armed) > 0
+        || atomic_load(&g_flush_keep_pending) || _flush_decide_open()) {
+        return;                              /* a seek/skip is being decided */
+    }
+    int planted = 0, stale = 0;
+    int64_t at = 0, gap = 0, q_ms = 0;
+    pthread_mutex_lock(&g_ring.lock);
+    if (g_ring.flush_epoch != g_near_end_epoch) {
+        stale = 1;
+    } else if (g_ring.fill == 0 && g_ring.empty_valid && g_vsink.t_ms > 0) {
+        gap = now - g_ring.empty_since_ms;
+        if (gap >= (int64_t)g_early_end_gap_ms) {
+            _vsink_settle_locked();
+            if (g_vsink.running && g_vsink.q_out > 0) {
+                at = g_ring.total_pushed;
+                q_ms = (g_vsink.q_out * 1000) / RING_BYTES_PER_SEC;
+                g_boundary_at_pushed = at;
+                g_boundary_client_generation = g_client_generation;
+                g_early_end_at = at;
+                g_early_end_gen = g_client_generation;
+                g_early_end_ms = now;
+                g_early_end_epoch = g_ring.flush_epoch;
+                planted = 1;
+            }
+        }
+    }
+    pthread_mutex_unlock(&g_ring.lock);
+    if (stale) {
+        g_near_end_gen = NO_CLIENT_GENERATION;   /* a flush since the mark: void */
+        return;
+    }
+    if (planted) {
+        g_near_end_gen = NO_CLIENT_GENERATION;   /* one-shot */
+        BOUNDARY("early_end_planted: at=%lld gap_ms=%lld vsink_ms=%lld gen=%lld",
+                 (long long)at, (long long)gap, (long long)q_ms, (long long)g_early_end_gen);
+        if (g_debug_trace) {
+            char _ts[32];
+            _trace_ts(_ts, sizeof(_ts));
+            fprintf(stderr, "[fakepulse %s] early-end: old stream ends now (gap %lld ms, sink still %lld ms)\n",
+                    _ts, (long long)gap, (long long)q_ms);
+        }
+    }
+}
+
 static int _pending_serve_control(pending_conn_t *p, int client_fd, const char *via) {
     if (_pending_is_control(p, "/boundary")) {
         _serve_boundary(p, client_fd);
@@ -2264,6 +2508,10 @@ static int _pending_serve_control(pending_conn_t *p, int client_fd, const char *
     }
     if (_pending_is_control(p, "/seek-keep")) {
         _serve_seek_keep(p, client_fd);
+        return 1;
+    }
+    if (_pending_is_control(p, "/near-end")) {
+        _serve_near_end(p, client_fd);
         return 1;
     }
     return 0;
@@ -2338,7 +2586,7 @@ static int _pending_accept(pending_conn_t *p, int client_fd, const char *via) {
         }
         if (_pending_is_control(&nc, "/boundary") || _pending_is_control(&nc, "/seek-arm")
             || _pending_is_control(&nc, "/hold-release") || _pending_is_control(&nc, "/browse-keep")
-            || _pending_is_control(&nc, "/seek-keep")) {
+            || _pending_is_control(&nc, "/seek-keep") || _pending_is_control(&nc, "/near-end")) {
             _pending_try_read(p);
             if (p->fd >= 0 && _pending_serve_control(p, client_fd, via)) {
                 /* the earlier control request is served first */
@@ -2540,6 +2788,8 @@ static int _http_write_client(int client_fd, const unsigned char *data, size_t n
                 _serve_browse_keep(pending);
             } else if (_pending_is_control(pending, "/seek-keep")) {
                 _serve_seek_keep(pending, client_fd);    /* 79-50 D-34 R2 */
+            } else if (_pending_is_control(pending, "/near-end")) {
+                _serve_near_end(pending, client_fd);    /* end-gap early EOF */
             }
         }
         if (pending->fd >= 0 && !_pending_head_complete(pending)
@@ -2787,6 +3037,12 @@ static void *_http_thread_fn(void *arg) {
             continue;
         }
 
+        if (_pending_is_control(&pending, "/near-end")) {
+            /* End-gap early EOF: the title-end mark, never a stream takeover. */
+            _serve_near_end(&pending, client_fd);
+            continue;
+        }
+
         if (pending.fd >= 0
             && (_pending_head_complete(&pending) || pending.len >= sizeof(pending.buf) - 1))
         {
@@ -2828,6 +3084,7 @@ static void *_http_thread_fn(void *arg) {
                  * g_boundary_client_generation's doc comment above
                  * g_boundary_at_pushed. */
                 g_client_generation++;
+                g_client_attach_ms = _hold_now_ms();   /* end-gap early EOF: the stream's age */
                 /* boundary-trifft-nachfolgeclient REOPENED fix: a live
                  * attach means the story has moved on -- any unconsumed
                  * departed-generation record from further back (a client
@@ -3181,6 +3438,11 @@ static void *_http_thread_fn(void *arg) {
                     if (ml) pthread_mutex_unlock(&ml->lock);
                 }
             }
+            /* End-gap early EOF: decided once per tick, after the drain and the
+             * underflow edge (see g_early_end_gap_ms). */
+            if (client_fd >= 0) {
+                _early_end_check(client_fd);
+            }
         }
     }
 
@@ -3471,6 +3733,20 @@ static void _fake_libpulse_init(void) {
         g_debug_trace = atoi(traceEnv);
     } else if (getenv("SPOTON_FAKEPULSE_DEBUG") != NULL) {
         g_debug_trace = 1;
+    }
+
+    {
+        /* End-gap early EOF: SPOTON_FAKEPULSE_EARLY_END_GAP_MS (0 off,
+         * 1..EARLY_END_GAP_MS_MAX), anything else the compiled default. Read
+         * here, before the HTTP thread exists (getenv never runs there). */
+        const char *e = getenv("SPOTON_FAKEPULSE_EARLY_END_GAP_MS");
+        if (e && *e) {
+            char *end = NULL;
+            long v = strtol(e, &end, 10);
+            if (end != e && *end == '\0' && v >= 0 && v <= EARLY_END_GAP_MS_MAX) {
+                g_early_end_gap_ms = v;
+            }
+        }
     }
 
     {
@@ -7081,6 +7357,223 @@ static void _test_connect_cases(pa_stream *s, int port, int *failures) {
     _test_connect_off_loopback(s, port, failures);
 }
 
+/* ==================================================================== */
+/* End-gap early EOF -- harness cells                                   */
+/* ==================================================================== */
+
+#define _TEST_EE_LEN_A 705600   /* 2 s of 0.25f */
+#define _TEST_EE_LEN_B 536848   /* the archive burst */
+
+/* Virtual sink on (T 3000 ms, real clock), stream uncorked, clean ring and
+ * marks; an attached client that has read title A completely. */
+static int _test_ee_open(pa_stream *s, int port, int *gotA) {
+    _test_vsink_env(3000);
+    _test_vsink_clock_set(0);
+    _test_vsink_cork(s, 1);
+    _test_vsink_cork(s, 0);
+    _test_vsink_flush(s);
+    (void)pa_stream_writable_size(s);
+    _test_ring_reset();
+    g_boundary_at_pushed = -1;
+    g_early_end_at = -1;
+    g_near_end_gen = NO_CLIENT_GENERATION;
+    g_early_end_min_stream_ms = 0;   /* the cells attach and end at once; EE-short covers the age */
+    *gotA = 0;
+    int fd = _test_hold_attach(port);
+    if (fd >= 0) {
+        _test_hold_push(s, _TEST_EE_LEN_A, 0.25f);
+        unsigned char *sink = malloc(_TEST_EE_LEN_A);
+        *gotA = (sink && _test_read_bytes(fd, sink, _TEST_EE_LEN_A, 8000) == 0);
+        free(sink);
+    }
+    return fd;
+}
+
+static void _test_ee_cleanup(pa_stream *s, int port) {
+    g_early_end_at = -1;
+    g_near_end_gen = NO_CLIENT_GENERATION;
+    g_early_end_gap_ms = EARLY_END_GAP_MS_DEFAULT;
+    g_early_end_min_stream_ms = EARLY_END_MIN_STREAM_MS;
+    _test_vsink_cork(s, 0);
+    _test_hold_cleanup(port);
+    _test_vsink_env(0);
+    (void)pa_stream_writable_size(s);
+    _test_ring_reset();
+}
+
+/* Reads until EOF or max_ms; *ms_to_eof = the time it took (-1 = no EOF). */
+static size_t _test_ee_read_until_eof(int fd, int max_ms, long *ms_to_eof) {
+    struct timeval start;
+    gettimeofday(&start, NULL);
+    int eof = 0;
+    size_t got = 0;
+    *ms_to_eof = -1;
+    while (!eof && _elapsed_ms(&start) < max_ms) {
+        got += _test_hold_read_window(fd, 20, &eof);
+    }
+    if (eof) {
+        *ms_to_eof = _elapsed_ms(&start);
+    }
+    return got;
+}
+
+static void _test_ee_natural(pa_stream *s, int port, int *failures) {
+    const char *name = "early-end: a marked title end closes the old stream in the gap, the next client gets the whole next title";
+    int gotA = 0;
+    char nbody[256], bbody[512];
+    nbody[0] = bbody[0] = '\0';
+    int fd = _test_ee_open(s, port, &gotA);
+    int armed = 0, post_ok = 0, eof2 = 0, second_ok = 0;
+    long ms_to_eof = -1, bad = 0;
+    size_t late = 0, extra = 0;
+    char state[24], anchor[16], via[16];
+    state[0] = anchor[0] = via[0] = '\0';
+    if (fd >= 0 && gotA) {
+        armed = _test_post_control_body(port, "/near-end?ms=2000", nbody, sizeof(nbody));
+        _test_body_str(nbody, "near_end=", state, sizeof(state));
+        late = _test_ee_read_until_eof(fd, 2000, &ms_to_eof);
+        close(fd);
+        int fd2 = _test_hold_attach(port);
+        if (fd2 >= 0) {
+            usleep(100000);
+            _test_hold_push(s, _TEST_EE_LEN_B, 0.5f);
+            post_ok = _test_post_control_body(port, "/boundary?anchor=drain", bbody, sizeof(bbody));
+            _test_body_str(bbody, "anchor=", anchor, sizeof(anchor));
+            _test_body_str(bbody, "via=", via, sizeof(via));
+            unsigned char *sb = malloc(_TEST_EE_LEN_B);
+            if (sb && _test_read_bytes(fd2, sb, _TEST_EE_LEN_B, 5000) == 0) {
+                int32_t want = _test_f32_to_s32(0.5f);
+                for (size_t i = 0; i + 3 < _TEST_EE_LEN_B; i += 4) {
+                    int32_t v;
+                    memcpy(&v, sb + i, 4);
+                    if (v != want) bad++;
+                }
+                second_ok = (bad == 0);
+            }
+            free(sb);
+            extra = _test_hold_read_window(fd2, 300, &eof2);
+            close(fd2);
+        }
+    } else if (fd >= 0) {
+        close(fd);
+    }
+    char facts[400];
+    snprintf(facts, sizeof(facts),
+             "gotA=%d near_end='%s' eof_after_ms=%ld (want >= %d) late_bytes=%zu boundary anchor='%s' via='%s' (want early/live) next title ok=%d bad=%ld extra=%zu next stream eof=%d (want 0)",
+             gotA, state, ms_to_eof, EARLY_END_GAP_MS_DEFAULT, late, anchor, via, second_ok, bad, extra, eof2);
+    int ok = gotA && armed && strcmp(state, "armed") == 0
+          && ms_to_eof >= EARLY_END_GAP_MS_DEFAULT - 50 && ms_to_eof < 1500 && late == 0
+          && post_ok && strcmp(anchor, "early") == 0 && strcmp(via, "live") == 0
+          && second_ok && extra == 0 && !eof2;
+    _test_hold_verdict(failures, ok, name, facts);
+    _test_ee_cleanup(s, port);
+}
+
+static void _test_ee_unmarked(pa_stream *s, int port, int *failures) {
+    const char *name = "early-end: without the mark the old stream stays open through the gap (behaviour as before)";
+    int gotA = 0, eof = 0;
+    int fd = _test_ee_open(s, port, &gotA);
+    size_t got = 0;
+    if (fd >= 0 && gotA) {
+        got = _test_hold_read_window(fd, 1500, &eof);
+    }
+    if (fd >= 0) close(fd);
+    char facts[160];
+    snprintf(facts, sizeof(facts), "gotA=%d bytes=%zu eof=%d (want 0)", gotA, got, eof);
+    _test_hold_verdict(failures, gotA && got == 0 && !eof, name, facts);
+    _test_ee_cleanup(s, port);
+}
+
+static void _test_ee_flushed(pa_stream *s, int port, int *failures) {
+    const char *name = "early-end: a seek flush after the mark voids it (no early close in the next gap)";
+    int gotA = 0, eof = 0, got2 = 0;
+    char nbody[256];
+    int fd = _test_ee_open(s, port, &gotA);
+    size_t got = 0;
+    if (fd >= 0 && gotA) {
+        (void)_test_post_control_body(port, "/near-end?ms=2000", nbody, sizeof(nbody));
+        _test_vsink_flush(s);   /* armed: the client stays */
+        _test_hold_push(s, 352800, 0.25f);
+        unsigned char *sink = malloc(352800);
+        got2 = (sink && _test_read_bytes(fd, sink, 352800, 5000) == 0);
+        free(sink);
+        got = _test_hold_read_window(fd, 1500, &eof);
+    }
+    if (fd >= 0) close(fd);
+    char facts[160];
+    snprintf(facts, sizeof(facts), "gotA=%d refill read=%d bytes=%zu eof=%d (want 0)", gotA, got2, got, eof);
+    _test_hold_verdict(failures, gotA && got2 && got == 0 && !eof, name, facts);
+    _test_ee_cleanup(s, port);
+}
+
+static void _test_ee_corked(pa_stream *s, int port, int *failures) {
+    const char *name = "early-end: a corked (paused) stream is not ended early";
+    int gotA = 0, eof = 0;
+    char nbody[256];
+    int fd = _test_ee_open(s, port, &gotA);
+    size_t got = 0;
+    if (fd >= 0 && gotA) {
+        _test_vsink_cork(s, 1);
+        (void)_test_post_control_body(port, "/near-end?ms=2000", nbody, sizeof(nbody));
+        got = _test_hold_read_window(fd, 1500, &eof);
+    }
+    if (fd >= 0) close(fd);
+    char facts[160];
+    snprintf(facts, sizeof(facts), "gotA=%d bytes=%zu eof=%d (want 0)", gotA, got, eof);
+    _test_hold_verdict(failures, gotA && got == 0 && !eof, name, facts);
+    _test_ee_cleanup(s, port);
+}
+
+static void _test_ee_off(pa_stream *s, int port, int *failures) {
+    const char *name = "early-end: EARLY_END_GAP_MS 0 switches it off (near_end=off, the stream stays open)";
+    int gotA = 0, eof = 0;
+    char nbody[256], state[24];
+    nbody[0] = state[0] = '\0';
+    int fd = _test_ee_open(s, port, &gotA);
+    size_t got = 0;
+    if (fd >= 0 && gotA) {
+        g_early_end_gap_ms = 0;
+        (void)_test_post_control_body(port, "/near-end?ms=2000", nbody, sizeof(nbody));
+        _test_body_str(nbody, "near_end=", state, sizeof(state));
+        got = _test_hold_read_window(fd, 1200, &eof);
+    }
+    if (fd >= 0) close(fd);
+    char facts[200];
+    snprintf(facts, sizeof(facts), "gotA=%d near_end='%s' (want off) bytes=%zu eof=%d (want 0)", gotA, state, got, eof);
+    _test_hold_verdict(failures, gotA && strcmp(state, "off") == 0 && got == 0 && !eof, name, facts);
+    _test_ee_cleanup(s, port);
+}
+
+static void _test_ee_short_stream(pa_stream *s, int port, int *failures) {
+    const char *name = "early-end: a stream younger than EARLY_END_MIN_STREAM_MS is not ended early (LMS sync skipAhead guard)";
+    int gotA = 0, eof = 0;
+    char nbody[256];
+    int fd = _test_ee_open(s, port, &gotA);
+    g_early_end_min_stream_ms = EARLY_END_MIN_STREAM_MS;   /* the real guard: the client is a few ms old */
+    size_t got = 0;
+    if (fd >= 0 && gotA) {
+        (void)_test_post_control_body(port, "/near-end?ms=2000", nbody, sizeof(nbody));
+        got = _test_hold_read_window(fd, 1500, &eof);
+    }
+    if (fd >= 0) close(fd);
+    char facts[160];
+    snprintf(facts, sizeof(facts), "gotA=%d bytes=%zu eof=%d (want 0)", gotA, got, eof);
+    _test_hold_verdict(failures, gotA && got == 0 && !eof, name, facts);
+    _test_ee_cleanup(s, port);
+}
+
+static void _test_early_end_cases(pa_stream *s, int port, int *failures) {
+    pa_sample_format_t saved = s->sample_spec.format;
+    s->sample_spec.format = PA_SAMPLE_FLOAT32LE;
+    _test_ee_natural(s, port, failures);
+    _test_ee_unmarked(s, port, failures);
+    _test_ee_flushed(s, port, failures);
+    _test_ee_corked(s, port, failures);
+    _test_ee_off(s, port, failures);
+    _test_ee_short_stream(s, port, failures);
+    s->sample_spec.format = saved;
+}
+
 static void _test_hold_cases(pa_stream *s, int port, int *failures) {
     _test_hold_archive(s, port, failures);
     _test_hold_timeout(s, port, failures);
@@ -8078,6 +8571,7 @@ int main(void) {
         return failures > 0 ? 1 : 0;
     }
     _test_hold_cases(s, port, &failures);
+    _test_early_end_cases(s, port, &failures);
     if (hold_only) {
         printf("Hold-only run: failures=%d\n", failures);
         unlink(portFilePath);

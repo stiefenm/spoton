@@ -309,6 +309,20 @@ use constant BROWSE_KEEP_PATH_OFF => '/browse-keep?on=0';
 # loopback POST here.
 use constant SEEK_KEEP_PATH => '/seek-keep';
 
+# End-gap early EOF: `POST /near-end?ms=<remaining>` marks the current title
+# as being at its end. Soloist reports the end gap as a `buffering`
+# position_sync (speed 0) right after it has written the title's last frame
+# and before it waits for the virtual sink to drain (about the vsink depth,
+# 3 s). With the mark, the shim ends LMS's old stream as soon as the gap is
+# certain, so LMS opens the next title DURING the gap instead of after it
+# (fake-libpulse.c, g_early_end_gap_ms). LMS then asks for the queued next
+# title while the daemon is still on the old one; Control answers it at once
+# and lets the daemon change title by itself (a skip_next would flush). The
+# daemon must have changed within the reported remaining time plus
+# EARLY_END_WAIT_S, else the old skip_next path runs.
+use constant NEAR_END_PATH    => '/near-end';
+use constant EARLY_END_WAIT_S => 2;
+
 # D-34: the 4th positional of a `spottyconnect seek` Control emits for an app
 # seek during Browse; Connect.pm applies the startOffset rewrite for it only
 # while Control's mode is browse.
@@ -1648,6 +1662,7 @@ sub noteSeekIntent {
 
     $self->wanted->{seekIntent} = { uri => $uri, target_ms => int($target_ms), ts => Time::HiRes::time() };
     $self->observed->{lastPlaybackCmdAt} = Time::HiRes::time();    # 79-78 D-50: the seek burst that follows is no stall
+    delete $self->observed->{nearEnd};    # end-gap early EOF: a seek voids the title-end mark (the shim's flush does too)
 
     main::DEBUGLOG && $log->is_debug && $log->debug(
         "Control: noteSeekIntent($uri, $target_ms) (" . ($self->mac // '?') . ")"
@@ -2451,6 +2466,12 @@ sub _reconcilePlan {
     # every track_changed until the next queue_changed re-states it).
     my $head = $observed->{queueHead};
     if ($self->mode eq 'browse' && ref($head) eq 'HASH' && defined $head->{uri} && $head->{uri} eq $uri) {
+        if ($trigger eq 'requestTrack') {
+            if (my $early = $self->_earlyEndPlan($uri, $posMs, $opts, $successCb, $now)) {
+                push @intents, @$early;
+                return \@intents;
+            }
+        }
         push @intents, @{ $self->_planCommand('play', uri => $uri, position_ms => $posMs,
             armed => $armed, awaitMeta => ($metaKnown ? 0 : 1),
             postSeek => ($posMs > 0 ? $posMs : undef),
@@ -5611,6 +5632,12 @@ sub _hangTrackChanged {
     delete @{$o}{qw(hangPre playingSince)};
     $self->_cancelHangWatch('track_changed');
     delete $o->{hangReplays} unless defined $o->{track} && $o->{track} eq $uri;
+    # end-gap early EOF: a title change ends the mark and an open wait for it
+    delete $o->{nearEnd} if ref($o->{nearEnd}) eq 'HASH' && ($o->{nearEnd}{uri} // '') ne $uri;
+    if (ref($o->{earlyEnd}) eq 'HASH' && ($o->{earlyEnd}{uri} // '') eq $uri) {
+        delete $o->{earlyEnd};
+        Slim::Utils::Timers::killTimers($self, \&_earlyEndFallback);
+    }
     return;
 }
 
@@ -5653,6 +5680,7 @@ sub _armHangWatch {
         main::DEBUGLOG && $log->is_debug && $log->debug(
             "Control: hang watch not armed (near end) $o->{track} pos=$p->{position_ms} (" . ($self->mac // '?') . ")"
         );
+        $self->_postNearEnd($o->{track}, $p->{position_ms});    # end-gap early EOF
         return;
     }
     my $ps = $o->{playingSince};
@@ -5672,6 +5700,94 @@ sub _armHangWatch {
     main::DEBUGLOG && $log->is_debug && $log->debug(
         "Control: hang watch armed $o->{track} pos=$p->{position_ms} (" . ($self->mac // '?') . ")"
     );
+    return;
+}
+
+# _postNearEnd($self, $uri, $posMs) -- end-gap early EOF: the near-end `buffering` frame of
+# the own title (the guards of _armHangWatch up to near_end hold: browse, active, nothing
+# pending, the burst came from playing, the wanted title) marks it at the shim, once per title.
+# Only with a DIFFERENT successor queued in the daemon (the queue head): without one there is no
+# next title for LMS to open early (context end, repeat-one), and nothing changes.
+sub _postNearEnd {
+    my ($self, $uri, $posMs) = @_;
+    my $o = $self->observed;
+    return unless defined $uri && defined $posMs;
+    return if ref($o->{nearEnd}) eq 'HASH' && ($o->{nearEnd}{uri} // '') eq $uri;
+    my $head = $o->{queueHead};
+    return unless ref($head) eq 'HASH' && defined $head->{uri} && $head->{uri} ne $uri;
+    my $meta = $o->{meta};
+    my $dur  = (ref($meta) eq 'HASH' && ref($meta->{$uri}) eq 'HASH') ? $meta->{$uri}{duration} : undef;
+    return unless defined $dur && $dur > 0;
+    my $remaining = int($dur * 1000 - $posMs);
+    $remaining = 0 if $remaining < 0;
+    my $daemon = $self->daemon or return;
+    my $port   = $daemon->_streamPort or return;
+    $o->{nearEnd} = { uri => $uri, next => $head->{uri}, at => Time::HiRes::time(), remaining_ms => $remaining };
+    my $sent = $self->_loopbackPost($port, NEAR_END_PATH . '?ms=' . $remaining);
+    main::DEBUGLOG && $log->is_debug && $log->debug(
+        "Control: near end of $uri ($remaining ms left, next $head->{uri}) -- "
+        . ($sent ? 'marked for the end gap' : 'mark not sent') . " (" . ($self->mac // '?') . ")"
+    );
+    return;
+}
+
+# _earlyEndPlan($self, $uri, $posMs, $opts, $successCb, $now) -- end-gap early EOF, the planner
+# side: LMS asks for the daemon's queue head while the daemon is still on the title marked by
+# _postNearEnd and within its reported remaining time (+ EARLY_END_WAIT_S). The shim ended LMS's
+# old stream early; the daemon changes to the queue head by itself once its sink has drained.
+# Answer LMS at once (successCb, so it opens the next stream now), raise the prefetch wish for the
+# title after it, and arm the fallback (_earlyEndFallback: the old skip_next path). Returns the
+# intents, or undef when the case does not apply (no seek target, the mark is for the daemon's
+# current title, the wanted title is the marked successor).
+sub _earlyEndPlan {
+    my ($self, $uri, $posMs, $opts, $successCb, $now) = @_;
+    return undef if $opts->{earlyEndFallback};
+    return undef if ($posMs // 0) > 0;
+    my $o  = $self->observed;
+    my $ne = $o->{nearEnd};
+    return undef unless ref($ne) eq 'HASH' && defined $o->{track} && ($ne->{uri} // '') eq $o->{track}
+        && ($ne->{next} // '') eq $uri;
+    my $deadline = ($ne->{at} // 0) + ($ne->{remaining_ms} // 0) / 1000 + EARLY_END_WAIT_S;
+    return undef if $now > $deadline;
+    # No status gate: the speed-0 position_sync of the end gap itself sets observed.status to
+    # `paused` (S-02). A real pause corks the stream, and the shim never ends a corked stream early.
+    my @intents;
+    if (!(ref($o->{earlyEnd}) eq 'HASH' && ($o->{earlyEnd}{uri} // '') eq $uri)) {
+        push @intents, { op => 'set', target => 'observed', key => 'earlyEnd',
+            value => { uri => $uri, from => $o->{track}, until => $deadline } };
+        push @intents, { op => 'timer', cb => \&_earlyEndFallback, at => $deadline };
+        push @intents, { op => 'log', level => 'info', text =>
+            "Control: LMS opened the queued next title $uri during the end gap of $o->{track} -- "
+            . "waiting for the daemon's own change (" . ($self->mac // '?') . ")" };
+    }
+    push @intents, { op => 'set', target => 'observed', key => 'prefetchWish', value => 1 };
+    push @intents, { op => 'fire', cb => { successCb => [ $successCb ] }, which => 'successCb', args => [] } if $successCb;
+    return \@intents;
+}
+
+# earlyEndContinues($self, $url) -- end-gap early EOF: 1 while Control waits for the daemon's own
+# change to $url after answering LMS's early request for it (_earlyEndPlan), else 0. Read by
+# ProtocolHandler::bufferThreshold for the stream LMS opens for that title (a gapless continuation).
+sub earlyEndContinues {
+    my ($self, $url) = @_;
+    return 0 unless $self->mode eq 'browse';
+    my $ee = $self->observed->{earlyEnd};
+    return 0 unless ref($ee) eq 'HASH' && defined $ee->{uri};
+    my $uri = _normalizeUri($url);
+    return (defined $uri && $uri eq $ee->{uri}) ? 1 : 0;
+}
+
+# _earlyEndFallback($self) -- end-gap early EOF: the daemon did not change to the title LMS asked
+# for in time. Back to the path that runs without the early EOF: reconcile once more, skipping
+# the early-end case (skip_next to the queue head, or play).
+sub _earlyEndFallback {
+    my $self = shift;
+    my $ee = delete $self->observed->{earlyEnd} or return;
+    return unless defined $self->wanted->{uri} && $self->wanted->{uri} eq ($ee->{uri} // '');
+    return if defined $self->observed->{track} && $self->observed->{track} eq $ee->{uri};
+    $log->warn("Control: the daemon did not change to $ee->{uri} within the end gap -- requesting it ("
+        . ($self->mac // '?') . ")");
+    $self->_reconcile('requestTrack', { earlyEndFallback => 1 });
     return;
 }
 
