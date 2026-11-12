@@ -472,6 +472,9 @@ our $ON_KEEP_WRITE;
 # moved out of @CALLS/@REQUESTS/@SYSWRITE_CALLS into @SEEK_KEEP_WRITES so no
 # pre-existing /boundary or /seek-arm count shifts.
 our @SEEK_KEEP_WRITES;
+# End-gap early EOF: POST /near-end?ms=<remaining> is its own channel too (no /boundary or
+# /seek-arm count shifts); @NEAR_END_WRITES holds the request lines in order.
+our @NEAR_END_WRITES;
 sub syswrite {
     my $self = shift;
     my ($data) = @_;
@@ -479,6 +482,13 @@ sub syswrite {
         pop @CALLS;
         pop @REQUESTS;
         push @SEEK_KEEP_WRITES, $data;
+        print { $self } $data;
+        return length($data);
+    }
+    if ($data =~ m{^POST /near-end\?}) {
+        pop @CALLS;
+        pop @REQUESTS;
+        push @NEAR_END_WRITES, $data;
         print { $self } $data;
         return length($data);
     }
@@ -4166,6 +4176,127 @@ sub d50_plant_stall {
     else {
         fail("D50-22b: row $_ skipped, _hangNearEnd is missing") for 1 .. 3;
     }
+}
+
+# ============================================================
+# End-gap early EOF: the near-end `buffering` frame marks the title at the shim (POST /near-end) when
+# a different successor is queued; LMS's early request for that queue head is answered at once and
+# the daemon changes title by itself (no skip_next); the fallback runs the old path; a seek voids it.
+# The D50-19 shape: duration 12.195 s, the real 9195 ms stall frame sits 3.0 s before the end.
+# ============================================================
+my $EE_NEXT = 'spotify:track:eeNextTitle0000000000';
+sub ee_session {
+    my ($mac) = @_;
+    my @fx = d50_frames('d50-hang-midtitle.frames');
+    my ($ctl, $daemon, $ws) = d50_session($mac, $D50_HM, $fx[0][0] - 0.05,
+        observed => { meta => { $D50_HM => { duration => 12.195 } } });
+    d50_feed($ctl, \@fx, 0, 12);
+    $ctl->observed->{queueHead} = { uri => $EE_NEXT };
+    $ctl->observed->{queuedByUs} = { $EE_NEXT => 1 };
+    @IO::Socket::INET::NEAR_END_WRITES = ();
+    d50_feed($ctl, \@fx, 13, 13);
+    return ($ctl, $daemon, $ws, \@fx, $fx[13][0]);
+}
+sub ee_done {
+    my ($ctl) = @_;
+    d50_done($ctl);
+    Slim::Utils::Timers::killTimers($ctl, \&Plugins::SpotOn::Soloist::Control::_earlyEndFallback);
+}
+sub ee_skips {
+    my ($ws, $from) = @_;
+    my @s = @{ $ws->sent };
+    return grep { $_->[0] eq 'skip_next' || $_->[0] eq 'play' } @s[ $from .. $#s ];
+}
+
+# --- EE-1: the near-end frame with a queued successor posts one mark with the remaining time
+{
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session('aa:bb:cc:dd:ee:e1');
+    is(scalar(@IO::Socket::INET::NEAR_END_WRITES), 1, "EE-1: one POST /near-end at the near-end buffering frame");
+    like($IO::Socket::INET::NEAR_END_WRITES[0] // '', qr{^POST /near-end\?ms=3000 }, "EE-1: it carries the remaining 3000 ms");
+    is($ctl->observed->{nearEnd}{uri}, $D50_HM, "EE-1: the mark is recorded for the daemon's title");
+    is($ctl->observed->{nearEnd}{next}, $EE_NEXT, "EE-1: with the queued successor");
+    d50_feed($ctl, $fx, 13, 13);
+    is(scalar(@IO::Socket::INET::NEAR_END_WRITES), 1, "EE-1: a second near-end frame of the same title posts no second mark");
+    ee_done($ctl);
+}
+
+# --- EE-2: without a queued successor no mark is posted (context end, repeat-one: nothing changes)
+{
+    my @fx = d50_frames('d50-hang-midtitle.frames');
+    my ($ctl, $daemon, $ws) = d50_session('aa:bb:cc:dd:ee:e2', $D50_HM, $fx[0][0] - 0.05,
+        observed => { meta => { $D50_HM => { duration => 12.195 } } });
+    d50_feed($ctl, \@fx, 0, 12);
+    delete $ctl->observed->{queueHead};
+    @IO::Socket::INET::NEAR_END_WRITES = ();
+    d50_feed($ctl, \@fx, 13, 13);
+    is(scalar(@IO::Socket::INET::NEAR_END_WRITES), 0, "EE-2: no queue head -> no POST /near-end");
+    ok(!$ctl->observed->{nearEnd}, "EE-2: and no mark recorded");
+    ee_done($ctl);
+}
+
+# --- EE-3: LMS asks for the queue head during the end gap -> answered at once, no skip_next, wait armed
+{
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session('aa:bb:cc:dd:ee:e3');
+    my $n = scalar @{ $ws->sent };
+    my $fired = 0;
+    d50_at($onset + 0.6, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack', successCb => sub { $fired++ } }); });
+    is(scalar(ee_skips($ws, $n)), 0, "EE-3: no skip_next or play is sent to the daemon");
+    is($fired, 1, "EE-3: LMS's successCb fired at once (LMS opens the next stream now)");
+    is($ctl->observed->{earlyEnd}{uri}, $EE_NEXT, "EE-3: the wait for the daemon's own change is armed");
+    is($ctl->observed->{prefetchWish}, 1, "EE-3: the prefetch wish for the title after it is raised");
+    is($ctl->wanted->{uri}, $EE_NEXT, "EE-3: wanted is the next title");
+
+    # the daemon changes by itself: the wait ends, still nothing sent
+    my $tc = d50_clone($fx->[0][1]);
+    $tc->{item}{uri} = $EE_NEXT;
+    d50_at($onset + 3.0, sub { $ctl->onEvent($tc); });
+    ok(!$ctl->observed->{earlyEnd}, "EE-3: the daemon's track_changed to it ends the wait");
+    is($ctl->observed->{track}, $EE_NEXT, "EE-3: the daemon is on the next title");
+    d50_fire($onset + 6.0);
+    is(scalar(ee_skips($ws, $n)), 0, "EE-3: and the fallback never sends anything afterwards");
+    ee_done($ctl);
+}
+
+# --- EE-4: the daemon does not change in time -> the fallback runs the old skip_next path
+{
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session('aa:bb:cc:dd:ee:e4');
+    my $n = scalar @{ $ws->sent };
+    d50_at($onset + 0.6, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack' }); });
+    is(scalar(ee_skips($ws, $n)), 0, "EE-4 setup: deferred");
+    @Slim::Utils::Log::WARNINGS = ();
+    d50_fire($onset + 3.0 + Plugins::SpotOn::Soloist::Control::EARLY_END_WAIT_S() - 0.1);
+    is(scalar(ee_skips($ws, $n)), 0, "EE-4: nothing before the deadline");
+    d50_fire($onset + 3.0 + Plugins::SpotOn::Soloist::Control::EARLY_END_WAIT_S() + 0.1);
+    my @after = ee_skips($ws, $n);
+    is(scalar(@after), 1, "EE-4: after the deadline exactly one command for the next title");
+    is($after[0][0], 'skip_next', "EE-4: it is the skip_next to the queue head (the old path)");
+    ok(!$ctl->observed->{earlyEnd}, "EE-4: the wait is gone");
+    ok(scalar(grep { /did not change to \Q$EE_NEXT\E within the end gap/ } @Slim::Utils::Log::WARNINGS), "EE-4: one WARN names it");
+    ee_done($ctl);
+}
+
+# --- EE-5: a seek after the mark voids it -> LMS's request for the queue head takes the old path at once
+{
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session('aa:bb:cc:dd:ee:e5');
+    d50_at($onset + 0.2, sub { $ctl->noteSeekIntent($D50_HM, 1000); });
+    ok(!$ctl->observed->{nearEnd}, "EE-5: noteSeekIntent removed the mark");
+    my $n = scalar @{ $ws->sent };
+    d50_at($onset + 0.6, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack' }); });
+    my @s = ee_skips($ws, $n);
+    is(scalar(@s), 1, "EE-5: the request is not deferred");
+    is($s[0][0] // '', 'skip_next', "EE-5: skip_next to the queue head as before");
+    ee_done($ctl);
+}
+
+# --- EE-6: a request for a title that is NOT the marked successor is not deferred
+{
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session('aa:bb:cc:dd:ee:e6');
+    $ctl->observed->{queueHead} = { uri => 'spotify:track:eeOtherTitle00000000' };
+    my $n = scalar @{ $ws->sent };
+    d50_at($onset + 0.6, sub { $ctl->requestTrack('spotify:track:eeOtherTitle00000000', 0, { source => 'getNextTrack' }); });
+    is(scalar(ee_skips($ws, $n)), 1, "EE-6: another queue head than the marked successor takes the old path");
+    ok(!$ctl->observed->{earlyEnd}, "EE-6: no wait armed");
+    ee_done($ctl);
 }
 
 # --- D50-23 (outside the edge): duration 15.25 s, threshold 9250 ms > 9195 (55 ms outside) -> the replay stays.

@@ -5,6 +5,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Soloist: the first title change after you start, skip or seek no longer leaves a gap of silence (about 1.5 s on a single player, about 5 s in a sync group). At the end of a title Soloist waits about 3 seconds for its audio to drain before it starts the next title; LMS only opened the next stream after that wait, and right after a start, skip or seek the player's buffer is too short to cover both. SpotOn now ends the old stream as soon as the title's last audio has been sent, so LMS opens the next title during the wait. `SPOTON_FAKEPULSE_EARLY_END_GAP_MS=0` switches this off.
+
 ## [4.0.0-beta.10] - 2026-11-12
 
 **Installing this beta.** Same beta repository URL as before (`https://stiefenm.github.io/spoton/beta/repo.xml`); the Plugins page offers SpotOn 4.0.0beta10 as an update over 4.0.0beta9. Restart LMS after the update. Both fixes below are for the Soloist backend.
