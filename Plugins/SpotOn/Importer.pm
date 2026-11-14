@@ -468,6 +468,18 @@ sub scanPlaylists { if (main::SCANNER) {
         }
     }
 
+    # LMS keeps the online tracks when a scan finds none but the library had some ("most likely due to
+    # some failure", OnlineLibraryBase::deleteRemovedTracks). Same rule for the playlists: _parseRootlist
+    # answers [] for a rootlist without a usable list (an empty 200 body is one), and that must not remove
+    # every imported playlist. Someone who really unfollowed every playlist keeps the rows until "Don't
+    # import playlists" or "Clear library and rescan everything". The playlist rows do not record the
+    # account, so the rule is for all accounts together.
+    if ($complete && !%keep && $class->_hasImportedPlaylists) {
+        $log->warn('Library import: no account lists a playlist any more, but SpotOn playlists are imported -- '
+            . 'keeping them (most likely a failed read)');
+        $complete = 0;
+    }
+
     $class->_deleteStalePlaylists(\%keep) if $complete;
 
     $progress->final;
@@ -528,6 +540,15 @@ sub _storePlaylist {
     }) or return;
 
     $playlistObj->setTracks([ map { TRACK_URL_PREFIX . $_ } @$trackIds ]);
+}
+
+# _hasImportedPlaylists($class) -> 1 when the library holds an imported
+# SpotOn playlist.
+sub _hasImportedPlaylists {
+    my ($class) = @_;
+    my ($found) = Slim::Schema->dbh->selectrow_array(
+        q{SELECT 1 FROM tracks WHERE url LIKE ? LIMIT 1}, undef, PLAYLIST_URL_PREFIX . '%');
+    return $found ? 1 : 0;
 }
 
 # _deleteStalePlaylists($class, \%keep) -- removes imported playlists that no

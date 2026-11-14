@@ -164,6 +164,11 @@ sub selectall_arrayref {
     my $i = 0;
     return [ map { [ ++$i, $_ ] } sort grep { index($_, $p) == 0 } keys %playlists ];
 }
+sub selectrow_array {   # SELECT 1 FROM tracks WHERE url LIKE ? LIMIT 1 -- playlists are tracks rows in LMS
+    my ($self, $sql, undef, $like) = @_;
+    (my $p = $like) =~ s/%$//;
+    return (grep { index($_, $p) == 0 } keys %playlists, keys %tracks) ? (1) : ();
+}
 sub prepare_cached { bless {}, 'Slim::Schema::StubSth' }
 package Slim::Schema::StubSth;
 sub execute {
@@ -505,6 +510,30 @@ my %A = (saved => [ [ { uri => "spotify:album:$A1", added_at => 1700000000 }, { 
     $IMP->startScan;
     is(scalar calls_of('playlists'), 0, 'playlists off: the playlist list is not read');
     ok(!$Slim::Schema::playlists{"spoton://playlist:$P1"}, 'playlists off: imported playlists removed');
+}
+
+# ============================================================
+# an empty playlist list never removes the imported playlists -- the rule LMS applies to its online
+# tracks (lms Slim/Plugin/OnlineLibraryBase.pm:86-90); switching the playlist import off still does (above)
+# ============================================================
+{
+    reset_world();
+    %Slim::Schema::playlists = ("spoton://playlist:$P1" => { tracks => [ "spoton://track:$T1" ] });
+    %Plugins::SpotOn::API::SpClient::answer = (saved => [ [] ], playlists => [ { items => [] } ]);
+    $IMP->startScan;
+    ok($Slim::Schema::playlists{"spoton://playlist:$P1"}, 'empty playlist list: the imported playlist stays');
+    is(scalar(grep { /no account lists a playlist any more/ } @Slim::Utils::Log::warnings), 1, 'empty playlist list: one warning');
+
+    reset_world();
+    %Plugins::SpotOn::API::SpClient::answer = (saved => [ [] ], playlists => [ { items => [ { id => 'not-an-id', name => 'Broken' } ] } ]);
+    $IMP->startScan;
+    ok($Slim::Schema::playlists{"spoton://playlist:$P1"}, 'a list without a usable playlist id counts as empty: the playlist stays');
+
+    reset_world();
+    %Slim::Schema::playlists = ();
+    %Plugins::SpotOn::API::SpClient::answer = (saved => [ [] ], playlists => [ { items => [] } ]);
+    $IMP->startScan;
+    is(scalar(@Slim::Utils::Log::warnings), 0, 'no playlist imported and none listed: no warning');
 }
 
 # ============================================================
