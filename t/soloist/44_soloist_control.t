@@ -4374,6 +4374,41 @@ for my $case ([ 'aa:bb:cc:dd:ee:e8', 'rebuffering', playing => 0, buffering => 2
     ee_done($ctl);
 }
 
+# --- EE-8: the refused early end (the shim switched off, a stream younger than its 12 s guard, no gap). The
+# mark is posted, but the shim keeps the old stream open, so the daemon changes title first and LMS asks only
+# afterwards. That must be main's path: the change drops the mark, the request is a Treffer (nothing sent,
+# successCb at once, the prefetch wish as on main), no wait is armed, LMS keeps its own threshold.
+{
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session('aa:bb:cc:dd:ee:eb');
+    ok($ctl->observed->{nearEnd}, "EE-8 setup: the mark stands");
+    my $at = $onset + 3.0;
+    my $tc = d50_clone($fx->[0][1]);
+    $tc->{item}{uri} = $EE_NEXT;
+    my $pc = d50_clone($fx->[7][1]);
+    my $ps = d50_clone($fx->[8][1]);
+    $ps->{item}{uri} = $EE_NEXT;
+    $ps->{position} = { position_ms => 0, timestamp_ms => int($at * 1000), speed => 1 };
+    my $sync = d50_clone($fx->[9][1]);
+    $sync->{position} = { position_ms => 0, timestamp_ms => int($at * 1000), speed => 1 };
+    d50_at($at, sub { $ctl->onEvent($_) for ($tc, $pc, $ps, $sync); });
+    $ctl->observed->{anchor}{seen_at} = $at;    # the anchor stamps CORE::time; the fixture clock is Time::HiRes::time
+    ok(!$ctl->observed->{nearEnd}, "EE-8: the daemon's own change drops the mark");
+    is($ctl->observed->{track}, $EE_NEXT, "EE-8: the daemon is on the next title");
+    my $n = scalar @{ $ws->sent };
+    my ($fired, $prefetched) = (0, 0);
+    {
+        no warnings 'redefine';
+        local *Plugins::SpotOn::Soloist::Control::_prefetchNext = sub { $prefetched++ };
+        d50_at($at + 0.2, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack', successCb => sub { $fired++ } }); });
+    }
+    is(scalar(@{ $ws->sent }) - $n, 0, "EE-8: LMS's request after the change sends nothing to the daemon (Treffer)");
+    is($fired, 1, "EE-8: successCb fired at once");
+    is($prefetched, 1, "EE-8: the prefetch wish is raised and consumed at once, as on main");
+    ok(!$ctl->observed->{earlyEnd}, "EE-8: no wait for the daemon's own change");
+    is($ctl->earlyEndContinues('spoton://track:eeNextTitle0000000000'), 0, "EE-8: earlyEndContinues is 0 (LMS keeps its own threshold)");
+    ee_done($ctl);
+}
+
 # --- D50-23 (outside the edge): duration 15.25 s, threshold 9250 ms > 9195 (55 ms outside) -> the replay stays.
 {
     my @fx = d50_frames('d50-hang-midtitle.frames');
