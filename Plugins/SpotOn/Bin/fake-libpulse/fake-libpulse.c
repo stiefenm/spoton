@@ -669,6 +669,28 @@ static volatile int64_t g_boundary_client_generation = NO_CLIENT_GENERATION;
 #define EARLY_END_GAP_MS_DEFAULT 400
 #define EARLY_END_GAP_MS_MAX     5000
 static long g_early_end_gap_ms = EARLY_END_GAP_MS_DEFAULT;
+
+/* SPOTON_FAKEPULSE_EARLY_END_GAP_MS: a whole number 0..EARLY_END_GAP_MS_MAX
+ * (0 = off) is "env"; unset or empty is "default"; anything else ("off", a
+ * trailing space, out of range) is "invalid" and keeps the compiled default,
+ * i.e. the early end stays ON -- which is why the constructor prints the
+ * source. Constructor (and harness main thread) only: getenv never runs on
+ * the HTTP thread. */
+static long _early_end_gap_ms_src(const char **src) {
+    const char *e = getenv("SPOTON_FAKEPULSE_EARLY_END_GAP_MS");
+    if (!e || !*e) {
+        *src = "default";
+        return EARLY_END_GAP_MS_DEFAULT;
+    }
+    char *end = NULL;
+    long v = strtol(e, &end, 10);
+    if (end != e && *end == '\0' && v >= 0 && v <= EARLY_END_GAP_MS_MAX) {
+        *src = "env";
+        return v;
+    }
+    *src = "invalid";
+    return EARLY_END_GAP_MS_DEFAULT;
+}
 /* The stream must have been attached this long before it may end early. LMS
  * compares the sync players' play points at a title start; a slave that has
  * not reported the new title yet still carries the play point of the OLD
@@ -3738,15 +3760,15 @@ static void _fake_libpulse_init(void) {
     {
         /* End-gap early EOF: SPOTON_FAKEPULSE_EARLY_END_GAP_MS (0 off,
          * 1..EARLY_END_GAP_MS_MAX), anything else the compiled default. Read
-         * here, before the HTTP thread exists (getenv never runs there). */
-        const char *e = getenv("SPOTON_FAKEPULSE_EARLY_END_GAP_MS");
-        if (e && *e) {
-            char *end = NULL;
-            long v = strtol(e, &end, 10);
-            if (end != e && *end == '\0' && v >= 0 && v <= EARLY_END_GAP_MS_MAX) {
-                g_early_end_gap_ms = v;
-            }
-        }
+         * here, before the HTTP thread exists (getenv never runs there). One
+         * unconditional line like the vsink one below: the daemon log then
+         * shows that this shim knows POST /near-end (an older one takes it as
+         * a new stream client) and which setting it runs with, an invalid
+         * value included (it leaves the early end on). */
+        const char *esrc;
+        g_early_end_gap_ms = _early_end_gap_ms_src(&esrc);
+        fprintf(stderr, "[fakepulse] early-end: gap_ms=%ld min_stream_ms=%ld source=%s\n",
+                g_early_end_gap_ms, g_early_end_min_stream_ms, esrc);
     }
 
     {
@@ -7562,7 +7584,49 @@ static void _test_ee_short_stream(pa_stream *s, int port, int *failures) {
     _test_ee_cleanup(s, port);
 }
 
+/* The constructor's parse of SPOTON_FAKEPULSE_EARLY_END_GAP_MS and the source
+ * its startup line prints: an invalid value must read "invalid" (and keep the
+ * default, the early end on), never pass as "env". */
+static void _test_ee_env_parse(int *failures) {
+    const char *name = "early-end: SPOTON_FAKEPULSE_EARLY_END_GAP_MS parse (env / default / invalid)";
+    static const struct { const char *val; long want; const char *src; } rows[] = {
+        { NULL,    EARLY_END_GAP_MS_DEFAULT, "default" },
+        { "",      EARLY_END_GAP_MS_DEFAULT, "default" },
+        { "0",     0,                        "env" },
+        { "250",   250,                      "env" },
+        { "5000",  EARLY_END_GAP_MS_MAX,     "env" },
+        { "5001",  EARLY_END_GAP_MS_DEFAULT, "invalid" },
+        { "-1",    EARLY_END_GAP_MS_DEFAULT, "invalid" },
+        { "off",   EARLY_END_GAP_MS_DEFAULT, "invalid" },
+        { "250 ",  EARLY_END_GAP_MS_DEFAULT, "invalid" },
+    };
+    int bad = 0;
+    char facts[400];
+    facts[0] = '\0';
+    for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
+        if (rows[i].val) {
+            setenv("SPOTON_FAKEPULSE_EARLY_END_GAP_MS", rows[i].val, 1);
+        } else {
+            unsetenv("SPOTON_FAKEPULSE_EARLY_END_GAP_MS");
+        }
+        const char *src = "?";
+        long got = _early_end_gap_ms_src(&src);
+        if (got != rows[i].want || strcmp(src, rows[i].src) != 0) {
+            bad++;
+            size_t used = strlen(facts);
+            snprintf(facts + used, sizeof(facts) - used, "'%s' -> %ld/%s (want %ld/%s) ",
+                     rows[i].val ? rows[i].val : "(unset)", got, src, rows[i].want, rows[i].src);
+        }
+    }
+    unsetenv("SPOTON_FAKEPULSE_EARLY_END_GAP_MS");
+    if (!bad) {
+        snprintf(facts, sizeof(facts), "%zu rows", sizeof(rows) / sizeof(rows[0]));
+    }
+    _test_hold_verdict(failures, bad == 0, name, facts);
+}
+
 static void _test_early_end_cases(pa_stream *s, int port, int *failures) {
+    _test_ee_env_parse(failures);
     pa_sample_format_t saved = s->sample_spec.format;
     s->sample_spec.format = PA_SAMPLE_FLOAT32LE;
     _test_ee_natural(s, port, failures);
