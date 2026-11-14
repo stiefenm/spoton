@@ -7,25 +7,29 @@ package Plugins::SpotOn::Importer;
 #
 # Loaded by the scanner through install.xml <importmodule>; the server never
 # runs startScan. The import follows the quota rules of #32:
-#   * lazy: it runs only inside an LMS scan (any rescan, or "rescan
-#     onlinelibrary"); Plugin.pm's onlineLibraryNeedsUpdate answers "no
-#     change" without a request, so the Online Library plugin's hourly poll
-#     costs nothing and never starts a scan on its own;
+#   * lazy: it runs only inside the scans scanner.pl runs: a rescan,
+#     "Clear library and rescan everything", "rescan playlists" (playlists
+#     only) and "rescan onlinelibrary". A single-folder scan does not
+#     register it (OnlineLibraryBase::initPlugin). Plugin.pm's
+#     onlineLibraryNeedsUpdate answers "no change" without a request, so the
+#     Online Library plugin's hourly poll costs nothing and SpotOn's answer
+#     never starts a scan;
 #   * incremental and cache-driven: an imported album is kept as a record in
 #     the SpotOn cache (ALBUM_RECORD_DAYS plus a per-album spread), a playlist
-#     as its track list keyed on the playlist revision, and track names come
-#     from SpClient's 90-day per-track cache that Browse fills too. A rescan
-#     of an unchanged library costs one collection/v2 page per 200 items of
-#     the collection (Saved Albums share it with Liked Songs) plus one
-#     rootlist request per account. A first import reads each new album's
-#     layout once and names the tracks of all new albums together, 200 per
-#     request;
+#     as its track list keyed on the playlist revision (PLAYLIST_RECORD_DAYS),
+#     and track names come from SpClient's 90-day per-track cache that Browse
+#     fills too. A rescan of an unchanged library costs one collection/v2
+#     page per 200 items of the collection (Saved Albums share it with Liked
+#     Songs) plus one rootlist request per account. A first import reads each
+#     new album's layout once and names the tracks of all new albums
+#     together, 200 per request;
 #   * gentle: one SpClient call at a time, REQUEST_SPACING seconds after
 #     every call that went to the network, and the first 429 (or an active
 #     backoff from the server process -- the rate key lives in the shared
 #     cache) stops the network part of the run. Whatever could not be read
 #     keeps its rows from the previous import; nothing is deleted on a
-#     partial read.
+#     partial read, and an empty playlist list does not remove the imported
+#     playlists (the rule LMS applies to its online tracks).
 #
 # Spotify ids stay public base62 ids. Track urls are SpotOn's playable
 # spoton://track:<id> form; the external ids use the "spoton:" prefix the
@@ -45,7 +49,7 @@ BEGIN {
 
 # The scanner loads this module without Plugin.pm, but every SpotOn module that
 # opens the shared cache reads its version from Plugin.pm (M5). Mirror the
-# value for the scanner only; t/core/79_library_importer.t keeps it equal to
+# value for the scanner only; t/core/80_library_importer.t keeps it equal to
 # Plugin.pm's.
 use constant SPOTON_CACHE_VERSION => 4;
 BEGIN {
@@ -68,13 +72,13 @@ use constant TRACK_URL_PREFIX    => 'spoton://track:';
 use constant PLAYLIST_URL_PREFIX => 'spoton://playlist:';
 use constant EXTID_PREFIX        => 'spoton:';
 use constant PLAYLIST_PREFIX     => 'Spotify: ';      # Spotty's convention, LMS users know it
-use constant GENRE               => 'Spotify';        # ditto; the Online Library genre mappings replace it
+use constant GENRE               => 'Spotify';        # ditto; an Online Library genre mapping adds its genre next to it
 use constant CONTENT_TYPE        => 'soc';            # ProtocolHandler->getFormatForURL; formatOverride decides at play time
 
 use constant ALBUM_RECORD_DAYS    => 30;   # an imported album is re-read after 30..39 days
 use constant ALBUM_RECORD_SPREAD  => 10;   # days, per album -- the records do not expire on the same scan
 use constant INCOMPLETE_DAYS      => 1;    # an album with unnamed tracks is retried on the next day's scan
-use constant PLAYLIST_RECORD_DAYS => 30;   # a playlist whose revision did not change is not read again
+use constant PLAYLIST_RECORD_DAYS => 30;   # a playlist whose revision did not change is not read again within 30 days
 use constant RECORD_FORMAT        => 1;
 use constant REQUEST_SPACING      => 0.25; # seconds after a call that reached the network
 use constant AWAIT_TIMEOUT        => 180;  # seconds for one SpClient call (it can hold several requests)
