@@ -6,6 +6,7 @@ use Test::More;
 use File::Basename qw(dirname);
 use File::Temp qw(tempdir);
 use File::Path qw(make_path);
+use File::Find;
 use Cwd qw(abs_path);
 
 # GH #32: the LMS library importer (Importer.pm) against a stubbed SpClient,
@@ -13,7 +14,9 @@ use Cwd qw(abs_path);
 # (no request for a known album or an unchanged playlist, one call at a time,
 # the first 429 stops the run), the keep-on-partial-read rule (nothing is
 # deleted that could not be read), the attribute mapping and the default-on /
-# no-polling wiring in Plugin.pm and install.xml.
+# no-polling wiring in Plugin.pm and install.xml. The blocks headed with an
+# LMS scan type ("rescan playlists", "Clear library and rescan everything",
+# which scans register the import) answer what each scan imports and sends.
 
 my $test_dir    = dirname(abs_path($0));
 my $project_dir = dirname(dirname($test_dir));
@@ -92,38 +95,89 @@ sub final  { }
 1;
 END
 
+# Slim::Music::Import as the scanner has it (lms Slim/Music/Import.pm, LMS 9.1.1): scanPlaylistsOnly is
+# set by scanner.pl for "rescan playlists" (scanner.pl:261),
+# isOnlineLibrarySupportEnabled is its scanner branch (:215-219), addImporter is recorded (:551-559).
 write_stub($stub_dir, 'Slim::Music::Import', <<'END');
 package Slim::Music::Import;
 our $playlistsOnly = 0;
-our @ended;
+our (@ended, @added);
 sub scanPlaylistsOnly { $playlistsOnly }
+sub isOnlineLibrarySupportEnabled { (Slim::Utils::Prefs::preferences('plugin.state')->get('OnlineLibrary') || '') eq 'enabled' }
+sub addImporter { push @added, [ $_[1], $_[2] ] }
 sub endImporter { push @ended, $_[1] }
 1;
 END
 
-# The Online Library base class: storeTracks / online_tracks bookkeeping recorded, deleteRemovedTracks
-# reports what it WOULD delete (rows with the track prefix that nobody stored or kept).
+# dataForPlugin: the parsed install.xml of the plugin that owns the module (lms
+# Slim/Utils/PluginManager.pm:478-488); here the fields of SpotOn's real install.xml.
+write_stub($stub_dir, 'Slim::Utils::PluginManager', <<'END');
+package Slim::Utils::PluginManager;
+our $installXml;
+sub dataForPlugin {
+    my ($class, $module) = @_;
+    return undef unless $module =~ /^Plugins::SpotOn::/;
+    open(my $fh, '<', $installXml) or die "$installXml: $!";
+    my $xml = do { local $/; <$fh> };
+    return { map { $xml =~ m{<$_>([^<]*)</$_>} ? ($_ => $1) : () } qw(name module importmodule onlineLibrary) };
+}
+1;
+END
+
+# The Online Library base class, following lms Slim/Plugin/OnlineLibraryBase.pm (LMS 9.1.1):
+#   * initPlugin registers the importer for every scan type but a single-folder scan, unless the
+#     import is switched off (:23-43); isImportEnabled reads the switch (:112-125);
+#   * a wipe scan has no online_tracks table (:45) and storeTracks writes none (:140);
+#   * deleteRemovedTracks does nothing on a wipe (:57), looks only at 'ssp' rows in a playlists-only
+#     scan (:68), and skips the deletion when no online track is left but some were there (:86-90).
+# storeTracks / online_tracks bookkeeping is recorded; $candidates is what deleteRemovedTracks would
+# delete (rows with the track prefix that nobody stored or kept), $deleted what it did delete.
 write_stub($stub_dir, 'Slim::Plugin::OnlineLibraryBase', <<'END');
 package Slim::Plugin::OnlineLibraryBase;
-our (@stored, %online, $deleted, $ignorePlaylists);
-sub initPlugin { 1 }
-sub isImportEnabled { 1 }
+our (@stored, %online, $candidates, $deleted, $ignorePlaylists);
+sub initPlugin {
+    my ($class, $args) = @_;
+    return if $ARGV[-1] && 'onlinelibrary' ne $ARGV[-1];
+    return if !$class->isImportEnabled();
+    $args ||= {};
+    Slim::Music::Import->addImporter($class, {
+        type => 'file', weight => 200, use => 1, playlistOnly => 1, onlineLibraryOnly => 1, %$args,
+    });
+    return 1;
+}
+sub isImportEnabled {
+    my ($class) = @_;
+    if (Slim::Music::Import->isOnlineLibrarySupportEnabled()) {
+        my $pluginData = Slim::Utils::PluginManager->dataForPlugin($class);
+        if ($pluginData && ref $pluginData && $pluginData->{name} && ($pluginData->{onlineLibrary} || '') eq 'true') {
+            return Slim::Utils::Prefs::preferences('plugin.onlinelibrary')->get('enable_' . $pluginData->{name}) ? 1 : 0;
+        }
+    }
+    return 0;
+}
 sub ignorePlaylists { $ignorePlaylists ? 1 : 0 }
-sub initOnlineTracksTable { %online = () }
+sub initOnlineTracksTable { %online = () unless $main::wipe }
 sub storeTracks {
     my ($class, $tracks, $libraryId, $accountId) = @_;
     for my $t (@$tracks) {
         my %a = %$t;
         my $url = delete $a{url};
-        $online{$url} = 1;
+        $online{$url} = 1 unless $main::wipe;
         $Slim::Schema::tracks{$url} = { %a, _comment => $accountId };
         push @stored, $url;
     }
 }
 sub deleteRemovedTracks {
     my $class = shift;
-    my $prefix = $class->trackUriPrefix;
-    $deleted = [ sort grep { index($_, $prefix) == 0 && !$online{$_} } keys %Slim::Schema::tracks ];
+    return if $main::wipe;
+    my $prefix       = $class->trackUriPrefix;
+    my $playlistOnly = Slim::Music::Import->scanPlaylistsOnly;
+    $candidates = [ sort grep {
+        index($_, $prefix) == 0 && !$online{$_} && (!$playlistOnly || ($Slim::Schema::tracks{$_}{CONTENT_TYPE} // '') eq 'ssp')
+    } keys %Slim::Schema::tracks ];
+    $deleted = [];
+    return if !%online && @$candidates;
+    $deleted = $candidates;
     delete $Slim::Schema::tracks{$_} for @$deleted;
 }
 1;
@@ -244,6 +298,8 @@ BEGIN {
 unshift @INC, $stub_dir, $project_dir;
 
 # the scanner has these loaded before any importer runs
+require Slim::Utils::PluginManager;
+$Slim::Utils::PluginManager::installXml = "$project_dir/Plugins/SpotOn/install.xml";
 require Slim::Music::Import;
 require Slim::Utils::Progress;
 require Slim::Schema;
@@ -284,6 +340,7 @@ sub reset_world {
     $Plugins::SpotOn::API::SpClient::rateLimitedFor = 0;
     $Plugins::SpotOn::API::SpClient::batchSize = 200;
     @Slim::Plugin::OnlineLibraryBase::stored = ();
+    $Slim::Plugin::OnlineLibraryBase::candidates = undef;
     $Slim::Plugin::OnlineLibraryBase::deleted = undef;
     $Slim::Plugin::OnlineLibraryBase::ignorePlaylists = 0;
     @Slim::Schema::dbDo = ();
@@ -292,6 +349,7 @@ sub reset_world {
     @Slim::Utils::Log::infos = ();
     $Slim::Utils::Log::infoOn = 0;
     $Slim::Music::Import::playlistsOnly = 0;
+    @Slim::Music::Import::added = ();
 }
 
 sub calls_of { my $p = shift; return grep { /^\Q$p\E:/ } @Plugins::SpotOn::API::SpClient::calls }
@@ -323,6 +381,53 @@ $Slim::Plugin::OnlineLibraryBase::online{dummy} = 1;
     unlike($needsUpdate // '', qr/SpClient|Pathfinder|SimpleAsyncHTTP|->get/, 'onlineLibraryNeedsUpdate sends no request (no background polling)');
     my $answer = eval "package NeedsUpdateProbe; $needsUpdate; my \$r = 'unset'; NeedsUpdateProbe->onlineLibraryNeedsUpdate(sub { \$r = shift }); \$r";
     is($answer, 0, 'onlineLibraryNeedsUpdate answers "no change" at once');
+}
+
+# ============================================================
+# which LMS scans run the import. The base class stub is LMS's initPlugin / isImportEnabled (see the
+# stub), so this pins that Importer->initPlugin leaves the decision to LMS: registered with
+# playlistOnly and onlineLibraryOnly, which lms Slim/Music/Import.pm:386-399 needs to run an
+# importer in "rescan playlists" and "rescan onlinelibrary"; not registered for a single-folder scan
+# or when the import is switched off. scanner.pl leaves 'onlinelibrary' or the folder in @ARGV; a
+# rescan, "rescan playlists" and "Clear library and rescan everything" leave it empty.
+# ============================================================
+{
+    reset_world();
+    my $register = sub {
+        my (%o) = @_;
+        @Slim::Music::Import::added = ();
+        Slim::Utils::Prefs::preferences('plugin.state')->set('OnlineLibrary', $o{plugin} // 'enabled');
+        Slim::Utils::Prefs::preferences('plugin.onlinelibrary')->set('enable_PLUGIN_SPOTON_NAME', $o{switch} // 1);
+        local @ARGV = @{ $o{argv} || [] };
+        $IMP->initPlugin;
+        return $Slim::Music::Import::added[0];
+    };
+
+    my $reg = $register->();
+    is($reg && $reg->[0], $IMP, 'rescan, "rescan playlists", "Clear library and rescan everything": the importer is registered');
+    is_deeply([ map { $reg ? $reg->[1]{$_} : undef } qw(type use playlistOnly onlineLibraryOnly) ], [ 'file', 1, 1, 1 ],
+        'registered as a file importer that also runs in "rescan playlists" and "rescan onlinelibrary"');
+    ok($register->(argv => ['onlinelibrary']), '"rescan onlinelibrary": registered');
+    ok(!$register->(argv => ['/music/new-folder']), 'single-folder rescan: not registered');
+    ok($register->(switch => -1), 'switch -1 ("integrate, no automatic check"): registered');
+    ok(!$register->(switch => 0), 'switch 0 ("no integration"): not registered -- no request, no deletion');
+    ok(!$register->(plugin => 'disabled'), 'Online Music Library plugin disabled: not registered');
+    is(scalar(@Plugins::SpotOn::API::SpClient::calls), 0, 'registering sends no Spotify request');
+
+    # Only LMS starts scans: no SpotOn file sends a scan command (lms Slim/Control/Request.pm:607 rescan,
+    # :631 wipecache; Slim/Plugin/Rescan/Plugin.pm:60 rescanplugin) or calls Slim::Music::Import->launchScan
+    # (Slim/Music/Import.pm:108).
+    my ($files, @offenders) = (0);
+    find({ no_chdir => 1, wanted => sub {
+        return unless -f $_ && /\.(?:pm|html|js|xml)\z/;
+        $files++;
+        open(my $fh, '<', $_) or die "$_: $!";
+        while (my $line = <$fh>) {
+            push @offenders, "$File::Find::name:$." if $line =~ /\[\s*['"](?:rescan|rescanplugin|wipecache)['"]|launchScan/;
+        }
+    } }, "$project_dir/Plugins/SpotOn");
+    cmp_ok($files, '>', 10, 'scan-command sweep: the plugin tree was read');
+    is_deeply(\@offenders, [], 'no SpotOn file starts an LMS scan (rescan, wipecache, rescanplugin, launchScan)');
 }
 
 # ============================================================
@@ -437,6 +542,32 @@ my %A = (saved => [ [ { uri => "spotify:album:$A1", added_at => 1700000000 }, { 
 }
 
 # ============================================================
+# LMS "rescan playlists" (scanner.pl:261 sets scanPlaylistsOnly): the playlist list only. The albums
+# are neither read nor deleted: LMS's deleteRemovedTracks looks only at 'ssp' rows in this scan.
+# ============================================================
+{
+    reset_world();
+    $Slim::Music::Import::playlistsOnly = 1;
+    %Plugins::SpotOn::API::SpClient::answer = (
+        %A,
+        playlists => [ { items => [ { id => $P1, name => 'Mix', revision => 'r1' } ] } ],
+        prefetch  => [ 2 ],
+    );
+    %Plugins::SpotOn::API::SpClient::cacheHit = (prefetch => 1);
+    $Slim::Utils::Log::infoOn = 1;
+
+    $IMP->startScan;
+
+    is_deeply([ @Plugins::SpotOn::API::SpClient::calls ], [ 'playlists:acct1', 'prefetch:2' ],
+        'rescan playlists: the playlist list, no album call (the unchanged playlist is not read, its tracks are named from the cache)');
+    is_deeply($Slim::Plugin::OnlineLibraryBase::deleted, [], 'rescan playlists: no album track deleted');
+    is(scalar keys %Slim::Schema::tracks, 3, 'rescan playlists: every album track row stays');
+    ok($Slim::Schema::playlists{"spoton://playlist:$P1"}, 'rescan playlists: the playlist stays');
+    my ($summary) = grep { /^Library import done:/ } @Slim::Utils::Log::infos;
+    like($summary // '', qr/, Spotify requests: 1 \(albums 0, playlists 1\)$/, 'rescan playlists: one Spotify request, the rootlist');
+}
+
+# ============================================================
 # an album removed from Saved Albums goes; a changed playlist is re-read
 # ============================================================
 {
@@ -453,6 +584,41 @@ my %A = (saved => [ [ { uri => "spotify:album:$A1", added_at => 1700000000 }, { 
     is_deeply($Slim::Plugin::OnlineLibraryBase::deleted, [ "spoton://track:$T3" ], 'scan 3: the unsaved album\'s track is deleted');
     is(scalar calls_of('pltracks'), 1, 'scan 3: a new revision is read again');
     is_deeply($Slim::Schema::playlists{"spoton://playlist:$P1"}{tracks}, [ "spoton://track:$T4" ], 'scan 3: playlist updated');
+}
+
+# ============================================================
+# LMS "Clear library and rescan everything" (scanner.pl --wipe: wipeAllData empties the library tables,
+# not SpotOn's records in Slim::Utils::Cache): the library is rebuilt from the records without an album
+# or playlist request. A wipe scan has no online_tracks table, so nothing may be written to it.
+# ============================================================
+{
+    reset_world();
+    local $main::wipe = 1;
+    %Slim::Schema::tracks    = ();
+    %Slim::Schema::playlists = ();
+    %Plugins::SpotOn::API::SpClient::answer = (
+        %A,
+        playlists => [ { items => [ { id => $P1, name => 'Mix', revision => 'r2' } ] } ],
+        prefetch  => [ 1 ],
+    );
+    %Plugins::SpotOn::API::SpClient::cacheHit = (prefetch => 1);
+    $Slim::Utils::Log::infoOn = 1;
+
+    $IMP->startScan;
+
+    is(scalar(calls_of('album')) + scalar(calls_of('albumids')) + scalar(calls_of('pltracks')), 0,
+        'wipe: no album or playlist content request (the records survive the wipe)');
+    my ($summary) = grep { /^Library import done:/ } @Slim::Utils::Log::infos;
+    like($summary // '', qr/, Spotify requests: 2 \(albums 1, playlists 1\)$/, 'wipe: the same two requests as an unchanged rescan');
+    is_deeply([ sort keys %Slim::Schema::tracks ], [ map { "spoton://track:$_" } sort ($T1, $T2, $T3) ], 'wipe: every record track stored again');
+    is_deeply($Slim::Schema::playlists{"spoton://playlist:$P1"}{tracks}, [ "spoton://track:$T4" ], 'wipe: the playlist stored again from its record');
+    is(scalar(grep { $_->[0] =~ /online_tracks/ } @Slim::Schema::dbDo), 0, 'wipe: nothing written to online_tracks');
+
+    reset_world();
+    %Plugins::SpotOn::API::SpClient::answer = (saved => [ undef, { error => 'http_error', code => 500 } ], playlists => [ { items => [] } ]);
+    $IMP->startScan;
+    is(scalar(grep { $_->[0] =~ /online_tracks/ } @Slim::Schema::dbDo), 0,
+        'wipe with a failed saved list: the keep-rows step is skipped (no online_tracks table)');
 }
 
 # ============================================================
@@ -494,7 +660,7 @@ my %A = (saved => [ [ { uri => "spotify:album:$A1", added_at => 1700000000 }, { 
 }
 
 # ============================================================
-# a failed saved-albums list keeps everything; an empty list does not
+# a failed saved-albums list keeps everything; an empty list keeps nothing, then LMS's guard decides
 # ============================================================
 {
     reset_world();
@@ -506,7 +672,9 @@ my %A = (saved => [ [ { uri => "spotify:album:$A1", added_at => 1700000000 }, { 
     reset_world();
     %Plugins::SpotOn::API::SpClient::answer = (saved => [ [] ], playlists => [ { items => [] } ]);
     $IMP->startScan;
-    is_deeply($Slim::Plugin::OnlineLibraryBase::deleted, [ "spoton://track:$T1" ], 'empty list: the tracks go (LMS\'s own empty-table guard is the base class\'s)');
+    is_deeply($Slim::Plugin::OnlineLibraryBase::candidates, [ "spoton://track:$T1" ], 'empty list: nothing is marked kept');
+    is_deeply($Slim::Plugin::OnlineLibraryBase::deleted, [],
+        'empty list: LMS\'s empty-table guard (OnlineLibraryBase.pm:86-90) then skips the deletion');
 }
 
 # ============================================================
