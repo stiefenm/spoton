@@ -779,4 +779,41 @@ my %A = (saved => [ [ { uri => "spotify:album:$A1", added_at => 1700000000 }, { 
     is(scalar calls_of('pltracks'), 1, '404: a new revision is tried again');
 }
 
+# ============================================================
+# a 404 for a playlist the rootlist lists without a revision (seen live): remembered for a day, not asked
+# again in the next scans; a record that has expired (the cache drops it) is asked again
+# ============================================================
+{
+    reset_world();
+    my %pl404 = (
+        saved     => [ [] ],
+        playlists => [ { items => [ { id => $P2, name => 'Made for you' } ] } ],
+        "pltracks:$P2" => [ undef, { error => '404 Not Found', code => 404 } ],
+    );
+    my $key = "spoton_lib_playlist_acct1_$P2";
+    delete $Slim::Utils::Cache::store{$key};    # the block above left a record for this id
+    %Plugins::SpotOn::API::SpClient::answer = %pl404;
+    my $t0 = time();
+    $IMP->startScan;
+    is(scalar calls_of('pltracks'), 1, '404 without revision: asked once');
+    ok($Slim::Utils::Cache::store{$key} && $Slim::Utils::Cache::store{$key}{notFound}, '404 without revision: remembered');
+    cmp_ok($Slim::Utils::Cache::expiry{$key} - $t0, '<=', 86400 + 5, '404 without revision: for a day, not 30');
+
+    reset_world();
+    %Plugins::SpotOn::API::SpClient::answer = %pl404;
+    $IMP->startScan;
+    is(scalar calls_of('pltracks'), 0, '404 without revision: not asked again in the next scan');
+
+    reset_world();
+    delete $Slim::Utils::Cache::store{$key};
+    %Plugins::SpotOn::API::SpClient::answer = %pl404;
+    $IMP->startScan;
+    is(scalar calls_of('pltracks'), 1, '404 without revision: asked again once the record expired');
+
+    reset_world();
+    %Plugins::SpotOn::API::SpClient::answer = (%pl404, playlists => [ { items => [ { id => $P2, name => 'Made for you', revision => 'm9' } ] } ]);
+    $IMP->startScan;
+    is(scalar calls_of('pltracks'), 1, '404 without revision: a revision appearing later is tried at once');
+}
+
 done_testing();

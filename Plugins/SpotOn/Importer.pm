@@ -79,6 +79,7 @@ use constant ALBUM_RECORD_DAYS    => 30;   # an imported album is re-read after 
 use constant ALBUM_RECORD_SPREAD  => 10;   # days, per album -- the records do not expire on the same scan
 use constant INCOMPLETE_DAYS      => 1;    # an album with unnamed tracks is retried on the next day's scan
 use constant PLAYLIST_RECORD_DAYS => 30;   # a playlist whose revision did not change is not read again within 30 days
+use constant NOT_FOUND_RETRY_DAYS => 1;    # a 404 playlist without a revision in the rootlist is asked again after a day
 use constant RECORD_FORMAT        => 1;
 use constant REQUEST_SPACING      => 0.25; # seconds after a call that reached the network
 use constant AWAIT_TIMEOUT        => 180;  # seconds for one SpClient call (it can hold several requests)
@@ -508,10 +509,13 @@ sub _playlistTrackIds {
 
     my $key    = "spoton_lib_playlist_${accountId}_$pl->{id}";
     my $record = $cache->get($key);
-    if (ref $record eq 'HASH' && ($record->{_fmt} || 0) == RECORD_FORMAT
-        && defined $pl->{revision} && defined $record->{revision} && $record->{revision} eq $pl->{revision})
-    {
-        return $record->{notFound} ? undef : $record->{tracks};
+    if (ref $record eq 'HASH' && ($record->{_fmt} || 0) == RECORD_FORMAT) {
+        if (defined $pl->{revision} && defined $record->{revision} && $record->{revision} eq $pl->{revision}) {
+            return $record->{notFound} ? undef : $record->{tracks};
+        }
+        # A 404 for a playlist the rootlist lists without a revision (seen live for a Spotify-made one):
+        # there is no revision to compare, so the record's expiry (NOT_FOUND_RETRY_DAYS) decides.
+        return undef if $record->{notFound} && !defined $pl->{revision} && !defined $record->{revision};
     }
 
     return undef if $run->{stopped};
@@ -523,10 +527,11 @@ sub _playlistTrackIds {
     unless ($uris) {
         $class->_noteError($run, $err, "playlist $pl->{id}");
         # Some Spotify-made playlists in the rootlist answer 404 on playlist/v2. Remember that for the
-        # revision, so every rescan does not ask again; a new revision is tried once more.
-        if (ref $err eq 'HASH' && ($err->{code} // 0) == 404 && defined $pl->{revision}) {
+        # revision, so every rescan does not ask again; a new revision is tried once more. Without a
+        # revision the 404 is remembered for NOT_FOUND_RETRY_DAYS.
+        if (ref $err eq 'HASH' && ($err->{code} // 0) == 404) {
             $cache->set($key, { _fmt => RECORD_FORMAT, revision => $pl->{revision}, notFound => 1 },
-                time() + PLAYLIST_RECORD_DAYS * 86400);
+                time() + (defined $pl->{revision} ? PLAYLIST_RECORD_DAYS : NOT_FOUND_RETRY_DAYS) * 86400);
         }
         return undef;
     }
