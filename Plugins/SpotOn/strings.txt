@@ -4222,6 +4222,19 @@ PLUGIN_SPOTON_ARTIST_PAGE_RADIO
 	PL	Radio wykonawcy
 	SV	Artistradio
 
+PLUGIN_SPOTON_PLAYLIST_RADIO
+	CS	SpotOn: Rádio playlistu
+	DA	SpotOn: Playlisteradio
+	DE	SpotOn: Playlist-Radio
+	EN	SpotOn: Playlist radio
+	ES	SpotOn: Radio de la lista
+	FR	SpotOn: Radio de la playlist
+	IT	SpotOn: Radio della playlist
+	NL	SpotOn: Afspeellijstradio
+	NO	SpotOn: Spillelisteradio
+	PL	SpotOn: Radio playlisty
+	SV	SpotOn: Spellisteradio
+
 PLUGIN_SPOTON_RADIO_UNAVAILABLE
 	CS	Spotify pro tuto položku nenabízí žádné rádio.
 	DA	Spotify har ingen radio til dette.

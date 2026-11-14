@@ -7,7 +7,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- Spotify Radio ([#82](https://github.com/stiefenm/spoton/issues/82)): the More menu of a track now offers "SpotOn: Song radio" and "SpotOn: Artist radio", and each artist page starts with "Artist radio". These are Spotify's own radios: the radio playlist Spotify makes for a song or an artist, with 50 tracks. You can open a radio, play it, or add it with Play next or Add to end, as with a playlist. SpotOn asks Spotify for a radio only when you open or play it, and remembers the answer for 6 hours.
+- Spotify Radio ([#82](https://github.com/stiefenm/spoton/issues/82)): the More menu of a track now offers "SpotOn: Song radio" and "SpotOn: Artist radio", and each artist page starts with "Artist radio". These are Spotify's own radios: the radio playlist Spotify makes for a song or an artist, with 50 tracks. The More menu of a SpotOn album or playlist offers a radio as well: an album gets its artist's radio, which is what Spotify answers for an album, and a playlist gets "SpotOn: Playlist radio", Spotify's station for that playlist. You can open a radio, play it, or add it with Play next or Add to end, as with a playlist. SpotOn asks Spotify for a radio only when you open or play it, and remembers the answer for 6 hours.
 
 ## [4.0.0-beta.10] - 2026-11-12
 

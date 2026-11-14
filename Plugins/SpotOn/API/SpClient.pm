@@ -3231,33 +3231,40 @@ sub getPlaylistItems {
 # ============================================================
 # Radio (GH #82)
 # ============================================================
-# Spotify's own radios, through the request its clients send (librespot-core
-# spclient.rs get_radio_for_track), with SpotOn's login5 bearer -- not the
-# Web API /recommendations that #82 found gone. Measured 2026-11-09 (seed: a
-# track of a saved album):
+# Spotify's own radios, through the requests its clients send (librespot-core
+# spclient.rs get_radio_for_track / get_apollo_station), with SpotOn's login5
+# bearer -- not the Web API /recommendations that #82 found gone. Measured
+# 2026-11-09 (seed: a track of a saved album):
 #   inspiredby-mix/v2/seed_to_playlist/<seed>?response-format=json
 #     -> { mediaItems: [{ uri }], total }
 #     track seed  -> spotify:playlist:37i9dQZF1E8..., "<track> - radio" (format inspiredby-mix), 50 tracks
 #     artist seed -> "<artist> - radio" (37i9dQZF1E4...), 50 tracks
+#     album seed  -> the same playlist as its artist seed (Spotify has no album radio)
+#     playlist    -> spotify:station:playlist:<id>, a station, not a playlist
+#   radio-apollo/v3/stations/<seed>?autoplay=false&count=N
+#     -> { tracks: [{ uri, ... }], title, next_page_url, ... }
 # A radio playlist is an ordinary playlist: playlist/v2 reads it and the
-# existing feeds play it. Requests happen only when a radio is opened or
-# played -- the menu entries are lazy.
+# existing feeds play it. A station is read through radio-apollo. Requests
+# happen only when a radio is opened or played -- the menu entries are lazy.
 
-use constant RADIO_SEED_TTL => 6 * 3600;   # seed -> radio playlist id; Spotify refreshes the playlist's contents itself
+use constant RADIO_SEED_TTL      => 6 * 3600;   # seed -> radio playlist id; Spotify refreshes the playlist's contents itself
+use constant RADIO_STATION_TTL   => 300;        # station track list, the browse tier (CLAUDE.md)
+use constant RADIO_STATION_COUNT => 50;         # what a radio playlist holds
 
-# radioSeedType($class, $seedUri) -> 'track' | 'artist', or undef for
-# anything else. The seed is spliced into a request path and a cache key, so
-# only these exact shapes pass (WR-04 discipline).
+# radioSeedType($class, $seedUri) -> 'track' | 'artist' | 'album' | 'playlist',
+# or undef for anything else. The seed is spliced into a request path and a
+# cache key, so only these exact shapes pass (WR-04 discipline).
 sub radioSeedType {
     my ($class, $seed) = @_;
     return undef unless defined $seed && !ref $seed;
-    return $seed =~ /\Aspotify:(track|artist):[0-9A-Za-z]{22}\z/ ? $1 : undef;
+    return $seed =~ /\Aspotify:(track|artist|album|playlist):[0-9A-Za-z]{22}\z/ ? $1 : undef;
 }
 
 # getRadio($class, $accountId, $seedUri, $cb)
-# The radio Spotify offers for a seed: cb->({ playlistId, uri }) for its
-# radio playlist, cb->(undef, { error => 'no_radio' }) when the answer names
-# none, or cb->(undef, $err) for a failed request. One request per seed and
+# The radio Spotify offers for a seed: cb->({ playlistId, uri }) when it is a
+# radio playlist, cb->({ station => $seedUri }) when Spotify answers with a
+# station (playlist seeds), cb->(undef, { error => 'no_radio' }) when it names
+# neither, or cb->(undef, $err) for a failed request. One request per seed and
 # RADIO_SEED_TTL; a cache hit sends nothing.
 sub getRadio {
     my ($class, $accountId, $seed, $cb) = @_;
@@ -3298,6 +3305,9 @@ sub getRadio {
         if ($uri =~ /\Aspotify:playlist:([0-9A-Za-z]{22})\z/) {
             $radio = { playlistId => $1, uri => $uri };
         }
+        elsif ($uri =~ /\Aspotify:station:/) {
+            $radio = { station => $seed };
+        }
         else {
             main::INFOLOG && $log->info('SpClient: no radio for ' . $class->radioSeedType($seed) . ' seed');
             $cb->(undef, { error => 'no_radio' });
@@ -3306,6 +3316,70 @@ sub getRadio {
 
         $cache->set($cacheKey, $radio, RADIO_SEED_TTL);
         $cb->($radio);
+    });
+}
+
+# getRadioStationTracks($class, $accountId, $seedUri, $params, $cb)
+# A station's tracks from radio-apollo (RADIO_STATION_COUNT of them, the list
+# cached RADIO_STATION_TTL so paging sees one list), sliced per
+# $params->{offset}/{limit} (defaults 0/50) and named through _enrichTracks.
+# Result shape = getPlaylistItems: { items => [{ track }], total, offset,
+# limit, next }. cb->(undef, $err) for a failed request.
+sub getRadioStationTracks {
+    my ($class, $accountId, $seed, $params, $cb) = @_;
+    $params ||= {};
+    my $offset = $params->{offset} // 0;
+    my $limit  = $params->{limit}  // RADIO_STATION_COUNT;
+
+    unless ($class->_hasLogin5Creds($accountId)) {
+        $cb->(undef, { error => 'no_credentials' });
+        return;
+    }
+
+    unless ($class->radioSeedType($seed)) {
+        $cb->(undef, { error => 'invalid_id' });
+        return;
+    }
+
+    my $deliver = sub {
+        my ($station) = @_;
+        my ($slice, $total) = $class->_sliceAsPage($station->{trackIds} || [], $offset, $limit);
+        $class->_enrichTracks($accountId, $slice, sub {
+            my ($tracks) = @_;
+            $cb->({
+                items  => [ map { { track => $_ } } @$tracks ],
+                total  => $total,
+                offset => $offset,
+                limit  => $limit,
+                next   => (($offset + $limit) < $total) ? 1 : undef,
+            });
+        });
+    };
+
+    my $cacheKey = "spoton_radio_station_${accountId}_$seed";
+    if (my $cached = $cache->get($cacheKey)) {
+        $deliver->($cached);
+        return;
+    }
+
+    $class->_request('get', "radio-apollo/v3/stations/$seed?autoplay=false&count=" . RADIO_STATION_COUNT, {
+        _accountId => $accountId,
+        _accept    => 'application/json',
+        _noCache   => 1,   # the station list is cached below
+    }, sub {
+        my ($result, $err) = @_;
+
+        if ($err) {
+            $cb->(undef, $err);
+            return;
+        }
+
+        my @trackIds = map { (ref $_ eq 'HASH' && ($_->{uri} // '') =~ /\Aspotify:track:([0-9A-Za-z]{22})\z/) ? $1 : () }
+                       @{ (ref $result eq 'HASH' && ref $result->{tracks} eq 'ARRAY') ? $result->{tracks} : [] };
+
+        my $station = { trackIds => \@trackIds };
+        $cache->set($cacheKey, $station, RADIO_STATION_TTL) if @trackIds;
+        $deliver->($station);
     });
 }
 
