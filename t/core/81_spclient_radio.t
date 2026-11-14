@@ -8,10 +8,10 @@ use File::Temp qw(tempdir);
 use File::Path qw(make_path);
 use Cwd qw(abs_path);
 
-# GH #82: the SpClient radio facades (radioSeedType, getRadio) against
-# recorded response shapes (2026-11-09 probe: inspiredby-mix
-# seed_to_playlist). Stub layout: t/core/59 (LMS stubs, a rule-based
-# SimpleAsyncHTTP, Login5/Credentials stubs).
+# GH #82: the SpClient radio facades (radioSeedType, getRadio,
+# getRadioStationTracks) against recorded response shapes (2026-11-09 probe:
+# inspiredby-mix seed_to_playlist, radio-apollo stations). Stub layout:
+# t/core/59 (LMS stubs, a rule-based SimpleAsyncHTTP, Login5/Credentials stubs).
 
 my $test_dir    = dirname(abs_path($0));
 my $project_dir = dirname(dirname($test_dir));
@@ -196,6 +196,7 @@ require_ok('Plugins::SpotOn::API::SpClient') or BAIL_OUT('Failed to load SpClien
 
 my $SP = 'Plugins::SpotOn::API::SpClient';
 
+sub enc  { Plugins::SpotOn::API::ProtobufLite::encode_field(@_) }
 sub rule { Slim::Networking::SimpleAsyncHTTP::add_rule(@_) }
 sub reqs { Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests() }
 
@@ -208,20 +209,36 @@ sub reset_all {
 
 my %HEX = map { $_ => sprintf('%032x', 0x2000 + $_) } 1 .. 4;
 my %ID  = map { $_ => $SP->hexToId($HEX{$_}) } keys %HEX;
-my $T = $ID{1};
+my ($T, $PL) = ($ID{1}, 'P' x 22);
 my $RADIO = 'R' x 22;
+
+# Track message (extended-metadata): gid=1 name=2 album=3 { gid=1 name=2 } artist=4 { gid=1 name=2 } duration=7 (zigzag)
+sub track_msg {
+    my ($n, $name) = @_;
+    return enc(1, 2, pack('H*', $HEX{$n})) . enc(2, 2, $name)
+         . enc(3, 2, enc(1, 2, pack('H*', $HEX{4})) . enc(2, 2, 'An Album'))
+         . enc(4, 2, enc(1, 2, pack('H*', $HEX{4})) . enc(2, 2, 'An Artist'))
+         . enc(7, 0, 2000);
+}
+sub extmeta_response {
+    return enc(2, 2, join '', map {
+        enc(3, 2, enc(1, 2, enc(1, 0, 200)) . enc(2, 2, "spotify:track:$ID{$_->[0]}") . enc(3, 2, enc(2, 2, track_msg(@$_))))
+    } @_);
+}
 
 # ============================================================
 # radioSeedType
 # ============================================================
 is($SP->radioSeedType("spotify:track:$T"), 'track', 'radioSeedType: track');
 is($SP->radioSeedType("spotify:artist:$T"), 'artist', 'radioSeedType: artist');
+is($SP->radioSeedType("spotify:album:$T"), 'album', 'radioSeedType: album');
+is($SP->radioSeedType("spotify:playlist:$PL"), 'playlist', 'radioSeedType: playlist');
 ok(!defined $SP->radioSeedType("spotify:episode:$T"), 'radioSeedType: episodes have no radio');
 ok(!defined $SP->radioSeedType('spotify:track:../x'), 'radioSeedType: malformed id rejected');
 ok(!defined $SP->radioSeedType("spotify:track:$T?x=1"), 'radioSeedType: no trailing text');
 
 # ============================================================
-# getRadio: radio playlist, cache, no radio, errors
+# getRadio: radio playlist, cache, station, no radio, errors
 # ============================================================
 {
     reset_all();
@@ -237,6 +254,16 @@ ok(!defined $SP->radioSeedType("spotify:track:$T?x=1"), 'radioSeedType: no trail
     $SP->getRadio('acct1', "spotify:track:$T", sub { ($radio, $err) = @_ });
     is($radio->{playlistId}, $RADIO, 'getRadio: answered again');
     is(scalar(reqs()), 0, 'getRadio: the second open of the same seed is a cache hit');
+
+    reset_all();
+    rule('GET', qr{/seed_to_playlist/spotify:playlist:$PL\?}, JSON::PP::encode_json({ mediaItems => [ { uri => "spotify:station:playlist:$PL" } ], total => 1 }));
+    $SP->getRadio('acct1', "spotify:playlist:$PL", sub { ($radio, $err) = @_ });
+    is_deeply($radio, { station => "spotify:playlist:$PL" }, 'getRadio: a station answer (playlist seed) -> station with the seed');
+
+    reset_all();
+    rule('GET', qr{/seed_to_playlist/spotify:album:$T\?}, JSON::PP::encode_json({ mediaItems => [ { uri => "spotify:playlist:$RADIO" } ], total => 1 }));
+    $SP->getRadio('acct1', "spotify:album:$T", sub { ($radio, $err) = @_ });
+    is($radio && $radio->{playlistId}, $RADIO, 'getRadio: an album seed -> the radio playlist Spotify names (its artist radio)');
 
     reset_all();
     rule('GET', qr{/seed_to_playlist/}, JSON::PP::encode_json({ mediaItems => [], total => 0 }));
@@ -266,6 +293,56 @@ ok(!defined $SP->radioSeedType("spotify:track:$T?x=1"), 'radioSeedType: no trail
     $Plugins::SpotOn::API::Credentials::mock_creds = undef;
     $SP->getRadio('acct1', "spotify:track:$T", sub { ($radio, $err) = @_ });
     is($err && $err->{error}, 'no_credentials', 'getRadio: no stored credentials -> no_credentials');
+}
+
+# ============================================================
+# getRadioStationTracks: radio-apollo list, named, sliced, cached
+# ============================================================
+{
+    reset_all();
+    my $apollo = JSON::PP::encode_json({
+        title  => 'Radio for a playlist',
+        tracks => [ { uri => "spotify:track:$ID{1}" }, { uri => 'spotify:episode:' . ('E' x 22) }, { uri => "spotify:track:$ID{2}" }, { uri => "spotify:track:$ID{3}" } ],
+        next_page_url => '/radio-apollo/v3/stations/x?offset=50',
+    });
+    rule('GET',  qr{/radio-apollo/v3/stations/spotify:playlist:$PL\?autoplay=false&count=50$}, $apollo);
+    rule('POST', qr{/extended-metadata/v0/extended-metadata$}, extmeta_response([1, 'One'], [2, 'Two'], [3, 'Three']));
+
+    my ($page, $err);
+    $SP->getRadioStationTracks('acct1', "spotify:playlist:$PL", { offset => 0, limit => 2 }, sub { ($page, $err) = @_ });
+    ok(!$err, 'getRadioStationTracks: no error');
+    is_deeply([ map { $_->{track}{name} } @{ $page->{items} } ], [ 'One', 'Two' ], 'getRadioStationTracks: first slice, named, episodes left out');
+    is($page->{total}, 3, 'getRadioStationTracks: total counts the tracks of the station');
+    ok($page->{next}, 'getRadioStationTracks: next set while tracks remain');
+    is(scalar(grep { $_->{url} =~ /radio-apollo/ } reqs()), 1, 'getRadioStationTracks: one radio-apollo request');
+
+    Slim::Networking::SimpleAsyncHTTP::reset_requests();
+    rule('POST', qr{/extended-metadata/v0/extended-metadata$}, extmeta_response([3, 'Three']));
+    $SP->getRadioStationTracks('acct1', "spotify:playlist:$PL", { offset => 2, limit => 2 }, sub { ($page, $err) = @_ });
+    is_deeply([ map { $_->{track}{name} } @{ $page->{items} } ], [ 'Three' ], 'getRadioStationTracks: next page from the same list');
+    ok(!$page->{next}, 'getRadioStationTracks: no next on the last page');
+    is(scalar(grep { $_->{url} =~ /radio-apollo/ } reqs()), 0, 'getRadioStationTracks: the next page reuses the cached station list');
+
+    reset_all();
+    rule('GET', qr{/radio-apollo/}, { code => 500 });
+    ($page, $err) = ();
+    $SP->getRadioStationTracks('acct1', "spotify:playlist:$PL", {}, sub { ($page, $err) = @_ });
+    ok(!$page && $err, 'getRadioStationTracks: HTTP error is passed on');
+
+    reset_all();
+    rule('GET', qr{/radio-apollo/}, JSON::PP::encode_json({ tracks => [] }));
+    ($page, $err) = ();
+    $SP->getRadioStationTracks('acct1', "spotify:playlist:$PL", {}, sub { ($page, $err) = @_ });
+    is($page && $page->{total}, 0, 'getRadioStationTracks: an empty station -> an empty page');
+    Slim::Networking::SimpleAsyncHTTP::reset_requests();
+    rule('GET', qr{/radio-apollo/}, JSON::PP::encode_json({ tracks => [] }));
+    $SP->getRadioStationTracks('acct1', "spotify:playlist:$PL", {}, sub { ($page, $err) = @_ });
+    is(scalar(grep { $_->{url} =~ /radio-apollo/ } reqs()), 1, 'getRadioStationTracks: an empty station is not cached');
+
+    reset_all();
+    $SP->getRadioStationTracks('acct1', 'spotify:playlist:bad', {}, sub { ($page, $err) = @_ });
+    is($err && $err->{error}, 'invalid_id', 'getRadioStationTracks: invalid seed -> invalid_id, no request');
+    is(scalar(reqs()), 0, 'getRadioStationTracks: invalid seed sends nothing');
 }
 
 done_testing();
