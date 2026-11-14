@@ -5,6 +5,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Spotify Radio ([#82](https://github.com/stiefenm/spoton/issues/82)): the More menu of a track now offers "SpotOn: Song radio" and "SpotOn: Artist radio", and each artist page starts with "Artist radio". These are Spotify's own radios: the radio playlist Spotify makes for a song or an artist, with 50 tracks. You can open a radio, play it, or add it with Play next or Add to end, as with a playlist. SpotOn asks Spotify for a radio only when you open or play it, and remembers the answer for 6 hours.
+
 ## [4.0.0] - 2026-11-15
 
 **SpotOn 4.0 is a large update over 3.5.x.** It no longer uses the Spotify Web API, needs no Spotify Developer App or client ID, and adds a second playback backend, Soloist (Spotify's own client, Linux only), next to librespot. The plugin manager offers it as an update over 3.5.8 and over every 4.0 beta. Restart LMS after the update. The sections below summarise what changes when you come from 3.5.x; the 4.0 beta entries further down list every change in detail.
