@@ -5643,8 +5643,12 @@ sub _hangTrackChanged {
     delete @{$o}{qw(hangPre playingSince)};
     $self->_cancelHangWatch('track_changed');
     delete $o->{hangReplays} unless defined $o->{track} && $o->{track} eq $uri;
-    # end-gap early EOF: a title change ends the mark and an open wait for it
-    delete $o->{nearEnd} if ref($o->{nearEnd}) eq 'HASH' && ($o->{nearEnd}{uri} // '') ne $uri;
+    # end-gap early EOF: a title change ends the mark and an open wait for it, with one INFO line
+    # per marked title end (_earlyEndOutcome)
+    if (ref($o->{nearEnd}) eq 'HASH' && ($o->{nearEnd}{uri} // '') ne $uri) {
+        main::INFOLOG && $log->is_info && $log->info($self->_earlyEndOutcome($uri));
+        delete $o->{nearEnd};
+    }
     if (ref($o->{earlyEnd}) eq 'HASH' && ($o->{earlyEnd}{uri} // '') eq $uri) {
         delete $o->{earlyEnd};
         Slim::Utils::Timers::killTimers($self, \&_earlyEndFallback);
@@ -5719,8 +5723,12 @@ sub _armHangWatch {
 # pending, the burst came from playing, the wanted title) marks it at the shim, once per title.
 # Only with a DIFFERENT successor queued in the daemon (the queue head): without one there is no
 # next title for LMS to open early (context end, repeat-one), and nothing changes.
+# The hidden pref soloistEarlyEnd (default 1, read per title end) switches it off at runtime
+# (`pref plugin.spoton:soloistEarlyEnd 0` on the LMS CLI): no mark, so _earlyEndPlan never
+# applies and earlyEndContinues stays 0 -- exactly the path without the early end.
 sub _postNearEnd {
     my ($self, $uri, $posMs) = @_;
+    return unless $prefs->get('soloistEarlyEnd') // 1;
     my $o = $self->observed;
     return unless defined $uri && defined $posMs;
     return if ref($o->{nearEnd}) eq 'HASH' && ($o->{nearEnd}{uri} // '') eq $uri;
@@ -5769,16 +5777,19 @@ sub _earlyEndPlan {
     my $deadline = ($ne->{at} // 0) + ($ne->{remaining_ms} // 0) / 1000 + EARLY_END_WAIT_S;
     return undef if $now > $deadline;
     if ($opts->{lmsStopped}) {
-        return (undef, [ { op => 'log', level => 'debug', text =>
-            "Control: LMS asked for the queued next title $uri with its players stopped (a skip or jump in the "
-            . "end gap of $o->{track}) -- old path (" . ($self->mac // '?') . ")" } ]);
+        return (undef, [
+            { op => 'set', target => 'observed', key => 'nearEnd', value => { %$ne, declined => 'lms_stopped' } },
+            { op => 'log', level => 'debug', text =>
+                "Control: LMS asked for the queued next title $uri with its players stopped (a skip or jump in the "
+                . "end gap of $o->{track}) -- old path (" . ($self->mac // '?') . ")" },
+        ]);
     }
     # No status gate: the speed-0 position_sync of the end gap itself sets observed.status to
     # `paused` (S-02). A real pause corks the stream, and the shim never ends a corked stream early.
     my @intents;
     if (!(ref($o->{earlyEnd}) eq 'HASH' && ($o->{earlyEnd}{uri} // '') eq $uri)) {
         push @intents, { op => 'set', target => 'observed', key => 'earlyEnd',
-            value => { uri => $uri, from => $o->{track}, until => $deadline } };
+            value => { uri => $uri, from => $o->{track}, until => $deadline, at => $now } };
         push @intents, { op => 'killtimer', cb => \&_earlyEndFallback };
         push @intents, { op => 'timer', cb => \&_earlyEndFallback, at => $deadline };
         push @intents, { op => 'log', level => 'info', text =>
@@ -5823,6 +5834,43 @@ sub earlyEndContinues {
     return (defined $uri && $uri eq $ee->{uri}) ? 1 : 0;
 }
 
+# _earlyEndOutcome($self, $uri) -- end-gap early EOF: the one line per marked title end, written by
+# _hangTrackChanged when the daemon leaves the marked title for $uri (before the mark and the wait
+# are dropped). It says whether the early EOF was used and, if so, how long before the daemon's
+# change LMS opened the next stream (the lead the players' buffers gain), or why not as far as
+# Control knows. The shim's own reason for not ending a stream (switched off, a stream younger
+# than its 12 s guard, the mark expired) is only in the Soloist daemon log (`early-end:` lines).
+# undef without a mark for another title.
+sub _earlyEndOutcome {
+    my ($self, $uri) = @_;
+    my $o  = $self->observed;
+    my $ne = $o->{nearEnd};
+    return undef unless ref($ne) eq 'HASH' && defined $ne->{uri} && defined $uri && $ne->{uri} ne $uri;
+    my $ee = $o->{earlyEnd};
+    my $what;
+    if (($ne->{next} // '') ne $uri) {
+        $what = 'early EOF not used, the daemon changed to another title than the marked ' . ($ne->{next} // '?');
+    }
+    elsif (ref($ee) eq 'HASH' && ($ee->{uri} // '') eq $uri) {
+        $what = sprintf("early EOF used, LMS opened the next title %.1f s before the daemon's change",
+            Time::HiRes::time() - ($ee->{at} // Time::HiRes::time()));
+    }
+    elsif ($ne->{fallback}) {
+        $what = 'early EOF used, but the daemon did not change within the end gap (fallback skip_next)';
+    }
+    elsif (($ne->{declined} // '') eq 'lms_stopped') {
+        $what = 'early EOF not used, LMS stopped its players first (a skip or jump in the gap): skip_next';
+    }
+    elsif (($self->wanted->{uri} // '') ne $uri) {
+        $what = "early EOF not used, LMS had not asked for the next title by the daemon's change "
+            . '(the early-end lines in the daemon log say whether the shim ended the old stream)';
+    }
+    else {
+        $what = 'early EOF not used, LMS asked for the next title on the old path';
+    }
+    return "Control: end gap $ne->{uri} -> $uri: $what (" . ($self->mac // '?') . ")";
+}
+
 # _earlyEndFallback($self) -- end-gap early EOF: the daemon did not change to the title LMS asked
 # for in time. Back to the path that runs without the early EOF: reconcile once more, skipping
 # the early-end case (skip_next to the queue head, or play).
@@ -5834,6 +5882,7 @@ sub _earlyEndFallback {
     return if defined $self->observed->{track} && $self->observed->{track} eq $ee->{uri};
     $log->warn("Control: the daemon did not change to $ee->{uri} within the end gap -- requesting it ("
         . ($self->mac // '?') . ")");
+    $self->observed->{nearEnd}{fallback} = 1 if ref($self->observed->{nearEnd}) eq 'HASH';    # for _earlyEndOutcome
     $self->_reconcile('requestTrack', { earlyEndFallback => 1 });
     return;
 }

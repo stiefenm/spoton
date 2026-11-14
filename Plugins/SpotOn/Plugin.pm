@@ -138,6 +138,7 @@ sub initPlugin {
         pkceRemoved          => 0,     # 85-14 (D-01/D-02): one-shot wipe of every pkce_tokens.json, the clientId pref and the PKCE cache keys
         backend              => 'librespot', # D-08/Phase 71: playback daemon backend ('librespot'|'soloist'), default librespot
         soloistQuality       => 0,  # 83.3 D-13: Spotify streaming quality for the Soloist backend, global default Automatic; per-player override with 'global' sentinel in the same-name client pref
+        soloistEarlyEnd      => 1,  # GH #213: with the Soloist backend, end the old stream in the end-of-title gap; no UI, `pref plugin.spoton:soloistEarlyEnd 0|1` on the LMS CLI switches it at runtime
     });
 
     # D-02: cacheSchemaVersion guard — log when cache namespace version was bumped
