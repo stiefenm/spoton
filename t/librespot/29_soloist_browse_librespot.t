@@ -293,6 +293,23 @@ sub import {
 1;
 END
 
+# Controllable Connect stub -- default isSpotifyConnect returns false. A stub
+# file, not an inline package: ProtocolHandler.pm `require`s Connect.pm
+# before each call (it is loaded late in production), and an inline package
+# would make that require load the real Connect.pm.
+write_stub($stub_dir, 'Plugins::SpotOn::Connect', <<'END');
+package Plugins::SpotOn::Connect;
+our $_IS_CONNECT = 0;
+our @RELEASE_CALLS;    # 83.1-02 Task 1: [ [client, source], ... ]
+sub isSpotifyConnect { return $_IS_CONNECT; }
+sub releaseConnectClaim {
+    my ($class, $client, $source) = @_;
+    push @RELEASE_CALLS, [ $client, $source ];
+    return;
+}
+1;
+END
+
 write_stub($stub_dir, 'Slim::Networking::SimpleAsyncHTTP', <<'END');
 package Slim::Networking::SimpleAsyncHTTP;
 our @CALLS;             # every instance that called ->post(), in order
@@ -458,6 +475,9 @@ require_ok('Plugins::SpotOn::Soloist::Control')
 # cache test just set.
 require_ok('Plugins::SpotOn::API::SpClient')
     or BAIL_OUT("Failed to load the Plugins::SpotOn::API::SpClient stub");
+
+require_ok('Plugins::SpotOn::Connect')
+    or BAIL_OUT("Failed to load the Plugins::SpotOn::Connect stub");
 
 sub reset_backend {
     my ($value) = @_;
@@ -651,19 +671,6 @@ our $protocol_src_84_08 = do {
     sub seekdata { my $self = shift; $self->{_seekdata} = shift if @_; return $self->{_seekdata}; }
     sub streamUrl { my $self = shift; $self->{_streamUrl} = shift if @_; return $self->{_streamUrl}; }
     sub currentTrack { return $_[0]->{track}; }
-}
-
-# Controllable Connect stub -- default isSpotifyConnect returns false.
-{
-    package Plugins::SpotOn::Connect;
-    our $_IS_CONNECT = 0;
-    our @RELEASE_CALLS;    # 83.1-02 Task 1: [ [client, source], ... ]
-    sub isSpotifyConnect { return $_IS_CONNECT; }
-    sub releaseConnectClaim {
-        my ($class, $client, $source) = @_;
-        push @RELEASE_CALLS, [ $client, $source ];
-        return;
-    }
 }
 
 # --- librespot connect: explicit pref check unchanged (D-14 regression pin) ---

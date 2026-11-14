@@ -5,6 +5,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Sync groups ([#217](https://github.com/stiefenm/spoton/issues/217)): right after LMS started, a sync group playing a SpotOn title could stay at "playing" at 0:00 without sound until you pressed stop and play. It happened when a player of the group connected in the first 4 seconds after SpotOn started; the server log then showed `Can't locate object method "isSpotifyConnect"`. In the same 4 seconds, restarting the title, and with the librespot backend also seeking, failed with the same error.
+
 ## [4.0.0-beta.10] - 2026-11-12
 
 **Installing this beta.** Same beta repository URL as before (`https://stiefenm.github.io/spoton/beta/repo.xml`); the Plugins page offers SpotOn 4.0.0beta10 as an update over 4.0.0beta9. Restart LMS after the update. Both fixes below are for the Soloist backend.
