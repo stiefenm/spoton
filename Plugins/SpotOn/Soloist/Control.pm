@@ -5765,7 +5765,9 @@ sub _postNearEnd {
 # and takes the old skip_next path. An early answer there would let LMS open the next stream
 # before the daemon changes. If the shim had not ended the old stream (switched off, a stream
 # younger than its 12 s guard, the first 400 ms of the gap), the drain boundary of the daemon's
-# change would then bound LMS's NEW stream, and the next title would be cut.
+# change would then bound LMS's NEW stream, and the next title would be cut. A skip after the
+# early answer (the common form: the players still play the old title's last seconds) also ends
+# that answer's wait and fallback timer, so exactly one skip_next goes out.
 sub _earlyEndPlan {
     my ($self, $uri, $posMs, $opts, $successCb, $now) = @_;
     return undef if $opts->{earlyEndFallback};
@@ -5777,11 +5779,21 @@ sub _earlyEndPlan {
     my $deadline = ($ne->{at} // 0) + ($ne->{remaining_ms} // 0) / 1000 + EARLY_END_WAIT_S;
     return undef if $now > $deadline;
     if ($opts->{lmsStopped}) {
+        # Answered early already: LMS's _Stop dropped the stream it opened for $uri (StreamingController
+        # _Stop keeps only the playing song), so this is its second request. The wait and its fallback
+        # timer end here; the fallback's skip_next would be a second one and pop the daemon's queue twice.
+        my $answered = ref($o->{earlyEnd}) eq 'HASH' && ($o->{earlyEnd}{uri} // '') eq $uri;
         return (undef, [
-            { op => 'set', target => 'observed', key => 'nearEnd', value => { %$ne, declined => 'lms_stopped' } },
+            { op => 'set', target => 'observed', key => 'nearEnd',
+              value => { %$ne, declined => 'lms_stopped', ($answered ? (answered => 1) : ()) } },
+            ($answered ? (
+                { op => 'set', target => 'observed', key => 'earlyEnd', delete => 1 },
+                { op => 'killtimer', cb => \&_earlyEndFallback },
+            ) : ()),
             { op => 'log', level => 'debug', text =>
                 "Control: LMS asked for the queued next title $uri with its players stopped (a skip or jump in the "
-                . "end gap of $o->{track}) -- old path (" . ($self->mac // '?') . ")" },
+                . "end gap of $o->{track}" . ($answered ? ', after the early answer' : '') . ") -- old path ("
+                . ($self->mac // '?') . ")" },
         ]);
     }
     # No status gate: the speed-0 position_sync of the end gap itself sets observed.status to
@@ -5849,7 +5861,15 @@ sub _earlyEndOutcome {
     my $ee = $o->{earlyEnd};
     my $what;
     if (($ne->{next} // '') ne $uri) {
-        $what = 'early EOF not used, the daemon changed to another title than the marked ' . ($ne->{next} // '?');
+        # a jump to another title after the early answer leaves its wait for the marked successor
+        my $used = $ne->{answered} || (ref($ee) eq 'HASH' && defined $ne->{next} && ($ee->{uri} // '') eq $ne->{next});
+        $what = ($used ? 'early EOF used, but the daemon then changed to another title than the marked '
+                       : 'early EOF not used, the daemon changed to another title than the marked ') . ($ne->{next} // '?');
+    }
+    elsif (($ne->{declined} // '') eq 'lms_stopped') {
+        $what = $ne->{answered}
+            ? 'early EOF used, then LMS stopped its players (a skip or jump in the gap): skip_next'
+            : 'early EOF not used, LMS stopped its players first (a skip or jump in the gap): skip_next';
     }
     elsif (ref($ee) eq 'HASH' && ($ee->{uri} // '') eq $uri) {
         $what = sprintf("early EOF used, LMS opened the next title %.1f s before the daemon's change",
@@ -5857,9 +5877,6 @@ sub _earlyEndOutcome {
     }
     elsif ($ne->{fallback}) {
         $what = 'early EOF used, but the daemon did not change within the end gap (fallback skip_next)';
-    }
-    elsif (($ne->{declined} // '') eq 'lms_stopped') {
-        $what = 'early EOF not used, LMS stopped its players first (a skip or jump in the gap): skip_next';
     }
     elsif (($self->wanted->{uri} // '') ne $uri) {
         $what = "early EOF not used, LMS had not asked for the next title by the daemon's change "
