@@ -28,8 +28,8 @@ package Plugins::SpotOn::Importer;
 #     backoff from the server process -- the rate key lives in the shared
 #     cache) stops the network part of the run. Whatever could not be read
 #     keeps its rows from the previous import; nothing is deleted on a
-#     partial read, and an empty playlist list does not remove the imported
-#     playlists (the rule LMS applies to its online tracks).
+#     partial read, and when no account lists a playlist, the imported
+#     playlists stay (the rule LMS applies to its online tracks).
 #
 # Spotify ids stay public base62 ids. Track urls are SpotOn's playable
 # spoton://track:<id> form; the external ids use the "spoton:" prefix the
