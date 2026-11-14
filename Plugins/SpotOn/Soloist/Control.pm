@@ -5754,8 +5754,10 @@ sub _postNearEnd {
 # side: LMS asks for the daemon's queue head while the daemon is still on the title marked by
 # _postNearEnd and within its reported remaining time (+ EARLY_END_WAIT_S), and LMS advanced by
 # itself ($opts->{lmsStopped} false, read by _reconcile). Before the daemon's change LMS advances
-# by itself only after the old stream's EOF, and inside the gap only the shim's early end gives
-# that EOF; Control never reads the mark's reply, so this is how it knows the shim used the mark.
+# by itself only after the old stream's EOF, and inside the gap that EOF comes from the shim's
+# early end; Control never reads the mark's reply, so this is how it knows the shim used the mark.
+# One exception, not measured: a stream that fails in the gap on a single player (StreamingFailed
+# in PLAYING runs _SyncStopNext, which asks without stopping) also reads as LMS's own advance.
 # The daemon changes to the queue head by itself once its sink has drained. Answer LMS at once
 # (successCb, so it opens the next stream now), raise the prefetch wish for the title after it,
 # and arm the fallback (_earlyEndFallback: the old skip_next path). Returns the intents, or undef
@@ -5817,7 +5819,9 @@ sub _earlyEndPlan {
 # this player (the sync group's, via the master) has its players stopped, else 0. A skip, or a
 # jump to any title, stops them before LMS asks for the next title (StreamingController
 # _StopGetNext: _Stop sets STOPPED, then _getNextTrack). LMS's own advance after an EOF
-# (_NextIfMore, _RetryOrNext) leaves them PLAYING, PAUSED, or BUFFERING in a rebuffer. isStopped
+# (ReadyToStream: _NextIfMore, _RetryOrNext) runs only in PLAYING or PAUSED and leaves them there.
+# BUFFERING (and WAITING_TO_SYNC) is accepted too: LMS's own advance never asks in it (ReadyToStream
+# is _NoOp/_Invalid there), and every path that asks from it stops the players first. isStopped
 # cannot tell the two apart: _getNextTrack sets TRACKWAIT before it asks the handler, and
 # isStopped also needs IDLE. Fails closed (1: the old path) without a client or controller, or
 # when a read dies.

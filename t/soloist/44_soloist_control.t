@@ -4384,9 +4384,10 @@ sub ee_lms {
 }
 
 # --- EE-7b: LMS's own advance after the early EOF keeps the early answer while its players are not stopped:
-# PLAYING (EE-3), BUFFERING in a rebuffer, PAUSED (ReadyToStream runs _NextIfMore in PAUSED too).
-for my $case ([ 'aa:bb:cc:dd:ee:e8', 'rebuffering', playing => 0, buffering => 2 ],
-              [ 'aa:bb:cc:dd:ee:e9', 'paused',      playing => 0, paused => 1 ]) {
+# PLAYING (EE-3) and PAUSED (ReadyToStream runs _NextIfMore in PAUSED too). BUFFERING is accepted too, although
+# LMS's own advance never asks in it (ReadyToStream is _NoOp/_Invalid there).
+for my $case ([ 'aa:bb:cc:dd:ee:e8', 'BUFFERING accepted', playing => 0, buffering => 1 ],
+              [ 'aa:bb:cc:dd:ee:e9', 'paused',             playing => 0, paused => 1 ]) {
     my ($mac, $label, %state) = @$case;
     my ($ctl, $daemon, $ws, $fx, $onset) = ee_session($mac);
     ee_lms($mac, %state);
@@ -4559,14 +4560,19 @@ sub ee_fallback_timers {
 }
 
 # --- EE-10: _hangTrackChanged writes the outcome line as INFO before it drops the mark (INFOLOG is a constant 0 in
-# this file, so the call is pinned in the source; EE-3/4/6/7/8 cover the text).
+# this file, so the call is pinned in the source, as t/37 G11 does; EE-3/4/6/7/7d/7e/8 cover the text). Comments
+# are stripped and only the order is pinned, so a reformatting of either line keeps it green.
 {
     open(my $fh, '<', "$project_dir/Plugins/SpotOn/Soloist/Control.pm") or die "Control.pm: $!";
     my $src = do { local $/; <$fh> };
     close($fh);
     my ($body) = $src =~ /^sub _hangTrackChanged \{\n(.*?)^\}/ms;
-    like($body // '', qr/\$log->info\(\$self->_earlyEndOutcome\(\$uri\)\);\s*delete \$o->\{nearEnd\};/,
-        "EE-10: _hangTrackChanged logs _earlyEndOutcome at INFO, then drops the mark");
+    my $code = join("\n", grep { !/^\s*#/ } split /\n/, $body // '');
+    like($code, qr/\$log->info\(\s*\$self->_earlyEndOutcome\(\s*\$uri\s*\)\s*\)/,
+        "EE-10: _hangTrackChanged logs _earlyEndOutcome at INFO");
+    my $info_idx = index($code, '_earlyEndOutcome');
+    my $drop_idx = index($code, 'delete $o->{nearEnd}');
+    ok($info_idx >= 0 && $drop_idx >= 0 && $info_idx < $drop_idx, "EE-10: before it drops the mark");
 }
 
 # --- D50-23 (outside the edge): duration 15.25 s, threshold 9250 ms > 9195 (55 ms outside) -> the replay stays.
