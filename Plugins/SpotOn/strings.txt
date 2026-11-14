@@ -1766,6 +1766,19 @@ PLUGIN_SPOTON_APPEARS_ON
 	PL	Pojawia się na
 	SV	Visas på
 
+PLUGIN_SPOTON_APPEARS_ON_CAPPED
+	CS	Zobrazeno prvních %s z %s vydání
+	DA	Viser de første %s af %s udgivelser
+	DE	Die ersten %s von %s Veröffentlichungen
+	EN	Showing the first %s of %s releases
+	ES	Se muestran los primeros %s de %s lanzamientos
+	FR	Affichage des %s premières sorties sur %s
+	IT	Mostrate le prime %s di %s uscite
+	NL	De eerste %s van %s releases
+	NO	Viser de første %s av %s utgivelser
+	PL	Pierwsze %s z %s wydań
+	SV	Visar de första %s av %s utgåvorna
+
 PLUGIN_SPOTON_TOP_RESULT
 	CS	Nejlepší výsledek
 	DA	Bedste resultat

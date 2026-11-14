@@ -1151,11 +1151,24 @@ sub _collectDaemonLogs {
 # last SERVER_LOG_FILTERED_MAX lines that mention SpotOn, belong to a player or network module that decides
 # playback, or carry an Error/Warning of ANY module, and (b) an unfiltered tail of the last SERVER_LOG_TAIL_LINES
 # lines, at most SERVER_LOG_TAIL_BYTES_UNFILTERED bytes.
+# 261112-tyh: LMS supplies the path (Slim::Utils::Log::serverLogFile); the logdir pref is only the fallback, and a
+# missing file prints a visible line instead of an empty section.
+sub _serverLogPath {
+    my ($ctx) = @_;
+    # symbol table check, not ->can: the function is absent on old LMS, and the test stub answers can() for every name
+    if (defined &Slim::Utils::Log::serverLogFile) {
+        my $file = eval { Slim::Utils::Log::serverLogFile() };
+        return $file if defined $file && length $file;
+    }
+    my $logdir = $ctx->{serverPrefs}->get('logdir');
+    return $logdir ? catfile($logdir, 'server.log') : undef;
+}
+
 sub _collectServerLog {
     my ($ctx) = @_;
-    my $logdir = $ctx->{serverPrefs}->get('logdir');
-    my $serverLogFile = $logdir ? catfile($logdir, 'server.log') : undef;
-    return () unless $serverLogFile && -f $serverLogFile;
+    my $serverLogFile = _serverLogPath($ctx);
+    return ('--- LMS server.log ---', '(server.log not found: ' . ($serverLogFile // 'path not resolvable') . ')')
+        unless defined $serverLogFile && -f $serverLogFile;
 
     my $size = -s $serverLogFile || 0;
     open(my $sfh, '<', $serverLogFile) or return ("--- LMS server.log ---", "(could not open server.log: $!)");

@@ -5,6 +5,30 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.0.0-beta.11] - 2026-11-14
+
+**Installing this beta.** Same beta repository URL as before (`https://stiefenm.github.io/spoton/beta/repo.xml`); the Plugins page offers SpotOn 4.0.0beta11 as an update over 4.0.0beta10. Restart LMS after the update. The fixes below apply to both backends unless they name one.
+
+### Fixed
+
+- Diagnostic report: the LMS server.log extract was always empty; the report now finds the server log where LMS writes it. If it still cannot find the file, the report says so instead of leaving the section empty.
+
+- Play All, Add and Insert on an album or artist opened from a track's More menu (Material skin) no longer fail with an error.
+
+- Material home rows: a second playlist or folder opened from a SpotOn row within a minute no longer shows an empty list.
+
+- Play All on an album could queue only one track after the artist's albums were listed again; it now queues the whole album.
+
+- Artist pages: Albums, Singles and Compilations now each show only their own releases instead of the same combined list; Appears On lists the releases the artist appears on.
+
+- Artist pages: Appears On now lists the first 100 releases and shows how many there are in total, so Play All there no longer queues hundreds of albums.
+
+- librespot backend: a track tapped in a playlist in the Spotify app now plays that track instead of the first one.
+
+### Known issues
+
+- Soloist: after a title changes by itself, a web interface that asks LMS for the status on its own timer, for example the default skin, can still show the old title's time for about 1 to 2 seconds before it corrects itself. It is most visible when you skipped close to the end of the previous title. Material Skin is not affected since 4.0.0-beta.10. The cause is in LMS; SpotOn cannot change it.
+
 ## [4.0.0-beta.10] - 2026-11-12
 
 **Installing this beta.** Same beta repository URL as before (`https://stiefenm.github.io/spoton/beta/repo.xml`); the Plugins page offers SpotOn 4.0.0beta10 as an update over 4.0.0beta9. Restart LMS after the update. Both fixes below are for the Soloist backend.
@@ -48,7 +72,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Connect (librespot): in a rare case where LMS pauses the player while Spotify keeps playing on it, and you then choose another track in the Spotify app, the time LMS shows can stay at 0 or be wrong for about as long as the previous track had played. The sound itself is right. This is tracked for a later release.
 - Connect (librespot): if a player stops taking its stream for a few minutes without disconnecting and continues exactly while a new track starts, that track can stay silent until the following track. This is tracked for a later release.
 - Connect (librespot): tapping the same track again after a pause can still stall for about 3 seconds before it plays. This is tracked for a later release. ([#201](https://github.com/stiefenm/spoton/issues/201))
-- Connect (librespot): if the connection between the SpotOn daemon and Spotify drops during playback, the current track plays on, but after it the player turns inactive and LMS pauses; playing from LMS is then refused until the daemon is restarted. This is tracked for a later release. ([#207](https://github.com/stiefenm/spoton/issues/207))
+- Connect (librespot): if the connection between the SpotOn daemon and Spotify drops during playback, the current track plays on until about 30 seconds before its end; then the player turns inactive and LMS pauses, and playing from LMS is refused. Selecting the player again in the Spotify app and pressing Play brings it back at the same position; restarting the daemon is not needed. This is tracked for a later release. ([#207](https://github.com/stiefenm/spoton/issues/207))
 
 Everything else is as in 4.0.0-beta.7 below.
 

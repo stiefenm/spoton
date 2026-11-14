@@ -946,6 +946,40 @@ sub artist_fixture {
     });
 }
 
+# 87.1-03 (GH #211): one distinct album gid per release group. The four *_group keys and the shape
+# { album => [ { gid } ] } follow the real metadata/4/artist reply (rig probe, 87.1-03-PROBE.txt: all four
+# keys present for Daft Punk and Queen). The CONTENT of appears_on_group is synthetic: the probe counted
+# no entries, so no real appears_on entry shape is claimed here beyond the shared group wrapper.
+sub artist_fixture_groups {
+    return JSON::XS::VersionOneAndTwo::to_json({
+        gid               => hexid(200),
+        name              => 'Test Artist Name',
+        album_group       => [ { album => [ { gid => hexid(10) } ] } ],
+        single_group      => [ { album => [ { gid => hexid(11) } ] } ],
+        compilation_group => [ { album => [ { gid => hexid(12) } ] } ],
+        appears_on_group  => [ { album => [ { gid => hexid(13) } ] } ],
+    });
+}
+
+# 261114-kus: an artist with $nAlbum album_group albums (gid hexid(2000+i)) and $nAppears appears_on_group
+# albums (gid hexid(1000+i)), the latter in wrappers of THREE albums each (the last one may be shorter; a cut at
+# 100 falls inside wrapper 34, so the cut is per album, not per wrapper). Synthetic content, wrapper shape as in
+# artist_fixture_groups.
+sub artist_fixture_cap {
+    my ($nAlbum, $nAppears) = @_;
+    my @ap = map { { gid => hexid(1000 + $_) } } 1 .. $nAppears;
+    my @apGroups;
+    push @apGroups, { album => [ splice(@ap, 0, 3) ] } while @ap;
+    return JSON::XS::VersionOneAndTwo::to_json({
+        gid               => hexid(200),
+        name              => 'Test Artist Name',
+        album_group       => ($nAlbum ? [ { album => [ map { { gid => hexid(2000 + $_) } } 1 .. $nAlbum ] } ] : []),
+        single_group      => [],
+        compilation_group => [],
+        appears_on_group  => \@apGroups,
+    });
+}
+
 sub show_fixture {
     return JSON::XS::VersionOneAndTwo::to_json({
         gid         => hexid(300),
@@ -1079,6 +1113,223 @@ sub context_resolve_mixed_fixture {
 
     is($secondCount, $firstCount,
         'D-09: repeated getAlbumTracks for the same album+slice issues zero additional HTTP requests (response cache hits)');
+}
+
+# WR-01 (gap closure 75-07 Task 2): an empty-body 200 response leaves $meta
+# undef -- the normalize closure must answer parse_error exactly once
+# instead of dying inside the async HTTP success callback (no die, no hang,
+# no double-callback; 85-15: no Client.pm delegation any more).
+{
+    reset_all();
+    $Slim::Networking::SimpleAsyncHTTP::auto_response_content = '';
+
+    my $cbCalls = 0;
+    my ($result, $err);
+    $SP->getAlbumTracks('acct17', '4iV5W9uYEdYUVa79Axb7Rh', {}, sub { $cbCalls++; ($result, $err) = @_ });
+
+    is($cbCalls, 1, 'WR-01 getAlbumTracks: cb fires exactly once on an empty-body 200 (no double-callback)');
+    is(scalar(@Plugins::SpotOn::API::Client::getAlbumTracks_calls), 0,
+        'WR-01 getAlbumTracks: empty-body $meta never reaches Client.pm (85-15), no die');
+    is(ref($err) eq 'HASH' ? $err->{error} : undef, 'parse_error',
+        'WR-01 getAlbumTracks: empty-body $meta answers (undef, {error=>parse_error})');
+
+    $Slim::Networking::SimpleAsyncHTTP::auto_response_content = '{}';
+}
+
+# getArtist: normalized shape incl. portrait_group images, empty genres.
+{
+    reset_all();
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/metadata/4/artist/}, artist_fixture());
+
+    my ($result, $err);
+    $SP->getArtist('acct13', '4iV5W9uYEdYUVa79Axb7Rh', sub { ($result, $err) = @_ });
+
+    ok($result, 'getArtist: result returned');
+    is($result->{name}, 'Test Artist Name', 'getArtist: name mapped');
+    is($result->{popularity}, 77, 'getArtist: popularity mapped');
+    like($result->{images}[0]{url}, qr{^https://i\.scdn\.co/image/artistportraitfileid}, 'getArtist: portrait_group image mapped');
+    is_deeply($result->{genres}, [], 'getArtist: genres always empty array');
+}
+
+# getArtist D-06: no login5-capable creds -> immediate no_credentials, zero HTTP, no Client.pm (85-15).
+{
+    reset_all();
+    $Plugins::SpotOn::API::Credentials::mock_creds = undef;
+
+    my ($result, $err);
+    $SP->getArtist('acct16', '4iV5W9uYEdYUVa79Axb7Rh', sub { ($result, $err) = @_ });
+
+    is(scalar(Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests()), 0, 'getArtist D-06: zero spclient HTTP when creds absent');
+    is(scalar(@Plugins::SpotOn::API::Client::getArtist_calls), 0, 'getArtist D-06: never reaches Client.pm when creds absent (85-15)');
+    is(ref($err) eq 'HASH' ? $err->{error} : undef, 'no_credentials', 'getArtist D-06: answers (undef, {error=>no_credentials}) when creds absent');
+
+    $Plugins::SpotOn::API::Credentials::mock_creds = { username => 'testuser', auth_data => 'ZGF0YQ==' };
+}
+
+# getArtistAlbums per release group (87.1-03, GH #211). One cached metadata/4/artist read; the include_groups
+# value picks the *_group key(s), and only the selected group's albums are counted and enriched (total and the
+# metadata/4/album requests are per tab).
+#   AG-1 album: total 1 'Album One', 2 metadata requests (artist + its album); a comma list adds the second group
+#   AG-2 single  AG-3 compilation  AG-4 appears_on (synthetic content)
+#   AG-5 include_groups absent: album + single + compilation (total 3), appears_on not included
+#   AG-6 unknown value: total 0, only the artist request (no enrichment)
+{
+    my %group_name = (10 => 'Album One', 11 => 'Single One', 12 => 'Compilation One', 13 => 'Appears On One');
+    my $run = sub {
+        my ($params) = @_;
+        reset_all();
+        Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/metadata/4/artist/}, artist_fixture_groups());
+        for my $n (sort keys %group_name) {
+            my $hex = hexid($n);
+            Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/metadata/4/album/$hex}, JSON::XS::VersionOneAndTwo::to_json({
+                gid  => $hex, name => $group_name{$n},
+                artist => [ { gid => hexid(201), name => 'Artist' } ],
+                cover_group => { image => [ { file_id => "coverid$n", width => 300, height => 300 } ] },
+            }));
+        }
+        my ($result, $err);
+        $SP->getArtistAlbums('acct14', '4iV5W9uYEdYUVa79Axb7Rh', $params, sub { ($result, $err) = @_ });
+        my @metaReqs = grep { $_->{url} =~ m{/metadata/4/} } Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests();
+        return ($result, $err, scalar @metaReqs);
+    };
+    my $names = sub { join(',', map { $_->{name} } @{ $_[0]->{items} || [] }) };
+
+    my ($r, $e, $reqs) = $run->({ include_groups => 'album' });
+    ok($r, 'AG-1: result returned');
+    is($r && $r->{total}, 1, 'AG-1: include_groups album -> total 1');
+    is($r && $names->($r), 'Album One', 'AG-1: include_groups album -> only Album One');
+    is($reqs, 2, 'AG-1: 2 metadata requests (artist + its own album), not 3 for the union');
+    ($r) = $run->({ include_groups => 'album,single' });
+    is($r && $names->($r), 'Album One,Single One', 'AG-1: a comma list takes both groups, album first');
+
+    ($r) = $run->({ include_groups => 'single' });
+    is($r && $r->{total}, 1, 'AG-2: include_groups single -> total 1');
+    is($r && $names->($r), 'Single One', 'AG-2: include_groups single -> only Single One');
+
+    ($r) = $run->({ include_groups => 'compilation' });
+    is($r && $r->{total}, 1, 'AG-3: include_groups compilation -> total 1');
+    is($r && $names->($r), 'Compilation One', 'AG-3: include_groups compilation -> only Compilation One');
+
+    ($r) = $run->({ include_groups => 'appears_on' });
+    is($r && $r->{total}, 1, 'AG-4: include_groups appears_on -> total 1 (synthetic appears_on_group)');
+    is($r && $names->($r), 'Appears On One', 'AG-4: include_groups appears_on -> only the appears_on_group album');
+
+    ($r, $e, $reqs) = $run->({});
+    is($r && $r->{total}, 3, 'AG-5: include_groups absent -> album + single + compilation, total 3');
+    is($r && $names->($r), 'Album One,Single One,Compilation One', 'AG-5: appears_on is not part of the default');
+    ($r) = $run->({ include_groups => '' });
+    is($r && $r->{total}, 3, 'AG-5: an empty include_groups behaves like an absent one');
+
+    ($r, $e, $reqs) = $run->({ include_groups => 'bogus' });
+    ok($r && !$e, 'AG-6: unknown include_groups value still answers a page');
+    is($r && $r->{total}, 0, 'AG-6: unknown include_groups value -> total 0');
+    is($r && scalar @{ $r->{items} }, 0, 'AG-6: unknown include_groups value -> no items');
+    is($reqs, 1, 'AG-6: only the artist request, no enrichment');
+}
+
+# 261114-kus: Appears On cap (user decision 2026-11-14, cap 100). One artist had 514 appears_on entries and Play All
+# enriched every one through metadata/4/album. getArtistAlbums keeps the first 100 appears_on album ids (reply order)
+# BEFORE total, slice and enrichment; `available` carries the uncapped count and exists only when the cap cut something.
+#   AOC-1 515 ids, page 0: total 100, available 515, 50 album requests for 1001..1050
+#   AOC-2 page at offset 100 is empty and sends no album request; offset 90 holds the last ten (91..100)
+#   AOC-3 a full page walk sends album requests for exactly 1001..1100 and ONE artist request
+#   AOC-4 combined list album,appears_on: only the appears_on part is cut (total 102, available 517)
+#   AOC-5 control: album stays unlimited (150), no available key; exactly 100 appears_on ids are not cut
+{
+    my $run = sub {
+        my ($nAlbum, $nAppears, $params) = @_;
+        reset_all();
+        Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/metadata/4/artist/}, artist_fixture_cap($nAlbum, $nAppears));
+        for my $spec ([ 1000, $nAppears, 'AO' ], [ 2000, $nAlbum, 'AL' ]) {
+            my ($base, $n, $pfx) = @$spec;
+            for my $i (1 .. $n) {
+                my $hex = hexid($base + $i);
+                Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/metadata/4/album/$hex}, JSON::XS::VersionOneAndTwo::to_json({
+                    gid  => $hex, name => "$pfx $i",
+                    artist => [ { gid => hexid(201), name => 'Artist' } ],
+                    cover_group => { image => [ { file_id => "coverid$base$i", width => 300, height => 300 } ] },
+                }));
+            }
+        }
+        my ($result, $err);
+        $SP->getArtistAlbums('acct14', '4iV5W9uYEdYUVa79Axb7Rh', $params, sub { ($result, $err) = @_ });
+        return ($result, $err);
+    };
+    my $albumNums = sub {
+        my @n = map { $_->{url} =~ m{/metadata/4/album/([0-9a-f]{32})} ? 0 + $1 : () }
+                Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests();
+        return @n;
+    };
+    my $names = sub { join(',', map { $_->{name} } @{ $_[0]->{items} || [] }) };
+
+    my ($r) = $run->(0, 515, { include_groups => 'appears_on', offset => 0, limit => 50 });
+    my @nums = $albumNums->();
+    is($r && $r->{total}, 100, 'AOC-1: 515 appears_on ids -> total 100');
+    is($r && $r->{available}, 515, 'AOC-1: available carries the uncapped count 515');
+    is($r && scalar @{ $r->{items} }, 50, 'AOC-1: page of 50 items');
+    is($r && $r->{items}[0]{name}, 'AO 1', 'AOC-1: first item is the first listed album');
+    is($r && $r->{items}[-1]{name}, 'AO 50', 'AOC-1: last item of the page is AO 50');
+    is(scalar @nums, 50, 'AOC-1: exactly 50 metadata/4/album requests');
+    is(join(',', sort { $a <=> $b } @nums), join(',', 1001 .. 1050), 'AOC-1: the requests are for albums 1001..1050');
+
+    ($r) = $run->(0, 515, { include_groups => 'appears_on', offset => 100, limit => 50 });
+    @nums = $albumNums->();
+    is($r && scalar @{ $r->{items} }, 0, 'AOC-2: the page at offset 100 is empty');
+    is($r && $r->{total}, 100, 'AOC-2: total stays 100 at offset 100');
+    is($r && $r->{available}, 515, 'AOC-2: available stays 515 at offset 100');
+    is(scalar @nums, 0, 'AOC-2: zero metadata/4/album requests at offset 100');
+
+    ($r) = $run->(0, 515, { include_groups => 'appears_on', offset => 90, limit => 50 });
+    @nums = $albumNums->();
+    is($r && scalar @{ $r->{items} }, 10, 'AOC-2: offset 90 holds the last ten items');
+    is($r && $names->($r), join(',', map { "AO $_" } 91 .. 100), 'AOC-2: offset 90 holds AO 91..AO 100');
+    is(scalar @nums, 10, 'AOC-2: offset 90 sends 10 album requests');
+    is((sort { $b <=> $a } @nums)[0], 1100, 'AOC-2: the highest requested album is 1100');
+
+    # AOC-3: walk the pages like Plugin.pm _fetchPages (one reset, no reset between pages).
+    reset_all();
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/metadata/4/artist/}, artist_fixture_cap(0, 515));
+    for my $i (1 .. 515) {
+        my $hex = hexid(1000 + $i);
+        Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/metadata/4/album/$hex}, JSON::XS::VersionOneAndTwo::to_json({
+            gid => $hex, name => "AO $i", artist => [ { gid => hexid(201), name => 'Artist' } ],
+            cover_group => { image => [ { file_id => "coverid$i", width => 300, height => 300 } ] },
+        }));
+    }
+    my @collected;
+    my $offset = 0;
+    my $guard  = 0;
+    while ($guard++ < 40) {
+        my ($pg, $pe);
+        $SP->getArtistAlbums('acct14', '4iV5W9uYEdYUVa79Axb7Rh', { include_groups => 'appears_on', offset => $offset, limit => 50 }, sub { ($pg, $pe) = @_ });
+        last unless $pg && @{ $pg->{items} || [] };
+        push @collected, map { $_->{name} } @{ $pg->{items} };
+        $offset += scalar @{ $pg->{items} };
+        last unless $offset < $pg->{total};
+    }
+    @nums = $albumNums->();
+    my %seen = map { $_ => 1 } @nums;
+    my @artistReqs = grep { $_->{url} =~ m{/metadata/4/artist/} } Slim::Networking::SimpleAsyncHTTP::non_apresolve_requests();
+    is(join(',', @collected), join(',', map { "AO $_" } 1 .. 100), 'AOC-3: the walk collects AO 1..AO 100 in order');
+    is(join(',', sort { $a <=> $b } keys %seen), join(',', 1001 .. 1100), 'AOC-3: the requested albums are exactly 1001..1100');
+    is(scalar(keys %seen), 100, 'AOC-3: 100 distinct album ids requested, none above 1100');
+    is(scalar @artistReqs, 1, 'AOC-3: ONE metadata/4/artist request for the whole walk');
+
+    ($r) = $run->(2, 515, { include_groups => 'album,appears_on', offset => 0, limit => 50 });
+    is($r && $r->{total}, 102, 'AOC-4: album 2 + appears_on 515 -> total 102 (only appears_on is cut)');
+    is($r && $r->{available}, 517, 'AOC-4: available 517 (uncapped count of the whole selection)');
+    is($r && join(',', map { $_->{name} } @{ $r->{items} }[0 .. 2]), 'AL 1,AL 2,AO 1', 'AOC-4: albums first, then the appears_on albums');
+    ($r) = $run->(2, 515, { include_groups => 'album,appears_on', offset => 102, limit => 50 });
+    is($r && scalar @{ $r->{items} }, 0, 'AOC-4: offset 102 gives no items');
+
+    ($r) = $run->(150, 0, { include_groups => 'album', offset => 0, limit => 50 });
+    is($r && $r->{total}, 150, 'AOC-5: include_groups album with 150 ids -> total 150 (no cap)');
+    ok($r && !exists $r->{available}, 'AOC-5: album carries no available key');
+    ($r) = $run->(150, 0, { include_groups => 'album', offset => 100, limit => 50 });
+    is($r && $names->($r), join(',', map { "AL $_" } 101 .. 150), 'AOC-5: offset 100 limit 50 gives AL 101..AL 150');
+    ($r) = $run->(0, 100, { include_groups => 'appears_on', offset => 0, limit => 50 });
+    is($r && $r->{total}, 100, 'AOC-5: exactly 100 appears_on ids -> total 100');
+    ok($r && !exists $r->{available}, 'AOC-5: exactly 100 ids are not cut, no available key');
 }
 
 # WR-01 (gap closure 75-07 Task 2): an empty-body 200 response leaves $meta

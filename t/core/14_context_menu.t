@@ -279,8 +279,42 @@ END
 # Stub: Slim::Menu::TrackInfo (registerInfoProvider — only needed if initPlugin is called)
 write_stub($stub_dir, 'Slim::Menu::TrackInfo', <<'END');
 package Slim::Menu::TrackInfo;
+our ($next_feed, @menu_calls);
 sub registerInfoProvider { }
-sub menu { }
+sub menu {
+    my $class = shift;
+    push @menu_calls, [@_];
+    return $next_feed;
+}
+1;
+END
+
+# Stub: Slim::Schema (quick 261113-b91: _trackInfoItemsCLI requires it at call
+# time; CI has no LMS tree, so the stub must exist and records its calls)
+write_stub($stub_dir, 'Slim::Schema', <<'END');
+package Slim::Schema;
+our ($next_object, @calls);
+sub objectForUrl {
+    my $class = shift;
+    push @calls, ['objectForUrl', [@_]];
+    return $next_object;
+}
+sub updateOrCreate {
+    my $class = shift;
+    push @calls, ['updateOrCreate', [@_]];
+    return undef;
+}
+1;
+END
+
+# Stub: Slim::Control::XMLBrowser (quick 261113-b91: records cliQuery calls)
+write_stub($stub_dir, 'Slim::Control::XMLBrowser', <<'END');
+package Slim::Control::XMLBrowser;
+our @calls;
+sub cliQuery {
+    push @calls, [@_];
+    return;
+}
 1;
 END
 
@@ -346,6 +380,8 @@ our @top_calls              = ();
 our $next_search            = {};
 our $next_search_err        = undef;
 our @search_calls           = ();
+our $next_artist_albums     = { items => [], total => 0, offset => 0, limit => 10 };   # 87.1-02: getArtistAlbums (plan 03 reuses it)
+our @artist_albums_calls    = ();
 sub _hasLogin5Creds { return $next_has_login5 }
 sub getMadeForYou {
     my ($class, $accountId, $cb) = @_;
@@ -367,8 +403,15 @@ sub search {
     push @search_calls, [$accountId, $params];
     $cb->($next_search, $next_search_err);
 }
+sub getArtistAlbums {
+    my ($class, $accountId, $artistId, $params, $cb) = @_;
+    push @artist_albums_calls, [$accountId, $artistId, $params];
+    $cb->($next_artist_albums);
+}
 sub pageLimit { return 10 }
 sub reset_calls {
+    $next_artist_albums   = { items => [], total => 0, offset => 0, limit => 10 };
+    @artist_albums_calls  = ();
     $next_top             = undef;
     $next_top_err         = undef;
     @top_calls            = ();
@@ -919,6 +962,196 @@ ok( !defined(&Plugins::SpotOn::ProtocolHandler::trackInfoURL),
 }
 
 # ============================================================
+# quick 261113-b91: Material Play All / Add / Insert from a SpotOn track's
+# More menu was answered with request not dispatchable. The handler must be
+# registered for the playlist form too and accept it as a query. Stubs for
+# Slim::Schema / Slim::Menu::TrackInfo / Slim::Control::XMLBrowser live in
+# $stub_dir, so nothing here needs the LMS tree (CI has none).
+# ============================================================
+{
+    require Slim::Schema;
+    require Slim::Menu::TrackInfo;
+    require Slim::Control::XMLBrowser;
+
+    {
+        # Mirrors Slim::Control::Request isNotQuery (Request.pm 1749-1751 and
+        # 2381-2395): not a query, or a command word missing from its name set.
+        package B91Request;
+        sub new {
+            my ($cls, %a) = @_;
+            return bless {
+                request => $a{request},
+                isQuery => $a{isQuery},
+                client  => $a{client},
+                params  => $a{params} || {},
+                status  => undef,
+            }, $cls;
+        }
+        sub client   { $_[0]{client} }
+        sub getParam { $_[0]{params}{ $_[1] } }
+        sub isNotQuery {
+            my ($self, $names) = @_;
+            return 1 unless $self->{isQuery};
+            my $i = 0;
+            foreach my $set (@$names) {
+                my $word = $self->{request}[$i++];
+                return 1 if !defined $word;
+                return 1 unless grep { $_ eq $word } @$set;
+            }
+            return 0;
+        }
+        sub setStatusBadDispatch { $_[0]{status} = 'bad_dispatch' }
+        sub setStatusBadParams   { $_[0]{status} = 'bad_params' }
+    }
+    {
+        package B91FakeTrack;
+    }
+
+    my $run = sub {
+        my (%a) = @_;
+        @Slim::Control::XMLBrowser::calls = ();
+        @Slim::Menu::TrackInfo::menu_calls = ();
+        @Slim::Schema::calls = ();
+        my $req = B91Request->new(%a);
+        Plugins::SpotOn::Plugin::_trackInfoItemsCLI($req);
+        return $req;
+    };
+
+    local $Slim::Schema::next_object = bless {}, 'B91FakeTrack';
+    my $feed = { name => 'b91 feed', items => [] };
+    local $Slim::Menu::TrackInfo::next_feed = $feed;
+
+    my $url    = 'spoton://track:15Cv0RFfDJQwAeZKcgQjrf';
+    my $client = MockClient->new('player-b91');
+
+    # B91-0: control, the items form keeps working
+    {
+        $run->(
+            request => ['spotoninfo', 'items', '0', '100'],
+            isQuery => 1,
+            client  => $client,
+            params  => { url => $url, _index => 0, _quantity => 100, menu => 'spotoninfo' },
+        );
+        my @calls = @Slim::Control::XMLBrowser::calls;
+        my $c = $calls[0] || [];
+        is( scalar(@calls), 1, 'B91-0: items form reaches cliQuery once' );
+        is( $c->[0], 'spotoninfo', 'B91-0: items form passes spotoninfo as the query name' );
+    }
+
+    # B91-1: initPlugin registers the playlist form
+    {
+        my $plugin_src_file = "$project_dir/Plugins/SpotOn/Plugin.pm";
+        open(my $pfh, '<', $plugin_src_file) or die "Cannot read $plugin_src_file: $!";
+        my @lines = <$pfh>;
+        close($pfh);
+
+        my @init;
+        my $in = 0;
+        foreach my $l (@lines) {
+            if (!$in) { $in = 1 if $l =~ /^sub initPlugin \{/; next if !$in; }
+            last if $l eq "}\n";
+            next if $l =~ /^\s*#/;
+            push @init, $l;
+        }
+        my $init_src = join('', @init);
+        like( $init_src,
+            qr/addDispatch\(\s*\[\s*'spotoninfo'\s*,\s*'playlist'\s*,\s*'_method'\s*\]\s*,\s*\[\s*1\s*,\s*1\s*,\s*1\s*,\s*\\&_trackInfoItemsCLI\s*\]\s*\)/,
+            'B91-1: initPlugin registers spotoninfo playlist _method as C=1 Q=1 T=1 against _trackInfoItemsCLI' );
+    }
+
+    # B91-2: the playlist form reaches XMLBrowser::cliQuery for play, add, insert
+    foreach my $method (qw(play add insert)) {
+        my $req = $run->(
+            request => ['spotoninfo', 'playlist', $method],
+            isQuery => 1,
+            client  => $client,
+            params  => {
+                _method       => $method,
+                url           => $url,
+                item_id       => '10.0.1',
+                isContextMenu => 1,
+                menu          => 'spotoninfo',
+            },
+        );
+        my @calls = @Slim::Control::XMLBrowser::calls;
+        my $c     = $calls[0] || [];
+        my @menu  = @Slim::Menu::TrackInfo::menu_calls;
+        my $m     = $menu[0] || [];
+        is( scalar(@calls), 1, "B91-2: playlist $method reaches cliQuery once" );
+        is( $c->[0], 'spotoninfo', "B91-2: playlist $method passes spotoninfo as the query name" );
+        ok( defined($c->[1]) && $c->[1] == $feed, "B91-2: playlist $method hands the TrackInfo feed to cliQuery" );
+        is( $m->[1], $url, "B91-2: playlist $method builds the TrackInfo menu for the request url" );
+        ok( defined($c->[2]) && $c->[2] == $req, "B91-2: playlist $method passes the request object to cliQuery" );
+    }
+
+    # B91-3: a bad url in the playlist form still gets BadParams
+    {
+        my $req = $run->(
+            request => ['spotoninfo', 'playlist', 'play'],
+            isQuery => 1,
+            client  => $client,
+            params  => {
+                _method => 'play',
+                item_id => '10.0.1',
+                url     => 'spoton://track:15Cv0RFfDJQwAeZKcgQjrf/../x',
+            },
+        );
+        is( $req->{status}, 'bad_params', 'B91-3: playlist form with a bad url gets BadParams' );
+        is( scalar(@Slim::Control::XMLBrowser::calls), 0, 'B91-3: playlist form with a bad url never reaches cliQuery' );
+    }
+
+    # B91-5: IN-02, a newline-terminated spoton url must not pass the shape
+    # check in the items form ("$" accepts one trailing newline, "\z" does not)
+    {
+        my $req = $run->(
+            request => ['spotoninfo', 'items', '0', '100'],
+            isQuery => 1,
+            client  => $client,
+            params  => { url => "$url\n", _index => 0, _quantity => 100, menu => 'spotoninfo' },
+        );
+        is( $req->{status}, 'bad_params', 'B91-5: items form with a newline-terminated url gets BadParams' );
+        is( scalar(@Slim::Control::XMLBrowser::calls), 0, 'B91-5: items form with a newline-terminated url never reaches cliQuery' );
+    }
+
+    # B91-6: IN-02, same url in the playlist form
+    {
+        my $req = $run->(
+            request => ['spotoninfo', 'playlist', 'play'],
+            isQuery => 1,
+            client  => $client,
+            params  => {
+                _method => 'play',
+                item_id => '10.0.1',
+                url     => "$url\n",
+            },
+        );
+        is( $req->{status}, 'bad_params', 'B91-6: playlist form with a newline-terminated url gets BadParams' );
+        is( scalar(@Slim::Control::XMLBrowser::calls), 0, 'B91-6: playlist form with a newline-terminated url never reaches cliQuery' );
+    }
+
+    # B91-4: control, other names and non-query playlist requests get BadDispatch
+    {
+        my $req = $run->(
+            request => ['spotoninfo', 'foo'],
+            isQuery => 1,
+            client  => $client,
+            params  => { url => $url },
+        );
+        is( $req->{status}, 'bad_dispatch', 'B91-4: request named neither items nor playlist gets BadDispatch' );
+        is( scalar(@Slim::Control::XMLBrowser::calls), 0, 'B91-4: request named neither items nor playlist never reaches cliQuery' );
+
+        $req = $run->(
+            request => ['spotoninfo', 'playlist', 'play'],
+            isQuery => 0,
+            client  => $client,
+            params  => { _method => 'play', url => $url },
+        );
+        is( $req->{status}, 'bad_dispatch', 'B91-4: playlist request that is not a query gets BadDispatch' );
+        is( scalar(@Slim::Control::XMLBrowser::calls), 0, 'B91-4: playlist request that is not a query never reaches cliQuery' );
+    }
+}
+
+# ============================================================
 # Phase 76-06 gap fill (Nyquist validation): GH-135 Up Next OPML feed.
 # Prior coverage was i18n (t/02) + syntax only -- this drives the real
 # _upNextFeed() with a stubbed API::Client->getQueue and asserts the
@@ -1261,6 +1494,347 @@ my @gone_hints = qw(PLUGIN_SPOTON_MIGRATION_REQUIRED PLUGIN_SPOTON_REAUTH_REQUIR
         ("'authChainMigrated'", '_removePkceOnce()', 'DaemonManager->init()');
     ok($i_auth >= 0 && $i_pkce > $i_auth && $i_init > $i_pkce,
         'CTX-27: _startUnifiedDaemons runs _removePkceOnce after authChainMigrated and before DaemonManager->init()');
+}
+
+# ============================================================
+# 87.1-02 (WR-02): no %_playAllItemCache entry is ever handed out live. Every
+# store and every slice goes through _playAllCacheStore / _playAllCacheSlice,
+# which copy. XMLBrowser writes items/offset/fetched/fetchSize/total into the
+# items it is given (XMLBrowser.pm 1549-1569); a live cached item carried those
+# writes into the next request (Play All after a re-listing queued one track
+# or died at XMLBrowser.pm:1013).
+#   WR02-1  the store helper keeps a copy (writes into the passed items stay out)
+#   WR02-2  the slice helper returns {items, offset, total} with copies
+#   WR02-3  _playlistFeed: fill, XMLBrowser-style writes, slice -> clean item
+#   WR02-4  _artistAlbumsFeed: the review's fill, single walk, slice
+#   WR02-S  no direct cache assignment or inline slice outside the two helpers;
+#           10 store and 8 slice call sites
+# ============================================================
+{
+    require Scalar::Util;
+    # symbol-table check: the stubbed base class answers ->can() with true for everything
+    my $have_store = defined &Plugins::SpotOn::Plugin::_playAllCacheStore ? 1 : 0;
+    my $have_slice = defined &Plugins::SpotOn::Plugin::_playAllCacheSlice ? 1 : 0;
+
+    my $refs_of;
+    $refs_of = sub {
+        my ($n, $acc) = @_;
+        $acc ||= {};
+        return $acc unless ref $n eq 'ARRAY' || ref $n eq 'HASH';
+        $acc->{ Scalar::Util::refaddr($n) } = 1;
+        $refs_of->($_, $acc) for (ref $n eq 'ARRAY' ? @$n : values %$n);
+        return $acc;
+    };
+    my $shared = sub { my ($x, $y) = @_; scalar grep { exists $y->{$_} } keys %$x };
+
+    # WR02-1
+    {
+        my @items = ( { name => 'a', items => [ { name => 'inner' } ] }, { name => 'b' } );
+        my $entry = $have_store ? Plugins::SpotOn::Plugin::_playAllCacheStore('wr02:store:1', \@items) : undef;
+        $items[0]{fetched} = 1;
+        $items[0]{items}[0]{offset} = 9;
+        push @items, { name => 'c' };
+        ok($have_store && ref $entry eq 'HASH' && ref $entry->{items} eq 'ARRAY'
+            && @{ $entry->{items} } == 2
+            && !exists $entry->{items}[0]{fetched}
+            && !exists $entry->{items}[0]{items}[0]{offset},
+            'WR02-1: _playAllCacheStore keeps a copy; writes into the passed items do not reach the cache');
+    }
+
+    # WR02-2
+    {
+        my $entry = { ts => time(), items => [ { name => 'a' }, { name => 'b', items => [ { name => 'x' } ] }, { name => 'c' } ] };
+        my $s1 = $have_slice ? Plugins::SpotOn::Plugin::_playAllCacheSlice($entry, 1, 2)  : undef;
+        my $s2 = $have_slice ? Plugins::SpotOn::Plugin::_playAllCacheSlice($entry, 1, 2)  : undef;
+        my $s3 = $have_slice ? Plugins::SpotOn::Plugin::_playAllCacheSlice($entry, 2, 10) : undef;
+        my $shape = $have_slice && ref $s1->{items} eq 'ARRAY' && @{ $s1->{items} } == 2
+            && $s1->{offset} == 1 && $s1->{total} == 3
+            && $s1->{items}[0]{name} eq 'b' && $s1->{items}[1]{name} eq 'c'
+            && @{ $s3->{items} } == 1 && $s3->{offset} == 2 && $s3->{total} == 3;
+        my $n_shared = $have_slice ? $shared->($refs_of->($s1), $refs_of->($entry)) + $shared->($refs_of->($s1), $refs_of->($s2)) : -1;
+        if ($have_slice) {
+            $s1->{items}[0]{fetched} = 1;
+            $s1->{items}[0]{items}[0]{offset} = 4;
+        }
+        ok($shape && $n_shared == 0 && !exists $entry->{items}[1]{fetched} && !exists $entry->{items}[1]{items}[0]{offset},
+            "WR02-2: _playAllCacheSlice returns {items, offset, total} with copies; shared refs=$n_shared");
+    }
+
+    my $client = MockClient->new('player-wr02');
+    Slim::Utils::Prefs::preferences('plugin.spoton')->set('activeAccount', 'wr02-account');
+
+    # WR02-3: _playlistFeed fill, XMLBrowser-style writes, slice
+    {
+        Plugins::SpotOn::API::SpClient::reset_calls();
+        $Plugins::SpotOn::API::SpClient::next_playlist_items = {
+            total => 3,
+            items => [ map { { track => { name => "WR02 T$_", uri => "spotify:track:WRT$_",
+                                          artists => [ { id => 'WRA1', name => 'Artist' } ],
+                                          album   => { id => 'WRAL1', name => 'Album', images => [] },
+                                          duration_ms => 1000 } } } 1 .. 3 ],
+        };
+        my ($fill, $slice);
+        Plugins::SpotOn::Plugin::_playlistFeed($client, sub { $fill = shift }, { index => 0, quantity => 25000 }, { playlistId => 'wr02playlist' });
+        my $n_fill = ($fill && ref $fill->{items} eq 'ARRAY') ? scalar @{ $fill->{items} } : 0;
+        for my $it (@{ $fill->{items} || [] }) {    # what XMLBrowser writes into the items it was handed
+            $it->{offset} = 7; $it->{fetched} = 1; $it->{fetchSize} = 25000; $it->{total} = 3; $it->{items} = [ { name => 'written' } ];
+        }
+        Plugins::SpotOn::Plugin::_playlistFeed($client, sub { $slice = shift }, { index => 1, quantity => 1 }, { playlistId => 'wr02playlist' });
+        my $it = $slice && ref $slice->{items} eq 'ARRAY' ? $slice->{items}[0] : undef;
+        ok($n_fill == 3 && $it && @{ $slice->{items} } == 1 && $slice->{offset} == 1 && $slice->{total} == 3
+            && !exists $it->{fetched} && !exists $it->{fetchSize} && (($it->{offset} // 0) != 7)
+            && !(grep { ($_->{name} // '') eq 'written' } @{ $it->{items} || [] }),
+            'WR02-3: _playlistFeed play-all fill, XMLBrowser-style writes, then a slice returns an item without fetched/fetchSize/items/offset');
+    }
+
+    # WR02-4: the review's sequence through _artistAlbumsFeed (fill, single walk into one album, slice)
+    {
+        Plugins::SpotOn::API::SpClient::reset_calls();
+        $Plugins::SpotOn::API::SpClient::next_artist_albums = {
+            total => 3, offset => 0, limit => 10,
+            items => [ map { { id => "WRAL$_", name => "WR02 Album $_", release_date => '2020-01-01', images => [],
+                               artists => [ { id => 'WRAR1', name => 'Artist' } ] } } 1 .. 3 ],
+        };
+        my ($fill, $slice);
+        Plugins::SpotOn::Plugin::_artistAlbumsFeed($client, sub { $fill = shift }, { index => 0, quantity => 25000 },
+            { artistId => 'WRAR1', includeGroups => 'album' });
+        my $n_fill = ($fill && ref $fill->{items} eq 'ARRAY') ? scalar @{ $fill->{items} } : 0;
+        if ($n_fill == 3) {    # a single-track walk: XMLBrowser descends into album 2 and writes its level there
+            my $album = $fill->{items}[1];
+            $album->{offset} = 5; $album->{fetched} = 1; $album->{fetchSize} = 25000; $album->{total} = 1;
+            $album->{items} = [ { name => 'only track' } ];
+        }
+        Plugins::SpotOn::Plugin::_artistAlbumsFeed($client, sub { $slice = shift }, { index => 1, quantity => 1 },
+            { artistId => 'WRAR1', includeGroups => 'album' });
+        my $it = $slice && ref $slice->{items} eq 'ARRAY' ? $slice->{items}[0] : undef;
+        ok($n_fill == 3 && $it && @{ $slice->{items} } == 1 && $slice->{offset} == 1 && $slice->{total} == 3
+            && !exists $it->{fetched} && !exists $it->{fetchSize} && !exists $it->{items} && (($it->{offset} // 0) != 5),
+            'WR02-4: _artistAlbumsFeed fill, single walk, then a slice returns the album item without the walk\'s writes');
+    }
+
+    # WR02-S: source shape of Plugin.pm
+    {
+        open(my $pfh, '<', "$project_dir/Plugins/SpotOn/Plugin.pm") or die "Cannot read Plugin.pm: $!";
+        my @lines = <$pfh>;
+        close $pfh;
+        my ($sub, @direct, @inline, $stores, $slices) = ('');
+        $stores = $slices = 0;
+        for my $i (0 .. $#lines) {
+            my $l = $lines[$i];
+            next if $l =~ /^\s*#/;
+            $sub = $1 if $l =~ /^sub\s+(\w+)/;
+            my $in_helper = $sub eq '_playAllCacheStore' || $sub eq '_playAllCacheSlice';
+            push @direct, ($i + 1) . ": $l" if !$in_helper && $l =~ /\$_playAllItemCache\{[^}]*\}\s*=[^=~]/;
+            push @inline, ($i + 1) . ": $l" if !$in_helper && $l =~ /\@\{\s*\$cached->\{items\}\s*\}\[/;
+            next if $l =~ /^sub\s/;
+            $stores++ if $l =~ /_playAllCacheStore\(/;
+            $slices++ if $l =~ /_playAllCacheSlice\(/;
+        }
+        ok(!@direct && !@inline && $stores == 10 && $slices >= 8,
+            "WR02-S: Plugin.pm has no direct %_playAllItemCache assignment or inline slice outside the helpers; store calls=$stores (want 10), slice calls=$slices (want 8)")
+            or diag("direct assignments:\n" . join('', @direct) . "inline slices:\n" . join('', @inline));
+    }
+}
+
+# ============================================================
+# 87.1-03 (GH #211): the artist tabs hand their own release group to getArtistAlbums.
+#   AR-1  _artistAlbumsFeed with includeGroups single passes include_groups single and renders the stub's item
+#   AR-2  each _artistFeed tab reaches getArtistAlbums with its own include_groups (album, single, compilation, appears_on)
+#   AR-3  _artistFeed rows (decision fill: four rows, the fourth appears_on; hide: three rows, none appears_on)
+# ============================================================
+{
+    my $client = MockClient->new('player-ar211');
+    Slim::Utils::Prefs::preferences('plugin.spoton')->set('activeAccount', 'ar211-account');
+    my $DECISION = 'fill';    # 87.1-03-DECISION.txt: fill = four tab rows, hide = three (no appears_on)
+
+    # AR-1
+    {
+        Plugins::SpotOn::API::SpClient::reset_calls();
+        $Plugins::SpotOn::API::SpClient::next_artist_albums = {
+            total => 1, offset => 0, limit => 10,
+            items => [ { id => 'AR1AL1', name => 'AR Single One', release_date => '2020-01-01', images => [],
+                         artists => [ { id => 'AR1ART', name => 'Artist' } ] } ],
+        };
+        my $res;
+        Plugins::SpotOn::Plugin::_artistAlbumsFeed($client, sub { $res = shift }, { index => 0, quantity => 50 },
+            { artistId => 'AR1ART', includeGroups => 'single' });
+        my @calls = @Plugins::SpotOn::API::SpClient::artist_albums_calls;
+        ok(scalar(@calls) >= 1 && !grep({ ($_->[2]{include_groups} // '') ne 'single' } @calls),
+            'AR-1: _artistAlbumsFeed passes include_groups single to getArtistAlbums (every call)');
+        my @names = map { $_->{name} // '' } @{ ($res && $res->{items}) || [] };
+        ok(scalar(@names) == 1 && $names[0] =~ /AR Single One/, 'AR-1: _artistAlbumsFeed renders the stub\'s item');
+    }
+
+    # AR-2 and AR-3
+    {
+        my ($rows, $feed);
+        Plugins::SpotOn::Plugin::_artistFeed($client, sub { $feed = shift }, {}, { artistId => 'AR2ART' });
+        $rows = ($feed && ref $feed->{items} eq 'ARRAY') ? $feed->{items} : [];
+        my %seen;
+        my $n = 0;
+        for my $row (@$rows) {
+            $n++;
+            Plugins::SpotOn::API::SpClient::reset_calls();
+            my $want = $row->{passthrough}[0]{includeGroups};
+            my $cb_res;
+            $row->{url}->($client, sub { $cb_res = shift }, { index => 0, quantity => 50 }, $row->{passthrough}[0]);
+            my @calls = @Plugins::SpotOn::API::SpClient::artist_albums_calls;
+            $seen{ $want // '' } = (scalar(@calls) >= 1 && !grep({ ($_->[2]{include_groups} // '') ne ($want // '') } @calls)) ? 1 : 0;
+        }
+        my @groups = map { $_->{passthrough}[0]{includeGroups} // '' } @$rows;
+        is_deeply([ sort @groups ], [ sort(($DECISION eq 'fill') ? qw(album single compilation appears_on) : qw(album single compilation)) ],
+            'AR-2: the tabs carry one distinct include_groups value each: ' . join(',', @groups));
+        ok(!grep({ !$seen{$_} } @groups), 'AR-2: each tab reaches getArtistAlbums with its own include_groups value');
+
+        if ($DECISION eq 'fill') {
+            is(scalar(@$rows), 4, 'AR-3: _artistFeed lists four rows (decision fill)');
+            is($groups[3], 'appears_on', 'AR-3: the fourth row is appears_on (decision fill)');
+        } else {
+            is(scalar(@$rows), 3, 'AR-3: _artistFeed lists three rows (decision hide)');
+            ok(!grep({ $_ eq 'appears_on' } @groups), 'AR-3: no appears_on row (decision hide)');
+        }
+    }
+}
+
+# ============================================================
+# 261114-kus: Appears On cap hint row. SpClient caps appears_on at 100 album ids and answers `available`
+# (uncapped count) only when it cut something; the tab then ends with ONE non-playable hint row at index 100
+# in every branch (browse blocks, Play-All fill, play-all cache slice).
+#   AOF-1 browse blocks: total 101, the hint only in the block that reaches index 100 with room left
+#   AOF-2 Play-All fill (Material quantity 25000): 100 albums in order, then the hint, 100 playable items
+#   AOF-3 LMS play-command shape (no index, no quantity): same list, 100 playable items
+#   AOF-4 play-all cache after AOF-2: the hint is served at index 100 from the cache, no new API call
+#   AOF-5 control: album tab has no cap, no hint
+# ============================================================
+{
+    my $client = MockClient->new('player-kus');
+    Slim::Utils::Prefs::preferences('plugin.spoton')->set('activeAccount', 'kus-account');
+
+    no warnings 'redefine';
+    local *Plugins::SpotOn::API::SpClient::getArtistAlbums = sub {
+        my ($class, $accountId, $artistId, $params, $cb) = @_;
+        push @Plugins::SpotOn::API::SpClient::artist_albums_calls, [$accountId, $artistId, $params];
+        my $capped = ($params->{include_groups} // '') eq 'appears_on';
+        my ($n, $pfx, $idp) = $capped ? (100, 'Cap Album', 'KUSAO') : (150, 'Plain Album', 'KUSAL');
+        my $from = $params->{offset} // 0;
+        my $to   = $from + ($params->{limit} // 10) - 1;
+        $to = $n - 1 if $to > $n - 1;
+        my @items = $from <= $to
+            ? map { { id => "$idp$_", name => "$pfx $_", release_date => '2020-01-01', images => [],
+                      artists => [ { id => 'KUSART', name => 'Artist' } ] } } ($from + 1 .. $to + 1)
+            : ();
+        my $reply = { items => \@items, total => $n, offset => $from, limit => $params->{limit} };
+        $reply->{available} = 515 if $capped;
+        $cb->($reply);
+    };
+    local *Plugins::SpotOn::Plugin::cstring = sub { join('|', @_[1 .. $#_]) };
+
+    my $feed = sub {
+        my ($artistId, $groups, $args) = @_;
+        my $res;
+        Plugins::SpotOn::Plugin::_artistAlbumsFeed($client, sub { $res = shift }, $args,
+            { artistId => $artistId, includeGroups => $groups });
+        return $res;
+    };
+    my $isHint = sub {
+        my ($it) = @_;
+        return ref($it) eq 'HASH' && ($it->{type} // '') eq 'text'
+            && ($it->{name} // '') eq 'PLUGIN_SPOTON_APPEARS_ON_CAPPED|100|515'
+            && !grep { exists $it->{$_} } qw(url play favorites_url playall passthrough);
+    };
+    my $playable = sub { scalar grep { ref($_) eq 'HASH' && (defined $_->{url} || defined $_->{play} || defined $_->{favorites_url}) } @{ $_[0] } };
+    my $texts    = sub { scalar grep { ref($_) eq 'HASH' && ($_->{type} // '') eq 'text' } @{ $_[0] } };
+    my $names    = sub { join(',', map { $_->{name} // '' } @{ $_[0] }) };
+    my @capNames = map { "Cap Album $_" } 1 .. 100;
+
+    # AOF-1
+    {
+        Plugins::SpotOn::API::SpClient::reset_calls();
+        my $r = $feed->('KUSB', 'appears_on', { index => 0, quantity => 50 });
+        my $it = ($r && $r->{items}) || [];
+        is(scalar @$it, 50, 'AOF-1: block 0/50 holds 50 items');
+        is($texts->($it), 0, 'AOF-1: block 0/50 has no hint row');
+        is($r && $r->{total}, 101, 'AOF-1: block 0/50 reports total 101');
+
+        $r = $feed->('KUSB', 'appears_on', { index => 50, quantity => 50 });
+        $it = ($r && $r->{items}) || [];
+        is(scalar @$it, 50, 'AOF-1: block 50/50 holds 50 items');
+        is($texts->($it), 0, 'AOF-1: block 50/50 is full, the hint waits for the next block');
+        is($r && $r->{total}, 101, 'AOF-1: block 50/50 reports total 101');
+
+        $r = $feed->('KUSB', 'appears_on', { index => 100, quantity => 50 });
+        $it = ($r && $r->{items}) || [];
+        is(scalar @$it, 1, 'AOF-1: block 100/50 holds exactly one item');
+        ok($it->[0] && $isHint->($it->[0]), 'AOF-1: block 100/50 carries the hint row');
+        is($r && $r->{total}, 101, 'AOF-1: block 100/50 reports total 101');
+
+        $r = $feed->('KUSB', 'appears_on', { index => 90, quantity => 50 });
+        $it = ($r && $r->{items}) || [];
+        is(scalar @$it, 11, 'AOF-1: block 90/50 holds 10 albums and the hint');
+        is($names->([ @$it[0 .. 9] ]), join(',', map { "Cap Album $_" } 91 .. 100), 'AOF-1: block 90/50 album names 91..100');
+        ok($it->[10] && $isHint->($it->[10]), 'AOF-1: block 90/50 ends with the hint row');
+        is($r && $r->{total}, 101, 'AOF-1: block 90/50 reports total 101');
+
+        $r = $feed->('KUSB', 'appears_on', { index => 0, quantity => 200 });
+        $it = ($r && $r->{items}) || [];
+        is(scalar @$it, 101, 'AOF-1: block 0/200 holds 101 items');
+        ok($it->[100] && $isHint->($it->[100]), 'AOF-1: block 0/200 has the hint as item 100');
+        is($r && $r->{total}, 101, 'AOF-1: block 0/200 reports total 101');
+    }
+
+    # AOF-2
+    {
+        Plugins::SpotOn::API::SpClient::reset_calls();
+        my $r = $feed->('KUSP', 'appears_on', { index => 0, quantity => 25000 });
+        my $it = ($r && $r->{items}) || [];
+        is(scalar @$it, 101, 'AOF-2: Play-All fill holds 101 items');
+        is($names->([ @$it[0 .. 99] ]), join(',', @capNames), 'AOF-2: items 0..99 are Cap Album 1..100 in order');
+        ok($it->[100] && $isHint->($it->[100]), 'AOF-2: item 100 is the hint row');
+        is($playable->($it), 100, 'AOF-2: exactly 100 playable items');
+    }
+
+    # AOF-3
+    {
+        Plugins::SpotOn::API::SpClient::reset_calls();
+        my $r = $feed->('KUSQ', 'appears_on', {});
+        my $it = ($r && $r->{items}) || [];
+        is(scalar @$it, 101, 'AOF-3: the LMS play shape (no index, no quantity) holds 101 items');
+        is($it->[0] && $it->[0]{name}, 'Cap Album 1', 'AOF-3: item 0 is Cap Album 1');
+        ok($it->[-1] && $isHint->($it->[-1]), 'AOF-3: the last item is the hint row');
+        is($playable->($it), 100, 'AOF-3: exactly 100 playable items');
+    }
+
+    # AOF-4 (after AOF-2: KUSP is in the play-all cache)
+    {
+        Plugins::SpotOn::API::SpClient::reset_calls();
+        my $r = $feed->('KUSP', 'appears_on', { index => 100, quantity => 50 });
+        my $it = ($r && $r->{items}) || [];
+        is(scalar @$it, 1, 'AOF-4: the cache slice at index 100 holds one item');
+        ok($it->[0] && $isHint->($it->[0]), 'AOF-4: the cache slice at index 100 is the hint row');
+        is($r && $r->{total}, 101, 'AOF-4: the cache slice reports total 101');
+        is(scalar(@Plugins::SpotOn::API::SpClient::artist_albums_calls), 0, 'AOF-4: served from the cache, no getArtistAlbums call');
+        $r = $feed->('KUSP', 'appears_on', { index => 0, quantity => 10 });
+        $it = ($r && $r->{items}) || [];
+        is(scalar @$it, 10, 'AOF-4: the cache slice at index 0 holds 10 album items');
+        is($texts->($it), 0, 'AOF-4: the first cache slice has no hint row');
+        is($r && $r->{total}, 101, 'AOF-4: the first cache slice reports total 101 too');
+    }
+
+    # AOF-5 (control)
+    {
+        Plugins::SpotOn::API::SpClient::reset_calls();
+        my $r = $feed->('KUSC', 'album', { index => 100, quantity => 100 });
+        my $it = ($r && $r->{items}) || [];
+        is(scalar @$it, 50, 'AOF-5: album block 100/100 holds 50 items');
+        is($names->($it), join(',', map { "Plain Album $_" } 101 .. 150), 'AOF-5: album block names Plain Album 101..150');
+        is($texts->($it), 0, 'AOF-5: album block has no hint row');
+        is($r && $r->{total}, 150, 'AOF-5: album block reports total 150');
+
+        $r = $feed->('KUSD', 'album', { index => 0, quantity => 25000 });
+        $it = ($r && $r->{items}) || [];
+        is(scalar @$it, 150, 'AOF-5: album Play-All fill holds 150 items');
+        is($texts->($it), 0, 'AOF-5: album Play-All fill has no hint row');
+    }
 }
 
 Plugins::SpotOn::API::Client::reset_queue_calls();

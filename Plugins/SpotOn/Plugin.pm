@@ -21,6 +21,7 @@ use File::Basename;
 use File::Spec;
 use File::Spec::Functions qw(catdir catfile);
 use Plugins::SpotOn::DisplayFormat ();   # 79-67: codecShort / rateLabel (backend-neutral)
+use Plugins::SpotOn::MenuCopy qw(copyMenu);   # 87.1-02: copy at the play-all cache boundaries (WR-02)
 use constant KILL_PROCESS_INTERVAL => 3600;    # Hourly orphaned-process cleanup (STR-10)
 use constant SPOTON_CACHE_VERSION  => 4;       # Bump to flush all SpotOn cache entries (D-01/D-02)
 use constant FLUSH_BATCH           => 50;      # Items per event-loop tick in _flushDeferredMeta (FIX-01)
@@ -42,6 +43,27 @@ my %_clockLastSong;
 sub _evictPlayAllCache {
     my $now = time();
     delete @_playAllItemCache{ grep { $now - $_playAllItemCache{$_}{ts} > 120 } keys %_playAllItemCache };
+}
+
+# 87.1-02 (WR-02): the play-all cache never hands out a live item. XMLBrowser writes
+# items/offset/fetched/fetchSize/total into the items it is given, so a cached item that
+# was also handed to a caller carried those writes into the next request (a negative
+# slice start at XMLBrowser.pm:1013, or one track instead of the album). Every store and
+# every slice copies; all cache sites go through these two.
+# _playAllCacheStore($key, $itemsRef): keeps a copy under $key, returns the stored entry.
+sub _playAllCacheStore {
+    my ($key, $itemsRef) = @_;
+    return $_playAllItemCache{$key} = { items => copyMenu($itemsRef), ts => time() };
+}
+
+# _playAllCacheSlice($cached, $offset, $qty): the {items, offset, total} reply for a cache hit,
+# with copies of the sliced items. The caller has checked $offset < number of cached items.
+sub _playAllCacheSlice {
+    my ($cached, $offset, $qty) = @_;
+    my $end = $offset + $qty - 1;
+    $end = $#{ $cached->{items} } if $end > $#{ $cached->{items} };
+    my @slice = @{ $cached->{items} }[$offset .. $end];
+    return { items => copyMenu(\@slice), offset => $offset, total => scalar @{ $cached->{items} } };
 }
 
 # _flushDeferredMeta($context, $pending, $start)
@@ -321,6 +343,15 @@ sub initPlugin {
     # by the `info` itemAction on _trackItem/_albumTrackItem/_episodeItem.
     Slim::Control::Request::addDispatch(['spotoninfo', 'items', '_index', '_quantity'],
                                                                 [0, 1, 1, \&_trackInfoItemsCLI]
+    );
+
+    # quick 261113-b91: Material's Play All / Add / Insert on an item reached
+    # through the browse More menu was answered with request not dispatchable,
+    # because only the items form above was registered. Same handler; C=1
+    # (acts on the requesting player), Q=1 like LMS's own trackinfo playlist
+    # registration, since XMLBrowser::cliQuery checks this form with isQuery.
+    Slim::Control::Request::addDispatch(['spotoninfo', 'playlist', '_method'],
+                                                                [1, 1, 1, \&_trackInfoItemsCLI]
     );
 }
 
@@ -1916,7 +1947,7 @@ sub _savedTracksFeed {
                 if (!@items) {
                     push @items, _authRequiredItem($client, $accountId, $err);
                 }
-                $_playAllItemCache{$cacheKey} = { items => \@items, ts => time() };
+                _playAllCacheStore($cacheKey, \@items);
                 $callback->({ items => \@items });
                 # Flush deferred metadata cache writes in background (50 per event-loop tick).
                 _flushDeferredMeta(undef, \@deferredMeta, 0) if @deferredMeta;
@@ -1924,10 +1955,7 @@ sub _savedTracksFeed {
         });
     } elsif (my $cached = $_playAllItemCache{$cacheKey}) {
         if (time() - $cached->{ts} < 120 && $offset < scalar @{$cached->{items}}) {
-            my $end = $offset + $qty - 1;
-            $end = $#{ $cached->{items} } if $end > $#{ $cached->{items} };
-            my @slice = @{ $cached->{items} }[$offset .. $end];
-            $callback->({ items => \@slice, offset => $offset, total => scalar @{$cached->{items}} });
+            $callback->(_playAllCacheSlice($cached, $offset, $qty));
             return;
         }
         delete $_playAllItemCache{$cacheKey};
@@ -1996,16 +2024,13 @@ sub _savedAlbumsFeed {
                 if (!@items) {
                     push @items, _authRequiredItem($client, $accountId, $err);
                 }
-                $_playAllItemCache{$cacheKey} = { items => \@items, ts => time() };
+                _playAllCacheStore($cacheKey, \@items);
                 $callback->({ items => \@items });
             },
         });
     } elsif (my $cached = $_playAllItemCache{$cacheKey}) {
         if (time() - $cached->{ts} < 120 && $offset < scalar @{$cached->{items}}) {
-            my $end = $offset + $qty - 1;
-            $end = $#{ $cached->{items} } if $end > $#{ $cached->{items} };
-            my @slice = @{ $cached->{items} }[$offset .. $end];
-            $callback->({ items => \@slice, offset => $offset, total => scalar @{$cached->{items}} });
+            $callback->(_playAllCacheSlice($cached, $offset, $qty));
             return;
         }
         delete $_playAllItemCache{$cacheKey};
@@ -2236,16 +2261,13 @@ sub _userPlaylistsFeed {
                 if (!@items) {
                     push @items, _authRequiredItem($client, $accountId, $err);
                 }
-                $_playAllItemCache{$cacheKey} = { items => \@items, ts => time() };
+                _playAllCacheStore($cacheKey, \@items);
                 $callback->({ items => \@items });
             },
         });
     } elsif (my $cached = $_playAllItemCache{$cacheKey}) {
         if (time() - $cached->{ts} < 120 && $offset < scalar @{$cached->{items}}) {
-            my $end = $offset + $qty - 1;
-            $end = $#{ $cached->{items} } if $end > $#{ $cached->{items} };
-            my @slice = @{ $cached->{items} }[$offset .. $end];
-            $callback->({ items => \@slice, offset => $offset, total => scalar @{$cached->{items}} });
+            $callback->(_playAllCacheSlice($cached, $offset, $qty));
             return;
         }
         delete $_playAllItemCache{$cacheKey};
@@ -2339,16 +2361,13 @@ sub _savedShowsFeed {
                 if (!@items) {
                     push @items, _authRequiredItem($client, $accountId, $err);
                 }
-                $_playAllItemCache{$cacheKey} = { items => \@items, ts => time() };
+                _playAllCacheStore($cacheKey, \@items);
                 $callback->({ items => \@items });
             },
         });
     } elsif (my $cached = $_playAllItemCache{$cacheKey}) {
         if (time() - $cached->{ts} < 120 && $offset < scalar @{$cached->{items}}) {
-            my $end = $offset + $qty - 1;
-            $end = $#{ $cached->{items} } if $end > $#{ $cached->{items} };
-            my @slice = @{ $cached->{items} }[$offset .. $end];
-            $callback->({ items => \@slice, offset => $offset, total => scalar @{$cached->{items}} });
+            $callback->(_playAllCacheSlice($cached, $offset, $qty));
             return;
         }
         delete $_playAllItemCache{$cacheKey};
@@ -2448,16 +2467,13 @@ sub _showFeed {
                 if (!@items) {
                     push @items, _authRequiredItem($client, $accountId, $err);
                 }
-                $_playAllItemCache{$showCacheKey} = { items => \@items, ts => time() };
+                _playAllCacheStore($showCacheKey, \@items);
                 $callback->({ items => \@items });
             },
         });
     } elsif (my $cached = $_playAllItemCache{$showCacheKey}) {
         if (time() - $cached->{ts} < 120 && $offset < scalar @{$cached->{items}}) {
-            my $end = $offset + $qty - 1;
-            $end = $#{ $cached->{items} } if $end > $#{ $cached->{items} };
-            my @slice = @{ $cached->{items} }[$offset .. $end];
-            $callback->({ items => \@slice, offset => $offset, total => scalar @{$cached->{items}} });
+            $callback->(_playAllCacheSlice($cached, $offset, $qty));
             return;
         }
         delete $_playAllItemCache{$showCacheKey};
@@ -3118,10 +3134,13 @@ sub _recentSearchesCLI {
 # created on demand from the spoton_meta cache before building the menu --
 # display data still flows from ProtocolHandler::getMetadataFor via the
 # same cache, the object mainly has to exist.
+#
+# The sub also serves the playlist form (Play All / Add / Insert from the
+# More menu, quick 261113-b91); the feed is rebuilt from the url per request.
 sub _trackInfoItemsCLI {
     my $request = shift;
 
-    if ($request->isNotQuery([['spotoninfo'], ['items']])) {
+    if ($request->isNotQuery([['spotoninfo'], ['items', 'playlist']])) {
         $request->setStatusBadDispatch();
         return;
     }
@@ -3131,7 +3150,7 @@ sub _trackInfoItemsCLI {
 
     # T-76-08: spoton:// urls carry public track/episode ids only; strict
     # shape check before the url reaches Schema/TrackInfo.
-    unless ($url =~ m{^spoton://(?:track|episode):[A-Za-z0-9]+$}) {
+    unless ($url =~ m{^spoton://(?:track|episode):[A-Za-z0-9]+\z}) {
         $request->setStatusBadParams();
         return;
     }
@@ -3587,9 +3606,29 @@ sub _artistFeed {
     $callback->({ items => \@items });
 }
 
+# _appearsOnCapItem($client, $shown, $available)
+# The hint row of a capped Appears On tab: "first <shown> of <available>" (261114-kus). Type 'text'
+# (not 'textarea': LMS lifts a textarea out of the list in menu mode and Material shows that only
+# for lists under 100 items). No url/play/favorites_url/playall/passthrough, so LMS never queues it.
+sub _appearsOnCapItem {
+    my ($client, $shown, $available) = @_;
+    return {
+        name => cstring($client, 'PLUGIN_SPOTON_APPEARS_ON_CAPPED', $shown, $available),
+        type => 'text',
+    };
+}
+
 # _artistAlbumsFeed($client, $callback, $args, $passthrough)
-# Fetches paginated albums for an artist filtered by a SINGLE include_groups value.
-# Per D-09/Pitfall 1: never combine include_groups values — issues separate request per type.
+# Lists one release group of an artist (include_groups: album, single, compilation or appears_on).
+# Every tab reads the SAME cached metadata/4/artist response (SpClient _spFacade, 3600 s);
+# getArtistAlbums filters it per tab (GH #211, 87.1-03), so total and the per-album enrichment
+# requests cover only that tab's group. Each tab passes a single include_groups value.
+# 261114-kus: the appears_on reply is capped (SpClient APPEARS_ON_CAP, reply key `available` =
+# uncapped count). A capped tab ends with ONE hint row at index 100 in every branch: Material
+# browses with quantity 25000 and so runs the Play-All branch, which also fills the play-all
+# cache, and the cache-slice branch serves the stored list. LMS queues only items with url/play,
+# so the text row never enters a queue and it sits last, so no album index shifts. Browse
+# blocks report total 101 and the block that reaches index 100 with room left carries the hint.
 # Play-all detection (GH #121): Material Skin sends quantity=25000 which exceeds the
 # artist_albums API limit (20). Without fetching all pages, LMS caches undef slots
 # beyond the first page and serves empty items on scroll.
@@ -3606,13 +3645,21 @@ sub _artistAlbumsFeed {
     my $accountId = _getAccountId($client);
     my $cacheKey  = "artistAlbums:$accountId:$artistId:$includeGroups";
 
+    my ($capShown, $capAvailable);
     my $apiFn = sub {
         my ($acct, $params, $cb) = @_;
         Plugins::SpotOn::API::SpClient->getArtistAlbums($acct, $artistId, {
             include_groups => $includeGroups,
             offset         => $params->{offset},
             limit          => $params->{limit},
-        }, $cb);
+        }, sub {
+            my ($data) = @_;
+            if (ref($data) eq 'HASH' && defined $data->{available}) {
+                $capShown     = $data->{total};
+                $capAvailable = $data->{available};
+            }
+            $cb->(@_);
+        });
     };
 
     if ($isPlayAll && $offset == 0) {
@@ -3627,16 +3674,16 @@ sub _artistAlbumsFeed {
                 if (!@items) {
                     push @items, _authRequiredItem($client, $accountId, $err);
                 }
-                $_playAllItemCache{$cacheKey} = { items => \@items, ts => time() };
+                elsif (defined $capAvailable && scalar(@items) == $capShown) {
+                    push @items, _appearsOnCapItem($client, $capShown, $capAvailable);
+                }
+                _playAllCacheStore($cacheKey, \@items);
                 $callback->({ items => \@items });
             },
         });
     } elsif (my $cached = $_playAllItemCache{$cacheKey}) {
         if (time() - $cached->{ts} < 120 && $offset < scalar @{$cached->{items}}) {
-            my $end = $offset + $qty - 1;
-            $end = $#{ $cached->{items} } if $end > $#{ $cached->{items} };
-            my @slice = @{ $cached->{items} }[$offset .. $end];
-            $callback->({ items => \@slice, offset => $offset, total => scalar @{$cached->{items}} });
+            $callback->(_playAllCacheSlice($cached, $offset, $qty));
             return;
         }
         delete $_playAllItemCache{$cacheKey};
@@ -3657,10 +3704,17 @@ sub _artistAlbumsFeed {
                     return;
                 }
                 my @items = map { _albumItem($client, $_) } @{$allItems};
+                my $reportTotal = $total // 0;
+                if (defined $capAvailable && defined $total && $total == $capShown) {
+                    $reportTotal = $capShown + 1;
+                    if ($offset + scalar(@items) == $capShown && scalar(@items) < $qty) {
+                        push @items, _appearsOnCapItem($client, $capShown, $capAvailable);
+                    }
+                }
                 if (!@items) {
                     push @items, { name => cstring($client, 'PLUGIN_SPOTON_NO_RESULTS'), type => 'textarea' };
                 }
-                $callback->({ items => \@items, offset => $offset, total => $total // 0 });
+                $callback->({ items => \@items, offset => $offset, total => $reportTotal });
             },
         });
     }
@@ -3728,7 +3782,7 @@ sub _albumFeed {
                 if (!@items) {
                     push @items, { name => cstring($client, 'PLUGIN_SPOTON_NO_RESULTS'), type => 'textarea' };
                 }
-                $_playAllItemCache{$albumCacheKey} = { items => \@items, ts => time() };
+                _playAllCacheStore($albumCacheKey, \@items);
                 $callback->({ items => \@items });
                 _flushDeferredMeta(undef, \@deferredMeta, 0) if @deferredMeta;
                 return;
@@ -3759,7 +3813,7 @@ sub _albumFeed {
                         if (!@items) {
                             push @items, _authRequiredItem($client, $accountId, $err);
                         }
-                        $_playAllItemCache{$albumCacheKey} = { items => \@items, ts => time() };
+                        _playAllCacheStore($albumCacheKey, \@items);
                         $callback->({ items => \@items });
                         _flushDeferredMeta(undef, \@deferredMeta, 0) if @deferredMeta;
                         return;
@@ -3777,7 +3831,7 @@ sub _albumFeed {
                         if (!@items) {
                             push @items, { name => cstring($client, 'PLUGIN_SPOTON_NO_RESULTS'), type => 'textarea' };
                         }
-                        $_playAllItemCache{$albumCacheKey} = { items => \@items, ts => time() };
+                        _playAllCacheStore($albumCacheKey, \@items);
                         $callback->({ items => \@items });
                         _flushDeferredMeta(undef, \@deferredMeta, 0) if @deferredMeta;
                     }
@@ -3787,10 +3841,7 @@ sub _albumFeed {
         });
     } elsif (my $cached = $_playAllItemCache{$albumCacheKey}) {
         if (time() - $cached->{ts} < 120 && $offset < scalar @{$cached->{items}}) {
-            my $end = $offset + $qty - 1;
-            $end = $#{ $cached->{items} } if $end > $#{ $cached->{items} };
-            my @slice = @{ $cached->{items} }[$offset .. $end];
-            $callback->({ items => \@slice, offset => $offset, total => scalar @{$cached->{items}} });
+            $callback->(_playAllCacheSlice($cached, $offset, $qty));
             return;
         }
         delete $_playAllItemCache{$albumCacheKey};
@@ -4066,17 +4117,14 @@ sub _playlistFeed {
                 if (!@items) {
                     push @items, _authRequiredItem($client, $accountId, $err);
                 }
-                $_playAllItemCache{$plCacheKey} = { items => \@items, ts => time() };
+                _playAllCacheStore($plCacheKey, \@items);
                 $callback->({ items => \@items });
                 _flushDeferredMeta(undef, \@deferredMeta, 0) if @deferredMeta;
             },
         });
     } elsif (my $cached = $_playAllItemCache{$plCacheKey}) {
         if (time() - $cached->{ts} < 120 && $offset < scalar @{$cached->{items}}) {
-            my $end = $offset + $qty - 1;
-            $end = $#{ $cached->{items} } if $end > $#{ $cached->{items} };
-            my @slice = @{ $cached->{items} }[$offset .. $end];
-            $callback->({ items => \@slice, offset => $offset, total => scalar @{$cached->{items}} });
+            $callback->(_playAllCacheSlice($cached, $offset, $qty));
             return;
         }
         delete $_playAllItemCache{$plCacheKey};

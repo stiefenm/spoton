@@ -1821,7 +1821,7 @@ sub resolve_raw_route {
     $write->("$spotonDir/0200005a1102-unified.log", "unified line spak_UNIFIEDSECRET74b here\n");
     my $logdir = tempdir(CLEANUP => 1);
     $write->("$logdir/server.log", "[x] SpotOn: token spak_SERVERLOGSECRET74b seen\nunrelated line\n");
-    $srv->set('logdir', $logdir);
+    local *Slim::Utils::Log::serverLogFile = sub { "$logdir/server.log" };
 
     Slim::Player::Client::set_mock_clients(FakeBundleClient->new(name => 'Kitchen', id => '02:00:00:5a:11:01'));
 
@@ -1984,7 +1984,6 @@ sub resolve_raw_route {
     close $dfh;
     like($dsrc, qr/spak_\[A-Za-z0-9_-\]\*\|auth_data\[\^ \]\*\|Bearer \[A-Za-z0-9\._-\]\+/, '74b-03 T-74b-07 / 79-72 D-45: the redaction pattern (now in Diagnostics.pm) is the repo pattern of tools/uat/extract-run.pl');
 
-    $srv->set('logdir', undef);
     Slim::Player::Client::set_mock_clients();
     $p->set('diagnosticMode', 0);
     $p->set('backend', 'librespot');
@@ -2016,7 +2015,7 @@ sub resolve_raw_route {
     $write->("$spotonDir/0200005a1143-soloist.log", "boot\n[soloist] authenticated as $uidUtf ok\nauth spak_B2SECRET43 end\n");
     my $logdir = tempdir(CLEANUP => 1);
     $write->("$logdir/server.log", "[x] SpotOn: SpClient: HTTP 503 error for user-profile-view/v3/profile/$uidEsc: 503\n[x] SpotOn: Bearer abc.B2-43 seen\n[x] SpotOn: rootlist for playlist/v2/user/other.user/rootlist\n");
-    $srv->set('logdir', $logdir);
+    local *Slim::Utils::Log::serverLogFile = sub { "$logdir/server.log" };
     Slim::Player::Client::set_mock_clients(FakeBundleClient->new(name => 'Kitchen', id => '02:00:00:5a:11:43'));
     my $accountsBefore = $p->get('accounts');
     my $activeBefore   = $p->get('activeAccount');
@@ -2046,7 +2045,6 @@ sub resolve_raw_route {
 
     $p->set('accounts', $accountsBefore);
     $p->set('activeAccount', $activeBefore);
-    $srv->set('logdir', undef);
     Slim::Player::Client::set_mock_clients();
     $p->set('diagnosticMode', 0);
     unlink "$spotonDir/0200005a1143-soloist.log";
@@ -2079,6 +2077,9 @@ sub resolve_raw_route {
     my $logdir = tempdir(CLEANUP => 1);
     $write->("$logdir/server.log", "[x] SpotOn: SpClient: HTTP 503 error for profile/$uid2Lo: 503\n[x] SpotOn: Thomas Maximilian HOLD_MAX_S Max end\n");
     $srv->set('logdir', $logdir);
+    # 261112-tyh: this cell keeps the logdir pref on purpose. It is the only cover of the fallback, and its server.log
+    # text is asserted further down (the "Thomas Maximilian" line).
+    ok(!defined &Slim::Utils::Log::serverLogFile, 'TYH-4: the 79-44 cell runs on the logdir fallback (serverLogFile is not defined)');
     Slim::Player::Client::set_mock_clients(FakeBundleClient->new(name => 'Kitchen', id => '02:00:00:5a:11:44'));
     my $accountsBefore = $p->get('accounts');
     my $activeBefore   = $p->get('activeAccount');
@@ -2165,7 +2166,7 @@ sub resolve_raw_route {
     for my $old (glob("$spotonDir/*-connect.log"), glob("$spotonDir/*-unified.log"), glob("$spotonDir/*-soloist.log*")) { unlink $old; }
     my $write = sub { my ($f, $text) = @_; open(my $fh, '>', $f) or die "$f: $!"; print $fh $text; close($fh); };
     my $logdir = tempdir(CLEANUP => 1);
-    $srv->set('logdir', $logdir);
+    local *Slim::Utils::Log::serverLogFile = sub { "$logdir/server.log" };
 
     my $accountsBefore = $p->get('accounts');
     my $activeBefore   = $p->get('activeAccount');
@@ -2379,7 +2380,6 @@ sub resolve_raw_route {
     # restore
     $p->set('accounts', $accountsBefore);
     $p->set('activeAccount', $activeBefore);
-    $srv->set('logdir', undef);
     $srv->set('disabledformats', undef);
     Slim::Player::Client::set_mock_clients();
     $Plugins::SpotOn::Unified::DaemonManager::fake_container = 0;
@@ -2465,7 +2465,7 @@ sub resolve_raw_route {
     close($fh);
     ok(-s "$logdir/server.log" > 2 * $cap, '79-61 WR-04: harness precondition -- server.log is larger than twice the tail cap');
 
-    $srv->set('logdir', $logdir);
+    local *Slim::Utils::Log::serverLogFile = sub { "$logdir/server.log" };
     Slim::Player::Client::set_mock_clients();
     $p->set('diagnosticMode', 1);
     @Slim::Web::HTTP::http_responses = ();
@@ -2480,7 +2480,6 @@ sub resolve_raw_route {
     like($text, qr/server\.log.*last 2 MB/, '79-61 WR-04: the bundle states that only the last 2 MB of server.log were scanned');
     is(Plugins::SpotOn::Settings::SERVER_LOG_TAIL_BYTES(), $cap, '79-61 WR-04: the tail cap is 2 MB');
 
-    $srv->set('logdir', undef);
     $p->set('diagnosticMode', 0);
 }
 
@@ -2514,7 +2513,7 @@ sub resolve_raw_route {
     $write->("$spotonDir/0200005a1158-connect.log", $connectLine);
     my $logdir = tempdir(CLEANUP => 1);
     $write->("$logdir/server.log", "[x] SpotOn: plain line\n");
-    $srv->set('logdir', $logdir);
+    local *Slim::Utils::Log::serverLogFile = sub { "$logdir/server.log" };
     Slim::Player::Client::set_mock_clients();
     $p->set('diagnosticMode', 1);
 
@@ -2543,7 +2542,6 @@ sub resolve_raw_route {
     close $cmpfh;
     is($after, $connectLine, '79-82 D57-B: the planted connect log is byte-identical afterwards');
 
-    $srv->set('logdir', undef);
     $p->set('diagnosticMode', 0);
     unlink "$spotonDir/0200005a1157-soloist.log", "$spotonDir/0200005a1158-connect.log";
 }
@@ -2596,6 +2594,64 @@ sub resolve_raw_route {
     Plugins::SpotOn::Settings->handler(undef, $sparams, sub { }, undef, undef);
     ok(!exists $sparams->{diagSections} && !exists $sparams->{diagRedactions} && !exists $sparams->{diagNotRedactedKey},
        '79-82 D56-S: the settings handler no longer sets diagSections, diagRedactions or diagNotRedactedKey');
+}
+
+# ============================================================
+# 261112-tyh: the serverlog section of the diagnostic report came out empty on every real LMS. The code read a server
+# pref "logdir" that LMS does not have; LMS names the file through Slim::Utils::Log::serverLogFile(). These cells never
+# set the logdir pref, so the fake pref cannot hide the real path. A missing file prints a visible line.
+# ============================================================
+{
+    require Plugins::SpotOn::Settings;
+    my $p   = Slim::Utils::Prefs::preferences('plugin.spoton');
+    my $srv = Slim::Utils::Prefs::preferences('server');
+    no warnings 'redefine';
+    local $main::VERSION = '9.1.1-test';
+    local *Plugins::SpotOn::Plugin::_pluginDataFor = sub { '9.9.9-test' };
+    Slim::Player::Client::set_mock_clients();
+    $p->set('diagnosticMode', 1);
+    my $section = sub { my ($body, $id) = @_; return $body =~ /^=== BEGIN \Q$id\E ===\n(.*?)^=== END \Q$id\E ===$/ms ? $1 : '' };
+    my $bundle = sub {
+        @Slim::Web::HTTP::http_responses = ();
+        my $res = FakeSettingsResponse->new();
+        Plugins::SpotOn::Settings::_diagnosticBundleHandler(undef, $res);
+        my $ref = $Slim::Web::HTTP::http_responses[0][2];
+        return $ref ? $$ref : '';
+    };
+
+    ok(!$srv->get('logdir') && !defined &Slim::Utils::Log::serverLogFile,
+       'TYH-0: harness precondition, no logdir pref is set and serverLogFile is not defined');
+
+    # TYH-1: serverLogFile names the file, no logdir pref
+    {
+        my $dir = tempdir(CLEANUP => 1);
+        open(my $fh, '>', "$dir/server.log") or die "$dir/server.log: $!";
+        print $fh "[x] SpotOn: tyh-marker-line\n";
+        close $fh;
+        local *Slim::Utils::Log::serverLogFile = sub { "$dir/server.log" };
+        my $sl = $section->($bundle->(), 'serverlog');
+        like($sl, qr/tyh-marker-line/, 'TYH-1: the serverlog section holds the line of the file serverLogFile names');
+        like($sl, qr/^--- LMS server\.log \(path: .*server\.log, size: \d+ bytes/m,
+             'TYH-1: the section carries the server.log header with its path and size');
+    }
+
+    # TYH-2: serverLogFile names a file that does not exist
+    {
+        my $dir = tempdir(CLEANUP => 1);
+        local *Slim::Utils::Log::serverLogFile = sub { "$dir/absent/server.log" };
+        is_deeply([ Plugins::SpotOn::Settings::_collectServerLog({ serverPrefs => $srv }) ],
+                  ['--- LMS server.log ---', "(server.log not found: $dir/absent/server.log)"],
+                  'TYH-2: a path that does not exist gives a visible not-found line, not an empty list');
+    }
+
+    # TYH-3: no serverLogFile, no logdir
+    is_deeply([ Plugins::SpotOn::Settings::_collectServerLog({ serverPrefs => $srv }) ],
+              ['--- LMS server.log ---', '(server.log not found: path not resolvable)'],
+              'TYH-3: no resolvable path gives a visible line, not an empty list');
+    like($section->($bundle->(), 'serverlog'), qr/^\(server\.log not found: path not resolvable\)$/m,
+         'TYH-3: the serverlog section of the bundle is no longer empty');
+
+    $p->set('diagnosticMode', 0);
 }
 
 done_testing();

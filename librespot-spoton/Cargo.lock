@@ -1228,7 +1228,7 @@ dependencies = [
 [[package]]
 name = "librespot-audio"
 version = "0.8.0"
-source = "git+https://github.com/stiefenm/librespot?branch=fix%2Faudio-key-retry-v2#f3734bfb5d0c926b1bb1249100c434e263e7dc02"
+source = "git+https://github.com/stiefenm/librespot?branch=fix%2Faudio-key-retry-v2-skip-to-empty#a8b6269ae6276f310f587958435d53f1afa0fb8a"
 dependencies = [
  "aes",
  "bytes",
@@ -1247,7 +1247,7 @@ dependencies = [
 [[package]]
 name = "librespot-connect"
 version = "0.8.0"
-source = "git+https://github.com/stiefenm/librespot?branch=fix%2Faudio-key-retry-v2#f3734bfb5d0c926b1bb1249100c434e263e7dc02"
+source = "git+https://github.com/stiefenm/librespot?branch=fix%2Faudio-key-retry-v2-skip-to-empty#a8b6269ae6276f310f587958435d53f1afa0fb8a"
 dependencies = [
  "futures-util",
  "librespot-core",
@@ -1266,7 +1266,7 @@ dependencies = [
 [[package]]
 name = "librespot-core"
 version = "0.8.0"
-source = "git+https://github.com/stiefenm/librespot?branch=fix%2Faudio-key-retry-v2#f3734bfb5d0c926b1bb1249100c434e263e7dc02"
+source = "git+https://github.com/stiefenm/librespot?branch=fix%2Faudio-key-retry-v2-skip-to-empty#a8b6269ae6276f310f587958435d53f1afa0fb8a"
 dependencies = [
  "aes",
  "base64",
@@ -1349,7 +1349,7 @@ dependencies = [
 [[package]]
 name = "librespot-metadata"
 version = "0.8.0"
-source = "git+https://github.com/stiefenm/librespot?branch=fix%2Faudio-key-retry-v2#f3734bfb5d0c926b1bb1249100c434e263e7dc02"
+source = "git+https://github.com/stiefenm/librespot?branch=fix%2Faudio-key-retry-v2-skip-to-empty#a8b6269ae6276f310f587958435d53f1afa0fb8a"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1366,7 +1366,7 @@ dependencies = [
 [[package]]
 name = "librespot-oauth"
 version = "0.8.0"
-source = "git+https://github.com/stiefenm/librespot?branch=fix%2Faudio-key-retry-v2#f3734bfb5d0c926b1bb1249100c434e263e7dc02"
+source = "git+https://github.com/stiefenm/librespot?branch=fix%2Faudio-key-retry-v2-skip-to-empty#a8b6269ae6276f310f587958435d53f1afa0fb8a"
 dependencies = [
  "log",
  "oauth2",
@@ -1380,7 +1380,7 @@ dependencies = [
 [[package]]
 name = "librespot-playback"
 version = "0.8.0"
-source = "git+https://github.com/stiefenm/librespot?branch=fix%2Faudio-key-retry-v2#f3734bfb5d0c926b1bb1249100c434e263e7dc02"
+source = "git+https://github.com/stiefenm/librespot?branch=fix%2Faudio-key-retry-v2-skip-to-empty#a8b6269ae6276f310f587958435d53f1afa0fb8a"
 dependencies = [
  "form_urlencoded",
  "futures-util",
@@ -1402,7 +1402,7 @@ dependencies = [
 [[package]]
 name = "librespot-protocol"
 version = "0.8.0"
-source = "git+https://github.com/stiefenm/librespot?branch=fix%2Faudio-key-retry-v2#f3734bfb5d0c926b1bb1249100c434e263e7dc02"
+source = "git+https://github.com/stiefenm/librespot?branch=fix%2Faudio-key-retry-v2-skip-to-empty#a8b6269ae6276f310f587958435d53f1afa0fb8a"
 dependencies = [
  "protobuf",
  "protobuf-codegen",

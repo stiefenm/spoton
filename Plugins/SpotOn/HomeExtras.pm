@@ -18,6 +18,8 @@ use warnings;
 
 use base qw(Plugins::MaterialSkin::HomeExtraBase);
 
+use Plugins::SpotOn::MenuCopy qw(copyMenu);
+
 my %_feedCache;
 
 sub initPlugin {
@@ -33,6 +35,9 @@ sub initPlugin {
     # CLI _index/_quantity and XMLBrowser forwards them in the feed args
     # (GH #133 — page-2 requests within the 60s TTL previously got page 1's
     # cached result).
+    # The memo and XMLBrowser never share a tree: XMLBrowser writes items/
+    # fetched/offset into what it is handed, so both the miss and the hit path
+    # hand out a copy (GH #210, a second playlist within 60s read an empty slice).
     $args{feed} = sub {
         my ($client, $cb, $feedArgs) = @_;
 
@@ -40,7 +45,7 @@ sub initPlugin {
         my $cached = $_feedCache{$cacheKey};
 
         if ($cached && time() - $cached->{ts} < 60) {
-            $cb->($cached->{result});
+            $cb->(copyMenu($cached->{result}));
             return;
         }
 
@@ -51,7 +56,7 @@ sub initPlugin {
             my @items = grep { ($_->{type} || '') ne 'textarea' }
                         @{ $result->{items} || [] };
             my $filtered = { %$result, items => \@items };
-            $_feedCache{$cacheKey} = { ts => time(), result => $filtered };
+            $_feedCache{$cacheKey} = { ts => time(), result => copyMenu($filtered) };
             $cb->($filtered);
         }, $feedArgs);
     };

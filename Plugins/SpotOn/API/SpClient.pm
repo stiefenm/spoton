@@ -63,6 +63,9 @@ use constant EXTMETA_KIND_TRACK_V4   => 10;   # extension_kind.proto: ARTIST_V4=
 # inside the hit path (the FIX-01 problem: N synchronous SQLite INSERTs in one callback block LMS).
 use constant TRACK_META_TTL          => 90 * 86400;
 use constant TRACK_META_RENEW_AFTER  => 30 * 86400;
+# 261114-kus: the artist tab Appears On keeps the first 100 album ids (Spotify's order). One artist listed 514
+# of them and Play All enriched each one through metadata/4/album (gate cap 2): a long wait, 429 risk, a huge queue.
+use constant APPEARS_ON_CAP          => 100;
 # 79-43 (D-33 FULL-3 CR-01): the format of a stored metadata/4/track value. _storeTrackMeta writes
 # _spoton_fmt => TRACK_META_FORMAT; a read whose value lacks it or carries a lower one is a MISS at both readers
 # (_request, _enrichTracks) and is fetched again, the refetch overwrites it. Format 2 = names are character
@@ -1543,11 +1546,20 @@ sub _normalizeAlbumStub {
 }
 
 # getArtistAlbums($class, $accountId, $artistId, $params, $cb)
-# Flattens artist metadata's album_group/single_group/compilation_group
+# Flattens artist metadata's album_group/single_group/compilation_group/appears_on_group
 # arrays (each group entry wraps an album[] array with gid-only entries)
 # into a single Web-API album list. spclient's artist metadata only
 # embeds gid per album (no name/cover), so the requested page is enriched
 # via metadata/4/album per album.
+# $params->{include_groups} (GH #211, 87.1-03) selects the release groups: album, single,
+# compilation, appears_on (comma list allowed; always walked in that order). Absent or empty
+# means album + single + compilation (appears_on is never part of the default). A value that
+# names no known group answers an empty page after the artist read, without enrichment requests. Total and
+# enrichment are per selection, the artist read itself stays ONE cached metadata/4/artist call.
+# 261114-kus: appears_on is cut at APPEARS_ON_CAP album ids (first ones in reply order) BEFORE total, slice and
+# enrichment, so neither the count nor the metadata/4/album requests ever see id 101+. The reply then carries
+# `available` = the uncapped count of the whole selection; the key exists only when the cap cut something. In a
+# combined list only the appears_on part is cut (album, single, compilation stay unlimited).
 sub getArtistAlbums {
     my ($class, $accountId, $artistId, $params, $cb) = @_;
     $params ||= {};
@@ -1566,6 +1578,16 @@ sub getArtistAlbums {
         return;
     }
 
+    my %groupKeyOf = (
+        album       => 'album_group',
+        single      => 'single_group',
+        compilation => 'compilation_group',
+        appears_on  => 'appears_on_group',
+    );
+    my @requested = grep { length } split /\s*,\s*/, ($params->{include_groups} // '');
+    my %want      = @requested ? (map { $_ => 1 } @requested) : (album => 1, single => 1, compilation => 1);
+    my @groupKeys = map { $groupKeyOf{$_} } grep { $want{$_} } qw(album single compilation appears_on);
+
     $class->_spFacade(
         "metadata/4/artist/$hexId",
         { _accountId => $accountId, _accept => 'application/json' },
@@ -1577,12 +1599,19 @@ sub getArtistAlbums {
             }
 
             my @albumIds;
-            for my $groupKey (qw(album_group single_group compilation_group)) {
+            my $uncapped = 0;
+            for my $groupKey (@groupKeys) {
+                my $cap  = $groupKey eq 'appears_on_group' ? APPEARS_ON_CAP : undef;
+                my $kept = 0;
                 for my $group (@{ $meta->{$groupKey} || [] }) {
                     for my $album (@{ $group->{album} || [] }) {
                         next unless $album && ref($album) eq 'HASH' && $album->{gid};
                         my $id = $class->hexToId($album->{gid});
-                        push @albumIds, $id if $id;
+                        next unless $id;
+                        $uncapped++;
+                        next if defined $cap && $kept >= $cap;
+                        $kept++;
+                        push @albumIds, $id;
                     }
                 }
             }
@@ -1592,7 +1621,9 @@ sub getArtistAlbums {
 
             $class->_enrichMeta($accountId, $slicedRef, 'album', '_normalizeAlbum', sub {
                 my ($enriched) = @_;
-                $fcb->({ items => $enriched, total => $total, offset => $offset, limit => $limit });
+                my $reply = { items => $enriched, total => $total, offset => $offset, limit => $limit };
+                $reply->{available} = $uncapped if $uncapped > $total;
+                $fcb->($reply);
             });
         },
         $cb,
