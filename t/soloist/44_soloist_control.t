@@ -4409,6 +4409,56 @@ for my $case ([ 'aa:bb:cc:dd:ee:e8', 'rebuffering', playing => 0, buffering => 2
     ee_done($ctl);
 }
 
+# ee_fallback_timers($ctl) -- the _earlyEndFallback timers armed for this Control.
+sub ee_fallback_timers {
+    my ($ctl) = @_;
+    return grep { $_->[0] == $ctl && $_->[2] == \&Plugins::SpotOn::Soloist::Control::_earlyEndFallback } @Slim::Utils::Timers::TIMERS;
+}
+
+# --- EE-9: the daemon goes away inside the end gap (crash, backend switch, LMS shutdown) after the early
+# answer: shutdown drops the mark, the wait and the fallback timer; nothing fires afterwards. The fallback
+# itself refuses on a torn-down Control too (it reconciles directly, past requestTrack's shutdown guard).
+{
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session('aa:bb:cc:dd:ee:ec');
+    d50_at($onset + 0.6, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack' }); });
+    is($ctl->observed->{earlyEnd}{uri}, $EE_NEXT, "EE-9 setup: LMS was answered early, the wait is armed");
+    is(scalar(ee_fallback_timers($ctl)), 1, "EE-9 setup: one fallback timer");
+    my $n = scalar @{ $ws->sent };
+    @Slim::Utils::Log::WARNINGS = ();
+    d50_at($onset + 1.0, sub { $ctl->shutdown; });
+    ok(!$ctl->observed->{earlyEnd}, "EE-9: shutdown drops the wait");
+    ok(!$ctl->observed->{nearEnd}, "EE-9: and the mark");
+    is(scalar(ee_fallback_timers($ctl)), 0, "EE-9: and kills the fallback timer");
+    d50_fire($onset + 3.0 + Plugins::SpotOn::Soloist::Control::EARLY_END_WAIT_S() + 0.1);
+    $ctl->observed->{earlyEnd} = { uri => $EE_NEXT, from => $D50_HM, until => $onset + 5.0 };
+    d50_at($onset + 5.1, sub { Plugins::SpotOn::Soloist::Control::_earlyEndFallback($ctl); });
+    is(scalar(@{ $ws->sent }) - $n, 0, "EE-9: nothing is sent after the shutdown, not even by a stray fallback");
+    is(scalar(grep { /within the end gap/ } @Slim::Utils::Log::WARNINGS), 0, "EE-9: no fallback WARN");
+    ee_done($ctl);
+}
+
+# --- EE-9b: LMS leaves browse inside the end gap after the early answer: the same cleanup.
+{
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session('aa:bb:cc:dd:ee:ed');
+    d50_at($onset + 0.6, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack' }); });
+    is($ctl->observed->{earlyEnd}{uri}, $EE_NEXT, "EE-9b setup: the wait is armed");
+    d50_at($onset + 1.0, sub { $ctl->leaveBrowse; });
+    ok(!$ctl->observed->{earlyEnd} && !$ctl->observed->{nearEnd}, "EE-9b: leaveBrowse drops the wait and the mark");
+    is(scalar(ee_fallback_timers($ctl)), 0, "EE-9b: and kills the fallback timer");
+    ee_done($ctl);
+}
+
+# --- EE-9c: the fallback timer is killed before it is armed: a stray one never doubles it.
+{
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session('aa:bb:cc:dd:ee:ef');
+    Slim::Utils::Timers::setTimer($ctl, $onset + 30, \&Plugins::SpotOn::Soloist::Control::_earlyEndFallback);
+    d50_at($onset + 0.6, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack' }); });
+    my @t = ee_fallback_timers($ctl);
+    is(scalar(@t), 1, "EE-9c: exactly one fallback timer after the early answer");
+    is($t[0][1], $ctl->observed->{earlyEnd}{until}, "EE-9c: and it is the one at the wait's deadline");
+    ee_done($ctl);
+}
+
 # --- D50-23 (outside the edge): duration 15.25 s, threshold 9250 ms > 9195 (55 ms outside) -> the replay stays.
 {
     my @fx = d50_frames('d50-hang-midtitle.frames');
