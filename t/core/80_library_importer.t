@@ -34,11 +34,12 @@ sub write_stub {
 
 write_stub($stub_dir, 'Slim::Utils::Log', <<'END');
 package Slim::Utils::Log;
-our @warnings;
+our (@warnings, @infos, $infoOn);
 sub import { my $caller = caller; no strict 'refs'; *{"${caller}::logger"} = \&logger; }
 sub logger   { return bless {}, 'Slim::Utils::Log' }
 sub warn     { push @warnings, $_[1] }
-sub is_info  { 0 }
+sub info     { push @infos, $_[1] }
+sub is_info  { $infoOn ? 1 : 0 }
 sub is_debug { 0 }
 sub AUTOLOAD { }
 sub can { 1 }
@@ -200,17 +201,18 @@ sub verifyCredentials { return $paired{$_[1]} ? { username => "u_$_[1]", auth_da
 END
 
 # SpClient: canned answers per method, every call recorded, answers synchronous (cache-hit shape,
-# so the importer's EV loop is never entered). requestCount grows by one per answered network call.
+# so the importer's EV loop is never entered). requestCount grows by one per answered call, except
+# for the methods in %cacheHit (answered from SpClient's caches: no request is dispatched).
 write_stub($stub_dir, 'Plugins::SpotOn::API::SpClient', <<'END');
 package Plugins::SpotOn::API::SpClient;
-our (@calls, %answer, $rateLimitedFor, $requests);
+our (@calls, %answer, %cacheHit, $rateLimitedFor, $requests);
 $requests = 0;
 sub _answer {
     my ($name, $key, $cb) = @_;
     push @calls, "$name:$key";
     my $a = $answer{"$name:$key"} // $answer{$name};
     $a = $a->($key) if ref $a eq 'CODE';
-    $requests++;
+    $requests++ unless $cacheHit{$name};
     $cb->(@{ $a || [ undef, { error => 'no_fixture' } ] });
 }
 sub getSavedAlbumUris    { _answer('saved',     $_[1], $_[2]) }
@@ -233,7 +235,7 @@ END
 BEGIN {
     no warnings 'redefine';
     *main::SCANNER   = sub () { 1 };
-    *main::INFOLOG   = sub () { 0 };
+    *main::INFOLOG   = sub () { 1 };   # the stub log's is_info decides ($Slim::Utils::Log::infoOn)
     *main::DEBUGLOG  = sub () { 0 };
     *main::WEBUI     = sub () { 0 };
     *main::ISWINDOWS = sub () { 0 };
@@ -278,6 +280,7 @@ sub album_fixture {
 sub reset_world {
     @Plugins::SpotOn::API::SpClient::calls = ();
     %Plugins::SpotOn::API::SpClient::answer = ();
+    %Plugins::SpotOn::API::SpClient::cacheHit = ();
     $Plugins::SpotOn::API::SpClient::rateLimitedFor = 0;
     $Plugins::SpotOn::API::SpClient::batchSize = 200;
     @Slim::Plugin::OnlineLibraryBase::stored = ();
@@ -286,6 +289,8 @@ sub reset_world {
     @Slim::Schema::dbDo = ();
     @Slim::Utils::Timers::paced = ();
     @Slim::Utils::Log::warnings = ();
+    @Slim::Utils::Log::infos = ();
+    $Slim::Utils::Log::infoOn = 0;
     $Slim::Music::Import::playlistsOnly = 0;
 }
 
@@ -413,6 +418,8 @@ my %A = (saved => [ [ { uri => "spotify:album:$A1", added_at => 1700000000 }, { 
         playlists => [ { items => [ { id => $P1, name => 'Mix', revision => 'r1' } ] } ],   # P2 unfollowed
         prefetch  => [ 2 ],
     );
+    %Plugins::SpotOn::API::SpClient::cacheHit = (prefetch => 1);   # scan 1 named the playlist tracks
+    $Slim::Utils::Log::infoOn = 1;
 
     $IMP->startScan;
 
@@ -424,6 +431,9 @@ my %A = (saved => [ [ { uri => "spotify:album:$A1", added_at => 1700000000 }, { 
     is(scalar keys %Slim::Schema::tracks, 3, 'scan 2: all tracks still there');
     ok($Slim::Schema::playlists{"spoton://playlist:$P1"}, 'scan 2: kept playlist stays');
     ok(!$Slim::Schema::playlists{"spoton://playlist:$P2"}, 'scan 2: a playlist no account lists any more is removed');
+    my ($summary) = grep { /^Library import done:/ } @Slim::Utils::Log::infos;
+    like($summary // '', qr/, Spotify requests: 2 \(albums 1, playlists 1\)$/,
+        'scan 2: the summary line counts the Spotify requests per phase (saved list, playlist list)');
 }
 
 # ============================================================
