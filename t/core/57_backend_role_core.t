@@ -181,7 +181,7 @@ sub observed { return $_[0]->{observed}; }
 sub wanted   { return $_[0]->{wanted}; }
 sub nextStreamGeneration { return ++$_[0]->{gen}; }    # 84-08: browse_proxy g=<gen>
 for my $m (qw(requestPause requestResume requestVolume requestSkip requestRestart requestTrack endForeignLeave
-               noteDuration noteSeekIntent noteMetadataMissing seekable consumeRestartAllowance consumeSeekIntent
+               noteDuration noteSeekIntent noteMetadataMissing seekable consumeRestartAllowance consumeSeekIntent earlyEndContinues
                leaveBrowse leaveConnect clearHold _recordErrorOnce watchdogRing notePlaylistChanged)) {
     no strict 'refs';
     *{$m} = sub {
