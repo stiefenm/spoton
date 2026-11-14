@@ -108,9 +108,16 @@ sub startScan { if (main::SCANNER) {
 
         my $run = { accounts => scalar @accounts };
 
+        # The Spotify requests of each phase go into the summary line, so the cost of a scan can be read
+        # from scanner.log without counting request lines. SpClient's requestCount counts the spclient
+        # dispatches of this process: cache hits and the rate-limit short-circuit are not counted.
+        my $atStart = Plugins::SpotOn::API::SpClient->requestCount;
+
         if (!Slim::Music::Import->scanPlaylistsOnly()) {
             $class->scanAlbums(\@accounts, $run);
         }
+
+        my $afterAlbums = Plugins::SpotOn::API::SpClient->requestCount;
 
         if (!($class->can('ignorePlaylists') && $class->ignorePlaylists)) {
             $class->scanPlaylists(\@accounts, $run);
@@ -119,11 +126,15 @@ sub startScan { if (main::SCANNER) {
             $class->_deleteStalePlaylists({});   # playlist import switched off: remove the imported ones
         }
 
+        my $atEnd = Plugins::SpotOn::API::SpClient->requestCount;
+
         $class->deleteRemovedTracks();
 
         main::INFOLOG && $log->is_info && $log->info(sprintf(
-            'Library import done: %d albums (%d read from Spotify), %d playlists (%d read)%s',
+            'Library import done: %d albums (%d read from Spotify), %d playlists (%d read), '
+                . 'Spotify requests: %d (albums %d, playlists %d)%s',
             $run->{albums} || 0, $run->{albumsRead} || 0, $run->{playlists} || 0, $run->{playlistsRead} || 0,
+            $atEnd - $atStart, $afterAlbums - $atStart, $atEnd - $afterAlbums,
             $run->{stopped} ? " -- stopped early ($run->{stopped}), the rest keeps its previous import" : ''));
     }
     else {
