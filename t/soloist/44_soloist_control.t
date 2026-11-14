@@ -4413,6 +4413,70 @@ for my $case ([ 'aa:bb:cc:dd:ee:e8', 'rebuffering', playing => 0, buffering => 2
     ee_done($ctl);
 }
 
+# ee_fallback_timers($ctl) -- the _earlyEndFallback timers armed for this Control.
+sub ee_fallback_timers {
+    my ($ctl) = @_;
+    return grep { $_->[0] == $ctl && $_->[2] == \&Plugins::SpotOn::Soloist::Control::_earlyEndFallback } @Slim::Utils::Timers::TIMERS;
+}
+
+# --- EE-7d: Next after the early answer, the common form of a Next in the gap: the shim ended the old stream,
+# LMS advanced by itself and was answered early, then the user presses Next while the old title's last seconds
+# play. LMS's _Stop drops the stream it opened for the next title, so it asks for it again, now stopped. That
+# request takes the old path AND ends the early answer's wait and fallback timer: exactly one skip_next, also past
+# the deadline without an echo (a second one from the fallback would pop the daemon's queue twice and skip the
+# title), and the outcome line says the early EOF was used before LMS stopped.
+{
+    my $mac = 'aa:bb:cc:dd:ee:7d';
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session($mac);
+    $ctl->observed->{meta}{$EE_NEXT} = { duration => 200 };
+    my $n = scalar @{ $ws->sent };
+    my ($early, $fired) = (0, 0);
+    d50_at($onset + 0.6, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack', successCb => sub { $early++ } }); });
+    is($early, 1, "EE-7d setup: LMS's own advance was answered early");
+    is($ctl->observed->{earlyEnd}{uri}, $EE_NEXT, "EE-7d setup: the wait is armed");
+    is(scalar(ee_fallback_timers($ctl)), 1, "EE-7d setup: with its fallback timer");
+
+    ee_lms($mac, playing => 0, paused => 0, buffering => 0, stopped => 0);
+    @Slim::Utils::Log::WARNINGS = ();
+    d50_at($onset + 1.2, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack', successCb => sub { $fired++ } }); });
+    my @s = ee_skips($ws, $n);
+    is(scalar(@s), 1, "EE-7d: the stopped request sends one command");
+    is($s[0][0] // '', 'skip_next', "EE-7d: the skip_next to the queue head (the old path)");
+    is($fired, 0, "EE-7d: its successCb waits for the daemon's echo");
+    ok(!$ctl->observed->{earlyEnd}, "EE-7d: the early answer's wait ends");
+    is(scalar(ee_fallback_timers($ctl)), 0, "EE-7d: and its fallback timer is killed");
+    is($ctl->earlyEndContinues('spoton://track:eeNextTitle0000000000'), 0, "EE-7d: earlyEndContinues is 0 (LMS keeps its own threshold)");
+
+    d50_fire($onset + 3.0 + Plugins::SpotOn::Soloist::Control::EARLY_END_WAIT_S() + 0.1);
+    is(scalar(ee_skips($ws, $n)), 1, "EE-7d: still one skip_next past the deadline without an echo");
+    is(scalar(grep { /within the end gap/ } @Slim::Utils::Log::WARNINGS), 0, "EE-7d: no fallback WARN");
+
+    my $at = $onset + 3.0 + Plugins::SpotOn::Soloist::Control::EARLY_END_WAIT_S() + 0.2;
+    like(d50_at($at, sub { $ctl->_earlyEndOutcome($EE_NEXT) }) // '',
+        qr/: early EOF used, then LMS stopped its players \(a skip or jump in the gap\): skip_next \(/,
+        "EE-7d: the outcome line at the echo: used, then LMS stopped");
+    my $tc = d50_clone($fx->[0][1]);
+    $tc->{item}{uri} = $EE_NEXT;
+    d50_at($at, sub { $ctl->onEvent($tc); });
+    ok(!$ctl->observed->{nearEnd}, "EE-7d: the echo ends the mark");
+    is($ctl->observed->{track}, $EE_NEXT, "EE-7d: the daemon is on the next title");
+    is($early, 1, "EE-7d: the early answer's successCb fired exactly once");
+    is(scalar(ee_skips($ws, $n)), 1, "EE-7d: nothing else is sent afterwards");
+    ee_done($ctl);
+}
+
+# --- EE-7e: a jump to another title after the early answer: the outcome line says the early EOF was used.
+{
+    my $mac = 'aa:bb:cc:dd:ee:7e';
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session($mac);
+    d50_at($onset + 0.6, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack' }); });
+    is($ctl->observed->{earlyEnd}{uri}, $EE_NEXT, "EE-7e setup: answered early, the wait is armed");
+    like(d50_at($onset + 1.5, sub { $ctl->_earlyEndOutcome('spotify:track:eeOtherTitle00000000') }) // '',
+        qr/: early EOF used, but the daemon then changed to another title than the marked \Q$EE_NEXT\E \(/,
+        "EE-7e: the outcome line for the change to another title says the early EOF was used");
+    ee_done($ctl);
+}
+
 # --- EE-8: the refused early end (the shim switched off, a stream younger than its 12 s guard, no gap). The
 # mark is posted, but the shim keeps the old stream open, so the daemon changes title first and LMS asks only
 # afterwards. That must be main's path: the change drops the mark, the request is a Treffer (nothing sent,
@@ -4448,12 +4512,6 @@ for my $case ([ 'aa:bb:cc:dd:ee:e8', 'rebuffering', playing => 0, buffering => 2
     ok(!$ctl->observed->{earlyEnd}, "EE-8: no wait for the daemon's own change");
     is($ctl->earlyEndContinues('spoton://track:eeNextTitle0000000000'), 0, "EE-8: earlyEndContinues is 0 (LMS keeps its own threshold)");
     ee_done($ctl);
-}
-
-# ee_fallback_timers($ctl) -- the _earlyEndFallback timers armed for this Control.
-sub ee_fallback_timers {
-    my ($ctl) = @_;
-    return grep { $_->[0] == $ctl && $_->[2] == \&Plugins::SpotOn::Soloist::Control::_earlyEndFallback } @Slim::Utils::Timers::TIMERS;
 }
 
 # --- EE-9: the daemon goes away inside the end gap (crash, backend switch, LMS shutdown) after the early
