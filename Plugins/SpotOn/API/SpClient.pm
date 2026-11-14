@@ -3229,6 +3229,87 @@ sub getPlaylistItems {
 }
 
 # ============================================================
+# Radio (GH #82)
+# ============================================================
+# Spotify's own radios, through the request its clients send (librespot-core
+# spclient.rs get_radio_for_track), with SpotOn's login5 bearer -- not the
+# Web API /recommendations that #82 found gone. Measured 2026-11-09 (seed: a
+# track of a saved album):
+#   inspiredby-mix/v2/seed_to_playlist/<seed>?response-format=json
+#     -> { mediaItems: [{ uri }], total }
+#     track seed  -> spotify:playlist:37i9dQZF1E8..., "<track> - radio" (format inspiredby-mix), 50 tracks
+#     artist seed -> "<artist> - radio" (37i9dQZF1E4...), 50 tracks
+# A radio playlist is an ordinary playlist: playlist/v2 reads it and the
+# existing feeds play it. Requests happen only when a radio is opened or
+# played -- the menu entries are lazy.
+
+use constant RADIO_SEED_TTL => 6 * 3600;   # seed -> radio playlist id; Spotify refreshes the playlist's contents itself
+
+# radioSeedType($class, $seedUri) -> 'track' | 'artist', or undef for
+# anything else. The seed is spliced into a request path and a cache key, so
+# only these exact shapes pass (WR-04 discipline).
+sub radioSeedType {
+    my ($class, $seed) = @_;
+    return undef unless defined $seed && !ref $seed;
+    return $seed =~ /\Aspotify:(track|artist):[0-9A-Za-z]{22}\z/ ? $1 : undef;
+}
+
+# getRadio($class, $accountId, $seedUri, $cb)
+# The radio Spotify offers for a seed: cb->({ playlistId, uri }) for its
+# radio playlist, cb->(undef, { error => 'no_radio' }) when the answer names
+# none, or cb->(undef, $err) for a failed request. One request per seed and
+# RADIO_SEED_TTL; a cache hit sends nothing.
+sub getRadio {
+    my ($class, $accountId, $seed, $cb) = @_;
+
+    unless ($class->_hasLogin5Creds($accountId)) {
+        main::INFOLOG && $log->info('SpClient: getRadio without stored credentials');
+        $cb->(undef, { error => 'no_credentials' });
+        return;
+    }
+
+    unless ($class->radioSeedType($seed)) {
+        $cb->(undef, { error => 'invalid_id' });
+        return;
+    }
+
+    my $cacheKey = "spoton_radio_${accountId}_$seed";
+    if (my $cached = $cache->get($cacheKey)) {
+        $cb->($cached);
+        return;
+    }
+
+    $class->_request('get', "inspiredby-mix/v2/seed_to_playlist/$seed?response-format=json", {
+        _accountId => $accountId,
+        _accept    => 'application/json',
+        _noCache   => 1,   # the seed -> radio answer is cached below
+    }, sub {
+        my ($result, $err) = @_;
+
+        if ($err) {
+            $cb->(undef, $err);
+            return;
+        }
+
+        my $items = (ref $result eq 'HASH' && ref $result->{mediaItems} eq 'ARRAY') ? $result->{mediaItems} : [];
+        my $uri   = (ref $items->[0] eq 'HASH' && defined $items->[0]{uri} && !ref $items->[0]{uri}) ? $items->[0]{uri} : '';
+
+        my $radio;
+        if ($uri =~ /\Aspotify:playlist:([0-9A-Za-z]{22})\z/) {
+            $radio = { playlistId => $1, uri => $uri };
+        }
+        else {
+            main::INFOLOG && $log->info('SpClient: no radio for ' . $class->radioSeedType($seed) . ' seed');
+            $cb->(undef, { error => 'no_radio' });
+            return;
+        }
+
+        $cache->set($cacheKey, $radio, RADIO_SEED_TTL);
+        $cb->($radio);
+    });
+}
+
+# ============================================================
 # Pathfinder-backed feeds and removed Web-API methods
 # ============================================================
 # 85-15 (D-01, D-08): the former Web-API-only passthroughs are gone. getMe
