@@ -423,7 +423,8 @@ $Slim::Plugin::OnlineLibraryBase::online{dummy} = 1;
         $files++;
         open(my $fh, '<', $_) or die "$_: $!";
         while (my $line = <$fh>) {
-            push @offenders, "$File::Find::name:$." if $line =~ /\[\s*['"](?:rescan|rescanplugin|wipecache)['"]|launchScan/;
+            next if $line =~ /\bsubscribe\s*\(/;    # a notification filter, not a command
+            push @offenders, "$File::Find::name:$." if $line =~ /\[\s*(?:qw\s*[(\[{]\s*|['"])(?:rescan|rescanplugin|wipecache)\b|launchScan/;
         }
     } }, "$project_dir/Plugins/SpotOn");
     cmp_ok($files, '>', 10, 'scan-command sweep: the plugin tree was read');
@@ -691,7 +692,7 @@ my %A = (saved => [ [ { uri => "spotify:album:$A1", added_at => 1700000000 }, { 
 }
 
 # ============================================================
-# an empty playlist list never removes the imported playlists -- the rule LMS applies to its online
+# when no account lists a playlist, the imported playlists stay -- the rule LMS applies to its online
 # tracks (lms Slim/Plugin/OnlineLibraryBase.pm:86-90); switching the playlist import off still does (above)
 # ============================================================
 {
