@@ -281,6 +281,14 @@ sub getPlaylistIndex {
 }
 sub getPlaylistTrackUris { _answer('pltracks',  $_[2], $_[3]) }
 sub prefetchTracks       { _answer('prefetch',  scalar @{ $_[2] }, $_[3]) }
+# a cache read, not a request: not in @calls; %cachedTrack = the ids SpClient has named already
+our (%cachedTrack, @uncachedCalls);
+sub uncachedTrackIds {
+    my (undef, undef, $ids) = @_;
+    push @uncachedCalls, [ @$ids ];
+    my %seen;
+    return [ grep { !$seen{$_}++ && !$cachedTrack{$_} } @$ids ];
+}
 sub rateLimitedFor { $rateLimitedFor || 0 }
 sub requestCount   { $requests }
 1;
@@ -337,6 +345,8 @@ sub reset_world {
     @Plugins::SpotOn::API::SpClient::calls = ();
     %Plugins::SpotOn::API::SpClient::answer = ();
     %Plugins::SpotOn::API::SpClient::cacheHit = ();
+    %Plugins::SpotOn::API::SpClient::cachedTrack = ();
+    @Plugins::SpotOn::API::SpClient::uncachedCalls = ();
     $Plugins::SpotOn::API::SpClient::rateLimitedFor = 0;
     $Plugins::SpotOn::API::SpClient::batchSize = 200;
     @Slim::Plugin::OnlineLibraryBase::stored = ();
@@ -734,6 +744,45 @@ my %A = (saved => [ [ { uri => "spotify:album:$A1", added_at => 1700000000 }, { 
     $Slim::Plugin::OnlineLibraryBase::ignorePlaylists = 1;
     $IMP->startScan;
     is_deeply([ calls_of('prefetch') ], [ 'prefetch:2', 'prefetch:1' ], 'batching: 3 distinct ids in calls of trackBatchSize (2) -- duplicates named once');
+}
+
+# ============================================================
+# only the tracks without a cache entry are batched: new tracks spread over batches of cached ones cost one
+# request per batch otherwise (measured live: 64 new tracks among 4,544 playlist tracks -> 23 requests)
+# ============================================================
+{
+    reset_world();
+    Slim::Utils::Cache->new->clear;
+    %Slim::Schema::tracks = ();
+    $Plugins::SpotOn::API::SpClient::batchSize = 2;
+    %Plugins::SpotOn::API::SpClient::cachedTrack = ($T1 => 1, $T3 => 1);
+    %Plugins::SpotOn::API::SpClient::answer = (
+        saved          => [ [ { uri => "spotify:album:$A1" }, { uri => "spotify:album:$A2" } ] ],
+        "albumids:$A1" => [ [ $T1, $T2 ] ],
+        "albumids:$A2" => [ [ $T3, $T4 ] ],
+        "album:$A1"    => album_fixture($A1),
+        "album:$A2"    => album_fixture($A2),
+        prefetch       => sub { [ $_[0] ] },
+    );
+    $Slim::Plugin::OnlineLibraryBase::ignorePlaylists = 1;
+    $IMP->startScan;
+    is_deeply([ map { scalar @$_ } @Plugins::SpotOn::API::SpClient::uncachedCalls ], [ 4 ], 'cached tracks: all 4 album track ids go through the cache check once');
+    is_deeply([ calls_of('prefetch') ], [ 'prefetch:2' ], 'cached tracks: the 2 uncached ids (one in each batch of 2) travel in ONE call, not 2');
+
+    reset_world();
+    Slim::Utils::Cache->new->clear;
+    %Slim::Schema::tracks = ();
+    %Plugins::SpotOn::API::SpClient::cachedTrack = map { $_ => 1 } ($T1, $T2, $T3, $T4);
+    %Plugins::SpotOn::API::SpClient::answer = (
+        saved          => [ [ { uri => "spotify:album:$A1" }, { uri => "spotify:album:$A2" } ] ],
+        "albumids:$A1" => [ [ $T1, $T2 ] ],
+        "albumids:$A2" => [ [ $T3, $T4 ] ],
+        "album:$A1"    => album_fixture($A1),
+        "album:$A2"    => album_fixture($A2),
+    );
+    $Slim::Plugin::OnlineLibraryBase::ignorePlaylists = 1;
+    $IMP->startScan;
+    is(scalar(calls_of('prefetch')), 0, 'cached tracks: every track cached -> no prefetch call at all');
 }
 
 # ============================================================

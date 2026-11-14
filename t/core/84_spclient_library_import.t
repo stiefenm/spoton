@@ -10,7 +10,7 @@ use Cwd qw(abs_path);
 
 # GH #32: the SpClient facades the LMS library importer reads through
 # (getSavedAlbumUris, getAlbumWithTracks, getPlaylistTrackUris,
-# prefetchTracks, rateLimitedFor, requestCount) and the playlist revision the
+# prefetchTracks, uncachedTrackIds, rateLimitedFor, requestCount) and the playlist revision the
 # rootlist parser now hands out. Stub layout: t/core/59 (LMS stubs, a rule-
 # based SimpleAsyncHTTP, Login5/Credentials stubs).
 
@@ -407,6 +407,24 @@ my $albumJson = JSON::PP::encode_json({
     $SP->prefetchTracks('acct1', [ $ID{1}, $ID{2} ], sub { $named = shift });
     is($named, 2, 'prefetchTracks: cached tracks count as named');
     is($SP->requestCount, $before, 'prefetchTracks: cached tracks cost no request');
+
+    # uncachedTrackIds: the ids prefetchTracks would still send, read from the cache only
+    Slim::Networking::SimpleAsyncHTTP::reset_requests();
+    $before = $SP->requestCount;
+    my $store = Slim::Utils::Cache->new;
+    $store->set($SP->_trackCacheKey('acct1', $HEX{3}), { name => 'Old format' });   # no _spoton_fmt: a miss at every reader
+    is_deeply($SP->uncachedTrackIds('acct1', [ $ID{4}, $ID{1}, 'not-a-track-id', $ID{3}, $ID{4}, undef, $ID{2} ]), [ $ID{4}, $ID{3} ],
+        'uncachedTrackIds: uncached and old-format ids in input order, each once; cached and non-track ids left out');
+    is(scalar(reqs()), 0, 'uncachedTrackIds: no request');
+    is($SP->requestCount, $before, 'uncachedTrackIds: requestCount unchanged');
+
+    # a due hit is noted for renewal as in _enrichTracks, so a skipped track does not run out after 90 days
+    my $key1 = $SP->_trackCacheKey('acct1', $HEX{1});
+    my $old  = time() - 40 * 86400;
+    $store->set($key1, { %{ $store->get($key1) }, _spoton_cached_at => $old });
+    is_deeply($SP->uncachedTrackIds('acct1', [ $ID{1} ]), [], 'uncachedTrackIds: a current entry 40 days old is still a hit');
+    Plugins::SpotOn::API::SpClient::_flushTrackRenewals();
+    cmp_ok($store->get($key1)->{_spoton_cached_at}, '>', $old, 'uncachedTrackIds: the due hit is renewed by the drain');
 }
 
 # ============================================================

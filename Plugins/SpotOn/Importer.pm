@@ -269,12 +269,14 @@ sub _warmAlbums {
 
 # _prefetch($class, $accountId, \@trackIds, $run, $what) -- names tracks into
 # SpClient's per-track cache, one paced call per trackBatchSize ids (so one
-# request per call at most; cached tracks cost nothing).
+# request per call at most). Only the ids without a cache entry are batched:
+# a playlist scan lists every imported playlist's tracks, and a few new ones
+# spread over batches of cached ones cost one request per batch (measured:
+# 64 new tracks among 4,544 -> 23 requests instead of 1).
 sub _prefetch {
     my ($class, $accountId, $trackIds, $run, $what) = @_;
 
-    my %seen;
-    my @ids  = grep { !$seen{$_}++ } @$trackIds;
+    my @ids  = @{ Plugins::SpotOn::API::SpClient->uncachedTrackIds($accountId, $trackIds) };
     my $size = Plugins::SpotOn::API::SpClient->can('trackBatchSize')
         ? Plugins::SpotOn::API::SpClient->trackBatchSize : 200;
 

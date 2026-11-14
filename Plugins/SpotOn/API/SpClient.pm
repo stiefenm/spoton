@@ -3490,6 +3490,34 @@ sub prefetchTracks {
     });
 }
 
+# uncachedTrackIds($class, $accountId, \@trackIds) -> [ids], input order, each once:
+# the tracks prefetchTracks would still ask Spotify for (no current
+# metadata/4/track entry). A cache read only, no request. Ids that are not
+# track ids are left out (_enrichTracks stubs them without a request). A hit
+# is noted for renewal exactly as in _enrichTracks, so a track the importer
+# skips here does not run out after 90 days while a playlist still lists it.
+# The importer batches only these: a few new tracks spread over batches of
+# cached ones would otherwise cost one request per batch.
+sub uncachedTrackIds {
+    my ($class, $accountId, $trackIds) = @_;
+
+    my (%seen, @misses);
+    for my $id (@{ $trackIds || [] }) {
+        next if !defined $id || $seen{$id}++;
+        my $hexId = $class->idToHex($id) or next;
+
+        my $cacheKey = $class->_trackCacheKey($accountId, $hexId);
+        my $cached   = $cache->get($cacheKey);
+        if ($cached && $class->_trackMetaCurrent($cached)) {
+            $class->_noteTrackHit($cacheKey, $cached);
+            next;
+        }
+        push @misses, $id;
+    }
+
+    return \@misses;
+}
+
 # rateLimitedFor($class) -> seconds left of the current spclient 429 backoff,
 # 0 when there is none. The importer stops at a backoff instead of waiting
 # behind it, and leaves the rest of the library for the next scan.
