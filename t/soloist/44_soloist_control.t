@@ -4466,6 +4466,30 @@ sub ee_fallback_timers {
     ee_done($ctl);
 }
 
+# --- EE-7f: a jump with a start position to the queued next title after the early answer (LMS stopped):
+# the old path with its seek, and the early answer's wait and fallback timer end, so no second skip_next.
+{
+    my $mac = 'aa:bb:cc:dd:ef:7f';
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session($mac);
+    $ctl->observed->{meta}{$EE_NEXT} = { duration => 200 };
+    my $n = scalar @{ $ws->sent };
+    d50_at($onset + 0.6, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack' }); });
+    is($ctl->observed->{earlyEnd}{uri}, $EE_NEXT, "EE-7f setup: the wait is armed");
+
+    ee_lms($mac, playing => 0, paused => 0, buffering => 0, stopped => 0);
+    @Slim::Utils::Log::WARNINGS = ();
+    d50_at($onset + 1.2, sub { $ctl->requestTrack($EE_NEXT, 30000, { source => 'getNextTrack' }); });
+    my @s = ee_skips($ws, $n);
+    is(scalar(@s), 1, "EE-7f: the stopped request with a position sends one command");
+    is($s[0][0] // '', 'skip_next', "EE-7f: the skip_next to the queue head (the old path)");
+    ok(!$ctl->observed->{earlyEnd}, "EE-7f: the early answer's wait ends");
+    is(scalar(ee_fallback_timers($ctl)), 0, "EE-7f: and its fallback timer is killed");
+    d50_fire($onset + 3.0 + Plugins::SpotOn::Soloist::Control::EARLY_END_WAIT_S() + 0.1);
+    is(scalar(ee_skips($ws, $n)), 1, "EE-7f: still one skip_next past the deadline without an echo");
+    is(scalar(grep { /within the end gap/ } @Slim::Utils::Log::WARNINGS), 0, "EE-7f: no fallback WARN");
+    ee_done($ctl);
+}
+
 # --- EE-7e: a jump to another title after the early answer: the outcome line says the early EOF was used.
 {
     my $mac = 'aa:bb:cc:dd:ee:7e';
@@ -4545,6 +4569,21 @@ sub ee_fallback_timers {
     d50_at($onset + 1.0, sub { $ctl->leaveBrowse; });
     ok(!$ctl->observed->{earlyEnd} && !$ctl->observed->{nearEnd}, "EE-9b: leaveBrowse drops the wait and the mark");
     is(scalar(ee_fallback_timers($ctl)), 0, "EE-9b: and kills the fallback timer");
+    ee_done($ctl);
+}
+
+# --- EE-9d: the WS transport closes inside the end gap after the early answer (no shutdown): the mark,
+# the wait and the fallback timer go with the connection, and no fallback WARN follows.
+{
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session('aa:bb:cc:dd:ef:d9');
+    d50_at($onset + 0.6, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack' }); });
+    is($ctl->observed->{earlyEnd}{uri}, $EE_NEXT, "EE-9d setup: the wait is armed");
+    @Slim::Utils::Log::WARNINGS = ();
+    d50_at($onset + 1.0, sub { $ctl->onEvent({ type => '_transport', state => 'closed' }); });
+    ok(!$ctl->observed->{earlyEnd} && !$ctl->observed->{nearEnd}, "EE-9d: the closed transport drops the wait and the mark");
+    is(scalar(ee_fallback_timers($ctl)), 0, "EE-9d: and kills the fallback timer");
+    d50_fire($onset + 3.0 + Plugins::SpotOn::Soloist::Control::EARLY_END_WAIT_S() + 0.1);
+    is(scalar(grep { /within the end gap/ } @Slim::Utils::Log::WARNINGS), 0, "EE-9d: no fallback WARN after the deadline");
     ee_done($ctl);
 }
 
