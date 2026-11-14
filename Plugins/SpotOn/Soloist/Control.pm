@@ -315,11 +315,13 @@ use constant SEEK_KEEP_PATH => '/seek-keep';
 # and before it waits for the virtual sink to drain (about the vsink depth,
 # 3 s). With the mark, the shim ends LMS's old stream as soon as the gap is
 # certain, so LMS opens the next title DURING the gap instead of after it
-# (fake-libpulse.c, g_early_end_gap_ms). LMS then asks for the queued next
-# title while the daemon is still on the old one; Control answers it at once
-# and lets the daemon change title by itself (a skip_next would flush). The
-# daemon must have changed within the reported remaining time plus
-# EARLY_END_WAIT_S, else the old skip_next path runs.
+# (fake-libpulse.c, g_early_end_gap_ms). LMS then advances by itself and asks
+# for the queued next title while the daemon is still on the old one; Control
+# answers it at once and lets the daemon change title by itself (a skip_next
+# would flush). A request after LMS stopped its players (a skip or jump in the
+# gap) takes the old path (_earlyEndPlan). The daemon must have changed within
+# the reported remaining time plus EARLY_END_WAIT_S, else the old skip_next
+# path runs.
 use constant NEAR_END_PATH    => '/near-end';
 use constant EARLY_END_WAIT_S => 2;
 
@@ -2467,10 +2469,12 @@ sub _reconcilePlan {
     my $head = $observed->{queueHead};
     if ($self->mode eq 'browse' && ref($head) eq 'HASH' && defined $head->{uri} && $head->{uri} eq $uri) {
         if ($trigger eq 'requestTrack') {
-            if (my $early = $self->_earlyEndPlan($uri, $posMs, $opts, $successCb, $now)) {
+            my ($early, $declined) = $self->_earlyEndPlan($uri, $posMs, $opts, $successCb, $now);
+            if ($early) {
                 push @intents, @$early;
                 return \@intents;
             }
+            push @intents, @$declined if $declined;
         }
         push @intents, @{ $self->_planCommand('play', uri => $uri, position_ms => $posMs,
             armed => $armed, awaitMeta => ($metaKnown ? 0 : 1),
@@ -2503,6 +2507,11 @@ sub _reconcile {
     local $opts->{hasStoredSession} = $self->_hasStoredSession
         if $trigger eq 'requestTrack'
             && defined $self->observed->{paired} && !$self->observed->{paired};
+
+    # End-gap early EOF (GH #213): LMS's playing state for _earlyEndPlan, read here for the
+    # same reason and only while a title-end mark stands.
+    local $opts->{lmsStopped} = $self->_lmsPlayersStopped
+        if $trigger eq 'requestTrack' && ref($self->observed->{nearEnd}) eq 'HASH';
 
     my $intents = $self->_reconcilePlan($trigger, $opts, Time::HiRes::time());
     $intents = $self->_enforceConnectOwnershipInvariant($intents, $opts // {})
@@ -5733,12 +5742,20 @@ sub _postNearEnd {
 
 # _earlyEndPlan($self, $uri, $posMs, $opts, $successCb, $now) -- end-gap early EOF, the planner
 # side: LMS asks for the daemon's queue head while the daemon is still on the title marked by
-# _postNearEnd and within its reported remaining time (+ EARLY_END_WAIT_S). The shim ended LMS's
-# old stream early; the daemon changes to the queue head by itself once its sink has drained.
-# Answer LMS at once (successCb, so it opens the next stream now), raise the prefetch wish for the
-# title after it, and arm the fallback (_earlyEndFallback: the old skip_next path). Returns the
-# intents, or undef when the case does not apply (no seek target, the mark is for the daemon's
-# current title, the wanted title is the marked successor).
+# _postNearEnd and within its reported remaining time (+ EARLY_END_WAIT_S), and LMS advanced by
+# itself ($opts->{lmsStopped} false, read by _reconcile). Before the daemon's change LMS advances
+# by itself only after the old stream's EOF, and inside the gap only the shim's early end gives
+# that EOF; Control never reads the mark's reply, so this is how it knows the shim used the mark.
+# The daemon changes to the queue head by itself once its sink has drained. Answer LMS at once
+# (successCb, so it opens the next stream now), raise the prefetch wish for the title after it,
+# and arm the fallback (_earlyEndFallback: the old skip_next path). Returns the intents, or undef
+# when the case does not apply (no seek target, the mark is for the daemon's current title, the
+# wanted title is the marked successor), or (undef, $declined) when LMS stopped its players
+# before it asked (a skip or a jump to the queue head inside the gap): the caller adds $declined
+# and takes the old skip_next path. An early answer there would let LMS open the next stream
+# before the daemon changes. If the shim had not ended the old stream (switched off, a stream
+# younger than its 12 s guard, the first 400 ms of the gap), the drain boundary of the daemon's
+# change would then bound LMS's NEW stream, and the next title would be cut.
 sub _earlyEndPlan {
     my ($self, $uri, $posMs, $opts, $successCb, $now) = @_;
     return undef if $opts->{earlyEndFallback};
@@ -5749,6 +5766,11 @@ sub _earlyEndPlan {
         && ($ne->{next} // '') eq $uri;
     my $deadline = ($ne->{at} // 0) + ($ne->{remaining_ms} // 0) / 1000 + EARLY_END_WAIT_S;
     return undef if $now > $deadline;
+    if ($opts->{lmsStopped}) {
+        return (undef, [ { op => 'log', level => 'debug', text =>
+            "Control: LMS asked for the queued next title $uri with its players stopped (a skip or jump in the "
+            . "end gap of $o->{track}) -- old path (" . ($self->mac // '?') . ")" } ]);
+    }
     # No status gate: the speed-0 position_sync of the end gap itself sets observed.status to
     # `paused` (S-02). A real pause corks the stream, and the shim never ends a corked stream early.
     my @intents;
@@ -5763,6 +5785,27 @@ sub _earlyEndPlan {
     push @intents, { op => 'set', target => 'observed', key => 'prefetchWish', value => 1 };
     push @intents, { op => 'fire', cb => { successCb => [ $successCb ] }, which => 'successCb', args => [] } if $successCb;
     return \@intents;
+}
+
+# _lmsPlayersStopped($self) -- end-gap early EOF (GH #213): 1 when LMS's StreamingController for
+# this player (the sync group's, via the master) has its players stopped, else 0. A skip, or a
+# jump to any title, stops them before LMS asks for the next title (StreamingController
+# _StopGetNext: _Stop sets STOPPED, then _getNextTrack). LMS's own advance after an EOF
+# (_NextIfMore, _RetryOrNext) leaves them PLAYING, PAUSED, or BUFFERING in a rebuffer. isStopped
+# cannot tell the two apart: _getNextTrack sets TRACKWAIT before it asks the handler, and
+# isStopped also needs IDLE. Fails closed (1: the old path) without a client or controller, or
+# when a read dies.
+sub _lmsPlayersStopped {
+    my $self = shift;
+
+    my $stopped = eval {
+        my $client     = Slim::Player::Client::getClient($self->mac);
+        my $controller = $client ? $client->controller : undef;
+        $controller
+            ? (($controller->isPlaying(1) || $controller->isPaused || $controller->buffering) ? 0 : 1)
+            : 1;
+    };
+    return defined $stopped ? $stopped : 1;
 }
 
 # earlyEndContinues($self, $url) -- end-gap early EOF: 1 while Control waits for the daemon's own

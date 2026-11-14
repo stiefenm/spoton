@@ -208,9 +208,15 @@ sub controller {
 package Slim::Player::Client::_StubController;
 our @JUMPS;
 our $ON_JUMP;
-sub new       { return bless { paused => 0, stopped => 0 }, shift; }
+# The real StreamingController's play-state readers, each from its own knob: isPlaying(1) is
+# playingState PLAYING, isPlaying() is neither stopped nor paused, buffering() is 1/2 while
+# BUFFERING/WAITING_TO_SYNC (end-gap early EOF: Control::_lmsPlayersStopped). The default is a
+# playing LMS.
+sub new       { return bless { paused => 0, stopped => 0, playing => 1, buffering => 0 }, shift; }
 sub isPaused  { return $_[0]->{paused}; }
 sub isStopped { return $_[0]->{stopped}; }
+sub isPlaying { return $_[1] ? $_[0]->{playing} : (!$_[0]->{stopped} && !$_[0]->{paused}); }
+sub buffering { return $_[0]->{buffering} // 0; }
 sub jumpToTime {
     my ($self, @args) = @_;
     push @JUMPS, [ @args ];
@@ -4237,6 +4243,8 @@ sub ee_skips {
 # --- EE-3: LMS asks for the queue head during the end gap -> answered at once, no skip_next, wait armed
 {
     my ($ctl, $daemon, $ws, $fx, $onset) = ee_session('aa:bb:cc:dd:ee:e3');
+    ok(Slim::Player::Client::getClient('aa:bb:cc:dd:ee:e3')->controller->isPlaying(1),
+        "EE-3 setup: LMS's players are PLAYING (LMS advanced by itself after the early EOF)");
     my $n = scalar @{ $ws->sent };
     my $fired = 0;
     d50_at($onset + 0.6, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack', successCb => sub { $fired++ } }); });
@@ -4299,6 +4307,70 @@ sub ee_skips {
     d50_at($onset + 0.6, sub { $ctl->requestTrack('spotify:track:eeOtherTitle00000000', 0, { source => 'getNextTrack' }); });
     is(scalar(ee_skips($ws, $n)), 1, "EE-6: another queue head than the marked successor takes the old path");
     ok(!$ctl->observed->{earlyEnd}, "EE-6: no wait armed");
+    ee_done($ctl);
+}
+
+# ee_lms($mac, %state) -- set LMS's play state for this player (the stub StreamingController's knobs).
+sub ee_lms {
+    my ($mac, %state) = @_;
+    my $lc = Slim::Player::Client::getClient($mac)->controller;
+    @{$lc}{ keys %state } = values %state;
+    return $lc;
+}
+
+# --- EE-7: Next (or a jump to the queue head) inside the end gap. LMS stopped its players before it asked
+# (StreamingController _StopGetNext), so nothing proves the shim ended the old stream: the old skip_next path,
+# successCb waits for the echo, no early answer. In TRACKWAIT the real isStopped is false; the stub says so too.
+{
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session('aa:bb:cc:dd:ee:e7');
+    ee_lms('aa:bb:cc:dd:ee:e7', playing => 0, paused => 0, buffering => 0, stopped => 0);
+    $ctl->observed->{meta}{$EE_NEXT} = { duration => 200 };
+    my $n = scalar @{ $ws->sent };
+    my $fired = 0;
+    d50_at($onset + 0.6, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack', successCb => sub { $fired++ } }); });
+    my @s = ee_skips($ws, $n);
+    is(scalar(@s), 1, "EE-7: Next in the gap -> one command for the next title");
+    is($s[0][0] // '', 'skip_next', "EE-7: it is the skip_next to the queue head (the old path)");
+    is($fired, 0, "EE-7: successCb waits for the daemon's echo (no early answer)");
+    ok(!$ctl->observed->{earlyEnd}, "EE-7: no wait for the daemon's own change is armed");
+    is($ctl->earlyEndContinues('spoton://track:eeNextTitle0000000000'), 0, "EE-7: earlyEndContinues is 0 (LMS keeps its own threshold)");
+    my $tc = d50_clone($fx->[0][1]);
+    $tc->{item}{uri} = $EE_NEXT;
+    d50_at($onset + 0.9, sub { $ctl->onEvent($tc); });
+    is($fired, 1, "EE-7: the echo fires successCb once");
+    ok(!$ctl->observed->{nearEnd}, "EE-7: the echo ends the mark");
+    d50_fire($onset + 6.0);
+    is(scalar(ee_skips($ws, $n)), 1, "EE-7: nothing else is sent afterwards");
+    ee_done($ctl);
+}
+
+# --- EE-7b: LMS's own advance after the early EOF keeps the early answer while its players are not stopped:
+# PLAYING (EE-3), BUFFERING in a rebuffer, PAUSED (ReadyToStream runs _NextIfMore in PAUSED too).
+for my $case ([ 'aa:bb:cc:dd:ee:e8', 'rebuffering', playing => 0, buffering => 2 ],
+              [ 'aa:bb:cc:dd:ee:e9', 'paused',      playing => 0, paused => 1 ]) {
+    my ($mac, $label, %state) = @$case;
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session($mac);
+    ee_lms($mac, %state);
+    my $n = scalar @{ $ws->sent };
+    my $fired = 0;
+    d50_at($onset + 0.6, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack', successCb => sub { $fired++ } }); });
+    is(scalar(ee_skips($ws, $n)), 0, "EE-7b ($label): no skip_next or play is sent");
+    is($fired, 1, "EE-7b ($label): successCb fired at once");
+    is($ctl->observed->{earlyEnd}{uri}, $EE_NEXT, "EE-7b ($label): the wait for the daemon's own change is armed");
+    ee_done($ctl);
+}
+
+# --- EE-7c: a controller read that dies fails closed: the old path.
+{
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session('aa:bb:cc:dd:ee:ea');
+    no warnings 'redefine';
+    local *Slim::Player::Client::_StubController::isPlaying = sub { die "boom\n" };
+    my $n = scalar @{ $ws->sent };
+    d50_at($onset + 0.6, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack' }); });
+    my @s = ee_skips($ws, $n);
+    is(scalar(@s), 1, "EE-7c: one command for the next title");
+    is($s[0][0] // '', 'skip_next', "EE-7c: a dying controller read reads as stopped (skip_next)");
+    ok(!$ctl->observed->{earlyEnd}, "EE-7c: no wait armed");
     ee_done($ctl);
 }
 
