@@ -600,6 +600,7 @@ sub leaveBrowse {
     delete $self->observed->{contextEndPlanted};
     delete $self->observed->{preResetAnchor};
     $self->_cancelHangWatch('leaveBrowse');    # 79-78 D-50
+    $self->_earlyEndClear('leaveBrowse');
     delete @{ $self->observed }{qw(hangPre hangReplays playingSince)};
     $self->mode('idle');
     $self->wanted({});
@@ -714,6 +715,7 @@ sub shutdown {
     delete $self->observed->{hold};
 
     $self->_cancelHangWatch('shutdown');    # 79-78 D-50
+    $self->_earlyEndClear('shutdown');
     Slim::Utils::Timers::killTimers($self, \&_t1Fire);
     Slim::Utils::Timers::killTimers($self, \&_watchdogRound2);
     # 79-51 runaway D1: a held resume does not outlive the instance (the 82-46 rule).
@@ -5777,6 +5779,7 @@ sub _earlyEndPlan {
     if (!(ref($o->{earlyEnd}) eq 'HASH' && ($o->{earlyEnd}{uri} // '') eq $uri)) {
         push @intents, { op => 'set', target => 'observed', key => 'earlyEnd',
             value => { uri => $uri, from => $o->{track}, until => $deadline } };
+        push @intents, { op => 'killtimer', cb => \&_earlyEndFallback };
         push @intents, { op => 'timer', cb => \&_earlyEndFallback, at => $deadline };
         push @intents, { op => 'log', level => 'info', text =>
             "Control: LMS opened the queued next title $uri during the end gap of $o->{track} -- "
@@ -5825,12 +5828,27 @@ sub earlyEndContinues {
 # the early-end case (skip_next to the queue head, or play).
 sub _earlyEndFallback {
     my $self = shift;
+    return if $self->_shutDown;    # the requestTrack guard (CR-01): this path reconciles directly
     my $ee = delete $self->observed->{earlyEnd} or return;
     return unless defined $self->wanted->{uri} && $self->wanted->{uri} eq ($ee->{uri} // '');
     return if defined $self->observed->{track} && $self->observed->{track} eq $ee->{uri};
     $log->warn("Control: the daemon did not change to $ee->{uri} within the end gap -- requesting it ("
         . ($self->mac // '?') . ")");
     $self->_reconcile('requestTrack', { earlyEndFallback => 1 });
+    return;
+}
+
+# _earlyEndClear($self, $why) -- end-gap early EOF: kill the fallback timer and drop the title-end
+# mark and an open wait for the daemon's own change. shutdown and leaveBrowse call it next to
+# _cancelHangWatch: no early-end state or timer outlives the session (the 82-11 CR-03 rule).
+sub _earlyEndClear {
+    my ($self, $why) = @_;
+
+    Slim::Utils::Timers::killTimers($self, \&_earlyEndFallback);
+    my @had = grep { defined } delete @{ $self->observed }{qw(nearEnd earlyEnd)};
+    main::DEBUGLOG && $log->is_debug && $log->debug(
+        "Control: end-gap early EOF state dropped ($why) (" . ($self->mac // '?') . ")"
+    ) if @had;
     return;
 }
 
