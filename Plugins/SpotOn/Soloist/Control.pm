@@ -5773,7 +5773,6 @@ sub _postNearEnd {
 sub _earlyEndPlan {
     my ($self, $uri, $posMs, $opts, $successCb, $now) = @_;
     return undef if $opts->{earlyEndFallback};
-    return undef if ($posMs // 0) > 0;
     my $o  = $self->observed;
     my $ne = $o->{nearEnd};
     return undef unless ref($ne) eq 'HASH' && defined $o->{track} && ($ne->{uri} // '') eq $o->{track}
@@ -5798,6 +5797,9 @@ sub _earlyEndPlan {
                 . ($self->mac // '?') . ")" },
         ]);
     }
+    # A request with a start position is never answered early (a jump with seek data takes the old
+    # path); the stopped case above runs first, so such a jump still ends an armed wait.
+    return undef if ($posMs // 0) > 0;
     # No status gate: the speed-0 position_sync of the end gap itself sets observed.status to
     # `paused` (S-02). A real pause corks the stream, and the shim never ends a corked stream early.
     my @intents;
@@ -5910,7 +5912,8 @@ sub _earlyEndFallback {
 
 # _earlyEndClear($self, $why) -- end-gap early EOF: kill the fallback timer and drop the title-end
 # mark and an open wait for the daemon's own change. shutdown and leaveBrowse call it next to
-# _cancelHangWatch: no early-end state or timer outlives the session (the 82-11 CR-03 rule).
+# _cancelHangWatch, _transportClosed with the other per-connection state: no early-end state or
+# timer outlives the session or its connection (the 82-11 CR-03 rule).
 sub _earlyEndClear {
     my ($self, $why) = @_;
 
@@ -7501,6 +7504,10 @@ sub _transportClosed {
     delete $self->observed->{anchor};
     delete $self->observed->{postSeekCheck};    # S1: the check belonged to the closed connection
     Slim::Utils::Timers::killTimers($self, \&_postSeekCheckFire);
+    # End-gap early EOF: the mark and the wait belong to the closed connection too. Without this the
+    # fallback still fires (observed.track is gone, so its 'track eq B' guard cannot stop it) and
+    # reconciles into the ws-down deferral.
+    $self->_earlyEndClear('transport closed');
     $self->_reloadForget;    # 79-52
     # 85-07 D-09: the Up Next cache describes the queue of a connection that
     # is gone; the next queue_changed / get_queue reply rebuilds it.
