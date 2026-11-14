@@ -751,6 +751,8 @@ subtest 'i18n: PLUGIN_SPOTON_STREAMING_MODE* keys have all 11 locales' => sub {
     package EEBackendStub;
     sub new   { my ($c, $a) = @_; return bless { a => $a, asked => [] }, $c; }
     sub query { my ($s, $w, %a) = @_; push @{ $s->{asked} }, [ $w, $a{url} ]; return $w eq 'earlyEndContinues' ? $s->{a} : undef; }
+    package EEBackendDies;
+    sub query { die "backend gone\n" }
     package EESong;
     sub new           { my ($c, $br) = @_; return bless { br => $br }, $c; }
     sub streambitrate { return $_[0]{br}; }
@@ -765,7 +767,7 @@ subtest 'i18n: PLUGIN_SPOTON_STREAMING_MODE* keys have all 11 locales' => sub {
 
     require Plugins::SpotOn::ProtocolHandler;
     require Plugins::SpotOn::Unified::DaemonManager;
-    no warnings 'redefine';
+    no warnings qw(redefine once);
     my $be;
     local *Plugins::SpotOn::Unified::DaemonManager::backendFor = sub { return $be; };
     my $PH  = 'Plugins::SpotOn::ProtocolHandler';
@@ -784,6 +786,8 @@ subtest 'i18n: PLUGIN_SPOTON_STREAMING_MODE* keys have all 11 locales' => sub {
     is($PH->bufferThreshold(EEClient->new(705600), $url), 255, 'early-end: a backend without an opinion (librespot) -> LMS\'s value');
     $be = undef;
     is($PH->bufferThreshold(EEClient->new(705600), $url), 255, 'early-end: no backend role at all -> LMS\'s value');
+    $be = bless {}, 'EEBackendDies';
+    is($PH->bufferThreshold(EEClient->new(705600), $url), 255, 'early-end: a backend query that dies -> LMS\'s value, no die');
     my $bare = bless {}, 'EEClientNoController';
     is($PH->bufferThreshold($bare, $url), 20, 'early-end: a client without a controller -> 20, no die');
 }
