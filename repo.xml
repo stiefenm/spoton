@@ -31,6 +31,7 @@
             <title lang="DE">SpotOn</title>
             <desc lang="EN">Spotify plugin for Lyrion Music Server</desc>
             <desc lang="DE">Spotify-Plugin fuer Lyrion Music Server</desc>
+            <link>https://github.com/stiefenm/spoton</link>
         </plugin>
     </plugins>
 </extensions>

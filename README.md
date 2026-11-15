@@ -80,7 +80,7 @@ SpotOn starts with librespot. Pair your account in SpotOn Settings (step 1 above
 
 **Using Soloist:** on a Linux system that can run Soloist, SpotOn Settings shows a hint "Soloist is available on this system. To use it, get your Spotify Soloist API key from Spotify:" with a link and a key field. Enter your Spotify Soloist API key there and save; the page then offers the switch to Soloist. After the switch SpotOn downloads Soloist from Spotify, starts it, and asks you to pair each player once by tapping it in the Spotify app's device picker.
 
-**Upgrading from 3.5.x:** your settings and accounts are taken over. A custom client ID from 3.5.x is removed because SpotOn no longer uses the Web API. An account whose stored login cannot be used any more is marked "Please pair this account once"; one pairing with the same Spotify account fixes it, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
+**Upgrading from 3.5.x:** your settings and accounts are taken over. A custom client ID from 3.5.x is removed because SpotOn no longer uses the Web API. An account whose stored login cannot be used any more is marked "Please pair this account once"; one pairing with the same Spotify account fixes it, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md). The full guide is [UPGRADING.md](UPGRADING.md).
 
 ## Troubleshooting
 

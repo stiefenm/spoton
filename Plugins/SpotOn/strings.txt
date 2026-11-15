@@ -2754,6 +2754,162 @@ PLUGIN_SPOTON_SETTINGS_DIAG_SECTION
 	PL	Diagnostyka
 	SV	Diagnostik
 
+PLUGIN_SPOTON_SETTINGS_HELP_SECTION
+	CS	Nápověda a zpětná vazba
+	DA	Hjælp og feedback
+	DE	Hilfe & Feedback
+	EN	Help & feedback
+	ES	Ayuda y comentarios
+	FR	Aide et retours
+	IT	Aiuto e feedback
+	NL	Hulp en feedback
+	NO	Hjelp og tilbakemeldinger
+	PL	Pomoc i opinie
+	SV	Hjälp och feedback
+
+PLUGIN_SPOTON_HELP_PROJECT
+	CS	Stránka projektu a dokumentace
+	DA	Projektside og dokumentation
+	DE	Projektseite und Dokumentation
+	EN	Project page and documentation
+	ES	Página del proyecto y documentación
+	FR	Page du projet et documentation
+	IT	Pagina del progetto e documentazione
+	NL	Projectpagina en documentatie
+	NO	Prosjektside og dokumentasjon
+	PL	Strona projektu i dokumentacja
+	SV	Projektsida och dokumentation
+
+PLUGIN_SPOTON_HELP_UPGRADE
+	CS	Přechod z verze 3.x
+	DA	Opgradering fra 3.x
+	DE	Umstieg von 3.x
+	EN	Upgrading from 3.x
+	ES	Actualización desde 3.x
+	FR	Mise à niveau depuis la version 3.x
+	IT	Aggiornamento dalla 3.x
+	NL	Upgraden vanaf 3.x
+	NO	Oppgradering fra 3.x
+	PL	Aktualizacja z wersji 3.x
+	SV	Uppgradering från 3.x
+
+PLUGIN_SPOTON_UPGRADE_GUIDE_LINK
+	CS	Co se změnilo ve verzi 4.0
+	DA	Hvad der er ændret i 4.0
+	DE	Was sich in 4.0 geändert hat
+	EN	What changed in 4.0
+	ES	Qué ha cambiado en 4.0
+	FR	Ce qui a changé dans la version 4.0
+	IT	Cosa è cambiato nella 4.0
+	NL	Wat er in 4.0 is veranderd
+	NO	Hva som er endret i 4.0
+	PL	Co się zmieniło w wersji 4.0
+	SV	Vad som har ändrats i 4.0
+
+PLUGIN_SPOTON_HELP_TROUBLESHOOT
+	CS	Řešení problémů
+	DA	Fejlfinding
+	DE	Fehlerbehebung
+	EN	Troubleshooting
+	ES	Solución de problemas
+	FR	Dépannage
+	IT	Risoluzione dei problemi
+	NL	Probleemoplossing
+	NO	Feilsøking
+	PL	Rozwiązywanie problemów
+	SV	Felsökning
+
+PLUGIN_SPOTON_HELP_REPORT
+	CS	Nahlásit problém
+	DA	Meld et problem
+	DE	Problem melden
+	EN	Report a problem
+	ES	Informar de un problema
+	FR	Signaler un problème
+	IT	Segnala un problema
+	NL	Een probleem melden
+	NO	Rapporter et problem
+	PL	Zgłoś problem
+	SV	Rapportera ett problem
+
+PLUGIN_SPOTON_HELP_REPORT_DESC
+	CS	Přiložte prosím diagnostickou zprávu z níže uvedené sekce Diagnostika.
+	DA	Vedhæft venligst diagnoserapporten fra afsnittet Diagnostik nedenfor.
+	DE	Bitte hängen Sie den Diagnosebericht aus dem Abschnitt Diagnose unten an.
+	EN	Please attach the diagnostic report from the Diagnostics section below.
+	ES	Adjunte el informe de diagnóstico de la sección Diagnósticos que aparece más abajo.
+	FR	Veuillez joindre le rapport de diagnostic de la section Diagnostics ci-dessous.
+	IT	Allegare il rapporto diagnostico della sezione Diagnostica qui sotto.
+	NL	Voeg het diagnoserapport uit de sectie Diagnostiek hieronder toe.
+	NO	Legg ved diagnoserapporten fra delen Diagnostikk nedenfor.
+	PL	Prosimy o załączenie raportu diagnostycznego z sekcji Diagnostyka poniżej.
+	SV	Bifoga diagnosrapporten från avsnittet Diagnostik nedan.
+
+PLUGIN_SPOTON_HELP_RELEASE_STATUS
+	CS	Stav vydání
+	DA	Udgivelsesstatus
+	DE	Release-Status
+	EN	Release status
+	ES	Estado de la versión
+	FR	État de la version
+	IT	Stato della release
+	NL	Releasestatus
+	NO	Utgivelsesstatus
+	PL	Status wydania
+	SV	Utgivningsstatus
+
+PLUGIN_SPOTON_HELP_RELEASE_STATUS_DESC
+	CS	Známé problémy a stav aktuálního vydání.
+	DA	Kendte problemer og status for den aktuelle udgivelse.
+	DE	Bekannte Probleme und der Stand des aktuellen Release.
+	EN	Known issues and the state of the current release.
+	ES	Problemas conocidos y estado de la versión actual.
+	FR	Problèmes connus et état de la version actuelle.
+	IT	Problemi noti e stato della release corrente.
+	NL	Bekende problemen en de stand van de huidige release.
+	NO	Kjente problemer og status for gjeldende utgivelse.
+	PL	Znane problemy i stan bieżącego wydania.
+	SV	Kända problem och status för den aktuella utgåvan.
+
+PLUGIN_SPOTON_HELP_FORUM
+	CS	Vlákno na fóru
+	DA	Forumtråd
+	DE	Forum-Thread
+	EN	Forum thread
+	ES	Hilo del foro
+	FR	Fil du forum
+	IT	Thread del forum
+	NL	Forumthread
+	NO	Forumtråd
+	PL	Wątek na forum
+	SV	Forumtråd
+
+PLUGIN_SPOTON_HELP_SUPPORT
+	CS	Podpořit SpotOn
+	DA	Støt SpotOn
+	DE	SpotOn unterstützen
+	EN	Support SpotOn
+	ES	Apoyar SpotOn
+	FR	Soutenir SpotOn
+	IT	Sostieni SpotOn
+	NL	SpotOn steunen
+	NO	Støtt SpotOn
+	PL	Wesprzyj SpotOn
+	SV	Stöd SpotOn
+
+PLUGIN_SPOTON_HELP_SUPPORT_DESC
+	CS	SpotOn je zdarma. Pokud chcete podpořit jeho vývoj, můžete zde přispět. Dar je dobrovolný a nic neodemyká.
+	DA	SpotOn er gratis. Hvis du vil støtte udviklingen, kan du donere her. En donation er frivillig og låser intet op.
+	DE	SpotOn ist kostenlos. Wenn Sie die Entwicklung unterstützen möchten, können Sie hier spenden. Eine Spende ist freiwillig und schaltet nichts frei.
+	EN	SpotOn is free. If you want to support its development, you can donate here. A donation is voluntary and unlocks nothing.
+	ES	SpotOn es gratuito. Si desea apoyar su desarrollo, puede donar aquí. Una donación es voluntaria y no desbloquea nada.
+	FR	SpotOn est gratuit. Si vous souhaitez soutenir son développement, vous pouvez faire un don ici. Un don est facultatif et ne débloque rien.
+	IT	SpotOn è gratuito. Se desidera sostenerne lo sviluppo, può donare qui. Una donazione è volontaria e non sblocca nulla.
+	NL	SpotOn is gratis. Als u de ontwikkeling wilt steunen, kunt u hier doneren. Een donatie is vrijwillig en ontgrendelt niets.
+	NO	SpotOn er gratis. Hvis du vil støtte utviklingen, kan du donere her. En donasjon er frivillig og låser ikke opp noe.
+	PL	SpotOn jest darmowy. Jeśli chcesz wesprzeć jego rozwój, możesz przekazać darowiznę tutaj. Darowizna jest dobrowolna i niczego nie odblokowuje.
+	SV	SpotOn är gratis. Om du vill stödja utvecklingen kan du donera här. En donation är frivillig och låser inte upp något.
+
 PLUGIN_SPOTON_DIAG_MODE
 	CS	Diagnostický režim
 	DA	Diagnostisk tilstand

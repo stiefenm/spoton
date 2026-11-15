@@ -29,6 +29,7 @@
             <title lang="DE">SpotOn (Beta)</title>
             <desc lang="EN">Spotify plugin for Lyrion Music Server - beta 4.0.0-beta.13</desc>
             <desc lang="DE">Spotify-Plugin fuer Lyrion Music Server - Beta 4.0.0-beta.13</desc>
+            <link>https://github.com/stiefenm/spoton</link>
         </plugin>
     </plugins>
 </extensions>

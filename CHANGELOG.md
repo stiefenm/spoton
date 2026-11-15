@@ -5,6 +5,33 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.0.0] - 2026-11-15
+
+**SpotOn 4.0 is a large update over 3.5.x.** It no longer uses the Spotify Web API, needs no Spotify Developer App or client ID, and adds a second playback backend, Soloist (Spotify's own client, Linux only), next to librespot. The plugin manager offers it as an update over 3.5.8 and over every 4.0 beta. Restart LMS after the update. The sections below summarise what changes when you come from 3.5.x; the 4.0 beta entries further down list every change in detail.
+
+**Updating from 3.5.x.** Your settings and accounts are taken over and the backend stays librespot. An account that only had the browser login from 3.5.x is marked "Please pair this account once": press **Konto koppeln** (*Pair account*) in SpotOn Settings and pick the `SpotOn Authorization` device in your Spotify app while a track is playing. A custom client ID from 3.5.x is removed, because nothing uses it any more. Step by step, including what to do when the pairing device does not show up: [UPGRADING.md](https://github.com/stiefenm/spoton/blob/main/UPGRADING.md). If the Plugins page fails to download the update with `Header line too long (limit is 8192)`, GitHub sent a longer header than LMS accepts; try again later.
+
+### Added
+- **No Web API, no Developer App** - Browse, Search and Library run over Spotify's own client endpoints with the login of your paired account. There is no Web API quota, no rate-limit pages and no client ID to set up.
+- **Pairing in the Spotify app** - accounts are paired once by picking the `SpotOn Authorization` device in the Spotify app, like connecting to a speaker. Where the app cannot see the device (Docker, VLANs), a `credentials.json` can be dropped into the `__DISCOVER__` folder instead (see [TROUBLESHOOTING.md](https://github.com/stiefenm/spoton/blob/main/TROUBLESHOOTING.md)).
+- **Soloist backend (Linux only)** - Spotify's own client as a second backend, chosen in SpotOn Settings. It needs a Linux host with glibc 2.38 or newer (for example Debian 13 or Raspberry Pi OS Trixie) and your own Spotify Soloist API key; each player is paired once by tapping it in the Spotify app. With Soloist, Spotify's quality setting goes up to Lossless and players receive FLAC 16, PCM or MP3. SpotOn downloads Soloist from Spotify on your LMS host, never ships it, and renews it automatically before it expires.
+- **Stream formats that deliver what they say** - per-player Stream Format with real FLAC 16, PCM, MP3 and, with librespot, OGG passthrough; the player settings page shows what each player receives.
+- **Help & feedback in SpotOn Settings** - links to the project page, the upgrade guide, the troubleshooting guide, problem reports, the release status, the forum thread and an optional donation. The LMS plugin list links to the project page.
+- **Upgrade guide for 3.x users** - [UPGRADING.md](https://github.com/stiefenm/spoton/blob/main/UPGRADING.md) explains what changes and what to do after the update; SpotOn Settings links to it next to every account that needs pairing.
+
+### Changed
+- **Platforms** - Windows and macOS run librespot only. Soloist runs on Linux x86_64 and aarch64 (tested, including a Raspberry Pi) and armhf (included, not tested).
+
+### Removed
+- **Web API login (PKCE), Developer App and custom client ID**.
+
+### Known issues
+- librespot: if you pause in the last 30 seconds of a title and then press Next in the LMS web interface, the next title plays but the Spotify app can still show the player as paused, and playback stops at the end of that title until you press Play.
+- librespot: tapping the same track again after a pause can stall for about 3 seconds before it plays.
+- Soloist: after a title changes by itself, a web interface that polls LMS on its own timer (for example the default skin) can show the old title's time for 1 to 2 seconds. Material Skin is not affected.
+- Soloist: the official Lyrion Docker image is based on Debian 12 (glibc 2.36), so Soloist cannot run there and SpotOn uses librespot; an image based on Debian 13 works.
+- Made for You: names that SpotOn looks up itself can come in English even when your Spotify account uses another language.
+
 ## [4.0.0-beta.13] - 2026-11-15
 
 **Installing this beta.** Same beta repository URL as before (`https://stiefenm.github.io/spoton/beta/repo.xml`); the Plugins page offers SpotOn 4.0.0beta13 as an update over 4.0.0beta12. Restart LMS after the update. The fixes below apply to both backends unless they name one.

@@ -238,7 +238,7 @@
 
 		[% FOREACH id IN needsPairingAccounts %]
 		<p class="needs-pairing" style="margin:10px 0 0 0; color:orange">
-			&#9679; [% accounts.$id.displayName | html %]: [% 'PLUGIN_SPOTON_ACCOUNT_NEEDS_PAIRING' | string %]
+			&#9679; [% accounts.$id.displayName | html %]: [% 'PLUGIN_SPOTON_ACCOUNT_NEEDS_PAIRING' | string %] &middot; <a href="https://github.com/stiefenm/spoton/blob/main/UPGRADING.md" target="_blank" rel="noopener noreferrer">[% 'PLUGIN_SPOTON_UPGRADE_GUIDE_LINK' | string %] &rarr;</a>
 		</p>
 		[% END %]
 
@@ -280,12 +280,6 @@
 
 		<hr style="margin:12px 0; border:0; border-top:1px solid rgba(128,128,128,0.2)"/>
 		<p style="margin:0; font-size:0.9em; opacity:0.85">[% 'PLUGIN_SPOTON_STEP_WHY_TWO' | string %]</p>
-		<p style="margin:8px 0 0 0; font-size:0.85em; opacity:0.7">
-			[% 'PLUGIN_SPOTON_SETUP_TROUBLESHOOT_HINT' | string %]
-			<a href="https://github.com/stiefenm/spoton/blob/main/TROUBLESHOOTING.md" target="_blank">
-				[% 'PLUGIN_SPOTON_SETUP_TROUBLESHOOT_LINK' | string %] &rarr;
-			</a>
-		</p>
 	</div>
 
 	[% WRAPPER setting title="PLUGIN_SPOTON_ACCOUNT_SETTINGS" desc="" %]
@@ -354,6 +348,41 @@
 		<label for="pref_normalization">[% 'PLUGIN_SPOTON_NORMALIZATION_LABEL' | string %]</label>
 	[% END %]
 	</div>
+
+	<hr style="margin:16px 0; border:0; border-top:1px solid rgba(128,128,128,0.25)"/>
+	<h2>[% 'PLUGIN_SPOTON_SETTINGS_HELP_SECTION' | string %]</h2>
+
+	[% WRAPPER setting title="PLUGIN_SPOTON_HELP_PROJECT" desc="" %]
+		<a href="https://github.com/stiefenm/spoton" target="_blank" rel="noopener noreferrer" style="font-weight:bold">github.com/stiefenm/spoton &rarr;</a>
+	[% END %]
+
+	[% WRAPPER setting title="PLUGIN_SPOTON_HELP_UPGRADE" desc="" %]
+		<a href="https://github.com/stiefenm/spoton/blob/main/UPGRADING.md" target="_blank" rel="noopener noreferrer" style="font-weight:bold">[% 'PLUGIN_SPOTON_UPGRADE_GUIDE_LINK' | string %] &rarr;</a>
+	[% END %]
+
+	[% WRAPPER setting title="PLUGIN_SPOTON_HELP_TROUBLESHOOT" desc="" %]
+		<div style="margin-bottom:6px; font-size:0.9em">[% 'PLUGIN_SPOTON_SETUP_TROUBLESHOOT_HINT' | string %]</div>
+		<a href="https://github.com/stiefenm/spoton/blob/main/TROUBLESHOOTING.md" target="_blank" rel="noopener noreferrer" style="font-weight:bold">[% 'PLUGIN_SPOTON_SETUP_TROUBLESHOOT_LINK' | string %] &rarr;</a>
+	[% END %]
+
+	[% WRAPPER setting title="PLUGIN_SPOTON_HELP_REPORT" desc="" %]
+		<div style="margin-bottom:6px; font-size:0.9em">[% 'PLUGIN_SPOTON_HELP_REPORT_DESC' | string %]</div>
+		<a href="https://github.com/stiefenm/spoton/issues/new/choose" target="_blank" rel="noopener noreferrer" style="font-weight:bold">GitHub Issues &rarr;</a>
+	[% END %]
+
+	[% WRAPPER setting title="PLUGIN_SPOTON_HELP_RELEASE_STATUS" desc="" %]
+		<div style="margin-bottom:6px; font-size:0.9em">[% 'PLUGIN_SPOTON_HELP_RELEASE_STATUS_DESC' | string %]</div>
+		<a href="https://github.com/stiefenm/spoton/issues?q=is%3Aissue+is%3Aopen+label%3Arelease-status" target="_blank" rel="noopener noreferrer" style="font-weight:bold">GitHub: release-status &rarr;</a>
+	[% END %]
+
+	[% WRAPPER setting title="PLUGIN_SPOTON_HELP_FORUM" desc="" %]
+		<a href="https://forums.lyrion.org/forum/user-forums/3rd-party-software/1826188-announce-spoton-%E2%80%94-spotify-plugin-for-lms-alternative-to-spotty" target="_blank" rel="noopener noreferrer" style="font-weight:bold">forums.lyrion.org &rarr;</a>
+	[% END %]
+
+	[% WRAPPER setting title="PLUGIN_SPOTON_HELP_SUPPORT" desc="" %]
+		<div style="margin-bottom:6px; font-size:0.9em">[% 'PLUGIN_SPOTON_HELP_SUPPORT_DESC' | string %]</div>
+		<a href="https://github.com/sponsors/stiefenm" target="_blank" rel="noopener noreferrer">GitHub Sponsors</a> &middot; <a href="https://ko-fi.com/stiefenm" target="_blank" rel="noopener noreferrer">Ko-fi</a>
+	[% END %]
 
 	<hr style="margin:16px 0; border:0; border-top:1px solid rgba(128,128,128,0.25)"/>
 	<h2>[% 'PLUGIN_SPOTON_SETTINGS_DIAG_SECTION' | string %]</h2>
