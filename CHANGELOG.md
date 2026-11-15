@@ -5,6 +5,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Soloist: when a title you played from LMS has ended and you then press play or start an album in the Spotify app on the same player, SpotOn now starts a Spotify Connect session. Before, LMS opened its last title again, SpotOn went back to Browse playback and stopped the music at the end of every title until you moved the session to another device and back. ([#225](https://github.com/stiefenm/spoton/issues/225))
+
 ## [4.0.0] - 2026-11-15
 
 **SpotOn 4.0 is a large update over 3.5.x.** It no longer uses the Spotify Web API, needs no Spotify Developer App or client ID, and adds a second playback backend, Soloist (Spotify's own client, Linux only), next to librespot. The plugin manager offers it as an update over 3.5.8 and over every 4.0 beta. Restart LMS after the update. The sections below summarise what changes when you come from 3.5.x; the 4.0 beta entries further down list every change in detail.
