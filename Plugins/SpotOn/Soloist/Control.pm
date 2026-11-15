@@ -329,6 +329,10 @@ use constant EARLY_END_LEAD_MS => 2500;
 # End-gap early EOF: how long after the daemon's change a skip into the early-opened title still
 # seeks it back (earlyServed, see _hangTrackChanged): past the hit tolerance the position does it.
 use constant EARLY_SERVED_S => 2.5;
+# End-gap early EOF: how long the outcome line of a change the daemon made before LMS asked waits for
+# that change's /boundary reply (anchor=early: the shim ended the old stream) before it is written as
+# "not used" (the reply itself is capped at BOUNDARY_REPLY_CAP_S).
+use constant OUTCOME_WAIT_S => 1;
 use constant EARLY_END_WAIT_S => 2;
 
 # D-34: the 4th positional of a `spottyconnect seek` Control emits for an app
@@ -5323,6 +5327,7 @@ sub _onFrameTrackChanged {
             $self->_postBoundaryRead($path, sub {
                 my $reply = shift;
                 main::DEBUGLOG && $log->is_debug && $log->debug($self->_boundaryReplyLine($reply));
+                $self->_outcomeWaitResolve($reply->{anchor});    # end-gap early EOF: the held-back outcome line
             });
         }
 
@@ -5681,7 +5686,18 @@ sub _hangTrackChanged {
     # end-gap early EOF: a title change ends the mark and an open wait for it, with one INFO line
     # per marked title end (_earlyEndOutcome)
     if (ref($o->{nearEnd}) eq 'HASH' && ($o->{nearEnd}{uri} // '') ne $uri) {
-        main::INFOLOG && $log->is_info && $log->info($self->_earlyEndOutcome($uri));
+        my ($line, $branch) = $self->_earlyEndOutcome($uri);
+        if (($branch // '') eq 'not_asked') {
+            # The daemon changed before LMS asked. Whether the shim had ended the old stream (a large
+            # top-up moves the daemon's change ahead of LMS's EOF) is in the reply to this change's
+            # /boundary (anchor=early): the line waits for it (_outcomeWaitResolve, OUTCOME_WAIT_S).
+            Slim::Utils::Timers::killTimers($self, \&_outcomeWaitFire);
+            $o->{outcomeWait} = { line => $line, early => scalar $self->_earlyEndOutcome($uri, 'early') };
+            Slim::Utils::Timers::setTimer($self, Time::HiRes::time() + OUTCOME_WAIT_S, \&_outcomeWaitFire);
+        }
+        else {
+            main::INFOLOG && $log->is_info && $log->info($line);
+        }
         delete $o->{nearEnd};
     }
     if (ref($o->{earlyEnd}) eq 'HASH' && ($o->{earlyEnd}{uri} // '') eq $uri) {
@@ -5952,12 +5968,12 @@ sub earlyEndContinues {
 # than its 12 s guard, the mark expired) is only in the Soloist daemon log (`early-end:` lines).
 # undef without a mark for another title.
 sub _earlyEndOutcome {
-    my ($self, $uri) = @_;
+    my ($self, $uri, $anchor) = @_;
     my $o  = $self->observed;
     my $ne = $o->{nearEnd};
     return undef unless ref($ne) eq 'HASH' && defined $ne->{uri} && defined $uri && $ne->{uri} ne $uri;
     my $ee = $o->{earlyEnd};
-    my ($what, $used);
+    my ($what, $used, $branch);
     if (($ne->{next} // '') ne $uri) {
         # a jump to another title after the early answer leaves its wait for the marked successor
         $used = $ne->{answered} || (ref($ee) eq 'HASH' && defined $ne->{next} && ($ee->{uri} // '') eq $ne->{next});
@@ -5980,8 +5996,16 @@ sub _earlyEndOutcome {
         $what = 'early EOF used, but the daemon did not change within the end gap (fallback skip_next)';
     }
     elsif (($self->wanted->{uri} // '') ne $uri) {
-        $what = "early EOF not used, LMS had not asked for the next title by the daemon's change "
-            . '(the early-end lines in the daemon log say whether the shim ended the old stream)';
+        $branch = 'not_asked';
+        if (($anchor // '') eq 'early') {
+            # the reply to the change's /boundary: the shim had ended the old stream
+            $used = 1;
+            $what = "early EOF used, the daemon changed before LMS asked for the next title";
+        }
+        else {
+            $what = "early EOF not used, LMS had not asked for the next title by the daemon's change "
+                . '(the early-end lines in the daemon log say whether the shim ended the old stream)';
+        }
     }
     else {
         $what = 'early EOF not used, LMS asked for the next title on the old path';
@@ -5990,7 +6014,26 @@ sub _earlyEndOutcome {
     # what the sink still holds then (its early-end line says how much).
     $what .= "; top-up asked $ne->{ff_ms} ms, the players were " . ($ne->{lead_ms} // '?') . ' ms behind'
         if $used && ($ne->{ff_ms} // 0) > 0;
-    return "Control: end gap $ne->{uri} -> $uri: $what (" . ($self->mac // '?') . ")";
+    my $line = "Control: end gap $ne->{uri} -> $uri: $what (" . ($self->mac // '?') . ")";
+    return wantarray ? ($line, $branch) : $line;
+}
+
+# _outcomeWaitResolve($self, $anchor) -- end-gap early EOF: writes the outcome line _hangTrackChanged
+# held back for a change the daemon made before LMS asked: the "used" text when the change's /boundary
+# reply says anchor=early, else the "not used" one. Once; the timer (_outcomeWaitFire) covers a reply
+# that never comes (no stream port, a failed send).
+sub _outcomeWaitResolve {
+    my ($self, $anchor) = @_;
+    my $w = delete $self->observed->{outcomeWait} or return;
+    Slim::Utils::Timers::killTimers($self, \&_outcomeWaitFire);
+    main::INFOLOG && $log->is_info && $log->info(($anchor // '') eq 'early' ? $w->{early} : $w->{line});
+    return;
+}
+
+sub _outcomeWaitFire {
+    my $self = shift;
+    $self->_outcomeWaitResolve(undef);
+    return;
 }
 
 # _earlyEndFallback($self) -- end-gap early EOF: the daemon did not change to the title LMS asked

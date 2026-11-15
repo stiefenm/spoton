@@ -4228,6 +4228,7 @@ sub ee_done {
     my ($ctl) = @_;
     d50_done($ctl);
     Slim::Utils::Timers::killTimers($ctl, \&Plugins::SpotOn::Soloist::Control::_earlyEndFallback);
+    Slim::Utils::Timers::killTimers($ctl, \&Plugins::SpotOn::Soloist::Control::_outcomeWaitFire);
 }
 sub ee_skips {
     my ($ws, $from) = @_;
@@ -4791,6 +4792,71 @@ sub ee_fallback_timers {
     ee_done($ctl);
 }
 
+# --- EE-OW: the daemon changes title before LMS asked (EE-8 shape; with a large top-up its change can come before
+# LMS has read the old stream's EOF although the shim ended it early). The outcome line waits for the reply to the
+# change's /boundary: anchor=early -> "early EOF used, the daemon changed before LMS asked", else the "not used" text;
+# OUTCOME_WAIT_S covers a reply that never comes. Other outcomes are written at once (no wait).
+sub ee_outcome_timers {
+    my ($ctl) = @_;
+    return grep { $_->[0] == $ctl && $_->[2] == \&Plugins::SpotOn::Soloist::Control::_outcomeWaitFire } @Slim::Utils::Timers::TIMERS;
+}
+sub ee_change_first {
+    my ($ctl, $fx, $at) = @_;
+    my $tc = d50_clone($fx->[0][1]);
+    $tc->{item}{uri} = $EE_NEXT;
+    d50_at($at, sub { $ctl->onEvent($tc); });
+}
+{
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session('aa:bb:cc:dd:ee:0a');
+    ee_change_first($ctl, $fx, $onset + 3.0);
+    my $w = $ctl->observed->{outcomeWait};
+    ok(ref($w) eq 'HASH', "EE-OW1: the daemon's change before LMS asked holds the outcome line back");
+    like($w->{line} // '', qr/: early EOF not used, LMS had not asked for the next title by the daemon's change /,
+        "EE-OW1: the held line for a reply without anchor=early");
+    like($w->{early} // '', qr/: early EOF used, the daemon changed before LMS asked for the next title \(/,
+        "EE-OW1: and the one for anchor=early");
+    is(scalar(ee_outcome_timers($ctl)), 1, "EE-OW1: one wait timer");
+    $ctl->_outcomeWaitResolve('early');
+    ok(!exists $ctl->observed->{outcomeWait}, "EE-OW1: the reply writes it once and drops it");
+    is(scalar(ee_outcome_timers($ctl)), 0, "EE-OW1: and kills the timer");
+    $ctl->_outcomeWaitResolve('early');
+    ok(!exists $ctl->observed->{outcomeWait}, "EE-OW1: a second reply finds nothing to write");
+    ee_done($ctl);
+}
+{
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session('aa:bb:cc:dd:ee:0b');
+    ee_change_first($ctl, $fx, $onset + 3.0);
+    d50_fire($onset + 3.0 + 1.1);
+    ok(!exists $ctl->observed->{outcomeWait}, "EE-OW2: without a reply the timer writes the line after OUTCOME_WAIT_S");
+    ee_done($ctl);
+}
+{
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session_lead('aa:bb:cc:dd:ee:0c', 8.595);
+    ee_change_first($ctl, $fx, $onset + 1.0);
+    like($ctl->observed->{outcomeWait}{early} // '', qr/: early EOF used, the daemon changed before LMS asked for the next title; top-up asked 1900 ms, the players were 600 ms behind \(/,
+        "EE-OW3: with a top-up the anchor=early line names it");
+    unlike($ctl->observed->{outcomeWait}{line} // '', qr/top-up/, "EE-OW3: the not-used line does not");
+    ee_done($ctl);
+}
+{
+    # LMS asked first (EE-3 shape): the outcome is known at the change, nothing waits
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session('aa:bb:cc:dd:ee:0d');
+    d50_at($onset + 0.6, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack' }); });
+    ee_change_first($ctl, $fx, $onset + 3.0);
+    ok(!exists $ctl->observed->{outcomeWait}, "EE-OW4: an early answer's change writes its line at once (no wait)");
+    is(scalar(ee_outcome_timers($ctl)), 0, "EE-OW4: no wait timer");
+    ee_done($ctl);
+}
+{
+    # the browse /boundary reply callback hands the reply's anchor to _outcomeWaitResolve (pinned in the source:
+    # the stub socket never answers)
+    open(my $fh, '<', "$project_dir/Plugins/SpotOn/Soloist/Control.pm") or die "Control.pm: $!";
+    my $src = do { local $/; <$fh> };
+    close($fh);
+    like($src, qr/BOUNDARY_PATH_PLAIN : BOUNDARY_PATH_DRAIN;\s*\$self->_postBoundaryRead\(\$path, sub \{.*?\$self->_outcomeWaitResolve\(\$reply->\{anchor\}\);/s,
+        "EE-OW5: the browse boundary reply resolves the held-back outcome line with its anchor");
+}
+
 # --- EE-10: _hangTrackChanged writes the outcome line as INFO before it drops the mark (INFOLOG is a constant 0 in
 # this file, so the call is pinned in the source, as t/37 G11 does; EE-3/4/6/7/7d/7e/8 cover the text). Comments
 # are stripped and only the order is pinned, so a reformatting of either line keeps it green.
@@ -4800,8 +4866,9 @@ sub ee_fallback_timers {
     close($fh);
     my ($body) = $src =~ /^sub _hangTrackChanged \{\n(.*?)^\}/ms;
     my $code = join("\n", grep { !/^\s*#/ } split /\n/, $body // '');
-    like($code, qr/\$log->info\(\s*\$self->_earlyEndOutcome\(\s*\$uri\s*\)\s*\)/,
-        "EE-10: _hangTrackChanged logs _earlyEndOutcome at INFO");
+    like($code, qr/my \(\$line, \$branch\) = \$self->_earlyEndOutcome\(\$uri\);/,
+        "EE-10: _hangTrackChanged computes the outcome line");
+    like($code, qr/\$log->info\(\$line\)/, "EE-10: and logs it at INFO (or holds it back, EE-OW)");
     my $info_idx = index($code, '_earlyEndOutcome');
     my $drop_idx = index($code, 'delete $o->{nearEnd}');
     ok($info_idx >= 0 && $drop_idx >= 0 && $info_idx < $drop_idx, "EE-10: before it drops the mark");
