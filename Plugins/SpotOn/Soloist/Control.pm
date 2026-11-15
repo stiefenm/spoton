@@ -4313,6 +4313,10 @@ sub _forwardBrowseSeek {
 
     return $self->_forwardBrowseSkip('-1') if $posMs < ENTRY_MIN_TARGET_MS;
 
+    # Lead top-up: the seek resets LMS's clock of this title to the daemon's target (Connect's
+    # startOffset), while the players first play out what they already hold. songTime is no longer
+    # the audible point, so _earlyEndTopUp must not measure a lead for this title.
+    $self->observed->{leadUnknownFor} = $self->observed->{track} if defined $self->observed->{track};
     $self->_emit('seek', sprintf('%.3f', $posMs / 1000), undef, undef, BROWSE_SEEK_MARK);
     return 1;
 }
@@ -5748,7 +5752,7 @@ sub _postNearEnd {
     $o->{nearEnd} = { uri => $uri, next => $head->{uri}, at => Time::HiRes::time(), remaining_ms => $remaining,
                       lead_ms => $lead, ff_ms => $ff };
     my $sent = $self->_loopbackPost($port, NEAR_END_PATH . '?ms=' . $remaining . ($ff > 0 ? '&ff=' . $ff : ''));
-    my $leadTxt = defined $lead ? ", players $lead ms behind, top-up $ff ms" : '';
+    my $leadTxt = defined $lead ? ", players $lead ms behind, top-up asked $ff ms" : '';
     if ($ff > 0) {
         main::INFOLOG && $log->is_info && $log->info(
             "Control: near end of $uri ($remaining ms left$leadTxt) -- "
@@ -5785,9 +5789,19 @@ sub _earlyEndTopUp {
     my $url  = eval { $song->track->url } // '';
     my $playing = _normalizeUri($url);
     return (0, undef) unless defined $playing && $playing eq $uri;
+    # An app seek in this title rewrote LMS's clock (_forwardBrowseSeek); the marker of an earlier
+    # title is stale and goes.
+    my $unknown = $self->observed->{leadUnknownFor};
+    if (defined $unknown) {
+        return (0, undef) if $unknown eq $uri;
+        delete $self->observed->{leadUnknownFor};
+    }
     my $t = eval { Slim::Player::Source::songTime($client) };
     return (0, undef) unless defined $t && $t =~ /^\d+(?:\.\d+)?$/;
     my $lead = int($posMs - $t * 1000 + 0.5);
+    # The players never play ahead of the daemon's sink; a negative lead means LMS's clock is not
+    # the audible point (a rewritten startOffset), so the lead is unknown.
+    return (0, undef) if $lead < 0;
     return (0, $lead) if $lead >= $target;
     my $ff = $target - $lead;
     $ff = $remaining if $ff > $remaining;
@@ -5910,23 +5924,26 @@ sub _earlyEndOutcome {
     my $ne = $o->{nearEnd};
     return undef unless ref($ne) eq 'HASH' && defined $ne->{uri} && defined $uri && $ne->{uri} ne $uri;
     my $ee = $o->{earlyEnd};
-    my $what;
+    my ($what, $used);
     if (($ne->{next} // '') ne $uri) {
         # a jump to another title after the early answer leaves its wait for the marked successor
-        my $used = $ne->{answered} || (ref($ee) eq 'HASH' && defined $ne->{next} && ($ee->{uri} // '') eq $ne->{next});
+        $used = $ne->{answered} || (ref($ee) eq 'HASH' && defined $ne->{next} && ($ee->{uri} // '') eq $ne->{next});
         $what = ($used ? 'early EOF used, but the daemon then changed to another title than the marked '
                        : 'early EOF not used, the daemon changed to another title than the marked ') . ($ne->{next} // '?');
     }
     elsif (($ne->{declined} // '') eq 'lms_stopped') {
+        $used = $ne->{answered};
         $what = $ne->{answered}
             ? 'early EOF used, then LMS stopped its players (a skip or jump in the gap): skip_next'
             : 'early EOF not used, LMS stopped its players first (a skip or jump in the gap): skip_next';
     }
     elsif (ref($ee) eq 'HASH' && ($ee->{uri} // '') eq $uri) {
+        $used = 1;
         $what = sprintf("early EOF used, LMS opened the next title %.1f s before the daemon's change",
             Time::HiRes::time() - ($ee->{at} // Time::HiRes::time()));
     }
     elsif ($ne->{fallback}) {
+        $used = 1;
         $what = 'early EOF used, but the daemon did not change within the end gap (fallback skip_next)';
     }
     elsif (($self->wanted->{uri} // '') ne $uri) {
@@ -5936,8 +5953,10 @@ sub _earlyEndOutcome {
     else {
         $what = 'early EOF not used, LMS asked for the next title on the old path';
     }
-    $what .= "; sink topped up $ne->{ff_ms} ms, the players were " . ($ne->{lead_ms} // '?') . ' ms behind'
-        if ($ne->{ff_ms} // 0) > 0;
+    # The shim takes the top-up out of its sink only when it ends the old stream early, and at most
+    # what the sink still holds then (its early-end line says how much).
+    $what .= "; top-up asked $ne->{ff_ms} ms, the players were " . ($ne->{lead_ms} // '?') . ' ms behind'
+        if $used && ($ne->{ff_ms} // 0) > 0;
     return "Control: end gap $ne->{uri} -> $uri: $what (" . ($self->mac // '?') . ")";
 }
 

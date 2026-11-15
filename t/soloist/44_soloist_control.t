@@ -4275,7 +4275,7 @@ sub ee_skips {
 # (default 2500) the mark asks the shim to take the difference out of its sink (POST /near-end?...&ff=<ms>), never
 # more than the remaining time, and nothing when the lead is already there, the pref is 0 or LMS plays another title.
 sub ee_session_lead {
-    my ($mac, $songTime, $playUrl) = @_;
+    my ($mac, $songTime, $playUrl, $before) = @_;
     my @fx = d50_frames('d50-hang-midtitle.frames');
     my ($ctl, $daemon, $ws) = d50_session($mac, $D50_HM, $fx[0][0] - 0.05,
         observed => { meta => { $D50_HM => { duration => 12.195 } } });
@@ -4285,6 +4285,10 @@ sub ee_session_lead {
     (my $id = $D50_HM) =~ s/^spotify:track://;
     Slim::Player::Client::getClient($mac)->playingSong(
         Test::MockSong->new(Test::MockTrack->new($playUrl // "spoton://track:$id")));
+    # The fixture's frame 12 (the D50 hang: the daemon's report jumps while LMS's clock ran on) reads
+    # as an app seek and marks the title's lead unknown (EE-TU8). These cases measure the lead.
+    delete $ctl->observed->{leadUnknownFor};
+    $before->($ctl) if $before;
     @IO::Socket::INET::NEAR_END_WRITES = ();
     local $Slim::Player::Source::SONGTIME = $songTime;
     d50_feed($ctl, \@fx, 13, 13);
@@ -4300,7 +4304,7 @@ sub ee_session_lead {
     my $n = scalar @{ $ws->sent };
     d50_at($onset + 0.6, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack' }); });
     like(d50_at($onset + 1.2, sub { $ctl->_earlyEndOutcome($EE_NEXT) }) // '',
-        qr/: early EOF used, LMS opened the next title 0\.6 s before the daemon's change; sink topped up 1900 ms, the players were 600 ms behind \(/,
+        qr/: early EOF used, LMS opened the next title 0\.6 s before the daemon's change; top-up asked 1900 ms, the players were 600 ms behind \(/,
         "EE-TU1: the outcome line names the top-up");
     is(scalar(ee_skips($ws, $n)), 0, "EE-TU1: the early answer itself is unchanged (nothing sent)");
     ee_done($ctl);
@@ -4310,7 +4314,7 @@ sub ee_session_lead {
     like($IO::Socket::INET::NEAR_END_WRITES[0] // '', qr{^POST /near-end\?ms=3000 }, "EE-TU2: players 3195 ms behind -> no ff");
     is($ctl->observed->{nearEnd}{lead_ms}, 3195, "EE-TU2: the lead is recorded");
     is($ctl->observed->{nearEnd}{ff_ms}, 0, "EE-TU2: top-up 0");
-    is($ctl->_earlyEndOutcome($EE_NEXT) =~ /topped up/ ? 1 : 0, 0, "EE-TU2: the outcome line names no top-up");
+    is($ctl->_earlyEndOutcome($EE_NEXT) =~ /top-up/ ? 1 : 0, 0, "EE-TU2: the outcome line names no top-up");
     ee_done($ctl);
 }
 {
@@ -4331,6 +4335,37 @@ sub ee_session_lead {
     my ($ctl) = ee_session_lead('aa:bb:cc:dd:ee:75', 8.595, 'spoton://track:eeOtherTitle00000000');
     like($IO::Socket::INET::NEAR_END_WRITES[0] // '', qr{^POST /near-end\?ms=3000 }, "EE-TU5: LMS plays another title -> no ff");
     is($ctl->observed->{nearEnd}{lead_ms}, undef, "EE-TU5: no lead");
+    ee_done($ctl);
+}
+{
+    # LMS's clock ahead of the daemon (a rewritten startOffset): the lead is unknown
+    my ($ctl) = ee_session_lead('aa:bb:cc:dd:ee:77', 9.5);
+    like($IO::Socket::INET::NEAR_END_WRITES[0] // '', qr{^POST /near-end\?ms=3000 }, "EE-TU7: songTime past the daemon position -> no ff");
+    is($ctl->observed->{nearEnd}{lead_ms}, undef, "EE-TU7: lead unknown");
+    ee_done($ctl);
+}
+{
+    # an app seek in this title rewrote LMS's clock: no top-up for it; the marker does not outlive the title
+    my ($ctl) = ee_session_lead('aa:bb:cc:dd:ee:78', 8.595, undef, sub { $_[0]->_forwardBrowseSeek(5000) });
+    is($ctl->observed->{leadUnknownFor}, $D50_HM, "EE-TU8 setup: the forwarded app seek marks the title");
+    like($IO::Socket::INET::NEAR_END_WRITES[0] // '', qr{^POST /near-end\?ms=3000 }, "EE-TU8: no ff after an app seek in the title");
+    is($ctl->observed->{nearEnd}{lead_ms}, undef, "EE-TU8: lead unknown");
+    $ctl->observed->{leadUnknownFor} = 'spotify:track:eeOtherTitle00000000';
+    my @r = do {
+        local $Slim::Player::Source::SONGTIME = 8.595;
+        $ctl->_earlyEndTopUp($D50_HM, 9195, 3000);
+    };
+    is_deeply(\@r, [1900, 600], "EE-TU8: a marker of another title is stale: measured again");
+    ok(!exists $ctl->observed->{leadUnknownFor}, "EE-TU8: and dropped");
+    ee_done($ctl);
+}
+{
+    # a top-up asked, but the early EOF not used: the outcome line names no top-up
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session_lead('aa:bb:cc:dd:ee:79', 8.595);
+    is($ctl->observed->{nearEnd}{ff_ms}, 1900, "EE-TU9 setup: a top-up was asked");
+    my $line = d50_at($onset + 1.0, sub { $ctl->_earlyEndOutcome($EE_NEXT) }) // '';
+    like($line, qr/: early EOF not used/, "EE-TU9: the daemon changed before LMS asked: not used");
+    unlike($line, qr/top-up/, "EE-TU9: and no top-up is named");
     ee_done($ctl);
 }
 {
