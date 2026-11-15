@@ -3108,6 +3108,26 @@ my $NEXT_TID = 'spotify:track:3n3Ppam7vgaVa1iaRUc9Lp';    # s01-pure-daemon-queu
         . "(S1: CR-01's postSeek 0 waits for the first position frame)");
 }
 
+# --- a LATE track_changed echo (after T1 released the play; a take-over's activate delays it) queues the successor
+# just like the timely echo: live 2026-11-15 06:50 nothing was queued, the daemon's autoplay took over at the end ---
+{
+    local @Slim::Player::Playlist::ENTRIES = ( undef, Test::MockTrack->new("spoton://track:3n3Ppam7vgaVa1iaRUc9Lp") );
+    local $Slim::Player::Source::INDEX = 0;
+
+    my ($ctl, $daemon, $ws) = fresh_control(
+        mac => 'aa:bb:cc:dd:ee:2f',
+        observed => { wsConnected => 1, meta => { $TID => { duration => 200 } }, track => 'spotify:track:previousXYZ', status => 'playing' },
+    );
+
+    $ctl->requestTrack($TID, 0, {});
+    Slim::Utils::Timers::fire_due(Time::HiRes::time() + 0.6);    # T1 fires -- pending released, expectEcho armed
+    ok($ctl->observed->{expectEcho}, "prefetch: late echo setup -- T1 armed the late-echo expectation");
+    $ctl->onEvent(decode_frame(load_fixture('track_changed.json')));    # the late echo
+    is($ctl->observed->{expectEcho}, undef, "prefetch: late echo -- recognized as our own (expectation consumed)");
+    is_deeply($ws->sent, [ [ 'play', { uri => $TID } ], [ 'add_to_queue', { uri => $NEXT_TID } ] ],
+        "prefetch: a late track_changed echo queues the successor too (add_to_queue)");
+}
+
 # --- next entry is an episode -> no add_to_queue ---
 {
     local @Slim::Player::Playlist::ENTRIES = ( undef, Test::MockTrack->new('spoton://episode:someEpisodeId12345') );

@@ -5174,8 +5174,9 @@ sub _onFrameTrackChanged {
         # A late echo corrects the bookkeeping (observed.track, drift
         # counter) -- it does NOT start a new title from Control's
         # perspective (the daemon never left this uri), so unlike the
-        # pending-echo branch above, no boundary is planted and no
-        # prefetch is triggered here.
+        # pending-echo branch above, no boundary is planted here. The
+        # successor IS queued, as on the timely echo: the late echo still
+        # confirms that the daemon started this title from our play.
         my $expectEcho = $self->observed->{expectEcho};
         if ($expectEcho && defined $expectEcho->{uri} && $expectEcho->{uri} eq $uri && !$mirrored
             && $expectEcho->{until} > Time::HiRes::time())
@@ -5207,6 +5208,13 @@ sub _onFrameTrackChanged {
             # clear path at all and accumulates one unbounded key per
             # foreign uri for the daemon's whole lifetime.
             $self->_clearErrorOnce('autoplay:' . $uri);
+            # The successor, as the timely echo queues it (_prefetchNext): a
+            # take-over's `activate` typically delays the echo past T1. Live
+            # 2026-11-15 06:50 nothing was queued after such a late echo, the
+            # daemon's autoplay picked a foreign title at the title end, the
+            # guard paused it and the first title change gapped ~4 s. Through
+            # the wish: the onEvent tail consumes it at its settle point.
+            $self->observed->{prefetchWish} = 1 if $self->mode eq 'browse';
             return;
         }
 
