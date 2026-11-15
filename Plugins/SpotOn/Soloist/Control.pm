@@ -333,6 +333,11 @@ use constant EARLY_SERVED_S => 2.5;
 # that change's /boundary reply (anchor=early: the shim ended the old stream) before it is written as
 # "not used" (the reply itself is capped at BOUNDARY_REPLY_CAP_S).
 use constant OUTCOME_WAIT_S => 1;
+# Leftover consume: how long the echoes of the skip_next commands that consume own leftover queue
+# entries before a play are swallowed (observed.leftoverConsume), and at most how many one jump
+# consumes.
+use constant LEFTOVER_CONSUME_S   => 3;
+use constant LEFTOVER_CONSUME_MAX => 3;
 use constant EARLY_END_WAIT_S => 2;
 
 # D-34: the 4th positional of a `spottyconnect seek` Control emits for an app
@@ -2512,12 +2517,56 @@ sub _reconcilePlan {
         return \@intents;
     }
 
+    # Leftover consume (browse): own entries at the head of the daemon's queue that LMS does not want
+    # now. The daemon has no command to remove a queue entry (the Soloist WebSocket API's only queue
+    # command is add_to_queue), and `play X` keeps the account's queue: the entry would block every
+    # later prefetch (D-49), make the near-end mark name the wrong successor and, once the Spotify
+    # app starts a context of its own, play before it. `skip_next` pops exactly one entry: one per own
+    # entry at the head, then the play, which (armed) flushes what the skips started. Their
+    # track_changed echoes are swallowed (observed.leftoverConsume, _onFrameTrackChanged).
+    my @consume = $self->_ownLeftoversAtHead($uri);
+    if (@consume) {
+        push @intents, { op => 'set', target => 'observed', key => 'leftoverConsume',
+            value => { uris => [ @consume ], until => $now + LEFTOVER_CONSUME_S } };
+        push @intents, { op => 'log', level => 'info', text =>
+            "Control: consuming own queue leftover " . join(',', @consume) . " (skip_next) before playing $uri ("
+            . ($self->mac // '?') . ")" };
+        push @intents, { op => 'send', cmd => 'skip_next', wireArgs => [], slot => undef } for @consume;
+    }
+
     push @intents, @{ $self->_planCommand('play', uri => $uri, position_ms => $posMs,
-        armed => $armed, awaitMeta => ($metaKnown ? 0 : 1),
+        armed => (@consume ? 1 : $armed), awaitMeta => ($metaKnown ? 0 : 1),
         postSeek => (defined $wanted->{position_ms} ? $posMs : undef),
         fromTrack => $observed->{track},    # S1: a KNOWN other title makes the echoed one a new title
         cb => { successCb => [ $successCb ? ($successCb) : () ], errorCb => $errorCb }) };
     return \@intents;
+}
+
+# _ownLeftoversAtHead($self, $target) -- leftover consume: the uris at the head of the daemon's
+# queue that SpotOn queued itself (observed.queuedByUs) and that are not $target, in queue order, up
+# to LEFTOVER_CONSUME_MAX; stops at the first entry that is not own. Browse only, only for a head we
+# KNOW (queueHead, re-stated by every queue_changed), and not for an entry equal to the daemon's
+# current title (the head a natural advance just consumed, until queue_changed drops it). Hidden pref
+# soloistConsumeLeftovers (default 1, 0 = off).
+sub _ownLeftoversAtHead {
+    my ($self, $target) = @_;
+    return () unless $self->mode eq 'browse';
+    return () unless $prefs->get('soloistConsumeLeftovers') // 1;
+    my $o    = $self->observed;
+    my $head = $o->{queueHead};
+    my $own  = $o->{queuedByUs};
+    return () unless ref($head) eq 'HASH' && defined $head->{uri} && ref($own) eq 'HASH';
+    my @q = @{ $o->{queueUris} || [] };
+    shift @q if @q && defined $o->{track} && $q[0] eq $o->{track};
+    return () unless @q && $q[0] eq $head->{uri};
+    my @out;
+    for my $u (@q) {
+        last if @out >= LEFTOVER_CONSUME_MAX;
+        last unless $own->{$u};
+        last if defined $target && $u eq $target;
+        push @out, $u;
+    }
+    return @out;
 }
 
 # _reconcile($self, $trigger, $opts) -- D-01: thin wrapper, kept for all
@@ -4979,6 +5028,32 @@ sub _onFrameTrackChanged {
         # T-22-01 discipline: validate before any id reaches an LMS command.
         return unless $uri =~ /^spotify:(?:track|episode):([A-Za-z0-9]+)$/;
         my $id = $1;
+
+        # Leftover consume: the echo of one of our own skip_next commands that consumed an own leftover
+        # queue entry before a play (_reconcilePlan). Not a title change of ours -- no hang watch or
+        # mark, no app-next detection, no prefetch, no boundary: the play right behind it brings the
+        # title. The entry is no longer queued.
+        if (my $lc = $self->observed->{leftoverConsume}) {
+            if (($lc->{until} // 0) <= Time::HiRes::time()) {
+                delete $self->observed->{leftoverConsume};
+            }
+            elsif (ref($lc->{uris}) eq 'ARRAY' && @{ $lc->{uris} } && $lc->{uris}[0] eq $uri) {
+                shift @{ $lc->{uris} };
+                delete $self->observed->{leftoverConsume} unless @{ $lc->{uris} };
+                delete $self->observed->{queuedByUs}{$uri} if ref($self->observed->{queuedByUs}) eq 'HASH';
+                delete $self->observed->{queueHead};
+                # the skip consumed it: drop it from the known queue now, so the play's echo can queue the
+                # successor whether or not the daemon's queue_changed has come in between
+                if (ref($self->observed->{queueUris}) eq 'ARRAY') {
+                    my @q = @{ $self->observed->{queueUris} };
+                    for my $i (0 .. $#q) { if ($q[$i] eq $uri) { splice @q, $i, 1; last } }
+                    $self->observed->{queueUris} = \@q;
+                }
+                main::DEBUGLOG && $log->is_debug && $log->debug(
+                    "Control: track_changed $uri is our leftover consume, swallowed (" . ($self->mac // '?') . ")");
+                return;
+            }
+        }
 
         $self->_noteCurrentItem($msg->{item});    # 85-07 D-09
 

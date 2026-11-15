@@ -3310,6 +3310,94 @@ sub n4_queue_changed {
         "D-49: no origin marker for the successor when nothing was queued");
 }
 
+# --- Leftover consume: own entries at the head of the daemon's queue that LMS does not want now are consumed with
+# one skip_next each before the play (the daemon has no queue removal); their track_changed echoes are swallowed.
+my $LC_L1 = 'spotify:track:ownLeftoverTitle0001';
+my $LC_L2 = 'spotify:track:ownLeftoverTitle0002';
+sub lc_session {
+    my ($mac, $entries, $own) = @_;
+    my ($ctl, $daemon, $ws) = fresh_control(
+        mac => $mac, mode => 'browse',
+        observed => { wsConnected => 1, meta => { $TID => { duration => 200 } }, track => 'spotify:track:previousXYZ',
+                      status => 'playing', is_active => 1 },
+    );
+    $ctl->observed->{queuedByUs} = { map { $_ => 1 } @$own };
+    $ctl->onEvent(n4_queue_changed(@$entries));
+    return ($ctl, $daemon, $ws);
+}
+sub lc_tc {
+    my ($uri) = @_;
+    my $f = decode_frame(load_fixture('track_changed.json'));
+    $f->{item}{uri} = $uri;
+    return $f;
+}
+{
+    local @Slim::Player::Playlist::ENTRIES = ( undef, Test::MockTrack->new("spoton://track:3n3Ppam7vgaVa1iaRUc9Lp") );
+    local $Slim::Player::Source::INDEX = 0;
+    my ($ctl, $daemon, $ws) = lc_session('aa:bb:cc:dd:ee:c1', [ [ 'q1', 'queue', $LC_L1 ] ], [ $LC_L1 ]);
+    my $success = 0;
+    $ctl->requestTrack($TID, 0, { successCb => sub { $success++ } });
+    is_deeply($ws->sent, [ [ 'skip_next', {} ], [ 'play', { uri => $TID } ] ],
+        "LC-1: an own leftover at the head: one skip_next consumes it, then the play");
+    is_deeply($ctl->observed->{leftoverConsume}{uris}, [ $LC_L1 ], "LC-1: its echo is expected");
+    is($ctl->pending && $ctl->pending->{uri}, $TID, "LC-1: the pending slot is the play");
+
+    @IO::Socket::INET::CALLS = ();
+    $ctl->onEvent(lc_tc($LC_L1));
+    is($ctl->observed->{track}, 'spotify:track:previousXYZ', "LC-1: the leftover's track_changed is swallowed (observed.track unchanged)");
+    is($ctl->pending && $ctl->pending->{uri}, $TID, "LC-1: the play stays pending");
+    is(scalar(@IO::Socket::INET::CALLS), 0, "LC-1: no boundary, no loopback POST for it");
+    ok(!exists $ctl->observed->{leftoverConsume}, "LC-1: the expectation is consumed");
+    ok(!exists(($ctl->observed->{queuedByUs} || {})->{$LC_L1}), "LC-1: and the entry is no longer ours");
+    is_deeply($ws->sent, [ [ 'skip_next', {} ], [ 'play', { uri => $TID } ] ], "LC-1: nothing is sent for the swallowed echo");
+
+    is_deeply($ctl->observed->{queueUris}, [], "LC-1: the consumed entry left the known queue at once");
+    $ctl->onEvent(decode_frame(load_fixture('track_changed.json')));
+    is($ctl->pending, undef, "LC-1: the play's echo settles the slot");
+    is($success, 1, "LC-1: successCb once");
+    is($ctl->observed->{track}, $TID, "LC-1: observed.track = target");
+    is_deeply($ws->sent->[-1], [ 'add_to_queue', { uri => $NEXT_TID } ],
+        "LC-1: the successor is queued at the play's echo, before the daemon's queue_changed (the queue is clean)");
+}
+{
+    my ($ctl, $daemon, $ws) = lc_session('aa:bb:cc:dd:ee:c2', [ [ 'q1', 'queue', $LC_L1 ] ], []);
+    $ctl->requestTrack($TID, 0, {});
+    is_deeply($ws->sent, [ [ 'play', { uri => $TID } ] ], "LC-2: a head SpotOn did not queue (the user's own) is left alone");
+}
+{
+    local $Slim::Utils::Prefs::FAKE_VALUES{soloistConsumeLeftovers} = 0;
+    my ($ctl, $daemon, $ws) = lc_session('aa:bb:cc:dd:ee:c3', [ [ 'q1', 'queue', $LC_L1 ] ], [ $LC_L1 ]);
+    $ctl->requestTrack($TID, 0, {});
+    is_deeply($ws->sent, [ [ 'play', { uri => $TID } ] ], "LC-3: soloistConsumeLeftovers 0 -> only the play");
+}
+{
+    my ($ctl, $daemon, $ws) = lc_session('aa:bb:cc:dd:ee:c4',
+        [ [ 'q1', 'queue', $LC_L1 ], [ 'q2', 'queue', $LC_L2 ], [ 'q3', 'queue', 'spotify:track:usersOwnQueued0001' ] ],
+        [ $LC_L1, $LC_L2 ]);
+    $ctl->requestTrack($TID, 0, {});
+    is_deeply($ws->sent, [ [ 'skip_next', {} ], [ 'skip_next', {} ], [ 'play', { uri => $TID } ] ],
+        "LC-4: two own leftovers at the head: two skip_next, the user's entry behind them stays");
+    $ctl->onEvent(lc_tc($LC_L1));
+    $ctl->onEvent(lc_tc($LC_L2));
+    is($ctl->observed->{track}, 'spotify:track:previousXYZ', "LC-4: both echoes swallowed, in order");
+    ok(!exists $ctl->observed->{leftoverConsume}, "LC-4: nothing left to expect");
+}
+{
+    # an own entry at the head that IS the target keeps the F-18-N4 path (one skip_next as the play)
+    my ($ctl, $daemon, $ws) = lc_session('aa:bb:cc:dd:ee:c5', [ [ 'q1', 'queue', $TID ] ], [ $TID ]);
+    $ctl->requestTrack($TID, 0, {});
+    is_deeply($ws->sent, [ [ 'skip_next', {} ] ], "LC-5: the head is the target: the existing skip_next path, no consume");
+    ok(!exists $ctl->observed->{leftoverConsume}, "LC-5: no consume expectation");
+}
+{
+    my ($ctl, $daemon, $ws) = lc_session('aa:bb:cc:dd:ee:c6', [ [ 'q1', 'queue', $LC_L1 ] ], [ $LC_L1 ]);
+    $ctl->requestTrack($TID, 0, {});
+    $ctl->observed->{leftoverConsume}{until} = Time::HiRes::time() - 1;
+    $ctl->onEvent(lc_tc($LC_L1));
+    ok(!exists $ctl->observed->{leftoverConsume}, "LC-6: an expired expectation is dropped");
+    is($ctl->observed->{track}, $LC_L1, "LC-6: and the track_changed is processed as before");
+}
+
 # --- change 2: queue head == target -> skip_next consumes it (a `play X` never consumes a head equal to X,
 # same-1 10:29:57.381); the slot stays {cmd:'play', uri} so the track_changed echo is classified as OWN.
 {
