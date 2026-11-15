@@ -742,4 +742,36 @@ subtest 'i18n: PLUGIN_SPOTON_STREAMING_MODE* keys have all 11 locales' => sub {
     is($p3{mp3Limit} // '', 'PLUGIN_SPOTON_MP3_LIMIT_NONE', '79-60: maxBitrate unset => "no limit" text');
 }
 
+# LMS's Pipeline frees its source (the handler's stream object, ProtocolHandler::Stream) between the transcoder's EAGAIN and the caller's errno
+# check; RemoteStream::DESTROY closes the closed socket again (EBADF). The handler's DESTROY keeps $!.
+{
+    use Errno qw(EAGAIN EBADF);
+    no warnings 'redefine';
+    local *Slim::Player::Protocols::HTTP::DESTROY = sub { $! = EBADF; $@ = 'parent destroy'; };
+    {
+        package Test::PlainSource;
+        our @ISA = ('Slim::Player::Protocols::HTTP');
+    }
+    my $plain = bless {}, 'Test::PlainSource';
+    $! = EAGAIN;
+    undef $plain;
+    is($! + 0, EBADF, 'DESTROY errno: a source without the guard turns the EAGAIN into EBADF (the LMS bug)');
+
+    my $ours = bless {}, 'Plugins::SpotOn::ProtocolHandler::Stream';
+    $! = EAGAIN;
+    $@ = '';
+    undef $ours;
+    is($! + 0, EAGAIN, "DESTROY errno: SpotOn's handler keeps the EAGAIN across its destruction");
+    is($@, '', 'DESTROY errno: and $@');
+
+    local *Slim::Player::Protocols::HTTP::DESTROY = sub { $! = EBADF; die "boom\n" };
+    my $dying = bless {}, 'Plugins::SpotOn::ProtocolHandler::Stream';
+    $! = EAGAIN;
+    my $warned = '';
+    local $SIG{__WARN__} = sub { $warned .= $_[0] };
+    undef $dying;
+    is($! + 0, EAGAIN, 'DESTROY errno: a parent DESTROY that dies changes nothing either');
+    is($warned, '', 'DESTROY errno: and warns nothing');
+}
+
 done_testing();
