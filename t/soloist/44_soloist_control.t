@@ -4425,6 +4425,74 @@ sub ee_session_lead {
     ee_done($ctl);
 }
 
+# --- EE-SK: a skip or jump in the old title's tail AFTER the daemon changed (early answer used): LMS threw away the
+# stream it opened early (with what the daemon wrote into it since) and asks for the same title with its players
+# stopped: the title is sought back to 0 (armed), even though the daemon position is within the hit tolerance.
+# Players playing (LMS's own continuation) or past EARLY_SERVED_S: no forced seek.
+sub ee_after_change {
+    my ($mac) = @_;
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session($mac);
+    d50_at($onset + 0.6, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack' }); });
+    my $tc = d50_clone($fx->[0][1]);
+    $tc->{item}{uri} = $EE_NEXT;
+    d50_at($onset + 1.4, sub { $ctl->onEvent($tc); });
+    return ($ctl, $daemon, $ws, $fx, $onset);
+}
+sub ee_seeks {
+    my ($ws, $from) = @_;
+    my @s = @{ $ws->sent };
+    return grep { $_->[0] eq 'seek' } @s[ $from .. $#s ];
+}
+{
+    my $mac = 'aa:bb:cc:dd:ee:5a';
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_after_change($mac);
+    is($ctl->observed->{earlyServed}{uri}, $EE_NEXT, "EE-SK1 setup: the daemon's change after the early answer records the early-served title");
+    ee_lms($mac, playing => 0, paused => 0, buffering => 0, stopped => 0);
+    my $n = scalar @{ $ws->sent };
+    {
+        no warnings 'redefine';
+        local *Plugins::SpotOn::Soloist::Control::_observedPositionMs = sub { 500 };    # within the hit tolerance
+        d50_at($onset + 2.0, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack' }); });
+    }
+    my @seek = ee_seeks($ws, $n);
+    is(scalar(@seek), 1, "EE-SK1: LMS reopens the title with its players stopped -> one seek");
+    is($seek[0][1]{position_ms} // -1, 0, "EE-SK1: back to 0");
+    ee_done($ctl);
+}
+{
+    my $mac = 'aa:bb:cc:dd:ee:5b';
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_after_change($mac);
+    ee_lms($mac, playing => 1);
+    my $n = scalar @{ $ws->sent };
+    {
+        no warnings 'redefine';
+        local *Plugins::SpotOn::Soloist::Control::_observedPositionMs = sub { 500 };
+        d50_at($onset + 2.0, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack' }); });
+    }
+    is(scalar(ee_seeks($ws, $n)), 0, "EE-SK2: players playing -> no forced seek");
+    ee_done($ctl);
+}
+{
+    my $mac = 'aa:bb:cc:dd:ee:5c';
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_after_change($mac);
+    ee_lms($mac, playing => 0, paused => 0, buffering => 0, stopped => 0);
+    my $n = scalar @{ $ws->sent };
+    {
+        no warnings 'redefine';
+        local *Plugins::SpotOn::Soloist::Control::_observedPositionMs = sub { 500 };
+        d50_at($onset + 1.4 + 2.6, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack' }); });
+    }
+    is(scalar(ee_seeks($ws, $n)), 0, "EE-SK3: past EARLY_SERVED_S (and within the hit tolerance) -> no forced seek");
+    ee_done($ctl);
+}
+{
+    my $mac = 'aa:bb:cc:dd:ee:5d';
+    my ($ctl) = ee_after_change($mac);
+    $ctl->_hangTrackChanged('spotify:track:eeOtherTitle00000000');
+    ok(!$ctl->observed->{earlyServed}, "EE-SK4: a change to another title drops the record");
+    ee_done($ctl);
+}
+
 # --- EE-5: a seek after the mark voids it -> LMS's request for the queue head takes the old path at once
 {
     my ($ctl, $daemon, $ws, $fx, $onset) = ee_session('aa:bb:cc:dd:ee:e5');

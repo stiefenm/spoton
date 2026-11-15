@@ -326,6 +326,9 @@ use constant NEAR_END_PATH    => '/near-end';
 # End-gap lead top-up: the lag of the players behind the daemon's sink that an early end tops up
 # to (hidden pref soloistEarlyEndLeadMs, 0 = off). See _earlyEndTopUp.
 use constant EARLY_END_LEAD_MS => 2500;
+# End-gap early EOF: how long after the daemon's change a skip into the early-opened title still
+# seeks it back (earlyServed, see _hangTrackChanged): past the hit tolerance the position does it.
+use constant EARLY_SERVED_S => 2.5;
 use constant EARLY_END_WAIT_S => 2;
 
 # D-34: the 4th positional of a `spottyconnect seek` Control emits for an app
@@ -2335,6 +2338,21 @@ sub _reconcilePlan {
             ? abs($haveMs - $wantMs) > HIT_POSITION_TOLERANCE_MS
             : ($self->mode ne 'connect' && !($pending && $pending->{cmd} eq 'play'));
 
+        # End-gap early EOF (GH #213): LMS stopped its players and asks again for the title the daemon
+        # changed to after an early answer (a skip or jump in the old title's tail). It threw away the
+        # stream it had opened early, with everything the daemon wrote into it since its change (the
+        # sink and more), so the new stream would start that far in: seek it back, armed.
+        my $es = $observed->{earlyServed};
+        if (!$needsSeek && ref($es) eq 'HASH' && ($es->{uri} // '') eq $wanted->{uri}
+            && ($es->{until} // 0) > $now && $opts->{lmsStopped} && $self->mode eq 'browse')
+        {
+            $needsSeek = 1;
+            push @intents, { op => 'log', level => 'info', text =>
+                "Control: LMS reopened $wanted->{uri} in the old title's tail (a skip or jump after the early answer) "
+                . "-- seeking it back to $wantMs ms (" . ($self->mac // '?') . ")"
+            };
+        }
+
         # S1 (debug silent-browse-start-headers-closed): the onStream twin of our
         # own Browse play arrives inside its echo (successCb -> Song::open ->
         # onStream), before this title's first position frame -- the anchor is
@@ -2516,7 +2534,8 @@ sub _reconcile {
     # End-gap early EOF (GH #213): LMS's playing state for _earlyEndPlan, read here for the
     # same reason and only while a title-end mark stands.
     local $opts->{lmsStopped} = $self->_lmsPlayersStopped
-        if $trigger eq 'requestTrack' && ref($self->observed->{nearEnd}) eq 'HASH';
+        if $trigger eq 'requestTrack'
+            && (ref($self->observed->{nearEnd}) eq 'HASH' || ref($self->observed->{earlyServed}) eq 'HASH');
 
     my $intents = $self->_reconcilePlan($trigger, $opts, Time::HiRes::time());
     $intents = $self->_enforceConnectOwnershipInvariant($intents, $opts // {})
@@ -5650,6 +5669,7 @@ sub _hangTrackChanged {
     delete @{$o}{qw(hangPre playingSince)};
     $self->_cancelHangWatch('track_changed');
     delete $o->{hangReplays} unless defined $o->{track} && $o->{track} eq $uri;
+    delete $o->{earlyServed} if ref($o->{earlyServed}) eq 'HASH' && ($o->{earlyServed}{uri} // '') ne $uri;
     # end-gap early EOF: a title change ends the mark and an open wait for it, with one INFO line
     # per marked title end (_earlyEndOutcome)
     if (ref($o->{nearEnd}) eq 'HASH' && ($o->{nearEnd}{uri} // '') ne $uri) {
@@ -5657,6 +5677,11 @@ sub _hangTrackChanged {
         delete $o->{nearEnd};
     }
     if (ref($o->{earlyEnd}) eq 'HASH' && ($o->{earlyEnd}{uri} // '') eq $uri) {
+        # LMS opened this title's stream early, and everything the daemon writes from now on goes
+        # into it while the players still play the old title's last seconds. A skip or jump in that
+        # tail makes LMS throw the stream away and open the title anew; _reconcilePlan then seeks it
+        # back to where LMS wants it (the position alone does not: it is within the hit tolerance).
+        $o->{earlyServed} = { uri => $uri, until => Time::HiRes::time() + EARLY_SERVED_S };
         delete $o->{earlyEnd};
         Slim::Utils::Timers::killTimers($self, \&_earlyEndFallback);
     }
