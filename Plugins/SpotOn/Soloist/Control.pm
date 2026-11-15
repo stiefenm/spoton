@@ -309,6 +309,37 @@ use constant BROWSE_KEEP_PATH_OFF => '/browse-keep?on=0';
 # loopback POST here.
 use constant SEEK_KEEP_PATH => '/seek-keep';
 
+# End-gap early EOF: `POST /near-end?ms=<remaining>` marks the current title
+# as being at its end. Soloist reports the end gap as a `buffering`
+# position_sync (speed 0) right after it has written the title's last frame
+# and before it waits for the virtual sink to drain (about the vsink depth,
+# 3 s). With the mark, the shim ends LMS's old stream as soon as the gap is
+# certain, so LMS opens the next title DURING the gap instead of after it
+# (fake-libpulse.c, g_early_end_gap_ms). LMS then advances by itself and asks
+# for the queued next title while the daemon is still on the old one; Control
+# answers it at once and lets the daemon change title by itself (a skip_next
+# would flush). A request after LMS stopped its players (a skip or jump in the
+# gap) takes the old path (_earlyEndPlan). The daemon must have changed within
+# the reported remaining time plus EARLY_END_WAIT_S, else the old skip_next
+# path runs.
+use constant NEAR_END_PATH    => '/near-end';
+# End-gap lead top-up: the lag of the players behind the daemon's sink that an early end tops up
+# to (hidden pref soloistEarlyEndLeadMs, 0 = off). See _earlyEndTopUp.
+use constant EARLY_END_LEAD_MS => 2500;
+# End-gap early EOF: how long after the daemon's change a skip into the early-opened title still
+# seeks it back (earlyServed, see _hangTrackChanged): past the hit tolerance the position does it.
+use constant EARLY_SERVED_S => 2.5;
+# End-gap early EOF: how long the outcome line of a change the daemon made before LMS asked waits for
+# that change's /boundary reply (anchor=early: the shim ended the old stream) before it is written as
+# "not used" (the reply itself is capped at BOUNDARY_REPLY_CAP_S).
+use constant OUTCOME_WAIT_S => 1;
+# Leftover consume: how long the echoes of the skip_next commands that consume own leftover queue
+# entries before a play are swallowed (observed.leftoverConsume), and at most how many one jump
+# consumes.
+use constant LEFTOVER_CONSUME_S   => 3;
+use constant LEFTOVER_CONSUME_MAX => 3;
+use constant EARLY_END_WAIT_S => 2;
+
 # D-34: the 4th positional of a `spottyconnect seek` Control emits for an app
 # seek during Browse; Connect.pm applies the startOffset rewrite for it only
 # while Control's mode is browse.
@@ -584,6 +615,7 @@ sub leaveBrowse {
     delete $self->observed->{contextEndPlanted};
     delete $self->observed->{preResetAnchor};
     $self->_cancelHangWatch('leaveBrowse');    # 79-78 D-50
+    $self->_earlyEndClear('leaveBrowse');
     delete @{ $self->observed }{qw(hangPre hangReplays playingSince)};
     $self->mode('idle');
     $self->wanted({});
@@ -608,8 +640,31 @@ sub _forgetOwnQueue {
         "Control: forgetting own queue entries (" . join(',', sort keys %$q) . ") -- "
         . ($why // '?') . " (" . ($self->mac // '?') . ")"
     );
+    # Leftover memory: own entries still in the daemon's queue are remembered by their uid
+    # (observed.ownLeftovers), so that a Spotify app session that takes over cannot play them
+    # (_connectLeftoverHead) and a later Browse jump can consume them (_ownLeftoversAtHead). Only a
+    # stable uid counts: when the daemon reports none (uid = the uri) an entry is not told apart
+    # from the user's own one.
+    for my $e (@{ $self->observed->{queueEntries} || [] }) {
+        next unless defined $e->{uid} && $e->{uid} ne $e->{uri} && $q->{ $e->{uri} };
+        $self->observed->{ownLeftovers}{ $e->{uid} } = $e->{uri};
+    }
     $self->observed->{queuedByUs} = {};
     return;
+}
+
+# _connectLeftoverHead($self, $uri) -- leftover memory: the uid of the daemon's queue head when it
+# is a remembered own leftover (observed.ownLeftovers) for $uri, else undef. Read by the track_changed
+# that consumes the head (queueHead still names it). Hidden pref soloistConsumeLeftovers.
+sub _connectLeftoverHead {
+    my ($self, $uri) = @_;
+    return undef unless $prefs->get('soloistConsumeLeftovers') // 1;
+    my $o    = $self->observed;
+    my $head = $o->{queueHead};
+    my $left = $o->{ownLeftovers};
+    return undef unless ref($head) eq 'HASH' && defined $head->{uid} && defined $head->{uri} && ref($left) eq 'HASH';
+    return undef unless $head->{uri} eq $uri && ($left->{ $head->{uid} } // '') eq $uri;
+    return $head->{uid};
 }
 
 sub new {
@@ -698,6 +753,7 @@ sub shutdown {
     delete $self->observed->{hold};
 
     $self->_cancelHangWatch('shutdown');    # 79-78 D-50
+    $self->_earlyEndClear('shutdown');
     Slim::Utils::Timers::killTimers($self, \&_t1Fire);
     Slim::Utils::Timers::killTimers($self, \&_watchdogRound2);
     # 79-51 runaway D1: a held resume does not outlive the instance (the 82-46 rule).
@@ -1648,6 +1704,7 @@ sub noteSeekIntent {
 
     $self->wanted->{seekIntent} = { uri => $uri, target_ms => int($target_ms), ts => Time::HiRes::time() };
     $self->observed->{lastPlaybackCmdAt} = Time::HiRes::time();    # 79-78 D-50: the seek burst that follows is no stall
+    delete $self->observed->{nearEnd};    # end-gap early EOF: a seek voids the title-end mark (the shim's flush does too)
 
     main::DEBUGLOG && $log->is_debug && $log->debug(
         "Control: noteSeekIntent($uri, $target_ms) (" . ($self->mac // '?') . ")"
@@ -2313,6 +2370,21 @@ sub _reconcilePlan {
             ? abs($haveMs - $wantMs) > HIT_POSITION_TOLERANCE_MS
             : ($self->mode ne 'connect' && !($pending && $pending->{cmd} eq 'play'));
 
+        # End-gap early EOF (GH #213): LMS stopped its players and asks again for the title the daemon
+        # changed to after an early answer (a skip or jump in the old title's tail). It threw away the
+        # stream it had opened early, with everything the daemon wrote into it since its change (the
+        # sink and more), so the new stream would start that far in: seek it back, armed.
+        my $es = $observed->{earlyServed};
+        if (!$needsSeek && ref($es) eq 'HASH' && ($es->{uri} // '') eq $wanted->{uri}
+            && ($es->{until} // 0) > $now && $opts->{lmsStopped} && $self->mode eq 'browse')
+        {
+            $needsSeek = 1;
+            push @intents, { op => 'log', level => 'info', text =>
+                "Control: LMS reopened $wanted->{uri} in the old title's tail (a skip or jump after the early answer) "
+                . "-- seeking it back to $wantMs ms (" . ($self->mac // '?') . ")"
+            };
+        }
+
         # S1 (debug silent-browse-start-headers-closed): the onStream twin of our
         # own Browse play arrives inside its echo (successCb -> Song::open ->
         # onStream), before this title's first position frame -- the anchor is
@@ -2451,6 +2523,14 @@ sub _reconcilePlan {
     # every track_changed until the next queue_changed re-states it).
     my $head = $observed->{queueHead};
     if ($self->mode eq 'browse' && ref($head) eq 'HASH' && defined $head->{uri} && $head->{uri} eq $uri) {
+        if ($trigger eq 'requestTrack') {
+            my ($early, $declined) = $self->_earlyEndPlan($uri, $posMs, $opts, $successCb, $now);
+            if ($early) {
+                push @intents, @$early;
+                return \@intents;
+            }
+            push @intents, @$declined if $declined;
+        }
         push @intents, @{ $self->_planCommand('play', uri => $uri, position_ms => $posMs,
             armed => $armed, awaitMeta => ($metaKnown ? 0 : 1),
             postSeek => ($posMs > 0 ? $posMs : undef),
@@ -2460,12 +2540,63 @@ sub _reconcilePlan {
         return \@intents;
     }
 
+    # Leftover consume (browse): own entries at the head of the daemon's queue that LMS does not want
+    # now. The daemon has no command to remove a queue entry (the Soloist WebSocket API's only queue
+    # command is add_to_queue), and `play X` keeps the account's queue: the entry would block every
+    # later prefetch (D-49), make the near-end mark name the wrong successor and, once the Spotify
+    # app starts a context of its own, play before it. `skip_next` pops exactly one entry: one per own
+    # entry at the head, then the play, which (armed) flushes what the skips started. Their
+    # track_changed echoes are swallowed (observed.leftoverConsume, _onFrameTrackChanged).
+    my @consume = $self->_ownLeftoversAtHead($uri);
+    if (@consume) {
+        push @intents, { op => 'set', target => 'observed', key => 'leftoverConsume',
+            value => { uris => [ @consume ], until => $now + LEFTOVER_CONSUME_S } };
+        push @intents, { op => 'log', level => 'info', text =>
+            "Control: consuming own queue leftover " . join(',', @consume) . " (skip_next) before playing $uri ("
+            . ($self->mac // '?') . ")" };
+        push @intents, { op => 'send', cmd => 'skip_next', wireArgs => [], slot => undef } for @consume;
+    }
+
     push @intents, @{ $self->_planCommand('play', uri => $uri, position_ms => $posMs,
-        armed => $armed, awaitMeta => ($metaKnown ? 0 : 1),
+        armed => (@consume ? 1 : $armed), awaitMeta => ($metaKnown ? 0 : 1),
         postSeek => (defined $wanted->{position_ms} ? $posMs : undef),
         fromTrack => $observed->{track},    # S1: a KNOWN other title makes the echoed one a new title
         cb => { successCb => [ $successCb ? ($successCb) : () ], errorCb => $errorCb }) };
     return \@intents;
+}
+
+# _ownLeftoversAtHead($self, $target) -- leftover consume: the uris at the head of the daemon's
+# queue that SpotOn queued itself (observed.queuedByUs) and that are not $target, in queue order, up
+# to LEFTOVER_CONSUME_MAX; stops at the first entry that is not own. Browse only, only for a head we
+# KNOW (queueHead, re-stated by every queue_changed), and not for an entry equal to the daemon's
+# current title (the head a natural advance just consumed, until queue_changed drops it). Hidden pref
+# soloistConsumeLeftovers (default 1, 0 = off).
+sub _ownLeftoversAtHead {
+    my ($self, $target) = @_;
+    return () unless $self->mode eq 'browse';
+    return () unless $prefs->get('soloistConsumeLeftovers') // 1;
+    my $o    = $self->observed;
+    my $head = $o->{queueHead};
+    my $own  = ref($o->{queuedByUs}) eq 'HASH' ? $o->{queuedByUs} : {};
+    return () unless ref($head) eq 'HASH' && defined $head->{uri};
+    my @q = @{ $o->{queueUris} || [] };
+    shift @q if @q && defined $o->{track} && $q[0] eq $o->{track};
+    return () unless @q && $q[0] eq $head->{uri};
+    # an entry is own when SpotOn queued it in this Browse session (queuedByUs) or it is a remembered
+    # leftover of an earlier one (its uid in observed.ownLeftovers)
+    my $left = ref($o->{ownLeftovers}) eq 'HASH' ? $o->{ownLeftovers} : {};
+    my %leftUri;
+    for my $e (@{ $o->{queueEntries} || [] }) {
+        $leftUri{ $e->{uri} } = 1 if defined $e->{uid} && ($left->{ $e->{uid} } // '') eq $e->{uri};
+    }
+    my @out;
+    for my $u (@q) {
+        last if @out >= LEFTOVER_CONSUME_MAX;
+        last unless $own->{$u} || $leftUri{$u};
+        last if defined $target && $u eq $target;
+        push @out, $u;
+    }
+    return @out;
 }
 
 # _reconcile($self, $trigger, $opts) -- D-01: thin wrapper, kept for all
@@ -2482,6 +2613,12 @@ sub _reconcile {
     local $opts->{hasStoredSession} = $self->_hasStoredSession
         if $trigger eq 'requestTrack'
             && defined $self->observed->{paired} && !$self->observed->{paired};
+
+    # End-gap early EOF (GH #213): LMS's playing state for _earlyEndPlan, read here for the
+    # same reason and only while a title-end mark stands.
+    local $opts->{lmsStopped} = $self->_lmsPlayersStopped
+        if $trigger eq 'requestTrack'
+            && (ref($self->observed->{nearEnd}) eq 'HASH' || ref($self->observed->{earlyServed}) eq 'HASH');
 
     my $intents = $self->_reconcilePlan($trigger, $opts, Time::HiRes::time());
     $intents = $self->_enforceConnectOwnershipInvariant($intents, $opts // {})
@@ -4278,6 +4415,10 @@ sub _forwardBrowseSeek {
 
     return $self->_forwardBrowseSkip('-1') if $posMs < ENTRY_MIN_TARGET_MS;
 
+    # Lead top-up: the seek resets LMS's clock of this title to the daemon's target (Connect's
+    # startOffset), while the players first play out what they already hold. songTime is no longer
+    # the audible point, so _earlyEndTopUp must not measure a lead for this title.
+    $self->observed->{leadUnknownFor} = $self->observed->{track} if defined $self->observed->{track};
     $self->_emit('seek', sprintf('%.3f', $posMs / 1000), undef, undef, BROWSE_SEEK_MARK);
     return 1;
 }
@@ -4653,6 +4794,29 @@ sub onEvent {
     my $type = $msg->{type};
     return unless defined $type;
 
+    # Leftover memory, Connect: while the daemon passes through a leftover SpotOn is skipping
+    # (_onFrameTrackChanged), every frame about it is swallowed until the skip's track_changed for the
+    # next title. A playback_state of the leftover would otherwise emit a `change` for LMS (seen live:
+    # LMS then took the leftover as a Browse title and ended the app's session), a position_sync of it
+    # could read as a seek. queue_changed and every other frame pass.
+    if (my $ls = $self->observed->{leftoverSkip}) {
+        if (($ls->{until} // 0) <= Time::HiRes::time()) {
+            delete $self->observed->{leftoverSkip};
+        }
+        elsif ($type eq 'track_changed' || $type eq 'playback_state') {
+            my $u = ref($msg->{item}) eq 'HASH' ? $msg->{item}{uri} : undef;
+            if (!defined $u || $u eq $ls->{uri}) {
+                main::DEBUGLOG && $log->is_debug && $log->debug(
+                    "Control: $type of the skipped leftover swallowed (" . ($self->mac // '?') . ")");
+                return;
+            }
+            delete $self->observed->{leftoverSkip};    # the next title: the skip is done, process it
+        }
+        elsif ($type eq 'position_sync' || $type eq 'playback_changed') {
+            return;
+        }
+    }
+
     my $now = Time::HiRes::time();
     my ($class, $detail) = _classify($msg, $self->wanted, $self->observed, $self->pending, $self->mode, $now,
         $self->_lmsPlaysOurs);
@@ -4918,6 +5082,53 @@ sub _onFrameTrackChanged {
         return unless $uri =~ /^spotify:(?:track|episode):([A-Za-z0-9]+)$/;
         my $id = $1;
 
+        # Leftover consume: the echo of one of our own skip_next commands that consumed an own leftover
+        # queue entry before a play (_reconcilePlan). Not a title change of ours -- no hang watch or
+        # mark, no app-next detection, no prefetch, no boundary: the play right behind it brings the
+        # title. The entry is no longer queued.
+        if (my $lc = $self->observed->{leftoverConsume}) {
+            if (($lc->{until} // 0) <= Time::HiRes::time()) {
+                delete $self->observed->{leftoverConsume};
+            }
+            elsif (ref($lc->{uris}) eq 'ARRAY' && @{ $lc->{uris} } && $lc->{uris}[0] eq $uri) {
+                shift @{ $lc->{uris} };
+                delete $self->observed->{leftoverConsume} unless @{ $lc->{uris} };
+                delete $self->observed->{queuedByUs}{$uri} if ref($self->observed->{queuedByUs}) eq 'HASH';
+                delete $self->observed->{queueHead};
+                # the skip consumed it: drop it from the known queue now, so the play's echo can queue the
+                # successor whether or not the daemon's queue_changed has come in between
+                if (ref($self->observed->{queueUris}) eq 'ARRAY') {
+                    my @q = @{ $self->observed->{queueUris} };
+                    for my $i (0 .. $#q) { if ($q[$i] eq $uri) { splice @q, $i, 1; last } }
+                    $self->observed->{queueUris} = \@q;
+                }
+                main::DEBUGLOG && $log->is_debug && $log->debug(
+                    "Control: track_changed $uri is our leftover consume, swallowed (" . ($self->mac // '?') . ")");
+                return;
+            }
+        }
+
+        # Leftover memory, Connect: the daemon reached a title SpotOn queued for LMS before the Spotify
+        # app took over (its uid at the head of the queue). Spotify plays the queue before the app's
+        # context, so the app would get our old successor. Skip it at once and swallow the frame: no
+        # `change` for LMS, no boundary; the skip's own track_changed brings the app's next title.
+        if ($self->mode eq 'connect' && defined(my $lid = $self->_connectLeftoverHead($uri))) {
+            delete $self->observed->{ownLeftovers}{$lid};
+            delete $self->observed->{queueHead};
+            $self->observed->{queueEntries} = [ grep { ($_->{uid} // '') ne $lid } @{ $self->observed->{queueEntries} || [] } ];
+            if (ref($self->observed->{queueUris}) eq 'ARRAY') {
+                my @q = @{ $self->observed->{queueUris} };
+                for my $i (0 .. $#q) { if ($q[$i] eq $uri) { splice @q, $i, 1; last } }
+                $self->observed->{queueUris} = \@q;
+            }
+            main::INFOLOG && $log->is_info && $log->info(
+                "Control: the daemon reached $uri, a title SpotOn queued for LMS before the Spotify app took over -- skipping it (skip_next) ("
+                . ($self->mac // '?') . ")");
+            $self->observed->{leftoverSkip} = { uri => $uri, until => Time::HiRes::time() + LEFTOVER_CONSUME_S };
+            $self->_execute([ { op => 'send', cmd => 'skip_next', wireArgs => [], slot => undef } ]);
+            return;
+        }
+
         $self->_noteCurrentItem($msg->{item});    # 85-07 D-09
 
         $self->_hangTrackChanged($uri);    # 79-78 D-50: before observed.track moves
@@ -5116,8 +5327,9 @@ sub _onFrameTrackChanged {
         # A late echo corrects the bookkeeping (observed.track, drift
         # counter) -- it does NOT start a new title from Control's
         # perspective (the daemon never left this uri), so unlike the
-        # pending-echo branch above, no boundary is planted and no
-        # prefetch is triggered here.
+        # pending-echo branch above, no boundary is planted here. The
+        # successor IS queued, as on the timely echo: the late echo still
+        # confirms that the daemon started this title from our play.
         my $expectEcho = $self->observed->{expectEcho};
         if ($expectEcho && defined $expectEcho->{uri} && $expectEcho->{uri} eq $uri && !$mirrored
             && $expectEcho->{until} > Time::HiRes::time())
@@ -5149,6 +5361,13 @@ sub _onFrameTrackChanged {
             # clear path at all and accumulates one unbounded key per
             # foreign uri for the daemon's whole lifetime.
             $self->_clearErrorOnce('autoplay:' . $uri);
+            # The successor, as the timely echo queues it (_prefetchNext): a
+            # take-over's `activate` typically delays the echo past T1. Live
+            # 2026-11-15 06:50 nothing was queued after such a late echo, the
+            # daemon's autoplay picked a foreign title at the title end, the
+            # guard paused it and the first title change gapped ~4 s. Through
+            # the wish: the onEvent tail consumes it at its settle point.
+            $self->observed->{prefetchWish} = 1 if $self->mode eq 'browse';
             return;
         }
 
@@ -5257,6 +5476,7 @@ sub _onFrameTrackChanged {
             $self->_postBoundaryRead($path, sub {
                 my $reply = shift;
                 main::DEBUGLOG && $log->is_debug && $log->debug($self->_boundaryReplyLine($reply));
+                $self->_outcomeWaitResolve($reply->{anchor});    # end-gap early EOF: the held-back outcome line
             });
         }
 
@@ -5611,6 +5831,33 @@ sub _hangTrackChanged {
     delete @{$o}{qw(hangPre playingSince)};
     $self->_cancelHangWatch('track_changed');
     delete $o->{hangReplays} unless defined $o->{track} && $o->{track} eq $uri;
+    delete $o->{earlyServed} if ref($o->{earlyServed}) eq 'HASH' && ($o->{earlyServed}{uri} // '') ne $uri;
+    # end-gap early EOF: a title change ends the mark and an open wait for it, with one INFO line
+    # per marked title end (_earlyEndOutcome)
+    if (ref($o->{nearEnd}) eq 'HASH' && ($o->{nearEnd}{uri} // '') ne $uri) {
+        my ($line, $branch) = $self->_earlyEndOutcome($uri);
+        if (($branch // '') eq 'not_asked') {
+            # The daemon changed before LMS asked. Whether the shim had ended the old stream (a large
+            # top-up moves the daemon's change ahead of LMS's EOF) is in the reply to this change's
+            # /boundary (anchor=early): the line waits for it (_outcomeWaitResolve, OUTCOME_WAIT_S).
+            Slim::Utils::Timers::killTimers($self, \&_outcomeWaitFire);
+            $o->{outcomeWait} = { line => $line, early => scalar $self->_earlyEndOutcome($uri, 'early') };
+            Slim::Utils::Timers::setTimer($self, Time::HiRes::time() + OUTCOME_WAIT_S, \&_outcomeWaitFire);
+        }
+        else {
+            main::INFOLOG && $log->is_info && $log->info($line);
+        }
+        delete $o->{nearEnd};
+    }
+    if (ref($o->{earlyEnd}) eq 'HASH' && ($o->{earlyEnd}{uri} // '') eq $uri) {
+        # LMS opened this title's stream early, and everything the daemon writes from now on goes
+        # into it while the players still play the old title's last seconds. A skip or jump in that
+        # tail makes LMS throw the stream away and open the title anew; _reconcilePlan then seeks it
+        # back to where LMS wants it (the position alone does not: it is within the hit tolerance).
+        $o->{earlyServed} = { uri => $uri, until => Time::HiRes::time() + EARLY_SERVED_S };
+        delete $o->{earlyEnd};
+        Slim::Utils::Timers::killTimers($self, \&_earlyEndFallback);
+    }
     return;
 }
 
@@ -5653,6 +5900,7 @@ sub _armHangWatch {
         main::DEBUGLOG && $log->is_debug && $log->debug(
             "Control: hang watch not armed (near end) $o->{track} pos=$p->{position_ms} (" . ($self->mac // '?') . ")"
         );
+        $self->_postNearEnd($o->{track}, $p->{position_ms});    # end-gap early EOF
         return;
     }
     my $ps = $o->{playingSince};
@@ -5672,6 +5920,299 @@ sub _armHangWatch {
     main::DEBUGLOG && $log->is_debug && $log->debug(
         "Control: hang watch armed $o->{track} pos=$p->{position_ms} (" . ($self->mac // '?') . ")"
     );
+    return;
+}
+
+# _postNearEnd($self, $uri, $posMs) -- end-gap early EOF: the near-end `buffering` frame of
+# the own title (the guards of _armHangWatch up to near_end hold: browse, active, nothing
+# pending, the burst came from playing, the wanted title) marks it at the shim, once per title.
+# Only with a DIFFERENT successor queued in the daemon (the queue head): without one there is no
+# next title for LMS to open early (context end, repeat-one), and nothing changes.
+# The hidden pref soloistEarlyEnd (default 1, read per title end) switches it off at runtime
+# (`pref plugin.spoton:soloistEarlyEnd 0` on the LMS CLI): no mark, so _earlyEndPlan never
+# applies and earlyEndContinues stays 0 -- exactly the path without the early end.
+sub _postNearEnd {
+    my ($self, $uri, $posMs) = @_;
+    return unless $prefs->get('soloistEarlyEnd') // 1;
+    my $o = $self->observed;
+    return unless defined $uri && defined $posMs;
+    return if ref($o->{nearEnd}) eq 'HASH' && ($o->{nearEnd}{uri} // '') eq $uri;
+    my $head = $o->{queueHead};
+    return unless ref($head) eq 'HASH' && defined $head->{uri} && $head->{uri} ne $uri;
+    my $meta = $o->{meta};
+    my $dur  = (ref($meta) eq 'HASH' && ref($meta->{$uri}) eq 'HASH') ? $meta->{$uri}{duration} : undef;
+    return unless defined $dur && $dur > 0;
+    my $remaining = int($dur * 1000 - $posMs);
+    $remaining = 0 if $remaining < 0;
+    my $daemon = $self->daemon or return;
+    my $port   = $daemon->_streamPort or return;
+    my ($ff, $lead) = $self->_earlyEndTopUp($uri, $posMs, $remaining);
+    $o->{nearEnd} = { uri => $uri, next => $head->{uri}, at => Time::HiRes::time(), remaining_ms => $remaining,
+                      lead_ms => $lead, ff_ms => $ff };
+    my $sent = $self->_loopbackPost($port, NEAR_END_PATH . '?ms=' . $remaining . ($ff > 0 ? '&ff=' . $ff : ''));
+    my $leadTxt = defined $lead ? ", players $lead ms behind, top-up asked $ff ms" : '';
+    if ($ff > 0) {
+        main::INFOLOG && $log->is_info && $log->info(
+            "Control: near end of $uri ($remaining ms left$leadTxt) -- "
+            . ($sent ? 'marked for the end gap' : 'mark not sent') . " (" . ($self->mac // '?') . ")"
+        );
+    }
+    else {
+        main::DEBUGLOG && $log->is_debug && $log->debug(
+            "Control: near end of $uri ($remaining ms left, next $head->{uri}$leadTxt) -- "
+            . ($sent ? 'marked for the end gap' : 'mark not sent') . " (" . ($self->mac // '?') . ")"
+        );
+    }
+    return;
+}
+
+# _earlyEndTopUp($self, $uri, $posMs, $remainingMs) -- end-gap lead top-up: how much audio the
+# shim should take out of its virtual sink when it ends the old stream early (POST /near-end
+# ?ff=). Returns ($ffMs, $leadMs); $leadMs undef when it cannot be known.
+# The players play every byte the shim sent; when the daemon changes title (its sink drained)
+# they still hold what they lag behind the sink, the lead. The next title's first audio reaches
+# them about 1 s after that change (the daemon's start, LMS's pipeline), so a lead under ~1 s
+# underruns -- typical after any (re)start, measured 0.6-0.9 s on 2026-11-15 with LMS 9.1.1.
+# Taking audio out of the sink moves the daemon's change, and so the next title's arrival, that
+# much earlier, and the lead grows by the same amount. Topped up to soloistEarlyEndLeadMs
+# (EARLY_END_LEAD_MS) only, never by more than the sink still holds: a fixed amount every title
+# would grow the lead without bound. The lead is the daemon's position at the near-end frame
+# minus LMS's play point of the same title (songTime of the playing song, the sync master's).
+sub _earlyEndTopUp {
+    my ($self, $uri, $posMs, $remaining) = @_;
+    my $target = $prefs->get('soloistEarlyEndLeadMs') // EARLY_END_LEAD_MS;
+    return (0, undef) unless defined $target && $target =~ /^\d+$/ && $target > 0;
+    my $client = eval { Slim::Player::Client::getClient($self->mac) } or return (0, undef);
+    my $song = eval { $client->can('playingSong') ? $client->playingSong : undef } or return (0, undef);
+    my $url  = eval { $song->track->url } // '';
+    my $playing = _normalizeUri($url);
+    return (0, undef) unless defined $playing && $playing eq $uri;
+    # An app seek in this title rewrote LMS's clock (_forwardBrowseSeek); the marker of an earlier
+    # title is stale and goes.
+    my $unknown = $self->observed->{leadUnknownFor};
+    if (defined $unknown) {
+        return (0, undef) if $unknown eq $uri;
+        delete $self->observed->{leadUnknownFor};
+    }
+    my $t = eval { Slim::Player::Source::songTime($client) };
+    return (0, undef) unless defined $t && $t =~ /^\d+(?:\.\d+)?$/;
+    my $lead = int($posMs - $t * 1000 + 0.5);
+    # The players never play ahead of the daemon's sink; a negative lead means LMS's clock is not
+    # the audible point (a rewritten startOffset), so the lead is unknown.
+    return (0, undef) if $lead < 0;
+    return (0, $lead) if $lead >= $target;
+    my $ff = $target - $lead;
+    $ff = $remaining if $ff > $remaining;
+    $ff = 0 if $ff < 0;
+    return ($ff, $lead);
+}
+
+# _earlyEndPlan($self, $uri, $posMs, $opts, $successCb, $now) -- end-gap early EOF, the planner
+# side: LMS asks for the daemon's queue head while the daemon is still on the title marked by
+# _postNearEnd and within its reported remaining time (+ EARLY_END_WAIT_S), and LMS advanced by
+# itself ($opts->{lmsStopped} false, read by _reconcile). Before the daemon's change LMS advances
+# by itself only after the old stream's EOF, and inside the gap that EOF comes from the shim's
+# early end; Control never reads the mark's reply, so this is how it knows the shim used the mark.
+# One exception, not measured: a stream that fails in the gap on a single player (StreamingFailed
+# in PLAYING runs _SyncStopNext, which asks without stopping) also reads as LMS's own advance.
+# The daemon changes to the queue head by itself once its sink has drained. Answer LMS at once
+# (successCb, so it opens the next stream now), raise the prefetch wish for the title after it,
+# and arm the fallback (_earlyEndFallback: the old skip_next path). Returns the intents, or undef
+# when the case does not apply (no seek target, the mark is for the daemon's current title, the
+# wanted title is the marked successor), or (undef, $declined) when LMS stopped its players
+# before it asked (a skip or a jump to the queue head inside the gap): the caller adds $declined
+# and takes the old skip_next path. An early answer there would let LMS open the next stream
+# before the daemon changes. If the shim had not ended the old stream (switched off, a stream
+# younger than its 12 s guard, the first 400 ms of the gap), the drain boundary of the daemon's
+# change would then bound LMS's NEW stream, and the next title would be cut. A skip after the
+# early answer (the common form: the players still play the old title's last seconds) also ends
+# that answer's wait and fallback timer, so exactly one skip_next goes out.
+sub _earlyEndPlan {
+    my ($self, $uri, $posMs, $opts, $successCb, $now) = @_;
+    return undef if $opts->{earlyEndFallback};
+    my $o  = $self->observed;
+    my $ne = $o->{nearEnd};
+    return undef unless ref($ne) eq 'HASH' && defined $o->{track} && ($ne->{uri} // '') eq $o->{track}
+        && ($ne->{next} // '') eq $uri;
+    my $deadline = ($ne->{at} // 0) + ($ne->{remaining_ms} // 0) / 1000 + EARLY_END_WAIT_S;
+    return undef if $now > $deadline;
+    if ($opts->{lmsStopped}) {
+        # Answered early already: LMS's _Stop dropped the stream it opened for $uri (StreamingController
+        # _Stop keeps only the playing song), so this is its second request. The wait and its fallback
+        # timer end here; the fallback's skip_next would be a second one and pop the daemon's queue twice.
+        my $answered = ref($o->{earlyEnd}) eq 'HASH' && ($o->{earlyEnd}{uri} // '') eq $uri;
+        return (undef, [
+            { op => 'set', target => 'observed', key => 'nearEnd',
+              value => { %$ne, declined => 'lms_stopped', ($answered ? (answered => 1) : ()) } },
+            ($answered ? (
+                { op => 'set', target => 'observed', key => 'earlyEnd', delete => 1 },
+                { op => 'killtimer', cb => \&_earlyEndFallback },
+            ) : ()),
+            { op => 'log', level => 'debug', text =>
+                "Control: LMS asked for the queued next title $uri with its players stopped (a skip or jump in the "
+                . "end gap of $o->{track}" . ($answered ? ', after the early answer' : '') . ") -- old path ("
+                . ($self->mac // '?') . ")" },
+        ]);
+    }
+    # A request with a start position is never answered early (a jump with seek data takes the old
+    # path); the stopped case above runs first, so such a jump still ends an armed wait.
+    return undef if ($posMs // 0) > 0;
+    # No status gate: the speed-0 position_sync of the end gap itself sets observed.status to
+    # `paused` (S-02). A real pause corks the stream, and the shim never ends a corked stream early.
+    my @intents;
+    if (!(ref($o->{earlyEnd}) eq 'HASH' && ($o->{earlyEnd}{uri} // '') eq $uri)) {
+        push @intents, { op => 'set', target => 'observed', key => 'earlyEnd',
+            value => { uri => $uri, from => $o->{track}, until => $deadline, at => $now } };
+        push @intents, { op => 'killtimer', cb => \&_earlyEndFallback };
+        push @intents, { op => 'timer', cb => \&_earlyEndFallback, at => $deadline };
+        push @intents, { op => 'log', level => 'info', text =>
+            "Control: LMS opened the queued next title $uri during the end gap of $o->{track} -- "
+            . "waiting for the daemon's own change (" . ($self->mac // '?') . ")" };
+    }
+    push @intents, { op => 'set', target => 'observed', key => 'prefetchWish', value => 1 };
+    push @intents, { op => 'fire', cb => { successCb => [ $successCb ] }, which => 'successCb', args => [] } if $successCb;
+    return \@intents;
+}
+
+# _lmsPlayersStopped($self) -- end-gap early EOF (GH #213): 1 when LMS's StreamingController for
+# this player (the sync group's, via the master) has its players stopped, else 0. A skip, or a
+# jump to any title, stops them before LMS asks for the next title (StreamingController
+# _StopGetNext: _Stop sets STOPPED, then _getNextTrack). LMS's own advance after an EOF
+# (ReadyToStream: _NextIfMore, _RetryOrNext) runs only in PLAYING or PAUSED and leaves them there.
+# BUFFERING (and WAITING_TO_SYNC) is accepted too: LMS's own advance never asks in it (ReadyToStream
+# is _NoOp/_Invalid there), and every path that asks from it stops the players first. isStopped
+# cannot tell the two apart: _getNextTrack sets TRACKWAIT before it asks the handler, and
+# isStopped also needs IDLE. Fails closed (1: the old path) without a client or controller, or
+# when a read dies.
+sub _lmsPlayersStopped {
+    my $self = shift;
+
+    my $stopped = eval {
+        my $client     = Slim::Player::Client::getClient($self->mac);
+        my $controller = $client ? $client->controller : undef;
+        $controller
+            ? (($controller->isPlaying(1) || $controller->isPaused || $controller->buffering) ? 0 : 1)
+            : 1;
+    };
+    return defined $stopped ? $stopped : 1;
+}
+
+# earlyEndContinues($self, $url) -- end-gap early EOF: 1 while Control waits for the daemon's own
+# change to $url after answering LMS's early request for it (_earlyEndPlan), else 0. Read by
+# ProtocolHandler::bufferThreshold for the stream LMS opens for that title (a gapless continuation).
+sub earlyEndContinues {
+    my ($self, $url) = @_;
+    return 0 unless $self->mode eq 'browse';
+    my $ee = $self->observed->{earlyEnd};
+    return 0 unless ref($ee) eq 'HASH' && defined $ee->{uri};
+    my $uri = _normalizeUri($url);
+    return (defined $uri && $uri eq $ee->{uri}) ? 1 : 0;
+}
+
+# _earlyEndOutcome($self, $uri) -- end-gap early EOF: the one line per marked title end, written by
+# _hangTrackChanged when the daemon leaves the marked title for $uri (before the mark and the wait
+# are dropped). It says whether the early EOF was used and, if so, how long before the daemon's
+# change LMS opened the next stream (the lead the players' buffers gain), or why not as far as
+# Control knows. The shim's own reason for not ending a stream (switched off, a stream younger
+# than its 12 s guard, the mark expired) is only in the Soloist daemon log (`early-end:` lines).
+# undef without a mark for another title.
+sub _earlyEndOutcome {
+    my ($self, $uri, $anchor) = @_;
+    my $o  = $self->observed;
+    my $ne = $o->{nearEnd};
+    return undef unless ref($ne) eq 'HASH' && defined $ne->{uri} && defined $uri && $ne->{uri} ne $uri;
+    my $ee = $o->{earlyEnd};
+    my ($what, $used, $branch);
+    if (($ne->{next} // '') ne $uri) {
+        # a jump to another title after the early answer leaves its wait for the marked successor
+        $used = $ne->{answered} || (ref($ee) eq 'HASH' && defined $ne->{next} && ($ee->{uri} // '') eq $ne->{next});
+        $what = ($used ? 'early EOF used, but the daemon then changed to another title than the marked '
+                       : 'early EOF not used, the daemon changed to another title than the marked ') . ($ne->{next} // '?');
+    }
+    elsif (($ne->{declined} // '') eq 'lms_stopped') {
+        $used = $ne->{answered};
+        $what = $ne->{answered}
+            ? 'early EOF used, then LMS stopped its players (a skip or jump in the gap): skip_next'
+            : 'early EOF not used, LMS stopped its players first (a skip or jump in the gap): skip_next';
+    }
+    elsif (ref($ee) eq 'HASH' && ($ee->{uri} // '') eq $uri) {
+        $used = 1;
+        $what = sprintf("early EOF used, LMS opened the next title %.1f s before the daemon's change",
+            Time::HiRes::time() - ($ee->{at} // Time::HiRes::time()));
+    }
+    elsif ($ne->{fallback}) {
+        $used = 1;
+        $what = 'early EOF used, but the daemon did not change within the end gap (fallback skip_next)';
+    }
+    elsif (($self->wanted->{uri} // '') ne $uri) {
+        $branch = 'not_asked';
+        if (($anchor // '') eq 'early') {
+            # the reply to the change's /boundary: the shim had ended the old stream
+            $used = 1;
+            $what = "early EOF used, the daemon changed before LMS asked for the next title";
+        }
+        else {
+            $what = "early EOF not used, LMS had not asked for the next title by the daemon's change "
+                . '(the early-end lines in the daemon log say whether the shim ended the old stream)';
+        }
+    }
+    else {
+        $what = 'early EOF not used, LMS asked for the next title on the old path';
+    }
+    # The shim takes the top-up out of its sink only when it ends the old stream early, and at most
+    # what the sink still holds then (its early-end line says how much).
+    $what .= "; top-up asked $ne->{ff_ms} ms, the players were " . ($ne->{lead_ms} // '?') . ' ms behind'
+        if $used && ($ne->{ff_ms} // 0) > 0;
+    my $line = "Control: end gap $ne->{uri} -> $uri: $what (" . ($self->mac // '?') . ")";
+    return wantarray ? ($line, $branch) : $line;
+}
+
+# _outcomeWaitResolve($self, $anchor) -- end-gap early EOF: writes the outcome line _hangTrackChanged
+# held back for a change the daemon made before LMS asked: the "used" text when the change's /boundary
+# reply says anchor=early, else the "not used" one. Once; the timer (_outcomeWaitFire) covers a reply
+# that never comes (no stream port, a failed send).
+sub _outcomeWaitResolve {
+    my ($self, $anchor) = @_;
+    my $w = delete $self->observed->{outcomeWait} or return;
+    Slim::Utils::Timers::killTimers($self, \&_outcomeWaitFire);
+    main::INFOLOG && $log->is_info && $log->info(($anchor // '') eq 'early' ? $w->{early} : $w->{line});
+    return;
+}
+
+sub _outcomeWaitFire {
+    my $self = shift;
+    $self->_outcomeWaitResolve(undef);
+    return;
+}
+
+# _earlyEndFallback($self) -- end-gap early EOF: the daemon did not change to the title LMS asked
+# for in time. Back to the path that runs without the early EOF: reconcile once more, skipping
+# the early-end case (skip_next to the queue head, or play).
+sub _earlyEndFallback {
+    my $self = shift;
+    return if $self->_shutDown;    # the requestTrack guard (CR-01): this path reconciles directly
+    my $ee = delete $self->observed->{earlyEnd} or return;
+    return unless defined $self->wanted->{uri} && $self->wanted->{uri} eq ($ee->{uri} // '');
+    return if defined $self->observed->{track} && $self->observed->{track} eq $ee->{uri};
+    $log->warn("Control: the daemon did not change to $ee->{uri} within the end gap -- requesting it ("
+        . ($self->mac // '?') . ")");
+    $self->observed->{nearEnd}{fallback} = 1 if ref($self->observed->{nearEnd}) eq 'HASH';    # for _earlyEndOutcome
+    $self->_reconcile('requestTrack', { earlyEndFallback => 1 });
+    return;
+}
+
+# _earlyEndClear($self, $why) -- end-gap early EOF: kill the fallback timer and drop the title-end
+# mark and an open wait for the daemon's own change. shutdown and leaveBrowse call it next to
+# _cancelHangWatch, _transportClosed with the other per-connection state: no early-end state or
+# timer outlives the session or its connection (the 82-11 CR-03 rule).
+sub _earlyEndClear {
+    my ($self, $why) = @_;
+
+    Slim::Utils::Timers::killTimers($self, \&_earlyEndFallback);
+    my @had = grep { defined } delete @{ $self->observed }{qw(nearEnd earlyEnd)};
+    main::DEBUGLOG && $log->is_debug && $log->debug(
+        "Control: end-gap early EOF state dropped ($why) (" . ($self->mac // '?') . ")"
+    ) if @had;
     return;
 }
 
@@ -6633,6 +7174,24 @@ sub _onFrameQueueChanged {
 
             my $old = $self->observed->{queueHead};
             $self->observed->{queueUris} = \@qUris;
+            # Leftover memory: the queue's own-queue entries with their uids, in order (the uid is
+            # the daemon's stable entry id, or the item uri when it has none), and the remembered
+            # leftovers that are still in the queue (an entry gone from it is no longer one).
+            {
+                my @qe;
+                for my $e (@$up) {
+                    next unless ref($e) eq 'HASH' && ref($e->{item}) eq 'HASH' && ($e->{source} // '') eq 'queue';
+                    my $eu = $e->{item}{uri};
+                    next unless defined $eu && $eu =~ /^spotify:track:[A-Za-z0-9]+$/;
+                    push @qe, { uri => $eu, uid => $e->{uid} };
+                }
+                $self->observed->{queueEntries} = \@qe;
+                my $left = $self->observed->{ownLeftovers};
+                if (ref($left) eq 'HASH' && %$left) {
+                    my %present = map { (defined $_->{uid} ? ($_->{uid} => 1) : ()) } @qe;
+                    delete $left->{$_} for grep { !$present{$_} } keys %$left;
+                }
+            }
             if ($head) { $self->observed->{queueHead} = $head }
             else       { delete $self->observed->{queueHead} }
 
@@ -7254,6 +7813,10 @@ sub _transportClosed {
     delete $self->observed->{anchor};
     delete $self->observed->{postSeekCheck};    # S1: the check belonged to the closed connection
     Slim::Utils::Timers::killTimers($self, \&_postSeekCheckFire);
+    # End-gap early EOF: the mark and the wait belong to the closed connection too. Without this the
+    # fallback still fires (observed.track is gone, so its 'track eq B' guard cannot stop it) and
+    # reconciles into the ws-down deferral.
+    $self->_earlyEndClear('transport closed');
     $self->_reloadForget;    # 79-52
     # 85-07 D-09: the Up Next cache describes the queue of a connection that
     # is gone; the next queue_changed / get_queue reply rebuilds it.

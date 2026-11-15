@@ -181,7 +181,7 @@ sub observed { return $_[0]->{observed}; }
 sub wanted   { return $_[0]->{wanted}; }
 sub nextStreamGeneration { return ++$_[0]->{gen}; }    # 84-08: browse_proxy g=<gen>
 for my $m (qw(requestQueue queueSnapshot requestPause requestResume requestVolume requestSkip requestRestart requestTrack endForeignLeave
-               noteDuration noteSeekIntent noteMetadataMissing seekable consumeRestartAllowance consumeSeekIntent
+               noteDuration noteSeekIntent noteMetadataMissing seekable consumeRestartAllowance consumeSeekIntent earlyEndContinues
                leaveBrowse leaveConnect clearHold _recordErrorOnce watchdogRing notePlaylistChanged)) {
     no strict 'refs';
     *{$m} = sub {
@@ -706,7 +706,7 @@ for my $cls ($S) {
         is($S->new($MAC)->notify($ev, @$args), 'down', "soloist notify('$ev') without Control -> down");
         present();
     }
-    for my $what (qw(seekable consumeRestartAllowance)) {
+    for my $what (qw(seekable consumeRestartAllowance earlyEndContinues)) {
         present();
         $Plugins::SpotOn::Soloist::Control::RET{$what} = 1;
         is($S->new($MAC)->query($what, url => 'spoton://track:a'), 1, "soloist query('$what') -> Control value 1");
