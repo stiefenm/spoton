@@ -73,6 +73,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/ioctl.h>
+#ifdef __linux__
+#include <linux/sockios.h>   /* SIOCOUTQ for the debug stats line */
+#endif
 #include <sys/syscall.h>
 #include <sys/time.h>
 #include <time.h>
@@ -709,6 +713,16 @@ static volatile int64_t  g_client_attach_ms  = 0;    /* when the current client 
 static volatile int64_t  g_near_end_gen      = NO_CLIENT_GENERATION;
 static volatile int64_t  g_near_end_until_ms = 0;
 static volatile uint64_t g_near_end_epoch    = 0;
+/* Lead top-up: POST /near-end?ff=<ms> asks the early end to also take up to
+ * that much audio out of the virtual sink when it ends the old stream. The
+ * players keep playing every byte (the data left the ring already); only
+ * Soloist's view of the sink moves, so its underflow edge and its change to
+ * the next title come that much earlier, and the next title's first audio
+ * reaches the players while they still play the old title's tail. Control
+ * computes the amount from the players' lag behind the sink, so the lag is
+ * topped up to a target instead of growing by the whole sink every title. */
+#define NEAR_END_FF_MS_MAX 10000
+static volatile long     g_near_end_ff_ms    = 0;
 static volatile int64_t  g_early_end_at      = -1;   /* marker planted early; -1 = none */
 static volatile int64_t  g_early_end_gen     = NO_CLIENT_GENERATION;
 static volatile int64_t  g_early_end_ms      = 0;
@@ -2402,6 +2416,16 @@ static void _serve_near_end(pending_conn_t *p, int client_fd) {
             if (ms > 20000) ms = 20000;
         }
     }
+    long ff = 0;   /* lead top-up (see g_near_end_ff_ms); absent = 0 */
+    {
+        const char *eol = strstr(p->buf, "\r\n");
+        const char *hit = strstr(p->buf, "ff=");
+        if (hit != NULL && (eol == NULL || hit < eol)) {
+            ff = strtol(hit + 3, NULL, 10);
+            if (ff < 0) ff = 0;
+            if (ff > NEAR_END_FF_MS_MAX) ff = NEAR_END_FF_MS_MAX;
+        }
+    }
     char body[200];
     if (g_early_end_gap_ms <= 0) {
         snprintf(body, sizeof(body), "near_end=off reason=disabled\n");
@@ -2414,8 +2438,9 @@ static void _serve_near_end(pending_conn_t *p, int client_fd) {
         pthread_mutex_unlock(&g_ring.lock);
         g_near_end_gen = g_client_generation;
         g_near_end_until_ms = _hold_now_ms() + (int64_t)ms + 3000;
-        snprintf(body, sizeof(body), "near_end=armed gen=%lld gap_ms=%ld until_ms=%lld\n",
-                 (long long)g_near_end_gen, g_early_end_gap_ms, (long long)g_near_end_until_ms);
+        g_near_end_ff_ms = ff;
+        snprintf(body, sizeof(body), "near_end=armed gen=%lld gap_ms=%ld until_ms=%lld ff_ms=%ld\n",
+                 (long long)g_near_end_gen, g_early_end_gap_ms, (long long)g_near_end_until_ms, ff);
     }
     char reply[320];
     int reply_len = snprintf(reply, sizeof(reply),
@@ -2472,7 +2497,7 @@ static void _early_end_check(int client_fd) {
         return;                              /* a seek/skip is being decided */
     }
     int planted = 0, stale = 0;
-    int64_t at = 0, gap = 0, q_ms = 0;
+    int64_t at = 0, gap = 0, q_ms = 0, ff_ms = 0;
     pthread_mutex_lock(&g_ring.lock);
     if (g_ring.flush_epoch != g_near_end_epoch) {
         stale = 1;
@@ -2483,6 +2508,16 @@ static void _early_end_check(int client_fd) {
             if (g_vsink.running && g_vsink.q_out > 0) {
                 at = g_ring.total_pushed;
                 q_ms = (g_vsink.q_out * 1000) / RING_BYTES_PER_SEC;
+                if (g_near_end_ff_ms > 0) {
+                    /* Lead top-up: whole frames (8 bytes), at most what the sink holds. */
+                    int64_t ffb = ((int64_t)g_near_end_ff_ms * RING_BYTES_PER_SEC / 1000) & ~(int64_t)7;
+                    if (ffb >= g_vsink.q_out) {
+                        ffb = g_vsink.q_out;
+                        g_vsink.frac = 0;
+                    }
+                    g_vsink.q_out -= ffb;
+                    ff_ms = (ffb * 1000) / RING_BYTES_PER_SEC;
+                }
                 g_boundary_at_pushed = at;
                 g_boundary_client_generation = g_client_generation;
                 g_early_end_at = at;
@@ -2500,15 +2535,55 @@ static void _early_end_check(int client_fd) {
     }
     if (planted) {
         g_near_end_gen = NO_CLIENT_GENERATION;   /* one-shot */
-        BOUNDARY("early_end_planted: at=%lld gap_ms=%lld vsink_ms=%lld gen=%lld",
-                 (long long)at, (long long)gap, (long long)q_ms, (long long)g_early_end_gen);
+        BOUNDARY("early_end_planted: at=%lld gap_ms=%lld vsink_ms=%lld ff_ms=%lld gen=%lld",
+                 (long long)at, (long long)gap, (long long)q_ms, (long long)ff_ms, (long long)g_early_end_gen);
         if (g_debug_trace) {
             char _ts[32];
             _trace_ts(_ts, sizeof(_ts));
-            fprintf(stderr, "[fakepulse %s] early-end: old stream ends now (gap %lld ms, sink still %lld ms)\n",
-                    _ts, (long long)gap, (long long)q_ms);
+            if (ff_ms > 0) {
+                fprintf(stderr, "[fakepulse %s] early-end: old stream ends now (gap %lld ms, sink still %lld ms, fast-forward %lld ms)\n",
+                        _ts, (long long)gap, (long long)q_ms, (long long)ff_ms);
+            } else {
+                fprintf(stderr, "[fakepulse %s] early-end: old stream ends now (gap %lld ms, sink still %lld ms)\n",
+                        _ts, (long long)gap, (long long)q_ms);
+            }
         }
     }
+}
+
+/* Debug stats (SPOTON_FAKEPULSE_STATS_MS, 0 = off, read by the constructor):
+ * one line per period from the HTTP thread with the ring's write and read
+ * cursors, its fill, the virtual sink's content, the gap hold and the bytes
+ * the kernel still holds in the client socket's send queue -- where the
+ * audio is between Soloist and LMS. */
+static long g_stats_ms = 0;
+static void _stats_tick(int client_fd) {
+    static int64_t last = 0;
+    if (g_stats_ms <= 0) return;
+    int64_t now = _hold_now_ms();
+    if (last != 0 && now - last < (int64_t)g_stats_ms) return;
+    last = now;
+    int64_t pushed, popped, hold_at, q;
+    size_t fill;
+    int running;
+    pthread_mutex_lock(&g_ring.lock);
+    if (g_vsink.t_ms > 0) _vsink_settle_locked();
+    pushed = g_ring.total_pushed;
+    popped = g_ring.total_popped;
+    fill = g_ring.fill;
+    hold_at = g_ring.hold_at;
+    q = g_vsink.q_out;
+    running = g_vsink.running;
+    pthread_mutex_unlock(&g_ring.lock);
+    int outq = -1;
+#ifdef SIOCOUTQ
+    if (client_fd >= 0 && ioctl(client_fd, SIOCOUTQ, &outq) != 0) outq = -1;
+#endif
+    char _ts[32];
+    _trace_ts(_ts, sizeof(_ts));
+    fprintf(stderr, "[fakepulse %s] stats: pushed=%lld popped=%lld fill=%zu sink_ms=%lld running=%d hold_at=%lld client=%d gen=%lld outq=%d\n",
+            _ts, (long long)pushed, (long long)popped, fill, (long long)((q * 1000) / RING_BYTES_PER_SEC),
+            running, (long long)hold_at, client_fd >= 0, (long long)g_client_generation, outq);
 }
 
 static int _pending_serve_control(pending_conn_t *p, int client_fd, const char *via) {
@@ -3168,6 +3243,7 @@ static void *_http_thread_fn(void *arg) {
             pending.len = 0;
         }
 
+        _stats_tick(client_fd);   /* debug stats, off unless SPOTON_FAKEPULSE_STATS_MS */
         if (client_fd >= 0) {
             /* Phase 78 fix: drain up to HTTP_DRAIN_BUDGET bytes per tick
              * instead of a single 16384-byte pop.  The old fixed chunk
@@ -3777,6 +3853,14 @@ static void _fake_libpulse_init(void) {
         const char *vsrc;
         long vt = _vsink_ms_src(&vsrc);
         fprintf(stderr, "[fakepulse] vsink: T_ms=%ld source=%s\n", vt, vsrc);
+    }
+
+    {
+        /* Debug stats line period (see _stats_tick): 0 or unset = off. */
+        const char *st = getenv("SPOTON_FAKEPULSE_STATS_MS");
+        long v = (st && *st) ? strtol(st, NULL, 10) : 0;
+        g_stats_ms = (v > 0 && v <= 60000) ? v : 0;
+        if (g_stats_ms > 0) fprintf(stderr, "[fakepulse] stats: every %ld ms\n", g_stats_ms);
     }
 
     const char *boundaryEnv = getenv("SPOTON_BOUNDARY_SPIKE");
@@ -7491,6 +7575,99 @@ static void _test_ee_natural(pa_stream *s, int port, int *failures) {
     _test_ee_cleanup(s, port);
 }
 
+/* Lead top-up: POST /near-end?ff= takes audio out of the virtual sink when the
+ * early end fires. The whole sink taken: the next client gets the underflow
+ * edge (Soloist's cue for the next title) at once instead of when the sink
+ * would have drained. Part of it taken: the sink holds that much less. */
+static void _test_ee_ff_run(pa_stream *s, int port, const char *path, long *ms_to_eof,
+                            int64_t *q_after_ms, long *uf_ms, char *state, size_t scap,
+                            char *ffv, size_t fcap, size_t *late, int *gotA) {
+    char nbody[256];
+    nbody[0] = '\0';
+    *ms_to_eof = -1;
+    *q_after_ms = -1;
+    *uf_ms = -1;
+    *late = 0;
+    int fd = _test_ee_open(s, port, gotA);
+    atomic_store(&_test_vsink_uf, 0);
+    pa_stream_set_underflow_callback(s, _test_vsink_uf_cb, NULL);
+    if (fd >= 0 && *gotA) {
+        if (_test_post_control_body(port, path, nbody, sizeof(nbody))) {
+            _test_body_str(nbody, "near_end=", state, scap);
+            _test_body_str(nbody, "ff_ms=", ffv, fcap);
+        }
+        *late = _test_ee_read_until_eof(fd, 2000, ms_to_eof);
+        pthread_mutex_lock(&g_ring.lock);
+        _vsink_settle_locked();
+        *q_after_ms = (g_vsink.q_out * 1000) / RING_BYTES_PER_SEC;
+        pthread_mutex_unlock(&g_ring.lock);
+        close(fd);
+        int base = atomic_load(&_test_vsink_uf);
+        struct timeval t0;
+        gettimeofday(&t0, NULL);
+        int fd2 = _test_hold_attach(port);
+        if (fd2 >= 0) {
+            while (_elapsed_ms(&t0) < 2500 && atomic_load(&_test_vsink_uf) == base) {
+                usleep(10000);
+            }
+            if (atomic_load(&_test_vsink_uf) != base) {
+                *uf_ms = _elapsed_ms(&t0);
+            }
+            close(fd2);
+        }
+    } else if (fd >= 0) {
+        close(fd);
+    }
+    pa_stream_set_underflow_callback(s, NULL, NULL);
+    _test_ee_cleanup(s, port);
+}
+
+static void _test_ee_fast_forward(pa_stream *s, int port, int *failures) {
+    const char *name = "early-end: ff=<all> empties the virtual sink at the early end, the next client gets the underflow edge at once";
+    int gotA = 0;
+    long ms_to_eof, uf_ms;
+    int64_t q_after;
+    size_t late;
+    char state[24], ffv[16];
+    state[0] = ffv[0] = '\0';
+    _test_ee_ff_run(s, port, "/near-end?ms=2000&ff=5000", &ms_to_eof, &q_after, &uf_ms,
+                    state, sizeof(state), ffv, sizeof(ffv), &late, &gotA);
+    char facts[300];
+    snprintf(facts, sizeof(facts),
+             "gotA=%d near_end='%s' ff_ms='%s' (want 5000) eof_after_ms=%ld late_bytes=%zu sink_after_eof_ms=%lld (want 0) underflow_after_attach_ms=%ld (want 0..600)",
+             gotA, state, ffv, ms_to_eof, late, (long long)q_after, uf_ms);
+    int ok = gotA && strcmp(state, "armed") == 0 && strcmp(ffv, "5000") == 0
+          && ms_to_eof >= EARLY_END_GAP_MS_DEFAULT - 50 && ms_to_eof < 1500 && late == 0
+          && q_after == 0 && uf_ms >= 0 && uf_ms < 600;
+    _test_hold_verdict(failures, ok, name, facts);
+}
+
+static void _test_ee_fast_forward_part(pa_stream *s, int port, int *failures) {
+    const char *name = "early-end: ff=500 takes 500 ms out of the virtual sink, the rest drains as before";
+    int gotA0 = 0, gotA = 0;
+    long eof0, eof1, uf0, uf1;
+    int64_t q0, q1;
+    size_t late0, late1;
+    char st0[24], st1[24], ff0[16], ff1[16];
+    st0[0] = st1[0] = ff0[0] = ff1[0] = '\0';
+    /* The same title end without ff, then with ff=500: the sink after the EOF
+     * differs by the 500 ms (minus the difference of the two EOF times). */
+    _test_ee_ff_run(s, port, "/near-end?ms=2000", &eof0, &q0, &uf0,
+                    st0, sizeof(st0), ff0, sizeof(ff0), &late0, &gotA0);
+    _test_ee_ff_run(s, port, "/near-end?ms=2000&ff=500", &eof1, &q1, &uf1,
+                    st1, sizeof(st1), ff1, sizeof(ff1), &late1, &gotA);
+    long diff = (long)(q0 - q1) - (eof1 - eof0);
+    char facts[360];
+    snprintf(facts, sizeof(facts),
+             "without ff: near_end='%s' ff_ms='%s' (want 0) eof_after_ms=%ld sink_after_eof_ms=%lld; ff=500: near_end='%s' ff_ms='%s' eof_after_ms=%ld sink_after_eof_ms=%lld; taken=%ld ms (want 500 +-150) underflow_after_attach_ms=%ld (want > 0: the rest still drains)",
+             st0, ff0, eof0, (long long)q0, st1, ff1, eof1, (long long)q1, diff, uf1);
+    int ok = gotA0 && gotA && strcmp(st0, "armed") == 0 && strcmp(ff0, "0") == 0
+          && strcmp(st1, "armed") == 0 && strcmp(ff1, "500") == 0
+          && eof0 > 0 && eof1 > 0 && late0 == 0 && late1 == 0
+          && q1 > 0 && diff > 350 && diff < 650 && uf1 > 0;
+    _test_hold_verdict(failures, ok, name, facts);
+}
+
 static void _test_ee_unmarked(pa_stream *s, int port, int *failures) {
     const char *name = "early-end: without the mark the old stream stays open through the gap (behaviour as before)";
     int gotA = 0, eof = 0;
@@ -7630,6 +7807,8 @@ static void _test_early_end_cases(pa_stream *s, int port, int *failures) {
     pa_sample_format_t saved = s->sample_spec.format;
     s->sample_spec.format = PA_SAMPLE_FLOAT32LE;
     _test_ee_natural(s, port, failures);
+    _test_ee_fast_forward(s, port, failures);
+    _test_ee_fast_forward_part(s, port, failures);
     _test_ee_unmarked(s, port, failures);
     _test_ee_flushed(s, port, failures);
     _test_ee_corked(s, port, failures);

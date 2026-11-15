@@ -323,6 +323,9 @@ use constant SEEK_KEEP_PATH => '/seek-keep';
 # the reported remaining time plus EARLY_END_WAIT_S, else the old skip_next
 # path runs.
 use constant NEAR_END_PATH    => '/near-end';
+# End-gap lead top-up: the lag of the players behind the daemon's sink that an early end tops up
+# to (hidden pref soloistEarlyEndLeadMs, 0 = off). See _earlyEndTopUp.
+use constant EARLY_END_LEAD_MS => 2500;
 use constant EARLY_END_WAIT_S => 2;
 
 # D-34: the 4th positional of a `spottyconnect seek` Control emits for an app
@@ -5741,13 +5744,55 @@ sub _postNearEnd {
     $remaining = 0 if $remaining < 0;
     my $daemon = $self->daemon or return;
     my $port   = $daemon->_streamPort or return;
-    $o->{nearEnd} = { uri => $uri, next => $head->{uri}, at => Time::HiRes::time(), remaining_ms => $remaining };
-    my $sent = $self->_loopbackPost($port, NEAR_END_PATH . '?ms=' . $remaining);
-    main::DEBUGLOG && $log->is_debug && $log->debug(
-        "Control: near end of $uri ($remaining ms left, next $head->{uri}) -- "
-        . ($sent ? 'marked for the end gap' : 'mark not sent') . " (" . ($self->mac // '?') . ")"
-    );
+    my ($ff, $lead) = $self->_earlyEndTopUp($uri, $posMs, $remaining);
+    $o->{nearEnd} = { uri => $uri, next => $head->{uri}, at => Time::HiRes::time(), remaining_ms => $remaining,
+                      lead_ms => $lead, ff_ms => $ff };
+    my $sent = $self->_loopbackPost($port, NEAR_END_PATH . '?ms=' . $remaining . ($ff > 0 ? '&ff=' . $ff : ''));
+    my $leadTxt = defined $lead ? ", players $lead ms behind, top-up $ff ms" : '';
+    if ($ff > 0) {
+        main::INFOLOG && $log->is_info && $log->info(
+            "Control: near end of $uri ($remaining ms left$leadTxt) -- "
+            . ($sent ? 'marked for the end gap' : 'mark not sent') . " (" . ($self->mac // '?') . ")"
+        );
+    }
+    else {
+        main::DEBUGLOG && $log->is_debug && $log->debug(
+            "Control: near end of $uri ($remaining ms left, next $head->{uri}$leadTxt) -- "
+            . ($sent ? 'marked for the end gap' : 'mark not sent') . " (" . ($self->mac // '?') . ")"
+        );
+    }
     return;
+}
+
+# _earlyEndTopUp($self, $uri, $posMs, $remainingMs) -- end-gap lead top-up: how much audio the
+# shim should take out of its virtual sink when it ends the old stream early (POST /near-end
+# ?ff=). Returns ($ffMs, $leadMs); $leadMs undef when it cannot be known.
+# The players play every byte the shim sent; when the daemon changes title (its sink drained)
+# they still hold what they lag behind the sink, the lead. The next title's first audio reaches
+# them about 1 s after that change (the daemon's start, LMS's pipeline), so a lead under ~1 s
+# underruns -- typical after any (re)start, measured 0.6-0.9 s on 2026-11-15 with LMS 9.1.1.
+# Taking audio out of the sink moves the daemon's change, and so the next title's arrival, that
+# much earlier, and the lead grows by the same amount. Topped up to soloistEarlyEndLeadMs
+# (EARLY_END_LEAD_MS) only, never by more than the sink still holds: a fixed amount every title
+# would grow the lead without bound. The lead is the daemon's position at the near-end frame
+# minus LMS's play point of the same title (songTime of the playing song, the sync master's).
+sub _earlyEndTopUp {
+    my ($self, $uri, $posMs, $remaining) = @_;
+    my $target = $prefs->get('soloistEarlyEndLeadMs') // EARLY_END_LEAD_MS;
+    return (0, undef) unless defined $target && $target =~ /^\d+$/ && $target > 0;
+    my $client = eval { Slim::Player::Client::getClient($self->mac) } or return (0, undef);
+    my $song = eval { $client->can('playingSong') ? $client->playingSong : undef } or return (0, undef);
+    my $url  = eval { $song->track->url } // '';
+    my $playing = _normalizeUri($url);
+    return (0, undef) unless defined $playing && $playing eq $uri;
+    my $t = eval { Slim::Player::Source::songTime($client) };
+    return (0, undef) unless defined $t && $t =~ /^\d+(?:\.\d+)?$/;
+    my $lead = int($posMs - $t * 1000 + 0.5);
+    return (0, $lead) if $lead >= $target;
+    my $ff = $target - $lead;
+    $ff = $remaining if $ff > $remaining;
+    $ff = 0 if $ff < 0;
+    return ($ff, $lead);
 }
 
 # _earlyEndPlan($self, $uri, $posMs, $opts, $successCb, $now) -- end-gap early EOF, the planner
@@ -5891,6 +5936,8 @@ sub _earlyEndOutcome {
     else {
         $what = 'early EOF not used, LMS asked for the next title on the old path';
     }
+    $what .= "; sink topped up $ne->{ff_ms} ms, the players were " . ($ne->{lead_ms} // '?') . ' ms behind'
+        if ($ne->{ff_ms} // 0) > 0;
     return "Control: end gap $ne->{uri} -> $uri: $what (" . ($self->mac // '?') . ")";
 }
 

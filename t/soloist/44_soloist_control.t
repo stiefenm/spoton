@@ -258,7 +258,8 @@ sub playmode {
     }
     return $PLAYMODE;
 }
-sub songTime { return 0; }
+our $SONGTIME = 0;    # LMS's play point of the playing song (the lead top-up cases set it)
+sub songTime { return $SONGTIME; }
 sub streamingSongIndex { return $INDEX; }
 sub playingSongIndex   { return $INDEX; }
 1;
@@ -4267,6 +4268,75 @@ sub ee_skips {
     is(scalar(@IO::Socket::INET::NEAR_END_WRITES), 1, "EE-2b: switched back on, the next near-end frame posts the mark");
     is($ctl2->observed->{nearEnd}{next}, $EE_NEXT, "EE-2b: for the queued successor");
     ee_done($ctl2);
+}
+
+# --- EE-TU: the lead top-up. At the near-end frame (daemon position 9195 ms, 3000 ms left) the players' lag behind
+# the daemon's sink is the daemon position minus LMS's play point of the same title; below soloistEarlyEndLeadMs
+# (default 2500) the mark asks the shim to take the difference out of its sink (POST /near-end?...&ff=<ms>), never
+# more than the remaining time, and nothing when the lead is already there, the pref is 0 or LMS plays another title.
+sub ee_session_lead {
+    my ($mac, $songTime, $playUrl) = @_;
+    my @fx = d50_frames('d50-hang-midtitle.frames');
+    my ($ctl, $daemon, $ws) = d50_session($mac, $D50_HM, $fx[0][0] - 0.05,
+        observed => { meta => { $D50_HM => { duration => 12.195 } } });
+    d50_feed($ctl, \@fx, 0, 12);
+    $ctl->observed->{queueHead} = { uri => $EE_NEXT };
+    $ctl->observed->{queuedByUs} = { $EE_NEXT => 1 };
+    (my $id = $D50_HM) =~ s/^spotify:track://;
+    Slim::Player::Client::getClient($mac)->playingSong(
+        Test::MockSong->new(Test::MockTrack->new($playUrl // "spoton://track:$id")));
+    @IO::Socket::INET::NEAR_END_WRITES = ();
+    local $Slim::Player::Source::SONGTIME = $songTime;
+    d50_feed($ctl, \@fx, 13, 13);
+    return ($ctl, $daemon, $ws, \@fx, $fx[13][0]);
+}
+{
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session_lead('aa:bb:cc:dd:ee:71', 8.595);
+    is(scalar(@IO::Socket::INET::NEAR_END_WRITES), 1, "EE-TU1: one POST /near-end");
+    like($IO::Socket::INET::NEAR_END_WRITES[0] // '', qr{^POST /near-end\?ms=3000&ff=1900 },
+        "EE-TU1: players 600 ms behind -> topped up to 2500 ms: ff=1900");
+    is($ctl->observed->{nearEnd}{lead_ms}, 600, "EE-TU1: the lead is recorded");
+    is($ctl->observed->{nearEnd}{ff_ms}, 1900, "EE-TU1: and the top-up");
+    my $n = scalar @{ $ws->sent };
+    d50_at($onset + 0.6, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack' }); });
+    like(d50_at($onset + 1.2, sub { $ctl->_earlyEndOutcome($EE_NEXT) }) // '',
+        qr/: early EOF used, LMS opened the next title 0\.6 s before the daemon's change; sink topped up 1900 ms, the players were 600 ms behind \(/,
+        "EE-TU1: the outcome line names the top-up");
+    is(scalar(ee_skips($ws, $n)), 0, "EE-TU1: the early answer itself is unchanged (nothing sent)");
+    ee_done($ctl);
+}
+{
+    my ($ctl) = ee_session_lead('aa:bb:cc:dd:ee:72', 6.0);
+    like($IO::Socket::INET::NEAR_END_WRITES[0] // '', qr{^POST /near-end\?ms=3000 }, "EE-TU2: players 3195 ms behind -> no ff");
+    is($ctl->observed->{nearEnd}{lead_ms}, 3195, "EE-TU2: the lead is recorded");
+    is($ctl->observed->{nearEnd}{ff_ms}, 0, "EE-TU2: top-up 0");
+    is($ctl->_earlyEndOutcome($EE_NEXT) =~ /topped up/ ? 1 : 0, 0, "EE-TU2: the outcome line names no top-up");
+    ee_done($ctl);
+}
+{
+    local $Slim::Utils::Prefs::FAKE_VALUES{soloistEarlyEndLeadMs} = 0;
+    my ($ctl) = ee_session_lead('aa:bb:cc:dd:ee:73', 9.0);
+    like($IO::Socket::INET::NEAR_END_WRITES[0] // '', qr{^POST /near-end\?ms=3000 }, "EE-TU3: soloistEarlyEndLeadMs 0 -> no ff");
+    is($ctl->observed->{nearEnd}{lead_ms}, undef, "EE-TU3: and no lead computed");
+    ee_done($ctl);
+}
+{
+    local $Slim::Utils::Prefs::FAKE_VALUES{soloistEarlyEndLeadMs} = '5000';    # the CLI sets a string
+    my ($ctl) = ee_session_lead('aa:bb:cc:dd:ee:74', 9.095);
+    like($IO::Socket::INET::NEAR_END_WRITES[0] // '', qr{^POST /near-end\?ms=3000&ff=3000 },
+        "EE-TU4: lead 100 ms, target 5000 -> capped at the remaining 3000 ms");
+    ee_done($ctl);
+}
+{
+    my ($ctl) = ee_session_lead('aa:bb:cc:dd:ee:75', 8.595, 'spoton://track:eeOtherTitle00000000');
+    like($IO::Socket::INET::NEAR_END_WRITES[0] // '', qr{^POST /near-end\?ms=3000 }, "EE-TU5: LMS plays another title -> no ff");
+    is($ctl->observed->{nearEnd}{lead_ms}, undef, "EE-TU5: no lead");
+    ee_done($ctl);
+}
+{
+    my ($ctl) = ee_session_lead('aa:bb:cc:dd:ee:76', undef);
+    like($IO::Socket::INET::NEAR_END_WRITES[0] // '', qr{^POST /near-end\?ms=3000 }, "EE-TU6: no play point from LMS -> no ff");
+    ee_done($ctl);
 }
 
 # --- EE-3: LMS asks for the queue head during the end gap -> answered at once, no skip_next, wait armed
