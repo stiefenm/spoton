@@ -1750,6 +1750,7 @@ sub resolve_raw_route {
 # 74b-04 Task 2: clear logs and the shown log size include the Soloist logs.
 # A live Soloist log is truncated, never unlinked (the running daemon keeps its
 # append-mode file handle; an unlinked file would swallow its output).
+# GH #220: the live librespot *-unified.log is truncated the same way.
 # ============================================================
 {
     require Plugins::SpotOn::Settings;
@@ -1769,7 +1770,10 @@ sub resolve_raw_route {
 
     # clearLogs: soloist live log truncated to 0, .1 removed, count covers all
     $write->("$spotonDir/74b4-connect.log", 10);
-    $write->("$spotonDir/74b4-unified.log", 10);
+    # GH #220: a live librespot daemon holds <mac>-unified.log open in append mode
+    open(my $liveUnified, '>>', "$spotonDir/74b4-unified.log") or die "unified: $!";
+    { my $old = select($liveUnified); $| = 1; select($old); }
+    syswrite($liveUnified, 'x' x 10);
     $write->("$spotonDir/74b4-soloist.log.1.tmp", 10);    # 74b WR-02: leftover of a failed tail copy
     @Slim::Web::HTTP::http_responses = ();
     my $res = FakeSettingsResponse->new(request => FakeSettingsRequest->new(method => 'POST', headers => { 'X-Requested-With' => 'XMLHttpRequest' }));
@@ -1778,10 +1782,21 @@ sub resolve_raw_route {
     ok(-e "$spotonDir/74b4-soloist.log" && -z "$spotonDir/74b4-soloist.log",
         '74b-04: clearLogs truncates the live soloist log to size 0 (never unlinks it)');
     ok(!-e "$spotonDir/74b4-soloist.log.1", '74b-04: clearLogs removes the soloist .1 generation');
-    ok(!-e "$spotonDir/74b4-connect.log" && !-e "$spotonDir/74b4-unified.log",
-        '74b-04: clearLogs still removes connect and unified logs');
+    ok(!-e "$spotonDir/74b4-connect.log", '74b-04: clearLogs still removes the connect log');
+    ok(-e "$spotonDir/74b4-unified.log" && -z "$spotonDir/74b4-unified.log",
+        'GH #220: clearLogs truncates the live unified log to size 0 (never unlinks it)');
+    syswrite($liveUnified, "after clear\n");
+    close($liveUnified);
+    {
+        my $got = '<file missing>';
+        if (open(my $rfh, '<', "$spotonDir/74b4-unified.log")) {
+            $got = do { local $/; <$rfh> };
+            close($rfh);
+        }
+        is($got, "after clear\n", 'GH #220: the live daemon\'s next line lands in the unified log on disk, no hole');
+    }
     ok(!-e "$spotonDir/74b4-soloist.log.1.tmp", '74b WR-02: clearLogs removes a leftover soloist .1.tmp');
-    is($payload->{deleted}, 5, '74b-04: the deleted count covers soloist, soloist.1, soloist.1.tmp, connect and unified');
+    is($payload->{deleted}, 5, '74b-04: the deleted count covers soloist (truncated), soloist.1, soloist.1.tmp (removed), connect (removed) and unified (truncated)');
 }
 
 # ============================================================

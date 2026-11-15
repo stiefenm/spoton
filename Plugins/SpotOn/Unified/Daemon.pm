@@ -159,6 +159,26 @@ sub _pruneAudioCache {
 	return ($deleted, $freed);
 }
 
+# _openStderrLog($file, $diagMode)
+# Opens the daemon stderr log in append mode, always (GH #220): a truncation
+# by path (Clear logs) then leaves the child's fd writing at EOF instead of
+# at its old offset, so no NUL-filled hole appears. Non-diagnostic mode
+# empties the file at open, which bounds growth structurally. Returns the
+# handle, or undef when the file cannot be opened.
+sub _openStderrLog {
+	my ($file, $diagMode) = @_;
+
+	my $fh;
+	unless (open($fh, '>>', $file)) {
+		$log->warn("Cannot open stderr log $file: $!");
+		return undef;
+	}
+	if (!$diagMode && !truncate($fh, 0)) {
+		$log->warn("Cannot truncate stderr log $file: $!");
+	}
+	return $fh;
+}
+
 sub start {
 	my $self = shift;
 
@@ -352,20 +372,18 @@ sub start {
 	}
 
 	# Pitfall 1 (Phase 51): stderr is ALWAYS captured to the same per-daemon
-	# file, independent of diagnosticMode — D-03's credential-error detection
+	# file, independent of diagnosticMode - D-03's credential-error detection
 	# (isCredentialError) must be able to read stderr text in the DEFAULT
 	# (non-diagnostic) configuration, not just when diagnosticMode is on.
-	# diagnosticMode ON: append mode (unchanged T-29-09 behavior, preserves
-	# logs across restarts). diagnosticMode OFF: truncate-on-start bounds
-	# growth structurally — each start resets the file, and the non-diagnostic
-	# RUST_LOG level (spoton=info,librespot=warn) emits only a handful of
-	# lines per run. The devnull branch is removed entirely.
+	# The file is always opened in append mode so a later truncation by Clear
+	# logs (GH #220) leaves no sparse hole: the child's fd writes at EOF.
+	# Non-diagnostic mode truncates at start to bound growth (the non-diagnostic
+	# RUST_LOG level emits only a handful of lines per run); diagnostic mode
+	# keeps earlier runs (T-29-09).
 	my $diagMode = $prefs->get('diagnosticMode');
 	my $stderrFile = catfile($serverPrefs->get('cachedir'), 'spoton', $self->id . '-unified.log');
-	my $stderr_fh;
-	my $openMode = $diagMode ? '>>' : '>';
-	open($stderr_fh, $openMode, $stderrFile)
-		or do { $log->warn("Cannot open stderr log $stderrFile: $!"); undef $stderr_fh; undef $stderrFile; };
+	my $stderr_fh = _openStderrLog($stderrFile, $diagMode);
+	undef $stderrFile unless $stderr_fh;
 
 	# WR-01: Windows open() doesn't share FILE_SHARE_DELETE, so a
 	# parent-held handle blocks unlink() of the daemon log file (Clear
@@ -724,6 +742,9 @@ sub stderrTail {
 		# (diagnosticMode ON) without this, stderr text from earlier runs
 		# could misclassify an unrelated crash as a credential error.
 		my $start = $self->_stderrStartOffset || 0;
+		# The log can be truncated under the running daemon (Clear logs, GH #220):
+		# an offset beyond the current size reads from 0, as in SoloistDaemon.pm.
+		$start = 0 if $start > $size;
 		my $from  = ($size - $maxBytes > $start) ? $size - $maxBytes : $start;
 		seek($fh, $from, 0);
 		local $/;

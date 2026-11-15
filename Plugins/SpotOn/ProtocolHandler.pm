@@ -737,7 +737,11 @@ sub getNextTrack {
         # deferred request, or a backend without one: state mode undef) ->
         # nothing to release.
         my $mode = $be->state->{mode};
-        Plugins::SpotOn::Connect->releaseConnectClaim($client, 'browse-entry') if defined $mode && $mode ne 'connect';
+        if (defined $mode && $mode ne 'connect') {
+            # The require on the connect- branch above does not run here.
+            require Plugins::SpotOn::Connect;
+            Plugins::SpotOn::Connect->releaseConnectClaim($client, 'browse-entry');
+        }
 
         return;
     }
@@ -1081,6 +1085,8 @@ sub getSeekData {
     # "no opinion" (no player engine), then no marker either.
     require Plugins::SpotOn::Unified::DaemonManager;
     if (my $be = Plugins::SpotOn::Unified::DaemonManager->backendFor($client)) {
+        # LMS can ask before Connect.pm is loaded, see canDoAction.
+        require Plugins::SpotOn::Connect;
         return undef if $be->capabilities->{connectSeekViaControl}
             && Plugins::SpotOn::Connect->isSpotifyConnect($client);
         my $url = $song->track->url;
@@ -1127,6 +1133,12 @@ sub getSeekData {
 sub canDoAction {
     my ($class, $client, $url, $action) = @_;
 
+    # Connect.pm is first loaded by Plugin::_startUnifiedDaemons, 4 s after
+    # initPlugin. LMS asks 'rew' before that when a player joins a playing
+    # sync group right after a restart (Squeezebox::reconnect ->
+    # StreamingController::playerActive -> _JumpToTime); without the require
+    # the call dies inside that player's HELO (GH #217).
+    require Plugins::SpotOn::Connect;
     if ($action eq 'rew' && Plugins::SpotOn::Connect->isSpotifyConnect($client)) {
         # 84-08: the one-shot restart allowance is the player engine's
         # (query('consumeRestartAllowance'), read-and-clear); no engine ->

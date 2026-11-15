@@ -1543,6 +1543,11 @@ sub _onPause {
             # sender into Backend::Librespot::control, 84-07.)
             $client->pluginData(connectSessionPaused => 0);
         }
+        elsif (!$isStop) {
+            # GH #219: an LMS pause pauses the Spotify session - remember it now, not only
+            # when the daemon stop echo arrives (a Next inside that window must see it).
+            $client->pluginData(connectSessionPaused => 1);
+        }
     }
 
     my $verb    = $isUnpause ? 'play' : 'pause';
@@ -1766,6 +1771,13 @@ sub _onPlaylistJump {
             "Connect mode: jump +1 -> Control's skip-forward route (D-B2)"
         );
         ($sentVerb, $sentOutcome) = ('skip_next', $be->control('skip_next', reason => 'jump+1'));
+        # GH #219: Next in LMS on a PAUSED player is not a skip inside the pause - LMS has
+        # already left PAUSED and re-opened the stream (BUFFERING, mode play). Resume the
+        # Spotify session too, as an LMS unpause does (GH #158), or that stream never gets data.
+        if ($gate && !$staleEject && ($client->pluginData('connectSessionPaused') // 0)) {
+            $client->pluginData(connectSessionPaused => 0);
+            $be->control('play', source => 'lms_next_while_paused');
+        }
     }
     # Debug session connect-skip-prev-ton-bleibt (2026-09-24), user
     # decision 1B -- DEVIATION from D-B2 for `jump +0`: LMS decides, like

@@ -1214,11 +1214,14 @@ sub _collectServerLog {
 
 # ============================================================
 # Clear logs endpoint (GT-07): /plugins/SpotOn/settings/clearLogs
-# Deletes the *-connect.log, *-unified.log, *-soloist.log.1 and
-# *-soloist.log.1.tmp files in the spoton cache directory and TRUNCATES the live *-soloist.log files to 0
-# (74b-04): a running Soloist daemon keeps its append-mode file handle, an
-# unlinked file would swallow its output until the next daemon start. The
-# deleted count covers every file removed or truncated.
+# Deletes the *-connect.log (legacy, no live writer), *-soloist.log.1 and
+# *-soloist.log.1.tmp files in the spoton cache directory and TRUNCATES the
+# live *-unified.log and *-soloist.log files to 0: both daemons hold an
+# append-mode handle, an unlinked file would swallow their output until the
+# next daemon start (74b-04, GH #220). A truncate that fails (for example on
+# Windows while the daemon holds the file) is warned and not counted; the
+# request still answers ok. The deleted count covers every file removed or
+# truncated.
 # ============================================================
 sub _clearLogsHandler {
     my ($httpClient, $response) = @_;
@@ -1230,11 +1233,13 @@ sub _clearLogsHandler {
     # W1: bsd_glob — plain glob() splits on whitespace (fails for paths with spaces)
     my @logFiles = (
         bsd_glob(catfile($spotonDir, '*-connect.log')),
-        bsd_glob(catfile($spotonDir, '*-unified.log')),
         bsd_glob(catfile($spotonDir, '*-soloist.log.1')),
         bsd_glob(catfile($spotonDir, '*-soloist.log.1.tmp')),
     );
-    my @liveSoloistLogs = bsd_glob(catfile($spotonDir, '*-soloist.log'));
+    my @liveLogs = (
+        bsd_glob(catfile($spotonDir, '*-unified.log')),
+        bsd_glob(catfile($spotonDir, '*-soloist.log')),
+    );
 
     my $deleted = 0;
     for my $logFile (@logFiles) {
@@ -1244,7 +1249,7 @@ sub _clearLogsHandler {
             $log->warn("clearLogs: failed to delete $logFile: $!");
         }
     }
-    for my $logFile (@liveSoloistLogs) {
+    for my $logFile (@liveLogs) {
         my $fh;
         if (open($fh, '+<', $logFile) && truncate($fh, 0)) {
             $deleted++;

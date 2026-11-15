@@ -839,6 +839,214 @@ sub one_post {
     one_post('jump +0', '/control/prev', '{}');
 }
 
+
+# ------------------------------------------------------------
+# GH #219: LMS Next (`playlist jump +1`) while a LIVE Connect session is
+# paused. LMS' own Skip leaves PAUSED by itself (StreamingController
+# _Skip/_StopGetNext: _Stop, clone of the repeating connect song, new
+# stream -> BUFFERING, mode play) and LMS discards every pause while
+# BUFFERING (state table row Pause = _NoOp). The Spotify session has to
+# follow: after skip_next, resume it (mirror of the GH #158 unpause).
+# LmsModel models only the LMS rows these cells need (Pause, Resume,
+# Skip); Connect.pm and Backend::Librespot are the REAL modules.
+# ------------------------------------------------------------
+{
+    package LmsModel;
+    sub new {
+        my ($c, %a) = @_;
+        return bless { ps => 'PLAYING', ss => 'STREAMING', notif => [], song => $a{song} }, $c;
+    }
+    sub isStopped   { $_[0]{ps} eq 'STOPPED' && $_[0]{ss} eq 'IDLE' }
+    sub isPaused    { $_[0]{ps} eq 'PAUSED' }
+    sub isPlaying   { my ($s, $really) = @_; return $really ? ($s->{ps} eq 'PLAYING' ? 1 : 0) : ((!$s->isStopped && !$s->isPaused) ? 1 : 0); }
+    sub buffering   { my $s = shift; return ($s->{ps} eq 'BUFFERING' || $s->{ps} eq 'WAITING_TO_SYNC') ? 1 : 0; }
+    sub isStreaming { $_[0]{ss} eq 'STREAMING' }
+    sub isStreamout { $_[0]{ss} eq 'STREAMOUT' }
+    sub streamingSong { undef }
+    sub playingSong   { $_[0]{song} }
+    sub jumpToTime    { }
+    sub playingSongDuration { undef }
+    sub playingSongElapsed  { 0 }
+    # row Pause: PLAYING -> _Pause (notifies `playlist pause 1`), BUFFERING -> _NoOp, PAUSED -> _Resume
+    sub pause {
+        my $s = shift;
+        if    ($s->{ps} eq 'PLAYING') { $s->{ps} = 'PAUSED'; push @{ $s->{notif} }, ['playlist', 'pause', 1]; }
+        elsif ($s->{ps} eq 'PAUSED')  { $s->{ps} = 'PLAYING'; push @{ $s->{notif} }, ['playlist', 'pause', 0]; }
+    }
+    sub resume {
+        my $s = shift;
+        if ($s->{ps} eq 'PAUSED') { $s->{ps} = 'PLAYING'; push @{ $s->{notif} }, ['playlist', 'pause', 0]; }
+    }
+    # row Skip -> _Skip/_StopGetNext: _Stop (`playlist stop` unless neither playing nor paused),
+    # _getNextTrack -> _Stream: BUFFERING/STREAMING with the cloned song
+    sub skip {
+        my ($s, $newSong) = @_;
+        push @{ $s->{notif} }, ['playlist', 'stop'] if $s->isPlaying || $s->isPaused;
+        $s->{ps} = 'BUFFERING'; $s->{ss} = 'STREAMING'; $s->{song} = $newSong;
+    }
+    sub stop { my $s = shift; $s->{ps} = 'STOPPED'; $s->{ss} = 'IDLE'; }
+
+    package ModelClient;
+    our @ISA = ('MockClient');
+    sub new {
+        my ($class, %a) = @_;
+        my $self = MockClient::new($class, %a);
+        $self->{lms} = $a{lms};
+        return $self;
+    }
+    sub isPlaying   { my $s = shift; return $s->{lms}->isPlaying(@_); }
+    sub isPaused    { return $_[0]{lms}->isPaused ? 1 : 0; }
+    sub isStopped   { return $_[0]{lms}->isStopped ? 1 : 0; }
+    sub playingSong { return $_[0]{lms}{song}; }
+    sub controller  { return $_[0]{lms}; }
+}
+
+my $LMS;
+my $gh219_applied = 0;
+sub gh219_setup {
+    my $url  = 'spoton://connect-1794684238324';
+    $LMS = LmsModel->new(song => MockSong->new(url => $url, info => { live => 1 }));
+    fresh();
+    $C = ModelClient->new(lms => $LMS);
+    $C->{playing} = 1;
+    $CONNECT->bindConnectClaim($C, 'test');
+    $Slim::Utils::Prefs::CLIENT{activeAccount} = 'acct1234';
+    # _fetchTrackMetadata caches spotifyUri for every live Connect track (reads as "dead history")
+    $Slim::Utils::Cache::STORE{ 'spoton_meta_' . md5_hex($url) } = { spotifyUri => 'spotify:track:0tk8p69r1Ed2OuqiXxHdAQ', duration => 112 };
+    $C->pluginData(connectStartTime => 1);     # session started long ago: grace expired
+    $gh219_applied = 0;
+    return;
+}
+# apply the source-marked requests Connect.pm sent to LMS, once each
+sub gh219_apply_sent {
+    my @s = sent();
+    for my $i ($gh219_applied .. $#s) {
+        my $line = join(' ', @{ $s[$i]{args} });
+        if    ($line eq 'pause 1') { $LMS->pause; }
+        elsif ($line eq 'pause 0') { $LMS->resume; }
+        elsif ($line eq 'stop')    { $LMS->stop; }
+    }
+    $gh219_applied = scalar(@s);
+}
+# deliver the notifications LMS queued, in order
+sub gh219_deliver {
+    while (my $n = shift @{ $LMS->{notif} }) {
+        my (undef, $what, $val) = @$n;
+        if    ($what eq 'pause') { Plugins::SpotOn::Connect::_onPause(pause_req('pause', $val)); }
+        elsif ($what eq 'stop')  { Plugins::SpotOn::Connect::_onPause(pause_req('stop', undef)); }
+    }
+}
+sub gh219_material_pause { $LMS->pause; gh219_deliver(); }
+sub gh219_material_next {
+    # clonePlaylistSong shares _pluginData with the old song (Song.pm:50, 172-174)
+    $LMS->skip(MockSong->new(url => 'spoton://connect-1794684238324', info => $LMS->{song}{info}));
+    Plugins::SpotOn::Connect::_onPlaylistJump(jump_req('+1'));   # the jump notification is queued first
+    gh219_deliver();                                              # then `playlist stop` from _Stop
+}
+sub gh219_reset_wire {
+    @Slim::Networking::SimpleAsyncHTTP::POSTS = ();
+    @Slim::Control::Request::SENT = ();
+    $gh219_applied = 0;
+}
+sub gh219_post_urls { return map { $_->{url} =~ s{^http://127\.0\.0\.1:4242}{}r } posts(); }
+
+# GH219-C1: LMS paused (daemon echo seen), then Next in LMS
+gh219_setup();
+gh219_material_pause();
+ev('stop');
+gh219_apply_sent();
+gh219_reset_wire();
+gh219_material_next();
+gh219_apply_sent();
+is_deeply([ gh219_post_urls() ], ['/control/next', '/control/play'],
+    'GH219-C1: Next in LMS while the session is paused: /control/next then /control/play');
+is($C->pluginData('connectSessionPaused'), 0, 'GH219-C1: the remembered pause state is cleared (GH #158 mirror)');
+is($CONNECT->isSpotifyConnect($C), 1, 'GH219-C1: the claim is still held');
+
+# GH219-C2: the daemon change that follows sends nothing
+gh219_reset_wire();
+ev('change', 'NEWTRK', 'OLDTRK');
+gh219_apply_sent();
+is_deeply([ cmds() ], [], 'GH219-C2: the change after the resumed skip issues no LMS request');
+is(scalar(gh219_post_urls()), 0, 'GH219-C2: ... and no POST');
+
+# GH219-C3: Next in the Spotify app while paused (GH #158/#201 B): unchanged
+gh219_setup();
+gh219_material_pause();
+ev('stop');
+gh219_apply_sent();
+gh219_reset_wire();
+ev('change', 'NEWTRK', 'OLDTRK');
+gh219_apply_sent();
+is_deeply([ cmds() ], [], 'GH219-C3: app Next while paused: no LMS request');
+is(scalar(gh219_post_urls()), 0, 'GH219-C3: ... no POST');
+is($LMS->{ps}, 'PAUSED', 'GH219-C3: LMS stays PAUSED with the new title');
+is($C->pluginData('connectSessionPaused'), 1, 'GH219-C3: the pause state is kept');
+
+# GH219-C4: Next while playing: /control/next only
+gh219_setup();
+gh219_reset_wire();
+gh219_material_next();
+gh219_apply_sent();
+is_deeply([ gh219_post_urls() ], ['/control/next'], 'GH219-C4: Next while playing: /control/next only, no /control/play');
+
+# GH219-C5: Previous while paused stays paused (decision for #219: no change). LMS `jump -1` / `jump +0`
+# on the one-entry connect playlist is jumpToTime(0) -> _JumpPaused, and ProtocolHandler::canDoAction('rew')
+# vetoes the restart while the claim is held, so LMS does not leave PAUSED and the session must not resume.
+gh219_setup();
+gh219_material_pause();
+ev('stop');
+gh219_apply_sent();
+gh219_reset_wire();
+Plugins::SpotOn::Connect::_onPlaylistJump(jump_req('-1'));
+is_deeply([ gh219_post_urls() ], ['/control/prev'], 'GH219-C5: Previous (jump -1) while paused: /control/prev only, no /control/play');
+is($C->pluginData('connectSessionPaused'), 1, 'GH219-C5: jump -1 keeps the pause state');
+gh219_reset_wire();
+Plugins::SpotOn::Connect::_onPlaylistJump(jump_req('+0'));
+is_deeply([ gh219_post_urls() ], ['/control/prev'], 'GH219-C5: Previous (jump +0) while paused: /control/prev only, no /control/play');
+is($C->pluginData('connectSessionPaused'), 1, 'GH219-C5: jump +0 keeps the pause state');
+
+# GH219-C6: GH #159 pass-through (claim gone, live connect stream): Next never sends /control/play
+gh219_setup();
+gh219_material_pause();
+ev('stop');
+gh219_apply_sent();
+$C->pluginData(connectSessionPaused => 1);
+$CONNECT->releaseConnectClaim($C, 'inactive');
+gh219_reset_wire();
+Plugins::SpotOn::Connect::_onPlaylistJump(jump_req('+1'));
+is_deeply([ gh219_post_urls() ], ['/control/next'], 'GH219-C6: GH #159 pass-through (no claim): /control/next only, no /control/play');
+
+# GH219-C7: Next before the daemon's stop echo reached Perl
+gh219_setup();
+gh219_material_pause();
+is($C->pluginData('connectSessionPaused'), 1, 'GH219-C7: an LMS pause marks the session paused at once');
+gh219_apply_sent();
+gh219_reset_wire();
+gh219_material_next();
+gh219_apply_sent();
+is_deeply([ gh219_post_urls() ], ['/control/next', '/control/play'],
+    'GH219-C7: Next inside the echo window (pause forwarded, daemon stop not yet seen) resumes too');
+
+# GH219-C8: Play in LMS after Pause (GH #158): unchanged
+gh219_setup();
+gh219_material_pause();
+ev('stop');
+gh219_apply_sent();
+gh219_reset_wire();
+$LMS->resume;
+gh219_deliver();
+is_deeply([ gh219_post_urls() ], ['/control/play'], 'GH219-C8: Play in LMS after Pause: /control/play only');
+is($C->pluginData('connectSessionPaused'), 0, 'GH219-C8: the pause state is cleared by the unpause');
+
+# GH219-C9: an LMS `playlist stop` (not a pause) on a claim-held live session must NOT mark
+# the session paused (pins the `!$isStop` guard of the early pause marking in _onPause)
+gh219_setup();
+gh219_reset_wire();
+Plugins::SpotOn::Connect::_onPause(pause_req('stop', undef));
+is_deeply([ gh219_post_urls() ], ['/control/pause'], 'GH219-C9: LMS stop on a live claim-held session is forwarded as /control/pause (the path under test was reached)');
+ok(!$C->pluginData('connectSessionPaused'), 'GH219-C9: LMS stop does NOT mark the session paused (!$isStop guard)');
+
 # 79-28 D-23: LMS seek -> debounced POST /control/seek (GH #129 behaviour behind the capability)
 sub seek_req {
     my ($newvalue, %extra) = @_;

@@ -5,6 +5,20 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.0.0-beta.13] - 2026-11-15
+
+**Installing this beta.** Same beta repository URL as before (`https://stiefenm.github.io/spoton/beta/repo.xml`); the Plugins page offers SpotOn 4.0.0beta13 as an update over 4.0.0beta12. Restart LMS after the update. The fixes below apply to both backends unless they name one.
+
+### Fixed
+
+- Sync groups: right after LMS started, a sync group playing a SpotOn title could stay at "playing" at 0:00 without sound until you pressed stop and play. It happened when a player of the group connected in the first 4 seconds after SpotOn started; the server log then showed `Can't locate object method "isSpotifyConnect"`. In the same 4 seconds, restarting the title, and with the librespot backend also seeking, failed with the same error.
+- "Clear logs" in the SpotOn settings no longer cuts off the librespot log of running players; it empties the log files instead of deleting them, so new log lines and the diagnostics report keep working.
+- librespot backend: Next in the LMS web interface while a Spotify Connect session is paused now plays the next title instead of leaving the player stuck at 0:00 without sound.
+
+### Known issues
+
+- librespot backend: if you pause in the last 30 seconds of a title and then press Next in the LMS web interface, the next title plays but the Spotify app can still show the player as paused, and playback stops at the end of that title until you press Play. The cause is in librespot; it will be fixed with the librespot update after 4.0.0.
+
 ## [4.0.0-beta.12] - 2026-11-15
 
 **Installing this beta.** Same beta repository URL as before (`https://stiefenm.github.io/spoton/beta/repo.xml`); the Plugins page offers SpotOn 4.0.0beta12 as an update over 4.0.0beta11. Restart LMS after the update. The first fix is for the Soloist backend, the second for the librespot backend.
