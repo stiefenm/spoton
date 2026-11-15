@@ -258,6 +258,7 @@ jobs:
   build-fake-libpulse:
     name: Build fake-libpulse ${{ matrix.bin_dir }}
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -287,6 +288,12 @@ jobs:
 
       - name: Build libpulse.so.0
         run: |
+          # GH #215: print the toolchain facts so a runner compiler drift is readable
+          # from the log (best effort, never fails the build).
+          echo "=== Toolchain facts (${{ matrix.cc }}) ==="
+          ${{ matrix.cc }} --version | head -n 1 || true
+          ${{ matrix.cc }} -Q --help=target | grep -E -- '-march=|-mtune=' || true
+          echo "CFLAGS=${CFLAGS:-<unset>}"
           # 79-26 (D-17): -B (unconditionally make all targets). In a fresh checkout the
           # tracked x86_64 libpulse.so.0 is not older than its .c, so plain make does
           # nothing and the x86_64 build would be copied into every Bin/<arch>/.
@@ -343,6 +350,14 @@ jobs:
             exit 1
           fi
           echo "ELF machine verification passed ($MACHINE)"
+
+          # GH #215: the x86_64 shim must carry no AVX instructions (CPUs
+          # without AVX crash Soloist at start). x86_64 only - the ISA
+          # problem is x86-only and host objdump cannot judge the ARM members.
+          if [ "${{ matrix.bin_dir }}" = "x86_64-linux" ]; then
+            echo "=== AVX gate (baseline x86-64 ISA, GH #215) ==="
+            bash tools/ci/check-no-avx.sh "$BINARY"
+          fi
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4

@@ -3598,4 +3598,238 @@ sub grace_case {
     }
 }
 
+# ==================================================================
+# 261114-p4u (GH #216): the Connect claim ends with the session
+# ==================================================================
+{
+    my $ready = sub {
+        my ($c) = @_;
+        Plugins::SpotOn::Connect::_connectEvent(Test::FakeRequest->new($c, _cmd => 'ready'));
+    };
+
+    # Cell 1: session end releases the claim, the GH #151 wait survives
+    {
+        set_power_pref(1);
+        my $client = Test::FakeClient->new(power => 0);
+        my $id = $client->id;
+        @Slim::Control::Request::EXECUTED = ();
+        raw_start($client);
+        @Slim::Utils::Log::LINES = ();
+        raw_end($client);
+        ok(!Plugins::SpotOn::Connect->isSpotifyConnect($client), 'P4U-1: stop inactive releases the Connect claim');
+        is(scalar(h_log(qr/Connect claim: released \Q$id\E source=inactive/)), 1, 'P4U-1: one release line with source=inactive');
+        is(power_off_timers($client), 1, 'P4U-2: the GH #151 power-off wait is armed after the release');
+        is(prev_power($client), 0, 'P4U-2: the saved pre-Connect state (off) is kept');
+        fire_power_off($client, 31);
+        is(scalar(power_off_dispatched()), 1, 'P4U-2: power 0 after the wait');
+        $client->{power}     = 1;
+        $client->{isPlaying} = 0;
+        @Slim::Control::Request::EXECUTED = ();
+        $ready->($client);
+        is(scalar(h_plays()), 0, 'P4U-3: a ready after the session end does not play, even on a player switched on again');
+        set_power_pref(undef);
+    }
+
+    # Cell 2: Soloist order - the handler releases, Control repeats the 'inactive' release
+    {
+        set_power_pref(1);
+        my $client = Test::FakeClient->new(power => 0);
+        @Slim::Control::Request::EXECUTED = ();
+        raw_start($client);
+        raw_end($client);
+        Plugins::SpotOn::Connect->releaseConnectClaim($client, 'inactive');
+        is(power_off_timers($client), 1, 'P4U-2: a second inactive release (Control) keeps the wait');
+        is(prev_power($client), 0, 'P4U-2: and keeps the saved state');
+        fire_power_off($client, 31);
+        is(scalar(power_off_dispatched()), 1, 'P4U-2: power 0 after the wait (Soloist order)');
+        set_power_pref(undef);
+    }
+
+    # GH #159 pass-through: only an unpause of a LIVE connect stream with no claim anywhere is forwarded
+    {
+        local $Plugins::SpotOn::Unified::DaemonManager::GATE = 1;
+        my $unpause = sub {
+            my ($c) = @_;
+            @Plugins::SpotOn::Unified::DaemonManager::VERBS = ();
+            @Slim::Utils::Log::LINES = ();
+            Plugins::SpotOn::Connect::_onPause(Test::FakePauseRequest->new($c, cmd => 'pause', params => { _newvalue => 0 }));
+            return [ @Plugins::SpotOn::Unified::DaemonManager::VERBS ];
+        };
+
+        # P4U-11: no claim, no live connect stream (a Browse pause/unpause): nothing forwarded, no D-16 line
+        my $browse = Test::FakeClient->new(power => 1);
+        is_deeply($unpause->($browse), [], 'P4U-11: no claim, no connect stream, LMS unpause: nothing forwarded');
+        is(scalar(h_log(qr/D-16: stale Connect claim/)), 0, 'P4U-11: and no D-16 stale-claim line (a Browse pause is not a stale claim)');
+        is(scalar(h_log(qr/after the Connect session ended - forwarding|stale stream after session end/)), 0, 'P4U-11: and no GH #159 forwarding line');
+
+        # P4U-12: a LIVE connect stream on this player, but the claim is held by ANOTHER player: no forwarding line
+        my $owner = Test::FakeClient->new(power => 1);
+        Plugins::SpotOn::Connect->bindConnectClaim($owner, 'test');
+        my $other = Test::FakeClientSong->new(power => 1, song => Test::FakeSongC4->new(url => 'spoton://connect-9'));
+        is_deeply($unpause->($other), [],
+            'P4U-12: claim held by another player, LMS unpause on a live connect stream: nothing forwarded (verb list empty)');
+        is(scalar(h_log(qr/after the Connect session ended - forwarding|stale stream after session end/)), 0,
+            'P4U-12: and no GH #159 pass-through line either');
+        Plugins::SpotOn::Connect->releaseConnectClaim($owner, 'test');
+    }
+
+    # IN-04 (261114-p4u-r2): the pass-through text lives in the OUTCOME line, written only when control()
+    # really ran. The connectPauseTs echo check and the connectStartTime grace return before control(); a
+    # "forwarding" line written ahead of them would claim a forward that did not happen.
+    {
+        local $Plugins::SpotOn::Unified::DaemonManager::GATE = 1;
+        my $stale = sub {
+            my ($key) = @_;
+            my $c = Test::FakeClientSong->new(power => 1, song => Test::FakeSongC4->new(url => 'spoton://connect-9'));
+            $c->pluginData($key => Time::HiRes::time()) if $key;
+            return $c;
+        };
+        my $unpause = sub {
+            my ($c) = @_;
+            @Plugins::SpotOn::Unified::DaemonManager::VERBS = ();
+            @Slim::Utils::Log::LINES = ();
+            Plugins::SpotOn::Connect::_onPause(Test::FakePauseRequest->new($c, cmd => 'pause', params => { _newvalue => 0 }));
+            return [ @Plugins::SpotOn::Unified::DaemonManager::VERBS ];
+        };
+        my $any = qr/after the Connect session ended - forwarding|stale stream after session end/;
+
+        is_deeply($unpause->($stale->('connectPauseTs')), [],
+            'P4U-17: unpause inside the 1 s connectPauseTs echo window: nothing forwarded');
+        is(scalar(h_log($any)), 0, 'P4U-17: and no pass-through line (the echo guard returned before control())');
+
+        is_deeply($unpause->($stale->('connectStartTime')), [],
+            'P4U-17: unpause inside the connectStartTime grace: nothing forwarded');
+        is(scalar(h_log($any)), 0, 'P4U-17: and no pass-through line (the grace guard returned before control())');
+
+        my $live = $stale->();
+        my $id   = $live->id;
+        is_deeply($unpause->($live), [ 'play' ], 'P4U-17: past both guards the unpause is forwarded (control play)');
+        is(scalar(h_log(qr/_onPause: control\(play\) -> \w+ for \Q$id\E \(stale stream after session end, GH #159\)/)), 1,
+            'P4U-17: one outcome line carries the pass-through marker');
+        is(scalar(h_log(qr/after the Connect session ended - forwarding/)), 0, 'P4U-17: and no separate forwarding line');
+    }
+
+    # IN-06 (1) (261114-p4u-r2): Next/Previous on the stale stream pass through like the unpause, with the same
+    # narrow conditions, and log once in the outcome line
+    {
+        local $Plugins::SpotOn::Unified::DaemonManager::GATE = 1;
+        my $jump = sub {
+            my ($c, $index) = @_;
+            @Plugins::SpotOn::Unified::DaemonManager::VERBS = ();
+            @Slim::Utils::Log::LINES = ();
+            Plugins::SpotOn::Connect::_onPlaylistJump(Test::FakePauseRequest->new($c, cmd => 'jump', params => { _index => $index }));
+            return [ @Plugins::SpotOn::Unified::DaemonManager::VERBS ];
+        };
+        my $stale = sub { return Test::FakeClientSong->new(power => 1, song => Test::FakeSongC4->new(url => 'spoton://connect-9')); };
+
+        my $n = $stale->();
+        my $nid = $n->id;
+        is_deeply($jump->($n, '+1'), [ 'skip_next' ], 'P4U-18: no claim, live connect stream, LMS next: control skip_next');
+        is(scalar(h_log(qr/_onPlaylistJump: control\(skip_next\) -> \w+ for \Q$nid\E \(stale stream after session end, GH #159\)/)), 1,
+            'P4U-18: one outcome line with the pass-through marker (next)');
+        my $p = $stale->();
+        my $pid = $p->id;
+        is_deeply($jump->($p, '-1'), [ 'skip_prev' ], 'P4U-18: no claim, live connect stream, LMS previous: control skip_prev');
+        is(scalar(h_log(qr/_onPlaylistJump: control\(skip_prev\) -> \w+ for \Q$pid\E \(stale stream after session end, GH #159\)/)), 1,
+            'P4U-18: one outcome line with the pass-through marker (previous)');
+
+        is_deeply($jump->(Test::FakeClient->new(power => 1), '+1'), [],
+            'P4U-18: no claim, no connect stream (Browse), LMS next: nothing forwarded');
+        my $owner = Test::FakeClient->new(power => 1);
+        Plugins::SpotOn::Connect->bindConnectClaim($owner, 'test');
+        is_deeply($jump->($stale->(), '+1'), [], 'P4U-18: the claim sits on another player, LMS next: nothing forwarded');
+        Plugins::SpotOn::Connect->releaseConnectClaim($owner, 'test');
+    }
+}
+
+# ==================================================================
+# 261114-p4u (GH #216): ready handler guards and log order
+# ==================================================================
+{
+    my $ready = sub {
+        my ($c) = @_;
+        Plugins::SpotOn::Connect::_connectEvent(Test::FakeRequest->new($c, _cmd => 'ready'));
+    };
+
+    # P4U-7: claim held, player off: nothing is played, one power-off line, no re-issuing line
+    {
+        my $client = Test::FakeClient->new(power => 1);
+        raw_start($client);
+        $client->{power} = 0;
+        @Slim::Control::Request::EXECUTED = ();
+        @Slim::Utils::Log::LINES = ();
+        $ready->($client);
+        is(scalar(h_plays()), 0, 'P4U-7: claim held, player off: no play');
+        is(scalar(h_log(qr/Spirc ready but player is off - not forcing playback, releasing the claim \(GH #216\)/)), 1, 'P4U-7: one power-off line');
+        is(scalar(h_log(qr/re-issuing Connect play/)), 0, 'P4U-7: no re-issuing line');
+        ok(!Plugins::SpotOn::Connect->isSpotifyConnect($client), 'P4U-7: the power-off guard released the claim (261114-p4u-r2 WR-05)');
+        $client->{power}     = 1;
+        $client->{isPlaying} = 0;
+        @Slim::Control::Request::EXECUTED = ();
+        @Slim::Utils::Log::LINES = ();
+        $ready->($client);
+        is(scalar(h_plays()), 0, 'P4U-7: a second ready on the switched-on, idle player sends no play (261114-p4u-r2 WR-05)');
+        Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
+    }
+
+    # P4U-7b (261114-p4u-r3 WR-02): the ready power-off release also discards the saved
+    # pre-Connect power state. Without it a stale "was off" survives, the next session's
+    # start keeps it (first save wins) and its end powers off a player that was on.
+    {
+        set_power_pref(1);
+        my $client = Test::FakeClient->new(power => 0);
+        @Slim::Control::Request::EXECUTED = ();
+        raw_start($client);
+        is(prev_power($client), 0, 'P4U-7b: precondition: was-off saved at start');
+        $client->{power} = 0;    # the user switches the player off while the claim is held
+        @Slim::Control::Request::EXECUTED = ();
+        $ready->($client);
+        ok(!Plugins::SpotOn::Connect->isSpotifyConnect($client), 'P4U-7b: precondition: the claim is released');
+        ok(!defined prev_power($client), 'P4U-7b: the ready power-off release discards the saved pre-Connect state');
+        is(power_off_timers($client), 0, 'P4U-7b: the release leaves no power-off timer pending');
+        is(scalar(power_off_dispatched()), 0, 'P4U-7b: no power request was executed');
+        set_power_pref(undef);
+    }
+
+    # P4U-8: positive control - claim held, player on: one play, one re-issuing line
+    {
+        my $client = Test::FakeClient->new(power => 1);
+        raw_start($client);
+        @Slim::Control::Request::EXECUTED = ();
+        @Slim::Utils::Log::LINES = ();
+        $ready->($client);
+        my @p = h_plays();
+        is(scalar(@p), 1, 'P4U-8: claim held, player on: one play');
+        like(@p ? $p[0]{cmd}[2] : '', qr/^spoton:\/\/connect-\d+$/, 'P4U-8: connect-<ts> url');
+        is(scalar(h_log(qr/re-issuing Connect play/)), 1, 'P4U-8: exactly one re-issuing line');
+        Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
+    }
+
+    # P4U-9: no claim anywhere: ignored line with claim=none
+    {
+        my $client = Test::FakeClient->new(power => 1);
+        @Slim::Control::Request::EXECUTED = ();
+        @Slim::Utils::Log::LINES = ();
+        $ready->($client);
+        is(scalar(h_plays()), 0, 'P4U-9: no claim: no play');
+        is(scalar(h_log(qr/ignored, not the active Connect player \(claim=none\)/)), 1, 'P4U-9: ignored line claim=none');
+        is(scalar(h_log(qr/re-issuing Connect play/)), 0, 'P4U-9: no re-issuing line');
+    }
+
+    # P4U-10: the claim sits on another player: ignored line names it
+    {
+        my $owner  = Test::FakeClient->new(power => 1);
+        my $client = Test::FakeClient->new(power => 1);
+        Plugins::SpotOn::Connect->bindConnectClaim($owner, 'test');
+        my $oid = $owner->id;
+        @Slim::Control::Request::EXECUTED = ();
+        @Slim::Utils::Log::LINES = ();
+        $ready->($client);
+        is(scalar(h_plays()), 0, 'P4U-10: claim on another player: no play');
+        is(scalar(h_log(qr/ignored, not the active Connect player \(claim=\Q$oid\E\)/)), 1, 'P4U-10: ignored line names the owner');
+        is(scalar(h_log(qr/re-issuing Connect play/)), 0, 'P4U-10: no re-issuing line');
+        Plugins::SpotOn::Connect->releaseConnectClaim($owner, 'test');
+    }
+}
+
 done_testing();

@@ -290,7 +290,8 @@ sub releaseConnectClaim {
     # (pluginData treats undef as a read).
     $client->pluginData(connectOwnPlayUri => '');
     # 79-70 BR4-03 (GH #151): the saved pre-Connect power state belongs to ONE session. The normal end
-    # (`stop inactive`, Control then releases with 'inactive') hands it to the power-off wait; any other release
+    # (Connect's own `stop inactive` handler releases with 'inactive' right after _restorePowerAfterConnect, GH #216,
+    # and Soloist's Control repeats it) hands it to the power-off wait; any other release
     # (foreign content, a Browse entry, ...) ends the session without that path, so a saved "was off" would
     # survive into a LATER session of a player that was on and power it off. Unconditional on the claim: the
     # Browse entry releases without a bound claim too, and Browse playback is "other playback" for the wait.
@@ -1423,8 +1424,30 @@ sub _onPause {
     # Control instance -- goes straight to control(); without Control the
     # role answers 'down' and nothing else happens (84-07 decision, user
     # 2026-10-11: no fallthrough into the librespot HTTP/Web-API path).
+    my $staleEject = 0;    # GH #159 pass-through taken (see the unless block below); read by the outcome line
     if ($be->capabilities->{connectClaimGate}) {
-        return unless __PACKAGE__->isSpotifyConnect($client);
+        # Live-stream classification (hoisted for the GH #159 pass-through
+        # below and read again by the D-16 guard).
+        my $onPauseSong = $client->playingSong();
+        my $onPauseUrl  = $onPauseSong ? ($onPauseSong->track->url || $onPauseSong->streamUrl || '') : '';
+        my $isLiveConnectStream = 0;
+        if ($onPauseUrl =~ m{spoton://connect-}) {
+            $isLiveConnectStream = (!$onPauseSong->pluginData('info') && _isDeadHistoryUrl($onPauseUrl)) ? 0 : 1;
+        }
+
+        unless (__PACKAGE__->isSpotifyConnect($client)) {
+            # GH #159 kept alive by the GH #216 release: with the claim gone at
+            # session end, an LMS unpause of the paused stale connect stream
+            # would return here and hang in BUFFERING. The daemon is the
+            # authority (409 -> Backend::Librespot ejects the stream). Only an
+            # unpause, only a live connect-* stream, only while NO player holds
+            # the claim (a claim on another player keeps the early return).
+            return unless $isUnpause && $isLiveConnectStream && !$_activeConnectPlayer;
+            # GH #216 review IN-04: only a flag here. The echo/grace/history guards below can
+            # still return without forwarding, so the log text belongs to the outcome line at
+            # the end (written only when control() really ran).
+            $staleEject = 1;
+        }
 
         # D-16 stale-claim guard (RC-2): the ownership claim is set but this
         # pause/stop does NOT belong to a live Connect session.  Without this
@@ -1446,12 +1469,6 @@ sub _onPause {
         # for_client() registry this function already found empty. Inlined as
         # the librespot-only check it always was in this call site; no
         # Control-mode question needed (there is no Control instance to ask).
-        my $onPauseSong = $client->playingSong();
-        my $onPauseUrl  = $onPauseSong ? ($onPauseSong->track->url || $onPauseSong->streamUrl || '') : '';
-        my $isLiveConnectStream = 0;
-        if ($onPauseUrl =~ m{spoton://connect-}) {
-            $isLiveConnectStream = (!$onPauseSong->pluginData('info') && _isDeadHistoryUrl($onPauseUrl)) ? 0 : 1;
-        }
         if (!$isLiveConnectStream
             && !$client->pluginData('pendingConnect')
             && Time::HiRes::time() - ($client->pluginData('connectStartTime') || 0) >= CONNECT_START_GRACE)
@@ -1532,6 +1549,7 @@ sub _onPause {
     my $outcome = $be->control($verb, isStop => $isStop, source => ($isStop ? 'lms_stop' : 'lms_pause'));
     main::INFOLOG && $log->is_info && $log->info(
         "_onPause: control($verb) -> $outcome for " . ($client->id // '?')
+        . ($staleEject ? " (stale stream after session end, GH #159)" : '')
     );
 }
 
@@ -1704,18 +1722,35 @@ sub _onPlaylistJump {
     require Plugins::SpotOn::Unified::DaemonManager;
     my $be   = Plugins::SpotOn::Unified::DaemonManager->backendFor($client);
     my $gate = $be->capabilities->{connectClaimGate};
+    my ($staleEject, $sentVerb, $sentOutcome) = (0, undef, undef);
 
     if ($gate) {
-        return unless __PACKAGE__->isSpotifyConnect($client);
-
-        # Suppress _onPause echo: LMS fires internal pause/stop events during
-        # playlist jump (old track stops). Without this, _onPause forwards them
-        # as /control/pause BEFORE the skip command takes effect. Kept for the
-        # librespot path only -- Control's own requestPause historic
-        # check (playmode-at-delivery, Befund 3) replaces this suppression for
-        # Soloist (D-B2), where the write would be a second, needless
-        # command path.
-        $client->pluginData(connectPauseTs => Time::HiRes::time());
+        unless (__PACKAGE__->isSpotifyConnect($client)) {
+            # GH #159 kept alive by the GH #216 release (review IN-06 (1)): with the claim
+            # gone at session end, LMS Next/Previous on the paused stale connect stream
+            # must eject it like Play does (_onPause pass-through) - the player's own
+            # daemon answers 409 and Backend::Librespot ejects the stream. Same narrow
+            # conditions as the unpause pass-through: a LIVE connect-* stream (not a dead
+            # history URL) and NO player holding the claim. The classification is repeated
+            # inline: the handlers are compiled one by one in the role harnesses.
+            my $jumpSong = $client->playingSong();
+            my $jumpUrl  = $jumpSong ? ($jumpSong->track->url || $jumpSong->streamUrl || '') : '';
+            return unless $jumpUrl =~ m{spoton://connect-}
+                && ($jumpSong->pluginData('info') || !_isDeadHistoryUrl($jumpUrl))
+                && !$_activeConnectPlayer;
+            $staleEject = 1;
+        }
+        else {
+            # Suppress _onPause echo: LMS fires internal pause/stop events during
+            # playlist jump (old track stops). Without this, _onPause forwards them
+            # as /control/pause BEFORE the skip command takes effect. Kept for the
+            # librespot path only -- Control's own requestPause historic
+            # check (playmode-at-delivery, Befund 3) replaces this suppression for
+            # Soloist (D-B2), where the write would be a second, needless
+            # command path. (Not stamped on the stale pass-through: no claim, so
+            # _onPause forwards nothing but an unpause there.)
+            $client->pluginData(connectPauseTs => Time::HiRes::time());
+        }
     }
     else {
         # Phase 82: in Browse, LMS' own playlist movement drives the next
@@ -1730,7 +1765,7 @@ sub _onPlaylistJump {
         main::INFOLOG && !$gate && $log->is_info && $log->info(
             "Connect mode: jump +1 -> Control's skip-forward route (D-B2)"
         );
-        $be->control('skip_next', reason => 'jump+1');
+        ($sentVerb, $sentOutcome) = ('skip_next', $be->control('skip_next', reason => 'jump+1'));
     }
     # Debug session connect-skip-prev-ton-bleibt (2026-09-24), user
     # decision 1B -- DEVIATION from D-B2 for `jump +0`: LMS decides, like
@@ -1752,8 +1787,14 @@ sub _onPlaylistJump {
         main::INFOLOG && !$gate && $log->is_info && $log->info(
             "Connect mode: jump $index -> Control's skip-backward route (D-B2)"
         );
-        $be->control('skip_prev', reason => 'jump' . $index);
+        ($sentVerb, $sentOutcome) = ('skip_prev', $be->control('skip_prev', reason => 'jump' . $index));
     }
+
+    # Outcome line of the stale pass-through (review IN-04 rule: logged only after control() really ran).
+    main::INFOLOG && $staleEject && defined $sentVerb && $log->is_info && $log->info(
+        "_onPlaylistJump: control($sentVerb) -> $sentOutcome for " . ($client->id // '?')
+        . " (stale stream after session end, GH #159)"
+    );
 }
 
 # _liveCaps($client) -- the backend role's capabilities for a player whose
@@ -2763,6 +2804,18 @@ sub _connectEvent {
 
             _restorePowerAfterConnect($client);
 
+            # GH #216: the claim must not outlive the session - a Spirc ready
+            # hours later re-issued play on a switched-off player. Placed after
+            # the pause (D-D1: the pause needs isSpotifyConnect) and after
+            # _restorePowerAfterConnect, which has either armed the GH #151 wait
+            # (source 'inactive' then skips discardPowerState via the exemption
+            # in releaseConnectClaim) or cleared the saved state in every other
+            # branch (discardPowerState then finds nothing). Soloist: Control's
+            # _emit dispatches synchronously, Control's own 'inactive' release
+            # right after it finds no claim and repeats only no-op hygiene.
+            # Backend-neutral by design: no capability gate, no backend name.
+            __PACKAGE__->releaseConnectClaim($client, 'inactive');
+
             $log->warn("[DIAG] [$diagTs] stop: player=" . $client->id
                 . " sessionEnd=1"
                 . " elapsed=" . sprintf('%.3f', Time::HiRes::time() - $diagTs)
@@ -2833,14 +2886,14 @@ sub _connectEvent {
     # Binary sends this after successfully completing a Spirc::new() reconnect.
     # Re-issue playlist play so LMS resumes streaming without user intervention.
     # T-05.3-06: guard checks $_activeConnectPlayer eq $client->id before acting.
+    # Guards in order: claim, M11 (paused), GH #216 (powered off). The
+    # "re-issuing" line is logged only when play is really re-issued; a ready
+    # for a player without the claim logs one "ignored" line instead.
     # T-05.3-07: source(__PACKAGE__) prevents the resulting playlist events from
     # echoing back to the binary (T-05-13 loop prevention).
     # -----------------------------------------------------------------
     if ($cmd eq 'ready') {
         _settleCancel($client, 'ready');    # 84.3-01
-        main::INFOLOG && $log->is_info && $log->info(
-            "Spirc reconnected (ready event) for " . $client->id . " - re-issuing Connect play"
-        );
 
         # Only re-issue if this player was previously the active Connect player.
         # If not (e.g. another player took over), ignore.
@@ -2853,6 +2906,25 @@ sub _connectEvent {
                 );
                 return;
             }
+            # GH #216: a switched-off player is never switched on by a Spirc reconnect
+            if (!$client->power) {
+                main::INFOLOG && $log->is_info && $log->info(
+                    "Spirc ready but player is off - not forcing playback, releasing the claim (GH #216)"
+                );
+                # The claim outlived its session (no `stop inactive` reached the handler:
+                # playback ended before the device was deselected, or the Spirc task was
+                # torn down first). It has no purpose left - a real continuation arrives
+                # as `start` and binds it again - and kept, the next ready on the
+                # switched-on, idle player would re-issue play. Source is NOT 'inactive':
+                # no `stop inactive` handler took the saved power state over, and the
+                # player is already off, so a saved pre-Connect state and a pending GH #151
+                # power-off wait are stale and go (discardPowerState powers nothing off).
+                __PACKAGE__->releaseConnectClaim($client, 'ready-power-off');
+                return;
+            }
+            main::INFOLOG && $log->is_info && $log->info(
+                "Spirc reconnected (ready event) for " . $client->id . " - re-issuing Connect play"
+            );
             $client->pluginData(connectStartTime => Time::HiRes::time());
 
             # D-04 backend dispatch: Soloist Connect uses spoton://track:ID
@@ -2883,6 +2955,12 @@ sub _connectEvent {
             ]);
             $playReq->source(__PACKAGE__);
             $playReq->execute();
+        }
+        else {
+            main::INFOLOG && $log->is_info && $log->info(
+                "Spirc reconnected (ready event) for " . $client->id
+                . " - ignored, not the active Connect player (claim=" . ($_activeConnectPlayer // 'none') . ")"
+            );
         }
         return;
     }

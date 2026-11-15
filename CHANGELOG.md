@@ -5,6 +5,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.0.0-beta.12] - 2026-11-15
+
+**Installing this beta.** Same beta repository URL as before (`https://stiefenm.github.io/spoton/beta/repo.xml`); the Plugins page offers SpotOn 4.0.0beta12 as an update over 4.0.0beta11. Restart LMS after the update. The first fix is for the Soloist backend, the second for the librespot backend.
+
+### Fixed
+
+- Soloist no longer crashes at start on processors without AVX (for example Intel Celeron J4125); the bundled audio helper library is built for all 64-bit Intel/AMD processors again.
+
+- librespot backend: a player that was switched off after a Connect session no longer switches itself on when the Spotify connection reconnects later. Next and Previous on a paused leftover Connect entry after the Spotify session has ended stop it instead of replaying the last title.
+
 ## [4.0.0-beta.11] - 2026-11-14
 
 **Installing this beta.** Same beta repository URL as before (`https://stiefenm.github.io/spoton/beta/repo.xml`); the Plugins page offers SpotOn 4.0.0beta11 as an update over 4.0.0beta10. Restart LMS after the update. The fixes below apply to both backends unless they name one.

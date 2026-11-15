@@ -1016,4 +1016,123 @@ sub unreachable_entries { return grep { $_->[1] eq 'Connect' && ($_->[3] // '') 
     is(scalar(unreachable_entries()), 0, 'no stream port: no status entry either (unchanged)');
 }
 
+# ============================================================
+# 261114-p4u (GH #216): the Connect claim ends with the session
+# (this file runs with INFOLOG off: no log assertions here)
+# ============================================================
+{
+    # P4U-4: the real Backend::Librespot role - stop 'inactive' releases the claim
+    fresh(playing => 1, song => MockSong->new(url => 'spoton://connect-9', info => { live => 1 }));
+    $CONNECT->bindConnectClaim($C, 'test');
+    ev('stop', 'inactive');
+    ok(!$CONNECT->isSpotifyConnect($C), "P4U-4: stop 'inactive' releases the claim (librespot role)");
+    @Slim::Control::Request::SENT = ();
+    $C->{playing} = 0;
+    $C->{power}   = 0;
+    ev('ready');
+    # IN-07: this runs AFTER the release, so it reaches the "ignored, no claim" branch and not the
+    # power-off guard (it would pass with power => 1 as well). The power guard is P4U-13 below.
+    is_deeply([ cmds() ], [], 'P4U-4: ready after the session end (no claim): nothing sent');
+}
+
+{
+    # P4U-5: GH #159 stays intact - an LMS unpause of the paused stale connect
+    # stream after the session end still reaches the daemon, its 409 ejects it
+    fresh(playing => 0, paused => 1, song => MockSong->new(url => 'spoton://connect-9', info => { live => 1 }));
+    $CONNECT->bindConnectClaim($C, 'test');
+    ev('stop', 'inactive');
+    is_deeply([ cmds() ], [], 'P4U-5: deselect while paused sends nothing');
+    Plugins::SpotOn::Connect::_onPause(pause_req('pause', 0));
+    my @p = posts();
+    is(scalar(@p), 1, 'P4U-5: LMS unpause after the session end: one control POST');
+    ok(@p && $p[0]{url} eq 'http://127.0.0.1:4242/control/play', 'P4U-5: the POST is /control/play');
+    $p[0]->fire_error('409 Conflict', undef) if @p;
+    is_deeply([ cmds() ], ['stop'], 'P4U-5: the 409 ejects the stale stream with one stop');
+    my @sent = sent();
+    ok(@sent && $sent[-1]{source} eq $CONNECT_SRC, 'P4U-5: the stop is source-marked');
+}
+
+{
+    # P4U-6: no claim, live connect stream, LMS pause: nothing goes to the daemon
+    fresh(playing => 1, song => MockSong->new(url => 'spoton://connect-9', info => { live => 1 }));
+    Plugins::SpotOn::Connect::_onPause(pause_req('pause', 1));
+    is(scalar(posts()), 0, 'P4U-6: no claim, LMS pause on a connect stream: no control POST');
+}
+
+# ============================================================
+# 261114-p4u-r2 (GH #216 review, WR-05 + IN-07): the ready power-off guard releases the claim
+# ============================================================
+{
+    # P4U-13: the real power-off guard on the real librespot role. The claim outlived its session (the
+    # session ended WITHOUT a `stop inactive`), the player is off: ready sends nothing and drops the
+    # claim, so the next ready - player switched on again and idle - cannot replace its playlist either.
+    fresh(playing => 0, power => 0, song => MockSong->new(url => 'spoton://connect-9', info => { live => 1 }));
+    $CONNECT->bindConnectClaim($C, 'test');
+    ok($CONNECT->isSpotifyConnect($C), 'P4U-13: precondition, the claim is bound');
+    ev('ready');
+    is_deeply([ cmds() ], [], 'P4U-13: claim bound, player off, ready without a preceding stop inactive: nothing sent');
+    ok(!$CONNECT->isSpotifyConnect($C), 'P4U-13: the power-off guard released the claim');
+    $C->{power}   = 1;
+    $C->{playing} = 0;
+    @Slim::Control::Request::SENT = ();
+    ev('ready');
+    is_deeply([ cmds() ], [], 'P4U-13: player switched on again and idle, second ready: still nothing sent');
+}
+
+{
+    # P4U-14: positive control - same claim, player on: ready re-issues playlist play
+    fresh(playing => 0, power => 1, song => MockSong->new(url => 'spoton://connect-9', info => { live => 1 }));
+    $CONNECT->bindConnectClaim($C, 'test');
+    ev('ready');
+    my @c = cmds();
+    is(scalar(@c), 1, 'P4U-14: claim bound, player on, ready: one request');
+    like($c[0] // '', qr/^playlist play spoton:\/\/connect-\d+$/, 'P4U-14: ready re-issues playlist play spoton://connect-<ts>');
+    ok($CONNECT->isSpotifyConnect($C), 'P4U-14: the claim stays bound');
+}
+
+# ============================================================
+# 261114-p4u-r2 (GH #216 review, IN-06 (1)): Next/Previous on the stale connect stream eject like Play
+# ============================================================
+sub stale_connect_stream {
+    fresh(playing => 0, paused => 1, song => MockSong->new(url => 'spoton://connect-9', info => { live => 1 }));
+    $CONNECT->bindConnectClaim($C, 'test');
+    ev('stop', 'inactive');                 # the session ends: the claim is released
+    @Slim::Control::Request::SENT = ();
+    @Slim::Networking::SimpleAsyncHTTP::POSTS = ();
+}
+
+for my $case ([ 'next', '+1', '/control/next' ], [ 'prev', '-1', '/control/prev' ], [ 'jump +0', '+0', '/control/prev' ]) {
+    my ($label, $index, $endpoint) = @$case;
+    stale_connect_stream();
+    ok(!$CONNECT->isSpotifyConnect($C), "P4U-15 $label: precondition, no claim after the session end");
+    Plugins::SpotOn::Connect::_onPlaylistJump(jump_req($index));
+    my @p = posts();
+    is(scalar(@p), 1, "P4U-15 $label: LMS jump on the stale stream: one control POST to the player's own daemon");
+    is($p[0] && $p[0]{url}, "http://127.0.0.1:4242$endpoint", "P4U-15 $label: the POST is $endpoint");
+    $p[0]->fire_error('409 Conflict', undef) if @p;
+    is_deeply([ cmds() ], ['stop'], "P4U-15 $label: the daemon's 409 ejects the stale stream with one stop");
+    my @sent = sent();
+    ok(@sent && $sent[-1]{source} eq $CONNECT_SRC, "P4U-15 $label: the stop is source-marked");
+}
+
+{
+    # P4U-16: negatives - the pass-through stays as narrow as the unpause one
+    fresh(playing => 1, song => MockSong->new(url => 'spoton://track:BRW1', info => undef));
+    Plugins::SpotOn::Connect::_onPlaylistJump(jump_req('+1'));
+    is(scalar(posts()), 0, 'P4U-16: Browse stream, no claim, LMS next: nothing forwarded');
+
+    fresh(playing => 0, paused => 1, song => MockSong->new(url => 'spoton://connect-9', info => undef));
+    $Slim::Utils::Cache::STORE{ 'spoton_meta_' . md5_hex('spoton://connect-9') } = { spotifyUri => 'spotify:track:OLD' };
+    Plugins::SpotOn::Connect::_onPlaylistJump(jump_req('+1'));
+    is(scalar(posts()), 0, 'P4U-16: dead history URL, no claim, LMS next: nothing forwarded');
+
+    # another player holds the claim: this player's jump is not forwarded either
+    my $owner = MockClient->new(playing => 1);
+    fresh(playing => 0, paused => 1, song => MockSong->new(url => 'spoton://connect-9', info => { live => 1 }));
+    $CONNECT->bindConnectClaim($owner, 'test');
+    Plugins::SpotOn::Connect::_onPlaylistJump(jump_req('+1'));
+    is(scalar(posts()), 0, 'P4U-16: the claim sits on another player, LMS next: nothing forwarded');
+    $CONNECT->releaseConnectClaim($owner, 'test');
+}
+
 done_testing();
