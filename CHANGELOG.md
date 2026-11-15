@@ -5,6 +5,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Soloist: the last seconds of a title that ends quietly, for example in a fade-out, are no longer cut off. At the end of a Soloist stream LMS often ended the song before its FLAC encoder had written the last of it, and dropped that. On a quiet ending the encoder holds several seconds, because quiet audio compresses to a few bytes; in a sync group the players then ran out and the group was silent for several seconds before the next title. ([#213](https://github.com/stiefenm/spoton/issues/213))
+
 ## [4.0.0] - 2026-11-15
 
 **SpotOn 4.0 is a large update over 3.5.x.** It no longer uses the Spotify Web API, needs no Spotify Developer App or client ID, and adds a second playback backend, Soloist (Spotify's own client, Linux only), next to librespot. The plugin manager offers it as an update over 3.5.8 and over every 4.0 beta. Restart LMS after the update. The sections below summarise what changes when you come from 3.5.x; the 4.0 beta entries further down list every change in detail.

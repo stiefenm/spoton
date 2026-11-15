@@ -1718,6 +1718,25 @@ package Plugins::SpotOn::ProtocolHandler::Stream;
 
 our @ISA = ('Slim::Player::Protocols::HTTP');
 
+# LMS 9.1's transcoding path (Slim::Player::Pipeline::sysread, taken by every Soloist stream LMS
+# transcodes, e.g. FLAC via sox; the PCM passthrough has no Pipeline) closes this stream object, its source, at the source's EOF, drops the last reference to it and
+# reads the transcoder (sox) in the same call. sox writes its last output only once its input is
+# closed, so that read fails with EAGAIN. Leaving the call frees this object; RemoteStream::DESTROY
+# closes the closed socket again, which sets $! to EBADF before Source::_readNextChunk checks it.
+# LMS takes the EAGAIN for a read error, ends the song and throws away what sox still writes.
+# How much that is depends on the music: FLAC packs a quiet or silent passage into a few bytes per
+# frame, and sox keeps its output in a 4 KB stdio buffer until it is full, so the last seconds of a
+# fade-out can sit in sox and are lost (measured 2026-11-15: up to ~4 s, with and without the
+# end-gap early EOF; strace and a debug build showed errno 11 entering this DESTROY and 9 after
+# the parent's). Keeping $! (and $@) across the destruction leaves LMS the real EAGAIN: it waits
+# for sox's last output and ends the song on sox's EOF.
+sub DESTROY {
+    local ($!, $@);
+    my $self = shift;
+    eval { $self->SUPER::DESTROY(@_) };
+    return;
+}
+
 sub requestString {
     my ($self, $client, $url, $post, $seekdata) = @_;
     my $plain = Plugins::SpotOn::ProtocolHandler::_daemonRequestString($url);
