@@ -15,6 +15,7 @@ Plugins/SpotOn/DisplayFormat.pm
 Plugins/SpotOn/DontStopTheMusic.pm
 Plugins/SpotOn/Helper.pm
 Plugins/SpotOn/HomeExtras.pm
+Plugins/SpotOn/Importer.pm
 Plugins/SpotOn/Plugin.pm
 Plugins/SpotOn/ProtocolHandler.pm
 Plugins/SpotOn/Settings.pm

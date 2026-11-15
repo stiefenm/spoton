@@ -5,6 +5,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- LMS library integration ([#32](https://github.com/stiefenm/spoton/issues/32)): an LMS rescan now imports your Saved Albums into LMS's own library and your Spotify playlists as LMS playlists named "Spotify: ...". They show up in LMS search and browsing, and the Online Music Library plugin's "Music without online duplicates" view hides Spotify albums you also have locally. The import runs only inside LMS scans (no background polling) and is incremental: imported albums are remembered for about a month, a playlist is read again when it changed (and at the latest after 30 days), and track names come from SpotOn's track cache. A first import reads each new album once and names its tracks in batches of 200; a rescan of an unchanged library sends one request per 200 Saved Albums and Liked Songs together, plus one per account. The first rate limit from Spotify ends the import for that scan, and everything not read keeps its previous import. The switch is the new SpotOn entry under LMS Settings > Online Music Library Integration (on by default); switching it off keeps the imported albums until "Clear library and rescan everything". If Spotty's library import is also on, albums show up twice: keep one of the two on.
+
 ## [4.0.0] - 2026-11-15
 
 **SpotOn 4.0 is a large update over 3.5.x.** It no longer uses the Spotify Web API, needs no Spotify Developer App or client ID, and adds a second playback backend, Soloist (Spotify's own client, Linux only), next to librespot. The plugin manager offers it as an update over 3.5.8 and over every 4.0 beta. Restart LMS after the update. The sections below summarise what changes when you come from 3.5.x; the 4.0 beta entries further down list every change in detail.
