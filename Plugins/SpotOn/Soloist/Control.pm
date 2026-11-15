@@ -640,8 +640,31 @@ sub _forgetOwnQueue {
         "Control: forgetting own queue entries (" . join(',', sort keys %$q) . ") -- "
         . ($why // '?') . " (" . ($self->mac // '?') . ")"
     );
+    # Leftover memory: own entries still in the daemon's queue are remembered by their uid
+    # (observed.ownLeftovers), so that a Spotify app session that takes over cannot play them
+    # (_connectLeftoverHead) and a later Browse jump can consume them (_ownLeftoversAtHead). Only a
+    # stable uid counts: when the daemon reports none (uid = the uri) an entry is not told apart
+    # from the user's own one.
+    for my $e (@{ $self->observed->{queueEntries} || [] }) {
+        next unless defined $e->{uid} && $e->{uid} ne $e->{uri} && $q->{ $e->{uri} };
+        $self->observed->{ownLeftovers}{ $e->{uid} } = $e->{uri};
+    }
     $self->observed->{queuedByUs} = {};
     return;
+}
+
+# _connectLeftoverHead($self, $uri) -- leftover memory: the uid of the daemon's queue head when it
+# is a remembered own leftover (observed.ownLeftovers) for $uri, else undef. Read by the track_changed
+# that consumes the head (queueHead still names it). Hidden pref soloistConsumeLeftovers.
+sub _connectLeftoverHead {
+    my ($self, $uri) = @_;
+    return undef unless $prefs->get('soloistConsumeLeftovers') // 1;
+    my $o    = $self->observed;
+    my $head = $o->{queueHead};
+    my $left = $o->{ownLeftovers};
+    return undef unless ref($head) eq 'HASH' && defined $head->{uid} && defined $head->{uri} && ref($left) eq 'HASH';
+    return undef unless $head->{uri} eq $uri && ($left->{ $head->{uid} } // '') eq $uri;
+    return $head->{uid};
 }
 
 sub new {
@@ -2554,15 +2577,22 @@ sub _ownLeftoversAtHead {
     return () unless $prefs->get('soloistConsumeLeftovers') // 1;
     my $o    = $self->observed;
     my $head = $o->{queueHead};
-    my $own  = $o->{queuedByUs};
-    return () unless ref($head) eq 'HASH' && defined $head->{uri} && ref($own) eq 'HASH';
+    my $own  = ref($o->{queuedByUs}) eq 'HASH' ? $o->{queuedByUs} : {};
+    return () unless ref($head) eq 'HASH' && defined $head->{uri};
     my @q = @{ $o->{queueUris} || [] };
     shift @q if @q && defined $o->{track} && $q[0] eq $o->{track};
     return () unless @q && $q[0] eq $head->{uri};
+    # an entry is own when SpotOn queued it in this Browse session (queuedByUs) or it is a remembered
+    # leftover of an earlier one (its uid in observed.ownLeftovers)
+    my $left = ref($o->{ownLeftovers}) eq 'HASH' ? $o->{ownLeftovers} : {};
+    my %leftUri;
+    for my $e (@{ $o->{queueEntries} || [] }) {
+        $leftUri{ $e->{uri} } = 1 if defined $e->{uid} && ($left->{ $e->{uid} } // '') eq $e->{uri};
+    }
     my @out;
     for my $u (@q) {
         last if @out >= LEFTOVER_CONSUME_MAX;
-        last unless $own->{$u};
+        last unless $own->{$u} || $leftUri{$u};
         last if defined $target && $u eq $target;
         push @out, $u;
     }
@@ -4764,6 +4794,29 @@ sub onEvent {
     my $type = $msg->{type};
     return unless defined $type;
 
+    # Leftover memory, Connect: while the daemon passes through a leftover SpotOn is skipping
+    # (_onFrameTrackChanged), every frame about it is swallowed until the skip's track_changed for the
+    # next title. A playback_state of the leftover would otherwise emit a `change` for LMS (seen live:
+    # LMS then took the leftover as a Browse title and ended the app's session), a position_sync of it
+    # could read as a seek. queue_changed and every other frame pass.
+    if (my $ls = $self->observed->{leftoverSkip}) {
+        if (($ls->{until} // 0) <= Time::HiRes::time()) {
+            delete $self->observed->{leftoverSkip};
+        }
+        elsif ($type eq 'track_changed' || $type eq 'playback_state') {
+            my $u = ref($msg->{item}) eq 'HASH' ? $msg->{item}{uri} : undef;
+            if (!defined $u || $u eq $ls->{uri}) {
+                main::DEBUGLOG && $log->is_debug && $log->debug(
+                    "Control: $type of the skipped leftover swallowed (" . ($self->mac // '?') . ")");
+                return;
+            }
+            delete $self->observed->{leftoverSkip};    # the next title: the skip is done, process it
+        }
+        elsif ($type eq 'position_sync' || $type eq 'playback_changed') {
+            return;
+        }
+    }
+
     my $now = Time::HiRes::time();
     my ($class, $detail) = _classify($msg, $self->wanted, $self->observed, $self->pending, $self->mode, $now,
         $self->_lmsPlaysOurs);
@@ -5053,6 +5106,27 @@ sub _onFrameTrackChanged {
                     "Control: track_changed $uri is our leftover consume, swallowed (" . ($self->mac // '?') . ")");
                 return;
             }
+        }
+
+        # Leftover memory, Connect: the daemon reached a title SpotOn queued for LMS before the Spotify
+        # app took over (its uid at the head of the queue). Spotify plays the queue before the app's
+        # context, so the app would get our old successor. Skip it at once and swallow the frame: no
+        # `change` for LMS, no boundary; the skip's own track_changed brings the app's next title.
+        if ($self->mode eq 'connect' && defined(my $lid = $self->_connectLeftoverHead($uri))) {
+            delete $self->observed->{ownLeftovers}{$lid};
+            delete $self->observed->{queueHead};
+            $self->observed->{queueEntries} = [ grep { ($_->{uid} // '') ne $lid } @{ $self->observed->{queueEntries} || [] } ];
+            if (ref($self->observed->{queueUris}) eq 'ARRAY') {
+                my @q = @{ $self->observed->{queueUris} };
+                for my $i (0 .. $#q) { if ($q[$i] eq $uri) { splice @q, $i, 1; last } }
+                $self->observed->{queueUris} = \@q;
+            }
+            main::INFOLOG && $log->is_info && $log->info(
+                "Control: the daemon reached $uri, a title SpotOn queued for LMS before the Spotify app took over -- skipping it (skip_next) ("
+                . ($self->mac // '?') . ")");
+            $self->observed->{leftoverSkip} = { uri => $uri, until => Time::HiRes::time() + LEFTOVER_CONSUME_S };
+            $self->_execute([ { op => 'send', cmd => 'skip_next', wireArgs => [], slot => undef } ]);
+            return;
         }
 
         $self->_noteCurrentItem($msg->{item});    # 85-07 D-09
@@ -7100,6 +7174,24 @@ sub _onFrameQueueChanged {
 
             my $old = $self->observed->{queueHead};
             $self->observed->{queueUris} = \@qUris;
+            # Leftover memory: the queue's own-queue entries with their uids, in order (the uid is
+            # the daemon's stable entry id, or the item uri when it has none), and the remembered
+            # leftovers that are still in the queue (an entry gone from it is no longer one).
+            {
+                my @qe;
+                for my $e (@$up) {
+                    next unless ref($e) eq 'HASH' && ref($e->{item}) eq 'HASH' && ($e->{source} // '') eq 'queue';
+                    my $eu = $e->{item}{uri};
+                    next unless defined $eu && $eu =~ /^spotify:track:[A-Za-z0-9]+$/;
+                    push @qe, { uri => $eu, uid => $e->{uid} };
+                }
+                $self->observed->{queueEntries} = \@qe;
+                my $left = $self->observed->{ownLeftovers};
+                if (ref($left) eq 'HASH' && %$left) {
+                    my %present = map { (defined $_->{uid} ? ($_->{uid} => 1) : ()) } @qe;
+                    delete $left->{$_} for grep { !$present{$_} } keys %$left;
+                }
+            }
             if ($head) { $self->observed->{queueHead} = $head }
             else       { delete $self->observed->{queueHead} }
 

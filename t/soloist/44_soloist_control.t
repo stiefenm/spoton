@@ -3398,6 +3398,83 @@ sub lc_tc {
     is($ctl->observed->{track}, $LC_L1, "LC-6: and the track_changed is processed as before");
 }
 
+# --- Leftover memory (LM): own entries still queued when Control loses control are remembered by uid; in Connect the
+# daemon reaching one is skipped at once (Spotify plays the queue before the app's context), a later Browse jump
+# consumes one. Only a stable uid counts (uid = uri means the daemon has none).
+{
+    my ($ctl, $daemon, $ws) = lc_session('aa:bb:cc:dd:ee:d1',
+        [ [ 'q12', 'queue', $LC_L1 ], [ $LC_L2, 'queue', $LC_L2 ], [ 'q14', 'queue', 'spotify:track:usersOwnQueued0001' ] ],
+        [ $LC_L1, $LC_L2 ]);
+    $ctl->_forgetOwnQueue('test');
+    is_deeply($ctl->observed->{ownLeftovers}, { q12 => $LC_L1 },
+        "LM-1: forgetting the own queue remembers the own entry by its uid (not the one without a stable uid, not the user's)");
+    is_deeply($ctl->observed->{queuedByUs}, {}, "LM-1: and forgets queuedByUs as before");
+    $ctl->onEvent(n4_queue_changed([ 'q14', 'queue', 'spotify:track:usersOwnQueued0001' ]));
+    is_deeply($ctl->observed->{ownLeftovers}, {}, "LM-2: an entry gone from the queue is no longer a leftover");
+}
+{
+    my ($ctl, $daemon, $ws) = lc_session('aa:bb:cc:dd:ee:d3', [ [ 'q12', 'queue', $LC_L1 ] ], [ $LC_L1 ]);
+    $ctl->_forgetOwnQueue('takeover');
+    $ctl->mode('connect');
+    $ctl->onEvent(n4_queue_changed([ 'q12', 'queue', $LC_L1 ]));
+    @IO::Socket::INET::CALLS = ();
+    $ctl->onEvent(lc_tc($LC_L1));
+    is_deeply($ws->sent, [ [ 'skip_next', {} ] ], "LM-3: Connect: the daemon reaching our leftover -> one skip_next");
+    is($ctl->observed->{track}, 'spotify:track:previousXYZ', "LM-3: the frame is swallowed (observed.track unchanged)");
+    ok(!$ctl->observed->{pendingChange}, "LM-3: no change for LMS");
+    is(scalar(@IO::Socket::INET::CALLS), 0, "LM-3: no boundary");
+    is_deeply($ctl->observed->{ownLeftovers}, {}, "LM-3: the leftover is gone");
+}
+{
+    # LM-7: the leftover's other frames are swallowed too (live: its playback_state emitted a `change` and LMS ended the
+    # app's session); the next title's track_changed ends the skip and is processed
+    my ($ctl, $daemon, $ws) = lc_session('aa:bb:cc:dd:ee:d7', [ [ 'q12', 'queue', $LC_L1 ] ], [ $LC_L1 ]);
+    $ctl->_forgetOwnQueue('takeover');
+    $ctl->mode('connect');
+    $ctl->observed->{startEmittedFor} = 'spotify:track:previousXYZ';
+    $ctl->onEvent(n4_queue_changed([ 'q12', 'queue', $LC_L1 ]));
+    $ctl->onEvent(lc_tc($LC_L1));
+    ok($ctl->observed->{leftoverSkip}, "LM-7 setup: the skip is in progress");
+    @Slim::Player::Client::EXECUTED = ();
+    my $ps = decode_frame(load_fixture('playback_state.json'));
+    $ps->{item}{uri} = $LC_L1;
+    my $anchorBefore = $ctl->observed->{anchor};
+    $ctl->onEvent($ps);
+    $ctl->onEvent(decode_frame(load_fixture('position_sync.json')));
+    is_deeply(\@Slim::Player::Client::EXECUTED, [], "LM-7: the leftover's playback_state emits no change for LMS");
+    is($ctl->observed->{track}, 'spotify:track:previousXYZ', "LM-7: observed.track stays");
+    is($ctl->observed->{anchor}, $anchorBefore, "LM-7: its position_sync moves no anchor");
+    $ctl->onEvent(lc_tc('spotify:track:appsNextTitle00000001'));
+    ok(!$ctl->observed->{leftoverSkip}, "LM-7: the next title's track_changed ends the skip");
+    is($ctl->observed->{track}, 'spotify:track:appsNextTitle00000001', "LM-7: and is processed");
+}
+{
+    # the same title queued by the user (another uid) is not ours
+    my ($ctl, $daemon, $ws) = lc_session('aa:bb:cc:dd:ee:d4', [ [ 'q12', 'queue', $LC_L1 ] ], [ $LC_L1 ]);
+    $ctl->_forgetOwnQueue('takeover');
+    $ctl->mode('connect');
+    $ctl->onEvent(n4_queue_changed([ 'q30', 'queue', $LC_L1 ], [ 'q12', 'queue', $LC_L1 ]));
+    $ctl->onEvent(lc_tc($LC_L1));
+    is_deeply($ws->sent, [], "LM-4: the head is the user's entry for the same title (another uid): not skipped");
+}
+{
+    local $Slim::Utils::Prefs::FAKE_VALUES{soloistConsumeLeftovers} = 0;
+    my ($ctl, $daemon, $ws) = lc_session('aa:bb:cc:dd:ee:d5', [ [ 'q12', 'queue', $LC_L1 ] ], [ $LC_L1 ]);
+    $ctl->_forgetOwnQueue('takeover');
+    $ctl->mode('connect');
+    $ctl->onEvent(n4_queue_changed([ 'q12', 'queue', $LC_L1 ]));
+    $ctl->onEvent(lc_tc($LC_L1));
+    is_deeply($ws->sent, [], "LM-5: soloistConsumeLeftovers 0 -> no skip in Connect either");
+}
+{
+    # Browse again later: a remembered leftover (queuedByUs empty) at the head is consumed before a jump
+    my ($ctl, $daemon, $ws) = lc_session('aa:bb:cc:dd:ee:d6', [ [ 'q12', 'queue', $LC_L1 ] ], []);
+    $ctl->observed->{ownLeftovers} = { q12 => $LC_L1 };
+    $ctl->requestTrack($TID, 0, {});
+    is_deeply($ws->sent, [ [ 'skip_next', {} ], [ 'play', { uri => $TID } ] ],
+        "LM-6: Browse: a remembered leftover at the head is consumed before the play");
+}
+
 # --- change 2: queue head == target -> skip_next consumes it (a `play X` never consumes a head equal to X,
 # same-1 10:29:57.381); the slot stays {cmd:'play', uri} so the track_changed echo is classified as OWN.
 {
