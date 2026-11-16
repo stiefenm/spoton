@@ -865,6 +865,10 @@ sub requestTrack {
     if ($self->mode eq 'connect' && ($opts->{source} // '') eq 'getNextTrack'
         && (!defined $self->observed->{track} || $self->observed->{track} ne $uri))
     {
+        # app wake (2026-11-15): this hand-over was silent -- the 12:34-12:44 loop passed through here once per title
+        main::INFOLOG && $log->is_info && $log->info("Control: getNextTrack for $uri while the daemon is on "
+            . ($self->observed->{track} // '-') . " -- LMS took the session over, handing over to browse ("
+            . ($self->mac // '?') . ")");
         $self->mode('browse');
     }
     elsif ($self->mode eq 'connect' && ($opts->{source} // '') eq 'getNextTrack'
@@ -3131,6 +3135,9 @@ sub _execute {
             if ($cmd eq 'pause' || $cmd eq 'play' || $cmd eq 'seek') {
                 $self->observed->{lastPlaybackCmdAt} = Time::HiRes::time();
                 $self->_cancelHangWatch("own $cmd");
+                # app wake (2026-11-15): a dormant->playing edge seen BEFORE an own command can be that
+                # command's echo or race -- only an edge after the last own command counts.
+                delete $self->observed->{wakeEdge};
             }
 
             if ($intent->{seekTarget}) {
@@ -4115,6 +4122,16 @@ sub _onFrameContextChanged {
         $self->_armReloadKeep($msg);
         return;
     }
+    if ($self->mode eq 'idle') {
+        # app wake: annotates an open dormant->playing edge only (the same burst, 79-51 E1 PASS1);
+        # idle still records no ctxForeign and runs no takeover.
+        my $we = $self->observed->{wakeEdge};
+        my $c  = $msg->{context};
+        $we->{newContext} = 1
+            if ref($we) eq 'HASH' && ref($c) eq 'HASH' && defined $c->{uri} && !ref($c->{uri})
+               && length($c->{uri}) && !$self->_isOwnBrowseUri($c->{uri});
+        return;
+    }
     return unless $self->mode eq 'browse';
     my $ctx = $msg->{context};
     return unless ref($ctx) eq 'HASH';
@@ -4222,6 +4239,7 @@ sub _enterConnectSession {
     });
     delete $self->observed->{leftBrowseUri};
     delete $self->observed->{leftBrowsePlanted};
+    $self->observed->{sessionEntry} = $why;    # app wake: _adoptedOnStaleStop
     if ($o{fresh}) {
         delete $self->observed->{leftConnectForeign};
         delete $self->observed->{autoplayPaused};
@@ -4792,11 +4810,36 @@ sub _onFrameOptionsChanged {
 
 # _resumeDueRelease($self, $id, $pos, $why) -- the single exit of a held resume. Only in mode connect it
 # emits (and asks the daemon for its state, the post-resume reconciliation); in any other mode it drops.
+#
+# app wake (2026-11-15): released as the session's plain `start` instead when
+#   - the record is an app wake's held start (asStart, _appWakeStart: the title the item-less playing frame did
+#     not name). _emitStart is a no-op when the deciding frame's own handler already started its new title;
+#   - or (same-title releases only) the session was adopted from idle and LMS is STOPPED on one of our entries for
+#     ANOTHER title (_adoptedOnStaleStop): Connect.pm's resume
+#     branch reads any spoton://track: entry as "on the Connect stream" and its `pause 0` on a stopped player is
+#     LMS's `playlist jump <index>` -- it re-opens that stale entry, whose unmarked getNextTrack hands the session
+#     to browse (requestTrack) and plays the stale title at the daemon. A start is a marked `playlist play` of the
+#     daemon's title instead. The dormant session a restored adoption leaves behind is the case (the session
+#     marker is dropped first so the start goes out). A 'new title' release is never converted: the frame's own
+#     `change` already re-opened LMS.
 sub _resumeDueRelease {
     my ($self, $id, $pos, $why) = @_;
-    delete $self->observed->{resumeDue};
+    my $rd = delete $self->observed->{resumeDue};
     Slim::Utils::Timers::killTimers($self, \&_resumeDueFire);
     return unless $self->mode eq 'connect';
+    my $asStart = (ref($rd) eq 'HASH' && $rd->{asStart}) ? 1 : 0;
+    if (!$asStart && $why ne 'new title' && $self->_adoptedOnStaleStop($id)) {
+        delete $self->observed->{startEmittedFor};
+        $asStart = 1;
+    }
+    if ($asStart) {
+        return unless defined $id && length $id;
+        main::INFOLOG && $log->is_info && $log->info(
+            "Control: resume released as the session's start ($why) track=$id (" . ($self->mac // '?') . ")"
+        );
+        $self->_emitStart($id, $pos);
+        return;
+    }
     main::INFOLOG && $log->is_info && $log->info(
         "Control: resume released ($why) track=" . ($id // '-') . " (" . ($self->mac // '?') . ")"
     );
@@ -4853,6 +4896,14 @@ sub _resumeDuePre {
         return;
     }
     if (Time::HiRes::time() - ($rd->{at} // 0) > RESUME_DUE_MAX_S) {
+        if ($rd->{asStart}) {
+            # app wake: a dropped start leaves LMS stopped under a playing daemon (the ladder would then
+            # `change` a stopped LMS) -- start the title the daemon last named instead
+            $log->warn("Control: no title frame within " . RESUME_DUE_MAX_S . " s after an app wake -- starting "
+                . ($self->observed->{track} // '-') . " (" . ($self->mac // '?') . ")");
+            $self->_resumeDueRelease(_trackIdOf($self->observed->{track}), '', 'stale');
+            return;
+        }
         # D-33 WR-02: a held resume that nothing released is a lost user action, not an INFO
         $log->warn("Control: held resume dropped (stale) - nothing released it within " . RESUME_DUE_MAX_S . " s ("
             . ($self->mac // '?') . ")");
@@ -4905,6 +4956,114 @@ sub _resumeDuePost {
     return unless defined $rd->{releaseFor};
     $self->_resumeDueRelease(_trackIdOf($rd->{releaseFor}), '', 'new title');
     return;
+}
+
+# ---------------------------------------------------------------------------
+# app wake (live 2026-11-15 12:34-12:44): after Control's own Browse stop-leave (requestPause isStop ->
+# leftBrowseUri) the daemon stays the active device, paused. The user pressing play / starting an album in the
+# Spotify app on that SAME device was adopted as a 'restored' session: Connect.pm suppressed the start while LMS
+# stood (or a stale startEmittedFor swallowed it), the split-brain ladder then `change`d a stopped LMS, whose
+# `pause 0` re-opened LMS's stale one-entry playlist and flipped the session back to browse -- the autoplay guard
+# then paused at every title end. Here an app action wakes a fresh Connect session with a plain start instead.
+#
+# observed.reportedStatus: the daemon's own status reports, playback_changed / playback_state only, and only
+# playing/paused/stopped/idle -- never `buffering`, never the speed-0 position_sync or the track_changed writes of
+# observed.status (an autoplay advance passes through those: d34-end-on A_on reports playing -> buffering ->
+# track_changed -> buffering, never paused -> playing). observed.wakeEdge: a playing report straight after a
+# dormant one (paused/stopped/idle) -- set by the first playing frame of the app's burst, annotated by an idle
+# context_changed of the same burst (newContext, 79-51 PASS1), deleted by the next dormant report, by every own
+# pause/play/seek send, and by _transportClosed (a reconnect snapshot is no transition: 79-61 restored stays).
+# ---------------------------------------------------------------------------
+sub _noteReportedStatus {
+    my ($self, $status) = @_;
+    return unless defined $status && $status =~ /^(?:playing|paused|stopped|idle)$/;
+    my $o    = $self->observed;
+    my $prev = $o->{reportedStatus};
+    if ($status ne 'playing') {
+        delete $o->{wakeEdge};
+    }
+    elsif (defined $prev && $prev =~ /^(?:paused|stopped|idle)$/) {
+        $o->{wakeEdge} = { newContext => 0 };
+    }
+    $o->{reportedStatus} = $status;
+    return;
+}
+
+# _appWakeAfterBrowse($self) -- called inside the idle reconnect adoption (a playing, is_active playback_state,
+# no R3/B7/T-84.1-29 hold, the Connect switch on). Consumes the edge whatever the verdict. Returns the edge when
+#   - the edge is set: the daemon went dormant -> playing after Control's last own command;
+#   - leftBrowseUri is set: Control itself left Browse on an LMS stop while the daemon stayed active (idle sends
+#     the daemon nothing that makes it play: requestResume is a no-op outside browse/connect);
+#   - no own echo can still be in flight (_ownEchoOpen: the stop-leave's realStop pause, the idle guard's pause);
+#   - LMS is stopped, on our own material or on no song (never replaces a local file or radio).
+# Otherwise undef: the restored adoption runs unchanged. A marker plus a playmode and url class; the only window
+# is the existing _ownEchoOpen.
+sub _appWakeAfterBrowse {
+    my $self = shift;
+    my $edge = delete $self->observed->{wakeEdge};
+    return undef unless ref($edge) eq 'HASH';
+    return undef unless defined $self->observed->{leftBrowseUri};
+    return undef if $self->_ownEchoOpen;
+    my $client = Slim::Player::Client::getClient($self->mac) or return undef;
+    return undef unless (Slim::Player::Source::playmode($client) // '') eq 'stop';
+    return undef unless $self->_lmsSongIsOurs || !defined $self->_lmsCurrentUrl;
+    return $edge;
+}
+
+# _appWakeStart($self, $uri, $edge) -- the woken session's start. A frame naming a title starts it now at this
+# frame's position (the anchor this frame wrote; '' after a new context). An item-less playing frame (79-51 E1:
+# nothing in it tells a resume from an album start) opens the 79-51 held decision as a start (asStart): the
+# same-title release (a title frame, or RESUME_DECIDE_MS without a context_changed) starts the paused title at its
+# position; another title, or any title after a context_changed, is started by that frame's own connect handler
+# (startEmittedFor is undefined: newSession) -- never the old title first. The split-brain ladder stands down while
+# it is held (_checkSplitBrain); a held start nothing decides within RESUME_DUE_MAX_S starts the last named title.
+sub _appWakeStart {
+    my ($self, $uri, $edge) = @_;
+    my $mac = $self->mac // '?';
+    my $a   = $self->observed->{anchor};
+    my $newContext = $edge->{newContext} ? 1 : 0;
+
+    if (defined $uri && $uri =~ /^spotify:(?:track|episode):[A-Za-z0-9]+$/) {
+        my $pos = (!$newContext && ref($a) eq 'HASH' && ($a->{position_ms} // 0) > 0
+                   && (!defined $a->{uri} || $a->{uri} eq $uri)) ? _anchorPosSec($a) : '';
+        main::INFOLOG && $log->is_info && $log->info(
+            "Control: app wake -- the Spotify app plays $uri after the Browse session ended (LMS stopped): fresh Connect session, start ($mac)");
+        $self->_emitStart(_trackIdOf($uri), $pos);
+        return;
+    }
+
+    my $track = $self->observed->{track};
+    my $pos = (!$newContext && defined $track && ref($a) eq 'HASH' && ($a->{position_ms} // 0) > 0
+               && (!defined $a->{uri} || $a->{uri} eq $track)) ? _anchorPosSec($a) : '';
+    Slim::Utils::Timers::killTimers($self, \&_resumeDueFire);
+    $self->observed->{resumeDue} = {
+        track   => $track,
+        id      => _trackIdOf($track),
+        pos     => $pos,
+        at      => Time::HiRes::time(),
+        noItem  => 1,
+        asStart => 1,
+        ($newContext ? (newContext => 1) : ()),
+    };
+    Slim::Utils::Timers::setTimer($self, Time::HiRes::time() + RESUME_DECIDE_MS / 1000, \&_resumeDueFire);
+    main::INFOLOG && $log->is_info && $log->info(
+        "Control: app wake -- item-less playing frame after the Browse session ended: fresh Connect session, start held for the title frame"
+        . ($newContext ? ' (new context)' : '') . " ($mac)");
+    return;
+}
+
+# _adoptedOnStaleStop($self, $id) -- the session was ADOPTED from idle (the reconnect adoption or an app wake:
+# Control entered connect itself, Connect.pm never opened LMS for it), and LMS is stopped on one of OUR entries
+# that is not title $id. Sessions Connect.pm opened (transfer-in, takeover: a plain start) and seeded test
+# sessions never match.
+sub _adoptedOnStaleStop {
+    my ($self, $id) = @_;
+    return 0 unless defined $id && length $id;
+    return 0 unless ($self->observed->{sessionEntry} // '') =~ /^(?:reconnect-to-connect|app-wake)$/;
+    my $client = Slim::Player::Client::getClient($self->mac) or return 0;
+    return 0 unless (Slim::Player::Source::playmode($client) // '') eq 'stop';
+    my ($cur) = ($self->_lmsCurrentUrl // '') =~ m{^spoton://(?:track|episode):([A-Za-z0-9]+)$};
+    return (defined $cur && $cur ne $id) ? 1 : 0;
 }
 
 sub _onFrameTrackChanged {
@@ -5405,6 +5564,7 @@ sub _onFramePlaybackChanged {
 
         my $mode       = $self->mode;
         my $prevStatus = $self->observed->{status};
+        $self->_noteReportedStatus($status);    # app wake: the daemon's own status report
 
         my $g4Pending = $self->pending;
         main::DEBUGLOG && $log->is_debug && $log->debug(
@@ -5812,6 +5972,7 @@ sub _onFramePlaybackState {
         }
 
         $self->_debugStatusTransition($msg->{status}, 'playback_state item.uri=' . ($uri // '-'));
+        $self->_noteReportedStatus($msg->{status});    # app wake: the daemon's own status report
         $self->_noteHoldRelease($msg->{status},
             (defined $uri && $uri =~ /^spotify:(?:track|episode):[A-Za-z0-9]+$/) ? $uri : undef,
             $hrPrevStatus, $hrPrevTrack);    # 79 D-31
@@ -5902,22 +6063,34 @@ sub _onFramePlaybackState {
                 return;
             }
             $self->_clearErrorOnce('connect-off:' . ($self->mac // '?'));
+            # app wake (live 2026-11-15 12:34-12:44): read BEFORE the bind -- _enterConnectSession
+            # deletes leftBrowseUri. Undef keeps the restored adoption below byte-identical.
+            my $wake = $self->_appWakeAfterBrowse;
             eval {
                 require Plugins::SpotOn::Connect;
                 my $bindClient = Slim::Player::Client::getClient($self->mac);
-                Plugins::SpotOn::Connect->bindConnectClaim($bindClient, 'reconnect') if $bindClient;
+                Plugins::SpotOn::Connect->bindConnectClaim($bindClient, $wake ? 'app-wake' : 'reconnect') if $bindClient;
                 1;
             };
-            # 84.2-01 (D-04, defensive): idle -> connect is a loss of Browse
-            # control too -- whatever path left an own-queue set behind in
-            # idle, none of it survives into connect.
-            # D-34 (79-48): the body shared by every way into a connect session
-            # (this reconnect adoption, the device_changed transfer-in, the
-            # app takeover out of Browse): _enterConnectSession.
-            $self->_enterConnectSession('reconnect-to-connect');
-            if (defined $self->observed->{track}) {
-                my $tid = _trackIdOf($self->observed->{track});
-                $self->_emitStart($tid, undef, 'restored') if defined $tid;    # 79-61 (FULL-2 WR-06)
+            if ($wake) {
+                # A user action in the app, not a restored session: a fresh session (the guard's
+                # autoplayPaused ends) whose stale session marker is dropped (newSession), and a
+                # plain start, never 'restored'.
+                $self->_enterConnectSession('app-wake', fresh => 1, newSession => 1);
+                $self->_appWakeStart($uri, $wake);
+            }
+            else {
+                # 84.2-01 (D-04, defensive): idle -> connect is a loss of Browse
+                # control too -- whatever path left an own-queue set behind in
+                # idle, none of it survives into connect.
+                # D-34 (79-48): the body shared by every way into a connect session
+                # (this reconnect adoption, the device_changed transfer-in, the
+                # app takeover out of Browse): _enterConnectSession.
+                $self->_enterConnectSession('reconnect-to-connect');
+                if (defined $self->observed->{track}) {
+                    my $tid = _trackIdOf($self->observed->{track});
+                    $self->_emitStart($tid, undef, 'restored') if defined $tid;    # 79-61 (FULL-2 WR-06)
+                }
             }
         }
 
@@ -6959,6 +7132,22 @@ sub _checkSplitBrain {
         if (my $sbh = $self->observed->{splitBrain}) { $sbh->{sightings} = 0; }
         return;
     }
+    # app wake: while the woken session's start waits for its title frame (_appWakeStart), LMS has not been
+    # asked to follow yet -- a `change` now would meet a stopped LMS (Connect.pm `pause 0` -> stale entry).
+    # Bounded by the record (RESUME_DUE_MAX_S, then a start).
+    if (ref($self->observed->{resumeDue}) eq 'HASH' && $self->observed->{resumeDue}{asStart}) {
+        if (my $sbh = $self->observed->{splitBrain}) { $sbh->{sightings} = 0; }
+        return;
+    }
+    # app wake: a frame while an own pause/play/seek may still echo is no evidence -- the daemon has not answered
+    # it yet. Live shape: the stop-leave's or the idle guard's pause racing the frames of the burst that the
+    # restored adoption took; the playback_state end check and the burst's own position_sync were two
+    # "sightings" milliseconds apart, and the rung then re-opened LMS (after a user Stop: the stopped title).
+    # Bounded by OWN_ECHO_WINDOW_S; the next ticker frame counts again.
+    if ($self->_ownEchoOpen) {
+        if (my $sbh = $self->observed->{splitBrain}) { $sbh->{sightings} = 0; }
+        return;
+    }
 
     return unless $self->wanted->{playing};
     return unless $self->observed->{is_active};
@@ -7061,7 +7250,18 @@ sub _connectResync {
 
         my $prevId = _trackIdOf($self->observed->{startEmittedFor});
         my $id     = _trackIdOf($uri);
-        $self->_emit('change', $id, $prevId, 'nachziehen');
+        # app wake (live 2026-11-15 12:34): in an ADOPTED session LMS may still stand on the stale entry it
+        # stopped on. Connect.pm's `change` runs `pause 0` on a stopped player -- LMS's `playlist jump <index>`
+        # re-opens that entry, whose unmarked getNextTrack hands the session to browse and plays the stale
+        # title at the daemon (the loop). The rung then asks with a start: a marked `playlist play` of the
+        # daemon's title. Same attempt, same errors[] entry; _emit arms the watchdog only on `change`.
+        my @rung = ('change', $id, $prevId);
+        if ($self->_adoptedOnStaleStop($id)) {
+            my $posMs = $self->_anchorPositionMs($uri);
+            @rung = ('start', $id, ((defined $posMs && $posMs > 0) ? sprintf('%.3f', $posMs / 1000) : ''));
+            $self->observed->{startEmittedFor} = $uri;
+        }
+        $self->_emit(@rung, 'nachziehen');
     }
     else {
         $self->_recordErrorOnce('split-brain-halt:' . $uri, 'warn',
@@ -7251,6 +7451,7 @@ sub _transportClosed {
     $self->observed->{wsConnected} = 0;
     delete $self->observed->{track};
     delete $self->observed->{status};
+    delete @{ $self->observed }{qw(reportedStatus wakeEdge)};    # app wake: a reconnect snapshot is no transition
     delete $self->observed->{anchor};
     delete $self->observed->{postSeekCheck};    # S1: the check belonged to the closed connection
     Slim::Utils::Timers::killTimers($self, \&_postSeekCheckFire);

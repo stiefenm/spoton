@@ -576,6 +576,50 @@ ok((index($control, 'sub endForeignLeave') >= 0), "84.1-07 G8: Control.pm define
         "84.1-08 G9: the line holding the logged_in assignment also holds loggedOutAt");
 }
 
+# ------------------------------------------------------------
+# App wake (2026-11-15, live 12:34-12:44): source gates.
+# ------------------------------------------------------------
+{
+    my $strip = sub { join("\n", grep { !/^\s*#/ } split /\n/, ($_[0] // '')) };
+    my @wake_enter = $control =~ /(_enterConnectSession\('app-wake', fresh => 1, newSession => 1\))/g;
+    is(scalar(@wake_enter), 1, "AW-G1: the app wake enters connect through the shared sub once, fresh + newSession");
+    my @restored = $control =~ /(_emitStart\(\$tid, undef, 'restored'\))/g;
+    is(scalar(@restored), 1, "AW-G1: the restored start of the reconnect adoption is still there, once");
+    like($control, qr/my \$wake = \$self->_appWakeAfterBrowse;.*?bindConnectClaim\(\$bindClient, \$wake \? 'app-wake' : 'reconnect'\)/s,
+        "AW-G1: the wake verdict is read BEFORE the bind (leftBrowseUri is deleted by _enterConnectSession)");
+
+    my ($aw_block) = $control =~ /(sub _appWakeAfterBrowse \{.*?\n\})/s;
+    ok($aw_block, "AW-G2: _appWakeAfterBrowse block parseable");
+    my $aw_code = $strip->($aw_block);
+    like($aw_code, qr/$_/, "AW-G2: _appWakeAfterBrowse references $_") for qw(wakeEdge leftBrowseUri _ownEchoOpen playmode _lmsSongIsOurs);
+    unlike($aw_code, qr/Time::HiRes|time\(\)/, "AW-G2: no clock read of its own (the only window is _ownEchoOpen)");
+    (my $regressed = $aw_code) =~ s/\s*return undef if \$self->_ownEchoOpen;//;
+    unlike($regressed, qr/_ownEchoOpen/, "AW-G2: dry run -- dropping the echo exclusion makes the gate above go red");
+
+    my ($nrs_block) = $control =~ /(sub _noteReportedStatus \{.*?\n\})/s;
+    ok($nrs_block, "AW-G3: _noteReportedStatus block parseable");
+    unlike($strip->($nrs_block), qr/buffering/, "AW-G3: buffering is never a reported status (an autoplay advance passes through it)");
+
+    my ($guard) = $control =~ /(# fremder-autoplay-waechter.*?autoplayPaused\} = \$uri;)/s;
+    ok($guard, "AW-G4: the autoplay guard block parseable");
+    unlike($guard // '', qr/wakeEdge|reportedStatus|asStart|_appWake/, "AW-G4: the autoplay guard is untouched by the app wake");
+
+    my ($csb) = $control =~ /(sub _checkSplitBrain \{.*?\n\})/s;
+    my $csb_code = $strip->($csb);
+    my ($i_mode, $i_start, $i_echo) = map { index($csb_code, $_) } ("mode eq 'connect'", '{asStart}', '_ownEchoOpen');
+    ok($i_mode >= 0 && $i_start > $i_mode && $i_echo > $i_mode,
+        "AW-G5: _checkSplitBrain keeps its connect gate first, then stands down for a held wake start and an open own echo");
+
+    my ($aos) = $control =~ /(sub _adoptedOnStaleStop \{.*?\n\})/s;
+    my $aos_code = $strip->($aos);
+    like($aos_code, qr/sessionEntry/, "AW-G6: the stale-stop start conversion is limited to adopted sessions (sessionEntry)");
+    like($aos_code, qr/reconnect-to-connect\|app-wake/, "AW-G6: ... the reconnect adoption and the app wake only");
+    my ($rdr) = $control =~ /(sub _resumeDueRelease \{.*?\n\})/s;
+    like($strip->($rdr), qr/\$why ne 'new title' && \$self->_adoptedOnStaleStop/, "AW-G6: a 'new title' resume release is never converted");
+    my ($ccr) = $control =~ /(sub _connectResync \{.*?\n\})/s;
+    like($strip->($ccr), qr/_adoptedOnStaleStop/, "AW-G6: the ladder rung uses the same predicate");
+}
+
 # G10: WR-02's discriminator placement and its no-clock/weak-reference
 # shape.
 
