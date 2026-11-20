@@ -16,7 +16,8 @@ package Plugins::SpotOn::Backend::Librespot;
 use strict;
 use warnings;
 
-use Scalar::Util qw(blessed weaken);
+use Scalar::Util qw(blessed refaddr weaken);
+use Time::HiRes ();
 use JSON::XS::VersionOneAndTwo;
 
 use Slim::Utils::Log;
@@ -71,6 +72,55 @@ my %SEND_INFO = (
     skip_next => 'Connect mode: forwarding skip-next to binary /control/next (D-14)',
     skip_prev => 'Connect mode: forwarding skip-previous to binary /control/prev (D-14)',
 );
+
+# 88-06 (D-03): how long a pull-back (POST /control/transfer, answered 204 = dispatched)
+# may wait for the session to arrive as a `start`/`change` before the open falls back
+# to Browse. 8 s = ceil(1.5 x 5.33 s): 5.33 s is the accepted upper latency of a
+# connect_transfer measured in phase 84 (STATE decision 2026-10-13), 1.5 is the margin.
+use constant TRANSFER_WAIT_S => 8;
+
+# 88 review WR-01: the recovering helper refuses every /control command with
+# 503 + `Retry-After: 2` (unified.rs control_status). LMS has already applied
+# the user's Play / Pause at that point, so a dropped command leaves LMS and
+# Spotify apart (LMS paused while the recovery plays on; LMS streaming a paused
+# session). The transport pair is retried through an LMS timer, never blocking:
+#   - only /control/play and /control/pause (the two states that diverge
+#     audibly); volume/seek/next/prev keep the drop, logged at warn
+#   - the delay is the Retry-After when it is 1..CONTROL_RETRY_MAX_DELAY_S s,
+#     else CONTROL_RETRY_DEFAULT_S
+#   - at most CONTROL_RETRY_MAX retries per command (15 x 2 s = 30 s, the
+#     helper's own RECOVERY_TRANSFER_MAX_AGE; a recovery ends inside it)
+#   - the newest transport command wins: it voids a pending retry, and the 503
+#     of an older command arms nothing (%_transportSeq)
+#   - never for a player that plays another song by then (identity of the
+#     playing Song, held weakly): a late retry must not eject other content
+#     through the 409 branch
+#   - never across the end of the Connect session it was issued in (88 review
+#     rounds 2 and 3, user decisions 2026-11-18 "Verwerfen" and "Lueckenlos
+#     fixen"). Three guarantees:
+#       1. the claim state is sampled when the command is ISSUED (not when its
+#          503 arrives) and travels with the record through the whole chain;
+#       2. at due time a changed claim state drops the retry (`stop inactive`
+#          reached LMS first; the Song object is the same afterwards, a late
+#          Play would meet a 409);
+#       3. a 409 on a retried Play that was armed under a claim ejects and
+#          releases but never reopens the entry (the reopen is the
+#          /control/transfer that pulls the session back from the device the
+#          user moved to). This covers the cases where the 409 is the first
+#          news of the session end: the retry sent in the race before LMS has
+#          processed `stop inactive`, and a replaced helper (nothing releases
+#          the claim then).
+#     The stale pass-through (no claim when armed) keeps its retry and its
+#     reopen. Accepted cost: a player whose claim was already dormant before
+#     the press (kept by the restart gate, device not active) needs a second
+#     Play, which then takes the ordinary 409 path.
+# State: ONE record per player in its pluginData (connectControlRetry:
+# endpoint, body, retries, song, claimed); a cleared record is written as 0.
+use constant CONTROL_RETRY_MAX         => 15;
+use constant CONTROL_RETRY_DEFAULT_S   => 2;
+use constant CONTROL_RETRY_MAX_DELAY_S => 5;
+my %RETRY_ENDPOINT = map { $_ => 1 } ('/control/play', '/control/pause');
+my %_transportSeq;      # mac -> number of the newest play/pause command issued
 
 # Connect.pm's volume debounce window, quoted in the [DIAG] volume line.
 use constant VOLUME_DEBOUNCE => 0.5;
@@ -344,9 +394,35 @@ sub streamUrl {
 # successful one clears that report.
 # ---------------------------------------------------------------------------
 sub _sendControlCommand {
-    my ($self, $endpoint, $body) = @_;
+    my ($self, $endpoint, $body, %args) = @_;
     my $mac = $self->{mac};
     return 0 unless $mac;
+
+    # 88 review WR-01: a new play/pause is the newest intent - a pending retry
+    # of an older one is void. The retry itself ($args{retry}) keeps the number
+    # of the command it repeats.
+    # 88 review round 3 R3-WR-01: the claim state is taken HERE, when the command is
+    # issued (a retry keeps the state of its first attempt), not when its 503 arrives -
+    # the session may end in between, and a 503 that is processed after `stop inactive`
+    # would otherwise record "no claim" and pass as a stale pass-through.
+    my ($seq, $claimedAtIssue);
+    if ($RETRY_ENDPOINT{$endpoint}) {
+        if ($args{retry}) {
+            $seq = $_transportSeq{$mac} // 0;
+            $claimedAtIssue = $args{retry}{claimed} ? 1 : 0;
+        }
+        else {
+            $seq = ++$_transportSeq{$mac};
+            $self->_dropControlRetry('superseded by ' . $endpoint);
+            # require only with a client: role-level callers (t/57) run without one and
+            # without the Connect module loaded
+            $claimedAtIssue = 0;
+            if (my $c = $self->client) {
+                require Plugins::SpotOn::Connect;
+                $claimedAtIssue = Plugins::SpotOn::Connect->isSpotifyConnect($c) ? 1 : 0;
+            }
+        }
+    }
 
     require Plugins::SpotOn::Unified::DaemonManager;
 
@@ -386,6 +462,25 @@ sub _sendControlCommand {
                 ? ($response->code || 0) : 0;
             $code ||= ($error && $error =~ /^(\d{3})\b/) ? $1 : 0;
 
+            # 88-06 (D-07 item 7): 503 WITH a Retry-After header is the recovering
+            # helper (88-04: `Retry-After: 2`, unified.rs). Nothing is wrong with the
+            # session or the daemon: no eject, no daemon-unreachable entry, no
+            # transfer. A 503 WITHOUT the header (the poisoned Spirc mutex,
+            # unified.rs:1811, or an LMS whose onError passes no response object)
+            # stays a failure and takes the _reportDaemonUnreachable path below.
+            if ($code == 503) {
+                my $retryAfter = ($response && blessed($response) && $response->can('header'))
+                    ? $response->header('Retry-After') : undef;
+                if (defined $retryAfter && length $retryAfter) {
+                    main::INFOLOG && $log->is_info && $log->info(
+                        "_sendControlCommand: $endpoint - daemon recovering (Retry-After $retryAfter) for " . $mac
+                    );
+                    # 88 review WR-01: play/pause are retried after the Retry-After
+                    $self->_armControlRetry($endpoint, $body, $retryAfter, $seq, $args{retry}, $claimedAtIssue);
+                    return;
+                }
+            }
+
             if ($code == 409) {
                 $log->warn(
                     "_sendControlCommand: $endpoint rejected for " . $mac
@@ -401,6 +496,43 @@ sub _sendControlCommand {
                 $stopReq->source(CONNECT_SOURCE);
                 $stopReq->execute();
 
+                # 88 review CR-01: the 409 is the daemon's authoritative statement
+                # that the session is not on this device, so a claim this player
+                # still holds is stale (nothing releases it when the helper process
+                # is replaced: health restart, crash backoff, a killed helper). It
+                # goes BEFORE the reopen below: with the claim held, getNextTrack
+                # takes the claim-holder branch and opens the dead /stream relay of
+                # the player's own live entry (BUFFERING at 0:00, the GH #159 state
+                # this eject exists to prevent). releaseConnectClaim only clears the
+                # claim when THIS player holds it; another player's claim (D-05) is
+                # untouched.
+                if (my $claimClient = $self->client) {
+                    require Plugins::SpotOn::Connect;
+                    Plugins::SpotOn::Connect->releaseConnectClaim($claimClient, 'daemon-409');
+                }
+
+                # 88-06 (D-03): a PLAY (the unpause of the stale stream) means the
+                # user wants to hear this player again. LMS reopens the player's own
+                # Connect entry (`play` from the stopped state goes through
+                # StreamingController::_StopGetNext and ProtocolHandler::getNextTrack),
+                # and that open is the ONE place that tries the pull-back
+                # (transferBack) before it translates to Browse. This branch never
+                # sends /control/transfer itself: one Play gesture causes at most one
+                # transfer (T-88-12). Same source mark as the stop, so _onPause does
+                # not echo the reopen to the daemon. pause/next/prev keep the eject only.
+                # R3-WR-01: NOT for a retried Play that was armed under a claim. The
+                # retry is only sent while the Connect session of the command is on; a
+                # 409 on it is the helper's own statement that the session ended in the
+                # meantime (recovery over and device deselected, or the helper replaced),
+                # so the reopen would be the late pull-back from the device the user
+                # moved to. Eject and release only; the stale pass-through (no claim
+                # when armed) keeps its reopen = the designed GH #223 gesture.
+                if ($endpoint eq '/control/play' && !($args{retry} && $args{retry}{claimed})) {
+                    my $playReq = Slim::Control::Request->new($mac, ['play']);
+                    $playReq->source(CONNECT_SOURCE);
+                    $playReq->execute();
+                }
+
                 # Deliberately NO Web API call here: a Web API PUT would act
                 # on the user's actually-active device — exactly wrong for a
                 # command meant for this (deselected) player.
@@ -414,6 +546,259 @@ sub _sendControlCommand {
 
     $http->post($url, 'Content-Type' => 'application/json', $jsonBody);
     return 1;
+}
+
+# ---------------------------------------------------------------------------
+# 88 review WR-01: the bounded retry of a play/pause the recovering helper
+# refused (see CONTROL_RETRY_MAX above).
+# ---------------------------------------------------------------------------
+
+# _armControlRetry($endpoint, $body, $retryAfter, $seq, $prev, $claimedAtIssue) --
+# called from the 503 + Retry-After branch. $seq is the command's number (undef
+# for a non-transport endpoint), $prev the record of the retry that was just
+# refused again (undef for the first attempt), $claimedAtIssue the claim state
+# sampled when the first attempt was issued (R3-WR-01).
+sub _armControlRetry {
+    my ($self, $endpoint, $body, $retryAfter, $seq, $prev, $claimedAtIssue) = @_;
+    my $mac = $self->{mac};
+
+    unless ($RETRY_ENDPOINT{$endpoint}) {
+        $log->warn("_sendControlCommand: $endpoint dropped for $mac - daemon recovering, only play/pause are retried");
+        return;
+    }
+    if (!defined $seq || $seq != ($_transportSeq{$mac} // 0)) {
+        main::INFOLOG && $log->is_info && $log->info(
+            "_sendControlCommand: $endpoint not retried for $mac - a newer play/pause was issued"
+        );
+        return;
+    }
+
+    my $client = $self->client or return;
+    $client = $client->master if $client->can('master') && $client->master;
+
+    my $retries = $prev ? ($prev->{retries} || 0) : 0;
+    if ($retries >= CONTROL_RETRY_MAX) {
+        $log->warn("_sendControlCommand: $endpoint not delivered to $mac - daemon still recovering after $retries retries");
+        return;
+    }
+    my $song = $prev ? $prev->{song} : ($client->can('playingSong') ? $client->playingSong : undef);
+    unless ($song) {
+        main::INFOLOG && $log->is_info && $log->info(
+            "_sendControlCommand: $endpoint not retried for $mac - no playing song to tie the retry to"
+        );
+        return;
+    }
+
+    my $delay = (defined $retryAfter && $retryAfter =~ /^\d+$/
+                 && $retryAfter >= 1 && $retryAfter <= CONTROL_RETRY_MAX_DELAY_S)
+        ? $retryAfter : CONTROL_RETRY_DEFAULT_S;
+
+    # the claim state of the FIRST attempt, as sampled when the command was issued,
+    # travels with the record (R2-WR-01, R3-WR-01)
+    my $claimed = $prev ? $prev->{claimed} : ($claimedAtIssue ? 1 : 0);
+    my $rec = { endpoint => $endpoint, body => $body, retries => $retries + 1, song => $song, claimed => $claimed };
+    weaken($rec->{song});
+    $client->pluginData(connectControlRetry => $rec);
+
+    require Slim::Utils::Timers;
+    Slim::Utils::Timers::killTimers($client, \&_controlRetryDue);
+    Slim::Utils::Timers::setTimer($client, Time::HiRes::time() + $delay, \&_controlRetryDue, $self);
+    main::INFOLOG && $log->is_info && $log->info(
+        "_sendControlCommand: $endpoint retry " . $rec->{retries} . "/" . CONTROL_RETRY_MAX . " in $delay s for $mac"
+    );
+    return;
+}
+
+# _dropControlRetry($why) -- void the pending retry of the player, if any.
+sub _dropControlRetry {
+    my ($self, $why) = @_;
+    my $client = $self->client or return;
+    $client = $client->master if $client->can('master') && $client->master;
+    my $rec = $client->pluginData('connectControlRetry');
+    return unless ref $rec eq 'HASH';
+    $client->pluginData(connectControlRetry => 0);
+    require Slim::Utils::Timers;
+    Slim::Utils::Timers::killTimers($client, \&_controlRetryDue);
+    main::INFOLOG && $log->is_info && $log->info(
+        "_sendControlCommand: pending " . $rec->{endpoint} . " retry dropped for " . $self->{mac} . " ($why)"
+    );
+    return;
+}
+
+# the retry timer: ($client, $role)
+sub _controlRetryDue {
+    my ($client, $self) = @_;
+    return unless $client && $self;
+    my $rec = $client->pluginData('connectControlRetry');
+    return unless ref $rec eq 'HASH';
+    $client->pluginData(connectControlRetry => 0);
+
+    # the retry belongs to the song that played when the command was issued
+    my $now = $client->can('playingSong') ? $client->playingSong : undef;
+    unless ($rec->{song} && $now && refaddr($now) == refaddr($rec->{song})) {
+        main::INFOLOG && $log->is_info && $log->info(
+            "_sendControlCommand: " . $rec->{endpoint} . " retry dropped for " . $self->{mac} . " (the player plays something else)"
+        );
+        return;
+    }
+    # R2-WR-01: the Connect session of the command ended (or began) meanwhile - a late
+    # retry must not reach the helper, whose 409 would reopen the entry and pull the
+    # session back
+    require Plugins::SpotOn::Connect;
+    if ((Plugins::SpotOn::Connect->isSpotifyConnect($client) ? 1 : 0) != ($rec->{claimed} // 0)) {
+        main::INFOLOG && $log->is_info && $log->info(
+            "_sendControlCommand: " . $rec->{endpoint} . " retry dropped for " . $self->{mac} . " (the Connect session ended meanwhile)"
+        );
+        return;
+    }
+    $self->_sendControlCommand($rec->{endpoint}, $rec->{body}, retry => $rec);
+    return;
+}
+
+# ---------------------------------------------------------------------------
+# 88-06 (D-03, D-04, D-05): the pull-back. ProtocolHandler::getNextTrack is the
+# ONLY caller of transferBack (the open of the player's own last Connect entry
+# as an explicit Play). The helper's POST /control/transfer (88-05) answers 204
+# = dispatched; success is not awaited there, it shows up later as the
+# `start`/`change` Connect.pm receives and reports through transferConfirmed.
+# After a takeover it requested, the helper itself sends `play` (88-05), so
+# nothing here sends /control/play.
+#
+# State: ONE record per player in its pluginData (connectTransferPending:
+# waiter list, started). A second request while a record is pending sends no
+# second POST and shares the outcome. A cleared record is written as 0 (LMS's
+# pluginData does not write undef).
+# ---------------------------------------------------------------------------
+
+# transferBack(on_fallback => CODE, on_confirmed => CODE) -> 1 | 0
+#   0: no alive daemon with a stream port (or no client) - no side effect, the
+#      caller keeps today's behaviour. 1: a transfer is in flight (new or
+#      shared); exactly one of the two callbacks runs later:
+#   on_fallback('refused:<code>' | 'timeout')   at once on a refusal / HTTP
+#      error, or when TRANSFER_WAIT_S passed without start/change
+#   on_confirmed($cmd, $issuedPlay)             one main-loop tick after the
+#      start/change handler finished (transferConfirmed)
+sub transferBack {
+    my ($self, %args) = @_;
+    my $mac = $self->{mac};
+    return 0 unless $mac;
+    return 0 unless ref $args{on_fallback} eq 'CODE' && ref $args{on_confirmed} eq 'CODE';
+
+    my $client = $self->client;
+    return 0 unless $client;
+    $client = $client->master if $client->can('master') && $client->master;
+
+    require Plugins::SpotOn::Unified::DaemonManager;
+    my $helper = Plugins::SpotOn::Unified::DaemonManager->helperForClient($mac);
+    my $port   = ($helper && $helper->alive) ? $helper->_streamPort : undef;
+    return 0 unless $port;
+
+    my $waiter  = { on_fallback => $args{on_fallback}, on_confirmed => $args{on_confirmed} };
+    my $pending = $client->pluginData('connectTransferPending');
+    if (ref $pending eq 'HASH') {
+        push @{ $pending->{waiters} }, $waiter;
+        main::INFOLOG && $log->is_info && $log->info(
+            "transfer-back already pending for $mac - sharing the outcome (" . scalar(@{ $pending->{waiters} }) . " waiters)"
+        );
+        return 1;
+    }
+
+    $pending = { started => Time::HiRes::time(), waiters => [ $waiter ] };
+    $client->pluginData(connectTransferPending => $pending);
+
+    my $url = "http://127.0.0.1:$port/control/transfer";
+    main::INFOLOG && $log->is_info && $log->info("transfer-back: POST $url for $mac");
+    $log->warn("[DIAG] control_cmd_sent: mac=" . $mac . " endpoint=/control/transfer body={}") if $prefs->get('diagnosticMode');
+
+    weaken(my $weakClient = $client);
+    my $http = Slim::Networking::SimpleAsyncHTTP->new(
+        sub {
+            # 204: dispatched. The record may already be gone (the session's start can
+            # arrive before this callback is processed) - then nothing is armed.
+            my $c = $weakClient or return;
+            my $cur = $c->pluginData('connectTransferPending');
+            return unless ref $cur eq 'HASH' && $cur == $pending;
+            require Slim::Utils::Timers;
+            Slim::Utils::Timers::setTimer($c, Time::HiRes::time() + TRANSFER_WAIT_S, \&_transferTimeout);
+        },
+        sub {
+            my ($http, $error, $response) = @_;
+            my $code = ($response && blessed($response) && $response->can('code'))
+                ? ($response->code || 0) : 0;
+            $code ||= ($error && $error =~ /^(\d{3})\b/) ? $1 : 0;
+            my $c = $weakClient or return;
+            my $cur = $c->pluginData('connectTransferPending');
+            return unless ref $cur eq 'HASH' && $cur == $pending;
+            $c->pluginData(connectTransferPending => 0);
+            my $why = 'refused:' . ($code || 'error');
+            main::INFOLOG && $log->is_info && $log->info("transfer-back for $mac refused ($why)");
+            _runWaiters($cur->{waiters}, 'on_fallback', $why);
+        },
+        { timeout => 5 }
+    );
+    $http->post($url, 'Content-Type' => 'application/json', '{}');
+    return 1;
+}
+
+# transferPending($class_or_role, $client) -> 1 | 0 -- a pull-back is in flight for the
+# player (88 review WR-05: Connect.pm's `change` handler binds the claim only then).
+sub transferPending {
+    my ($class, $client) = @_;
+    return 0 unless $client;
+    $client = $client->master if $client->can('master') && $client->master;
+    return ref $client->pluginData('connectTransferPending') eq 'HASH' ? 1 : 0;
+}
+
+# transferConfirmed($class_or_role, $client, $cmd, $issuedPlay) -- Connect.pm reports the
+# session's arrival on $client (`start` / `change`) and whether its handler issued its own
+# `playlist play` ($issuedPlay). A no-op unless a transfer is pending for the player. The waiters
+# run from a zero-delay timer: after the calling handler finished its own commands.
+sub transferConfirmed {
+    my ($class, $client, $cmd, $issuedPlay) = @_;
+    return unless $client;
+    $client = $client->master if $client->can('master') && $client->master;
+
+    my $pending = $client->pluginData('connectTransferPending');
+    return unless ref $pending eq 'HASH';
+
+    require Slim::Utils::Timers;
+    Slim::Utils::Timers::killTimers($client, \&_transferTimeout);
+    $client->pluginData(connectTransferPending => 0);
+    main::INFOLOG && $log->is_info && $log->info("transfer-back confirmed by " . ($cmd // '?'));
+
+    Slim::Utils::Timers::setTimer($client, Time::HiRes::time(), \&_deliverConfirmed,
+        $pending->{waiters}, $cmd, $issuedPlay ? 1 : 0);
+    return;
+}
+
+# the TRANSFER_WAIT_S timer
+sub _transferTimeout {
+    my ($client) = @_;
+    return unless $client;
+    my $pending = $client->pluginData('connectTransferPending');
+    return unless ref $pending eq 'HASH';
+    $client->pluginData(connectTransferPending => 0);
+    main::INFOLOG && $log->is_info && $log->info(
+        "transfer-back: no start/change within " . TRANSFER_WAIT_S . " s - falling back"
+    );
+    _runWaiters($pending->{waiters}, 'on_fallback', 'timeout');
+    return;
+}
+
+# the zero-delay timer transferConfirmed arms
+sub _deliverConfirmed {
+    my ($client, $waiters, $cmd, $issuedPlay) = @_;
+    _runWaiters($waiters, 'on_confirmed', $cmd, $issuedPlay);
+    return;
+}
+
+# one waiter's failure must not keep the others from their outcome
+sub _runWaiters {
+    my ($waiters, $which, @args) = @_;
+    for my $w (@{ $waiters || [] }) {
+        eval { $w->{$which}->(@args); 1 } or $log->warn("transfer-back: $which waiter failed: $@");
+    }
+    return;
 }
 
 # _reportDaemonUnreachable($endpoint, $error) -- 85-07 D-10 (T-85-26): the

@@ -2968,7 +2968,9 @@ sub grace_case {
 }
 {
     my ($paused, $n) = grace_case(gate => 1, age => 5);
-    isnt($paused, 1, 'D-33 FULL-2 L5: librespot role, stop 5 s after start -> ignored, connectSessionPaused not 1');
+    # 88-10 D-19: an app pause inside the start grace IS marked paused; only the
+    # forwarding stays suppressed (the pause-command count below stays 0).
+    is($paused, 1, 'D-33 FULL-2 L5: librespot role, stop 5 s after start -> not forwarded, but connectSessionPaused is 1 (D-19)');
     is($n, 0, 'D-33 FULL-2 L5: librespot role, stop 5 s after start -> no pause command');
 }
 {
@@ -2978,7 +2980,9 @@ sub grace_case {
 }
 {
     my ($paused, $n) = grace_case(no_role => 1, age => 5);
-    isnt($paused, 1, 'D-33 FULL-2 U5: no role known, stop 5 s after start -> ignored, connectSessionPaused not 1');
+    # 88-10 D-19: an app pause inside the start grace IS marked paused; only the
+    # forwarding stays suppressed (the pause-command count below stays 0).
+    is($paused, 1, 'D-33 FULL-2 U5: no role known, stop 5 s after start -> not forwarded, but connectSessionPaused is 1 (D-19)');
     is($n, 0, 'D-33 FULL-2 U5: no role known, stop 5 s after start -> no pause command');
 }
 
@@ -3662,14 +3666,16 @@ sub grace_case {
         is(scalar(h_log(qr/D-16: stale Connect claim/)), 0, 'P4U-11: and no D-16 stale-claim line (a Browse pause is not a stale claim)');
         is(scalar(h_log(qr/after the Connect session ended - forwarding|stale stream after session end/)), 0, 'P4U-11: and no GH #159 forwarding line');
 
-        # P4U-12: a LIVE connect stream on this player, but the claim is held by ANOTHER player: no forwarding line
+        # P4U-12: a LIVE connect stream on this player, but the claim is held by ANOTHER player. 88-06 (D-05, #159 WR-04):
+        # the session moved from this player to the other one, and Play here is the gesture that pulls it back - the unpause
+        # reaches this player's own daemon (its 409 ejects and reopens the entry). Before 88-06 nothing was forwarded.
         my $owner = Test::FakeClient->new(power => 1);
         Plugins::SpotOn::Connect->bindConnectClaim($owner, 'test');
         my $other = Test::FakeClientSong->new(power => 1, song => Test::FakeSongC4->new(url => 'spoton://connect-9'));
-        is_deeply($unpause->($other), [],
-            'P4U-12: claim held by another player, LMS unpause on a live connect stream: nothing forwarded (verb list empty)');
-        is(scalar(h_log(qr/after the Connect session ended - forwarding|stale stream after session end/)), 0,
-            'P4U-12: and no GH #159 pass-through line either');
+        is_deeply($unpause->($other), ['play'],
+            'P4U-12: claim held by another player, LMS unpause on a live connect stream: forwarded to its own daemon (88-06 D-05)');
+        is(scalar(h_log(qr/after the Connect session ended - forwarding|stale stream after session end/)), 1,
+            'P4U-12: and the GH #159 pass-through line is written (88-06 D-05)');
         Plugins::SpotOn::Connect->releaseConnectClaim($owner, 'test');
     }
 

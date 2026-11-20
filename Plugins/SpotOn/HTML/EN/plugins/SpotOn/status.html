@@ -88,6 +88,8 @@ header p {
 .metric-value {
     font-weight: 400;
 }
+.audiokey-advice { flex-wrap: wrap; gap: 4px 12px; }
+.audiokey-advice a { color: #1db954; }
 .dot-alive { color: #1db954; }
 .dot-dead { color: #e53935; }
 .dot-unknown { color: rgba(224,224,224,0.3); }
@@ -215,6 +217,38 @@ footer {
         vl.textContent = value;
         row.appendChild(lbl);
         row.appendChild(vl);
+        return row;
+    }
+
+    // 89-02 (D-11a, ACC-03): one row of the Auth Health card that says what a
+    // refused audio key means on this platform and links to the troubleshooting
+    // section. A row of its own on purpose: the errors[] entry is cut at 80
+    // characters below (the cut part is only a tooltip), the advice and the
+    // link must never depend on that. `lead` is '' for the paired account or
+    // 'Player <name>: ' for a guest on one player. The three sentences are the
+    // ones of DaemonManager audioKeyAdviceText, character for character (a
+    // cell in t/core/13 pins the equality). Returns null for an unknown advice
+    // value. Text is set through textContent only.
+    function createAudioKeyAdviceRow(lead, advice, guest) {
+        var texts = {
+            linux_server: 'There is no way out on this system (macOS or Windows). On a Linux server this account plays with the Soloist backend, for example LMS in Docker, in a VM or on a small Linux machine.',
+            soloist: 'Select the Soloist backend in the SpotOn settings.',
+            unavailable: 'Soloist is not available on this system.'
+        };
+        if (!Object.prototype.hasOwnProperty.call(texts, advice)) return null;
+
+        var row = document.createElement('div');
+        row.className = 'metric-row audiokey-advice' + (guest ? ' audiokey-advice--guest' : '');
+        var span = document.createElement('span');
+        span.className = 'metric-label';
+        span.textContent = (lead || '') + texts[advice];
+        var link = document.createElement('a');
+        link.href = 'https://github.com/stiefenm/spoton/blob/main/TROUBLESHOOTING.md#key-refused-spotify-soloist-api-key-not-saved-or-spotify-refuses-audio-keys';
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        link.textContent = 'What this means';
+        row.appendChild(span);
+        row.appendChild(link);
         return row;
     }
 
@@ -481,6 +515,23 @@ footer {
             else if (audioKey.state === 'not_used')  { akLabel = 'Not used (Soloist)'; akClass = 'dot-unknown'; }
             else                                     { akLabel = 'OK'; akClass = 'dot-alive'; }
             body.appendChild(createMetricRow('Audio Keys', akLabel, akClass));
+
+            // 89-02 (D-11a, ACC-03): the platform advice and the docs link as
+            // their own rows -- one for a denied paired account, one for every
+            // player with a live guest entry (a refusal that was not this
+            // account's). Never only inside the errors[] text.
+            if (audioKey.advice) {
+                if (audioKey.state === 'denied') {
+                    var pRow = createAudioKeyAdviceRow('', audioKey.advice, false);
+                    if (pRow) body.appendChild(pRow);
+                }
+                var guests = Array.isArray(audioKey.guests) ? audioKey.guests : [];
+                for (var gi = 0; gi < guests.length; gi++) {
+                    var gName = (guests[gi] && guests[gi].player) ? String(guests[gi].player) : '';
+                    var gRow = createAudioKeyAdviceRow(gName ? 'Player ' + gName + ': ' : '', audioKey.advice, true);
+                    if (gRow) body.appendChild(gRow);
+                }
+            }
         }
     }
 

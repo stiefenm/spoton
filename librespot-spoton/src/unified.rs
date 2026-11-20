@@ -104,6 +104,83 @@ fn advance_connect_track_generation(
     }
 }
 
+/// How long a Browse `/track/` or `/episode/` request waits for the Player's first real
+/// signal (the first audio chunk, or the verdict of `serve_track_request`) before it gives
+/// up. 89-09 (ACC-02): the status line is decided by that signal, never by a timer. Before,
+/// the handler answered `200 OK` after a fixed 500 ms and a verdict that came later could
+/// only end the body with 0 bytes, which LMS starts as a short track.
+///
+/// The value sits between three other clocks:
+/// - above the fork's key timeout chain (`KEY_RESPONSE_TIMEOUT` 1.5 s, three attempts,
+///   4.5 s), so a dead key channel still reaches the 404 arm as a verdict and counts
+///   toward the reconnect;
+/// - below the 15 s LMS waits for a status line when it opens the stream itself (proxy
+///   mode, sync groups, transcoding: `Slim::Formats::RemoteStream::request` reads it with
+///   a blocking `sysreadline`, server pref `remotestreamtimeout`, default 15). LMS is
+///   blocked for that read, so the bound is also the longest such block;
+/// - below the about 58 s after which the fork hands back a code-2 refusal (`request`
+///   asks again at 3, 8, 18 ... 58 s). Phase 88 Pitfall 4: such a refusal must not reach
+///   the 404 arm (it would count toward the reconnect); the request has given up long
+///   before, and the give-up arm does not count.
+/// squeezelite itself puts no limit on the wait for headers (10 s on the TCP connect only).
+const BROWSE_FIRST_SIGNAL_BOUND: Duration = Duration::from_secs(10);
+
+/// The first thing a Browse title request learns from its serve task.
+#[derive(Debug, PartialEq)]
+enum BrowseFirstSignal {
+    /// The first audio chunk: the title plays.
+    Audio(Bytes),
+    /// `serve_track_request` ended before any audio (404 unavailable, 409 superseded, ...).
+    Verdict(StatusCode),
+    /// The serve task was dropped before any audio and without a verdict (aborted by the
+    /// Connect takeover listener).
+    Aborted,
+    /// Neither audio nor a verdict within the bound.
+    NoAnswer,
+}
+
+/// Waits for the first real signal of a Browse title request. Audio wins over a verdict
+/// that is ready at the same time (a title that fits the channel whole still plays).
+async fn browse_first_signal(
+    pcm_rx: &mut mpsc::Receiver<Bytes>,
+    status_rx: &mut tokio::sync::oneshot::Receiver<StatusCode>,
+    bound: Duration,
+) -> BrowseFirstSignal {
+    let deadline = tokio::time::sleep(bound);
+    tokio::pin!(deadline);
+    let mut pcm_open = true;
+    loop {
+        tokio::select! {
+            biased;
+            chunk = pcm_rx.recv(), if pcm_open => match chunk {
+                Some(chunk) => return BrowseFirstSignal::Audio(chunk),
+                // Closed without a byte: the serve task is ending, its verdict follows.
+                None => pcm_open = false,
+            },
+            status = &mut *status_rx => return match status {
+                Ok(status) => BrowseFirstSignal::Verdict(status),
+                Err(_) => BrowseFirstSignal::Aborted,
+            },
+            _ = &mut deadline => return BrowseFirstSignal::NoAnswer,
+        }
+    }
+}
+
+/// What a title is answered that ended without a single audio byte and without a 404 or a
+/// 409: never a 2xx (an empty 200 is a stream LMS starts as a short track).
+fn status_for_an_end_without_audio(status: StatusCode) -> StatusCode {
+    if status.is_success() { StatusCode::BAD_GATEWAY } else { status }
+}
+
+/// The body of a Browse answer: the chunk that was the first signal, then the rest.
+fn browse_audio_body(first: Option<Bytes>, rest: mpsc::Receiver<Bytes>) -> BoxBody<Bytes, hyper::Error> {
+    let stream = TokioStreamExt::map(
+        TokioStreamExt::chain(tokio_stream::iter(first), ReceiverStream::new(rest)),
+        |chunk| Ok::<Frame<Bytes>, hyper::Error>(Frame::data(chunk)),
+    );
+    BodyExt::boxed(StreamBody::new(stream))
+}
+
 // -------------------------------------------------------------------------
 // /control status mapping — GH #159
 // -------------------------------------------------------------------------
@@ -129,16 +206,711 @@ fn advance_connect_track_generation(
 ///      active Connect target", so 409 is the correct signal here too.
 ///      (Body-parse failures cannot reach this arm — those exist only for
 ///      volume/seek, which keep their 422 mapping.)
-fn control_status(spirc_active: bool, result_present: bool, cmd: &str) -> StatusCode {
-    match (spirc_active, result_present, cmd) {
-        (false, _, "pause" | "play" | "next" | "prev") => StatusCode::CONFLICT,
-        (_, false, "pause" | "play" | "next" | "prev") => StatusCode::CONFLICT,
-        (_, true, _) => StatusCode::NO_CONTENT,
-        (_, false, "volume" | "seek") => {
+fn control_status(recovering: bool, spirc_active: bool, result_present: bool, cmd: &str) -> StatusCode {
+    match (recovering, spirc_active, result_present, cmd) {
+        // GH #207 / D-08 (Fable decision 1 item 7): while the helper rebuilds a dropped
+        // AP session the answer is 503 (+ Retry-After 2 from the caller), never 409, so
+        // Backend/Librespot.pm does not eject the stream and the D-03 pull-back is not
+        // triggered by the helper's own outage.
+        (true, _, _, "pause" | "play" | "next" | "prev" | "volume" | "seek") => {
+            StatusCode::SERVICE_UNAVAILABLE
+        }
+        (_, false, _, "pause" | "play" | "next" | "prev") => StatusCode::CONFLICT,
+        (_, _, false, "pause" | "play" | "next" | "prev") => StatusCode::CONFLICT,
+        (_, _, true, _) => StatusCode::NO_CONTENT,
+        (_, _, false, "volume" | "seek") => {
             log::debug!("[spoton/unified] /control/{cmd}: body parse failed, returning 422");
             StatusCode::UNPROCESSABLE_ENTITY
         }
         _ => StatusCode::NOT_FOUND,
+    }
+}
+
+// -------------------------------------------------------------------------
+// /control/transfer status mapping and play-after-takeover - phase 88 D-03
+// -------------------------------------------------------------------------
+
+/// Minimum spacing between two accepted /control/transfer dispatches
+/// (T-88-12, proactive burst prevention).
+const TRANSFER_MIN_INTERVAL: Duration = Duration::from_secs(3);
+
+/// Maps a /control/transfer dispatch outcome to an HTTP status.
+///
+/// Deliberately takes NO activity flag: a transfer-back is requested precisely
+/// while this device is not the active Connect target, so the 409-when-inactive
+/// rule of `control_status` must never apply to it (D-03, Pitfall 5, GH #223).
+///
+/// - an AP-drop recovery runs (GH #207, `recovering`): 503
+/// - no Spirc handle (Browse preemption / reconnect window): 503
+/// - last accepted dispatch younger than TRANSFER_MIN_INTERVAL: 503
+///   (T-88-12, the caller adds `Retry-After: 2`)
+/// - otherwise 204
+fn transfer_status(recovering: bool, spirc_present: bool, since_last_dispatch: Option<Duration>) -> StatusCode {
+    // GH #207: the old Spirc is being woken and the new one is not up yet.
+    if recovering || !spirc_present {
+        return StatusCode::SERVICE_UNAVAILABLE;
+    }
+    match since_last_dispatch {
+        Some(d) if d < TRANSFER_MIN_INTERVAL => StatusCode::SERVICE_UNAVAILABLE,
+        _ => StatusCode::NO_CONTENT,
+    }
+}
+
+/// Window in which a takeover still counts as the one a /control/transfer
+/// asked for. Derivation: 88-06's TRANSFER_WAIT_S (8 s) plus the 5.33 s
+/// connect_transfer latency accepted in phase 84, rounded up. A takeover
+/// later than that was not requested by any waiting LMS gesture and must not
+/// play by itself (D-09).
+const TRANSFER_PLAY_WINDOW: Duration = Duration::from_secs(15);
+
+/// One-shot play-after-takeover decision (D-03, GH #223).
+///
+/// Spotify's takeover loads PAUSED when the restored remote state was paused
+/// (`handle_transfer` loads with `is_playing = !is_paused`), and LMS's start
+/// handler then streams a silent /stream. When the takeover is the one this
+/// helper itself requested (`armed_at` = instant of the accepted
+/// /control/transfer) and it arrives inside TRANSFER_PLAY_WINDOW, the helper
+/// sends `play()` once. No arm (app selection, 88-04's recovery takeover) or
+/// an expired arm never plays (D-09, T-88-30).
+fn play_after_takeover(armed_at: Option<Instant>, now: Instant) -> bool {
+    match armed_at {
+        Some(t) => now.saturating_duration_since(t) <= TRANSFER_PLAY_WINDOW,
+        None => false,
+    }
+}
+
+/// Shared transfer bookkeeping: the last accepted dispatch (rate limit) and
+/// the one-shot play arm consumed by the first SessionConnected.
+#[derive(Default)]
+struct TransferState {
+    last_dispatch: std::sync::Mutex<Option<Instant>>,
+    play_armed: std::sync::Mutex<Option<Instant>>,
+}
+
+impl TransferState {
+    /// Takes (and thereby consumes) the play arm.
+    fn take_play_arm(&self) -> Option<Instant> {
+        self.play_armed.lock().unwrap_or_else(|e| e.into_inner()).take()
+    }
+}
+
+/// POST /control/transfer: ask Spirc to pull a moved session back to this
+/// device (`Spirc::transfer(None)`). Success is NOT awaited; it shows later as
+/// `start`/`change` to LMS. Returns the HTTP status; the log lines are the
+/// extract-run category of 88-03.
+fn dispatch_transfer(
+    spirc_handle: &std::sync::Mutex<Option<Spirc>>,
+    state: &TransferState,
+    recovering: bool,
+) -> StatusCode {
+    let guard = spirc_handle.lock().unwrap_or_else(|e| e.into_inner());
+    let present = guard.is_some();
+    let since = state
+        .last_dispatch
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .map(|t| t.elapsed());
+    let status = transfer_status(recovering, present, since);
+    if status != StatusCode::NO_CONTENT {
+        let reason = if recovering {
+            "recovering"
+        } else if present {
+            "min_interval"
+        } else {
+            "no_spirc"
+        };
+        log::info!("[spoton/unified] /control/transfer: refused ({reason})");
+        return status;
+    }
+    let sent = guard.as_ref().map(|s| s.transfer(None).is_ok()).unwrap_or(false);
+    if !sent {
+        // Command channel closed: the Spirc task is gone, same as no handle.
+        log::info!("[spoton/unified] /control/transfer: refused (no_spirc)");
+        return StatusCode::SERVICE_UNAVAILABLE;
+    }
+    let now = Instant::now();
+    *state.last_dispatch.lock().unwrap_or_else(|e| e.into_inner()) = Some(now);
+    *state.play_armed.lock().unwrap_or_else(|e| e.into_inner()) = Some(now);
+    log::info!("[spoton/unified] /control/transfer: dispatched");
+    StatusCode::NO_CONTENT
+}
+
+// -------------------------------------------------------------------------
+// AP-drop recovery decisions - phase 88 D-07/D-08/D-09, GH #207
+// -------------------------------------------------------------------------
+//
+// Pure decision functions of the helper-internal recovery (Fable decision 1,
+// option d). The wiring (poll, intent, wake, rebuild, re-acquire) lives in the
+// main loop of `run`; everything that can be decided without I/O is decided here
+// so the table tests pin it.
+
+/// How long after a Recovered outcome a Paused/Stopped is still the takeover's
+/// own paused load. Derivation: the gh207 rule's recovery budget ("recovered in"
+/// within 15 s): a takeover load slower than that already fails the rig row, and
+/// a Paused after it is the user's.
+const RECOVERY_SETTLE: Duration = Duration::from_secs(15);
+
+/// Age limit of the not-active transfer path (Fable decision 1 item 4): the
+/// fallback transfer could otherwise pull a session back from a device the user
+/// switched to in the meantime.
+const RECOVERY_TRANSFER_MAX_AGE: Duration = Duration::from_secs(30);
+
+/// The player-event kinds the recovery gates look at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EventKind {
+    SessionDisconnected,
+    Paused,
+    Stopped,
+    Playing,
+    TrackChanged,
+    Other,
+}
+
+fn event_kind(event: &PlayerEvent) -> EventKind {
+    match event {
+        PlayerEvent::SessionDisconnected { .. } => EventKind::SessionDisconnected,
+        PlayerEvent::Paused { .. } => EventKind::Paused,
+        PlayerEvent::Stopped { .. } => EventKind::Stopped,
+        PlayerEvent::Playing { .. } => EventKind::Playing,
+        PlayerEvent::TrackChanged { .. } => EventKind::TrackChanged,
+        _ => EventKind::Other,
+    }
+}
+
+/// What the helper knew when the session was lost (Fable decision 1 item 1).
+#[derive(Debug, Clone)]
+struct RecoveryIntent {
+    was_active: bool,
+    was_playing: bool,
+    track_id: Option<String>,
+    session_id: String,
+    at: Instant,
+}
+
+/// Next step after the rebuilt Spirc is up (Fable decision 1 item 4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecoveryStep {
+    Play,
+    TransferThenPlay,
+    TransferOnly,
+    Quiet,
+    GiveUp,
+}
+
+/// How the recovery ended, as the dispatcher needs to know it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecoveryOutcome {
+    Recovered,
+    Failed,
+    GaveUp,
+}
+
+/// Fable decision 1 item 2: the session end (and the pause/stop the wake-up and
+/// the old Spirc cause) is NOT passed to LMS while a recovery runs OR while the
+/// session is already invalid at event time (the Spirc task noticed the loss
+/// before the poll did). Outside a loss the same events are the honest end /
+/// the user's pause and are forwarded.
+fn suppress_for_recovery(kind: EventKind, recovering: bool, session_invalid: bool) -> bool {
+    match kind {
+        EventKind::SessionDisconnected | EventKind::Paused | EventKind::Stopped => {
+            recovering || session_invalid
+        }
+        _ => false,
+    }
+}
+
+/// What to do once the rebuilt Spirc is up (Fable decision 1 item 4), evaluated
+/// in this order. The 30 s age limit belongs ONLY to the not-active transfer
+/// path: a takeover that already succeeded is never a failure because of elapsed
+/// time. A session that was paused at the loss never plays (D-09), a device that
+/// was not active never takes over anything (D-09, T-88-09).
+///
+/// 88-03 spike (N=1, rig): the session-id carry-over fired the automatic
+/// takeover 410 ms after `Spirc::new` (`NORMAL_TAKEOVER_STEP=session-id`), so
+/// `active_after_rebuild` is normally already true and the transfer branches are
+/// the unexercised fallback (assumption A1 stays open for 88-08).
+fn recovery_plan(intent: &RecoveryIntent, active_after_rebuild: bool, age: Duration) -> RecoveryStep {
+    if !intent.was_active {
+        RecoveryStep::Quiet
+    } else if active_after_rebuild {
+        if intent.was_playing { RecoveryStep::Play } else { RecoveryStep::Quiet }
+    } else if age >= RECOVERY_TRANSFER_MAX_AGE {
+        RecoveryStep::GiveUp
+    } else if intent.was_playing {
+        RecoveryStep::TransferThenPlay
+    } else {
+        RecoveryStep::TransferOnly
+    }
+}
+
+/// The event the dispatcher passes to the ordinary `handle_player_event` call
+/// once the outcome is known. Recovered: the session continues, nothing is
+/// replayed. Failed / GaveUp: the held SessionDisconnected, or one built from
+/// the old session's connection id when none was held, so the ordinary arm
+/// sends `stop inactive <counter>` and resets the cursor. A held Paused/Stopped
+/// is never replayed (the replayed disconnect pauses LMS anyway).
+fn held_event_after_recovery(
+    outcome: RecoveryOutcome,
+    held: Option<PlayerEvent>,
+    old_connection: &(String, String),
+) -> Option<PlayerEvent> {
+    match outcome {
+        RecoveryOutcome::Recovered => None,
+        RecoveryOutcome::Failed | RecoveryOutcome::GaveUp => match held {
+            Some(e @ PlayerEvent::SessionDisconnected { .. }) => Some(e),
+            _ => Some(PlayerEvent::SessionDisconnected {
+                connection_id: old_connection.0.clone(),
+                user_name: old_connection.1.clone(),
+            }),
+        },
+    }
+}
+
+/// The 1 s loss poll fires ONCE per loss: not while the reconnect arm runs
+/// (`connecting`) and not while a recovery runs (`recovering`). Round-3 finding:
+/// `connecting` alone is set only in the Spirc-task-died arm, so the poll kept
+/// re-firing every second until the old task ended and each re-fire reset the
+/// intent's `at`.
+fn loss_poll_fires(connecting: bool, recovering: bool, session_invalid: bool) -> bool {
+    !connecting && !recovering && session_invalid
+}
+
+/// After a Recovered outcome the takeover's own paused load (Spirc loads paused
+/// because the intent paused it at the loss; the Play step plays afterwards)
+/// must not reach LMS as `stop` + `resume`. Paused/Stopped inside the settle
+/// window are suppressed; Playing never is (the caller ends the window on it);
+/// a later pause is the user's; a new SessionDisconnected is an honest end or a
+/// new recovery and is never hidden by the window.
+fn suppress_after_recovery(kind: EventKind, settle_until: Option<Instant>, now: Instant) -> bool {
+    matches!(kind, EventKind::Paused | EventKind::Stopped)
+        && settle_until.map(|u| now < u).unwrap_or(false)
+}
+
+/// GH #207 (88-08 finding 1, V4): the rebuilt Spirc announces the title it takes
+/// over a second time - `TrackChanged` first, then `Playing` with the restored
+/// position. For a RELINKED title the two carry different ids (88-03 observation
+/// 3: `TrackChanged` names the relinked id `0yNtt...`, `Playing` the Spirc-side id
+/// `4uLU...`), and the dispatcher cursor holds the `Playing` form from before the
+/// loss. `connect.rs` therefore read the takeover's `TrackChanged` as `4uLU ->
+/// 0yNtt` and the `Playing` as `0yNtt -> 4uLU`: two `change` notifications, each
+/// of which Connect.pm answers with `startOffset = -elapsed`, i.e. the LMS clock
+/// restarted at 0 while the helper's position (51261 ms at the loss, 51424 ms at
+/// the takeover) was right all along.
+///
+/// The takeover of the session this helper just lost is the SAME session, not a
+/// new title, so its `TrackChanged` is held back from LMS while the recovery runs
+/// (`recovering`) and inside the settle window after a Recovered outcome (the
+/// event can land on either side of `RecoveryShared::finish`). The cursor then
+/// still equals the `Playing` id, which stays a no-op; a takeover that really
+/// restored a DIFFERENT title still reaches LMS as `change` through `Playing`
+/// (its id differs from the cursor). Needs a cursor: without one the event is a
+/// session start (`start`), never held. Only `TrackChanged` is concerned: the
+/// caller keeps ending the window on `Playing`, and the pause gates above are
+/// separate.
+fn suppress_takeover_announce(
+    kind: EventKind,
+    recovering: bool,
+    settle_until: Option<Instant>,
+    now: Instant,
+    has_cursor: bool,
+) -> bool {
+    kind == EventKind::TrackChanged
+        && has_cursor
+        && (recovering || settle_until.map(|u| now < u).unwrap_or(false))
+}
+
+/// Round-4 safety net: the wake-up command is sent once; if the old Spirc task
+/// never leaves (stuck in a network call on the dead session), the recovery
+/// would hold `recovering` (503 for /control, no Perl health restart) forever.
+/// After RECOVERY_WAKE_TIMEOUT the rebuild is forced.
+fn recovery_wake_stuck(recovering: bool, connecting: bool, age: Duration) -> bool {
+    recovering && !connecting && age >= RECOVERY_WAKE_TIMEOUT
+}
+
+/// 88 review WR-02: the re-acquire step reads `spirc_active == true` as "the
+/// rebuilt Spirc took over". The ordinary path into the rebuild (the
+/// Spirc-task-ended arm) clears the flag first; the two shortcuts (no Spirc to
+/// wake, the forced rebuild of a Spirc that never left) bypass that arm. A Spirc
+/// stuck in `handle_disconnect` emits its SessionDisconnected only after the
+/// await it hangs in, so the dispatcher never cleared the flag either: the
+/// re-acquire then saw a takeover at its first poll and sent `play()` to a
+/// rebuilt Spirc that was not active yet, which the fork drops ("will be ignored
+/// while Not Active") while the log read `recovered in N ms (playing=1)`.
+/// Both shortcuts call this before they set `connecting`.
+fn mark_inactive_for_rebuild(spirc_active: &AtomicBool) {
+    spirc_active.store(false, Ordering::SeqCst);
+}
+
+/// Retry schedule of a failed `Spirc::new` on the recovery path (Fable decision
+/// 1 item 6): after 1, 2, 4 s, each with a NEW Session; then give up and let the
+/// Perl backoff (GH #147) take over.
+fn recovery_retry_delay(attempt: usize) -> Option<Duration> {
+    match attempt {
+        0 => Some(Duration::from_secs(1)),
+        1 => Some(Duration::from_secs(2)),
+        2 => Some(Duration::from_secs(4)),
+        _ => None,
+    }
+}
+
+/// 88 review WR-03: upper bound of ONE `Spirc::new` on the recovery path.
+///
+/// The rebuild is awaited inline in the reconnect arm of the main loop. The fork
+/// bounds the TCP connect and the handshake (5 s, `connection::connect`), but
+/// `connection::authenticate` awaits the access point's answer with no timeout:
+/// an access point that completes the handshake and then goes quiet blocked the
+/// arm for good. `recovering` stayed set (503 for /control, no Perl health
+/// restart) and neither the loss poll nor Ctrl+C was served.
+///
+/// 30 s = the fork's own access-point rotation (`Session::connect`: 6 access
+/// points, 5 s each): the longest a rebuild can legitimately take before it
+/// fails by itself. The limit must not be shorter, because a retry starts with a
+/// NEW Session and that rotation starts over. An elapsed limit is an ordinary
+/// failed attempt of the 1/2/4 s schedule (`recovery_retry_delay`).
+const RECOVERY_SPIRC_NEW_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Only the recovery path is bounded: outside it `recovering` is not set, so the
+/// Perl health restart (GH #149) is still armed and today's await is unchanged.
+fn rebuild_limit(on_recovery_path: bool) -> Option<Duration> {
+    on_recovery_path.then_some(RECOVERY_SPIRC_NEW_TIMEOUT)
+}
+
+/// Await one rebuild attempt, at most `limit` long. An elapsed limit drops the
+/// attempt and returns a DeadlineExceeded error, so the caller's retry schedule
+/// treats it like any other failed `Spirc::new`.
+async fn bounded_rebuild<T, F>(attempt: F, limit: Option<Duration>) -> Result<T, librespot_core::Error>
+where
+    F: std::future::Future<Output = Result<T, librespot_core::Error>>,
+{
+    match limit {
+        None => attempt.await,
+        Some(limit) => match tokio::time::timeout(limit, attempt).await {
+            Ok(result) => result,
+            Err(_) => Err(librespot_core::Error::deadline_exceeded(format!(
+                "Spirc::new timed out after {} ms",
+                limit.as_millis()
+            ))),
+        },
+    }
+}
+
+/// Upper bound of the shutdown-side wait for the dispatcher's ack of a replayed
+/// recovery outcome: notify's TCP bound (5 s, connect.rs) + 1 s.
+const OUTCOME_ACK_TIMEOUT: Duration = Duration::from_secs(6);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AckResult {
+    Acked,
+    TimedOut,
+    Dropped,
+}
+
+/// Wait (bounded) for the dispatcher to finish the replay of a recovery outcome.
+/// A dropped sender (the dispatcher is gone) returns at once; nothing can still
+/// deliver the replay then.
+async fn await_outcome_ack(rx: tokio::sync::oneshot::Receiver<()>, timeout: Duration) -> AckResult {
+    match tokio::time::timeout(timeout, rx).await {
+        Ok(Ok(())) => AckResult::Acked,
+        Ok(Err(_)) => AckResult::Dropped,
+        Err(_) => AckResult::TimedOut,
+    }
+}
+
+/// Wait for the old Spirc task to leave after the wake-up before the rebuild is
+/// forced. Its exit normally takes about 1.3 s (88-03: two spclient PUTs and the
+/// dealer close); 10 s leaves a wide margin without holding `recovering` long.
+const RECOVERY_WAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Fable decision 1 item 4: wait up to 3 s for the automatic takeover
+/// (`spirc_active`), then up to 5 s after the fallback `transfer(None)`.
+const RECOVERY_ACTIVE_WAIT: Duration = Duration::from_secs(3);
+const RECOVERY_TRANSFER_WAIT: Duration = Duration::from_secs(5);
+
+/// Poll `flag` every 50 ms until it is set or `timeout` elapsed.
+async fn wait_active(flag: &AtomicBool, timeout: Duration) -> bool {
+    let t0 = Instant::now();
+    loop {
+        if flag.load(Ordering::Acquire) {
+            return true;
+        }
+        if t0.elapsed() >= timeout {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// Fires the recovery outcome acknowledgement when dropped, so every exit of a
+/// dispatcher loop iteration (including `continue`) acknowledges the replay.
+struct AckOnDrop(Option<tokio::sync::oneshot::Sender<()>>);
+
+impl Drop for AckOnDrop {
+    fn drop(&mut self) {
+        if let Some(tx) = self.0.take() {
+            let _ = tx.send(());
+        }
+    }
+}
+
+type OutcomeMsg = (RecoveryOutcome, tokio::sync::oneshot::Sender<()>);
+
+/// State shared by the main loop and the player-event dispatchers.
+struct RecoveryShared {
+    /// A recovery runs: /control answers 503, /health reports it, the session
+    /// end is held back.
+    recovering: AtomicBool,
+    /// Last known "this device was the active Connect target". NOT cleared by a
+    /// SessionDisconnected that was suppressed because the session was invalid
+    /// (the Spirc task noticed the loss before the poll), so the intent still
+    /// knows the device was active.
+    active_snapshot: AtomicBool,
+    /// The main loop shut the session down ON PURPOSE (ZeroConf credential
+    /// rotation, Browse-triggered reconnect). Such an end keeps today's path: its
+    /// SessionDisconnected is forwarded, not held back as an AP drop.
+    deliberate: AtomicBool,
+    settle_until: std::sync::Mutex<Option<Instant>>,
+    held: std::sync::Mutex<Option<PlayerEvent>>,
+    /// (connection id, user name) of the session that was lost.
+    old_connection: std::sync::Mutex<(String, String)>,
+    /// Mirror of the dispatcher's LMS cursor (the id form the dispatcher itself
+    /// compares, 88-03 observation 3).
+    cursor: std::sync::Mutex<Option<String>>,
+    lms_configured: bool,
+    /// Outcome channel, main loop -> dispatcher. INVARIANT (88 review WR-09):
+    /// this struct owns BOTH halves and nothing closes the receiver, so for as
+    /// long as a `RecoveryShared` exists a send cannot fail and a receive cannot
+    /// report a closed channel. `finish` and `next_outcome` rely on it; do not
+    /// hand either half out or call `close()` without revisiting both.
+    outcome_tx: mpsc::UnboundedSender<OutcomeMsg>,
+    outcome_rx: tokio::sync::Mutex<mpsc::UnboundedReceiver<OutcomeMsg>>,
+}
+
+impl RecoveryShared {
+    fn new(lms_configured: bool) -> Self {
+        let (outcome_tx, outcome_rx) = mpsc::unbounded_channel();
+        RecoveryShared {
+            recovering: AtomicBool::new(false),
+            active_snapshot: AtomicBool::new(false),
+            deliberate: AtomicBool::new(false),
+            settle_until: std::sync::Mutex::new(None),
+            held: std::sync::Mutex::new(None),
+            old_connection: std::sync::Mutex::new((String::new(), String::new())),
+            cursor: std::sync::Mutex::new(None),
+            lms_configured,
+            outcome_tx,
+            outcome_rx: tokio::sync::Mutex::new(outcome_rx),
+        }
+    }
+
+    fn is_recovering(&self) -> bool {
+        self.recovering.load(Ordering::Acquire)
+    }
+
+    /// 88 review WR-06: the main loop or the HTTP handler takes the device off
+    /// the session ON PURPOSE (Browse preemption, ZeroConf rotation,
+    /// Browse-triggered reconnect, the Spirc task ended). Clears the activity
+    /// flag AND the snapshot: the disconnect event that would clear the snapshot
+    /// may be suppressed or never emitted (an aborted Spirc task), and a stale
+    /// snapshot makes the next loss read `was_active` for a device that was not.
+    fn clear_active(&self, spirc_active: &AtomicBool) {
+        spirc_active.store(false, Ordering::SeqCst);
+        self.active_snapshot.store(false, Ordering::SeqCst);
+    }
+
+    /// Hold a suppressed SessionDisconnected until the outcome is known. A
+    /// suppressed Paused/Stopped is dropped.
+    fn hold(&self, event: &PlayerEvent) {
+        if matches!(event, PlayerEvent::SessionDisconnected { .. }) {
+            *self.held.lock().unwrap_or_else(|e| e.into_inner()) = Some(event.clone());
+        }
+    }
+
+    fn take_held(&self) -> Option<PlayerEvent> {
+        self.held.lock().unwrap_or_else(|e| e.into_inner()).take()
+    }
+
+    fn old_connection(&self) -> (String, String) {
+        self.old_connection.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    fn settle_until(&self) -> Option<Instant> {
+        *self.settle_until.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn end_settle(&self) {
+        *self.settle_until.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
+    fn set_cursor(&self, cursor: &Option<String>) {
+        *self.cursor.lock().unwrap_or_else(|e| e.into_inner()) = cursor.clone();
+    }
+
+    fn cursor(&self) -> Option<String> {
+        self.cursor.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Next recovery outcome for a dispatcher to act on. Waits while none is
+    /// queued; the channel cannot close (see the invariant on `outcome_tx`).
+    async fn next_outcome(&self) -> OutcomeMsg {
+        self.outcome_rx
+            .lock()
+            .await
+            .recv()
+            .await
+            .expect("RecoveryShared owns the outcome sender: the channel cannot close")
+    }
+
+    /// End the recovery: open the settle window (Recovered), hand the outcome to
+    /// the dispatcher and clear `recovering`. The returned receiver fires when the
+    /// dispatcher finished the replay; without LMS (`!lms_configured`) no
+    /// dispatcher consumes outcomes and it is fired here. Clearing happens last,
+    /// so no event slips between the outcome and the window.
+    fn finish(&self, outcome: RecoveryOutcome) -> tokio::sync::oneshot::Receiver<()> {
+        if outcome == RecoveryOutcome::Recovered {
+            *self.settle_until.lock().unwrap_or_else(|e| e.into_inner()) =
+                Some(Instant::now() + RECOVERY_SETTLE);
+        }
+        let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+        if self.lms_configured {
+            // Cannot fail (invariant on `outcome_tx`): the receiver lives in `self`.
+            let _ = self.outcome_tx.send((outcome, ack_tx));
+        } else {
+            let _ = ack_tx.send(());
+        }
+        self.recovering.store(false, Ordering::Release);
+        ack_rx
+    }
+}
+
+/// "This device was the active Connect target when the session was lost": the
+/// live flag, or the snapshot a suppressed SessionDisconnected left behind.
+fn was_active_at_loss(spirc_active: &AtomicBool, rs: &RecoveryShared) -> bool {
+    spirc_active.load(Ordering::Acquire) || rs.active_snapshot.load(Ordering::Acquire)
+}
+
+/// 88 review WR-06: the Spirc task ended while the session is still VALID (after
+/// a Browse preemption or an internal error) and the main loop shuts the session
+/// down to rebuild it. Marked `deliberate` like the ZeroConf rotation and the
+/// Browse-triggered reconnect, so an event of the old Spirc that the dispatcher
+/// reads after the shutdown is forwarded as the honest end (`stop inactive`)
+/// instead of being held as an AP drop and discarded. An already invalid session
+/// is the AP drop itself: nothing is shut down, nothing is marked. Returns
+/// whether the session was shut down here.
+fn end_valid_session_on_purpose(rs: &RecoveryShared, session: &Session) -> bool {
+    if session.is_invalid() {
+        return false;
+    }
+    rs.deliberate.store(true, Ordering::Release);
+    session.shutdown();
+    true
+}
+
+/// Extrapolated playback position of the LMS anchor, for the log line only.
+fn anchor_position_ms(anchor: &Option<crate::connect::PositionAnchor>, now: Instant) -> u64 {
+    match anchor {
+        Some(a) if a.playing => {
+            u64::from(a.position_ms) + now.saturating_duration_since(a.at).as_millis() as u64
+        }
+        Some(a) => u64::from(a.position_ms),
+        None => 0,
+    }
+}
+
+/// Build the intent at the moment the loss is seen (Fable decision 1 item 1),
+/// set `recovering`, disarm 88-05's one-shot transfer play (the recovery decides
+/// play itself, D-09) and log the anchor line. Does NOT wake the Spirc.
+async fn begin_recovery(
+    rs: &RecoveryShared,
+    session: &Session,
+    spirc_active: &AtomicBool,
+    mode_state: &tokio::sync::Mutex<ActiveMode>,
+    lms: &LMS,
+    transfer_state: &TransferState,
+) -> RecoveryIntent {
+    let was_active = was_active_at_loss(spirc_active, rs);
+    let in_connect = *mode_state.lock().await == ActiveMode::Connect;
+    let anchor = *lms.position_anchor.lock().unwrap_or_else(|e| e.into_inner());
+    let was_playing = was_active && in_connect && anchor.map(|a| a.playing).unwrap_or(false);
+    let now = Instant::now();
+    let track_id = rs.cursor();
+    *rs.old_connection.lock().unwrap_or_else(|e| e.into_inner()) =
+        (session.connection_id(), session.username());
+    rs.recovering.store(true, Ordering::Release);
+    let _ = transfer_state.take_play_arm();
+    log::info!(
+        "[spoton/unified] session lost (active={} playing={} track={} pos={})",
+        was_active as u8,
+        was_playing as u8,
+        track_id.as_deref().unwrap_or("none"),
+        anchor_position_ms(&anchor, now)
+    );
+    RecoveryIntent {
+        was_active,
+        was_playing,
+        track_id,
+        session_id: session.session_id(),
+        at: now,
+    }
+}
+
+/// Result of the re-acquire step.
+struct Reacquired {
+    outcome: RecoveryOutcome,
+    /// `play()` was sent (the session was playing at the loss and we took over).
+    playing: bool,
+    /// Fixed reason text for `recovery failed: <reason>`.
+    reason: &'static str,
+}
+
+/// Fable decision 1 item 4: after `Spirc::new` succeeded on the recovery path.
+/// Wait up to 3 s for the automatic takeover, then act on `recovery_plan`.
+async fn reacquire_after_rebuild(
+    intent: &RecoveryIntent,
+    spirc_handle: &std::sync::Mutex<Option<Spirc>>,
+    spirc_active: &AtomicBool,
+) -> Reacquired {
+    let mut active = if intent.was_active {
+        wait_active(spirc_active, RECOVERY_ACTIVE_WAIT).await
+    } else {
+        spirc_active.load(Ordering::Acquire)
+    };
+    let step = recovery_plan(intent, active, intent.at.elapsed());
+    let send = |f: &dyn Fn(&Spirc) -> bool| -> bool {
+        let guard = spirc_handle.lock().unwrap_or_else(|e| e.into_inner());
+        guard.as_ref().map(|s| f(s)).unwrap_or(false)
+    };
+    let failed = |outcome, reason| Reacquired { outcome, playing: false, reason };
+    match step {
+        RecoveryStep::Quiet => {
+            if intent.was_active && active {
+                log::info!("[spoton/unified] recovery: takeover via session-id");
+            }
+            Reacquired { outcome: RecoveryOutcome::Recovered, playing: false, reason: "" }
+        }
+        RecoveryStep::GiveUp => failed(RecoveryOutcome::GaveUp, "no takeover within 30 s"),
+        RecoveryStep::Play => {
+            log::info!("[spoton/unified] recovery: takeover via session-id");
+            if send(&|s| s.play().is_ok()) {
+                Reacquired { outcome: RecoveryOutcome::Recovered, playing: true, reason: "" }
+            } else {
+                failed(RecoveryOutcome::Failed, "spirc command channel closed")
+            }
+        }
+        RecoveryStep::TransferThenPlay | RecoveryStep::TransferOnly => {
+            if !send(&|s| s.transfer(None).is_ok()) {
+                return failed(RecoveryOutcome::Failed, "spirc command channel closed");
+            }
+            active = wait_active(spirc_active, RECOVERY_TRANSFER_WAIT).await;
+            if !active {
+                return failed(RecoveryOutcome::Failed, "no takeover after transfer");
+            }
+            log::info!("[spoton/unified] recovery: takeover via transfer");
+            let play = step == RecoveryStep::TransferThenPlay;
+            if play && !send(&|s| s.play().is_ok()) {
+                return failed(RecoveryOutcome::Failed, "spirc command channel closed");
+            }
+            Reacquired { outcome: RecoveryOutcome::Recovered, playing: play, reason: "" }
+        }
     }
 }
 
@@ -281,6 +1053,60 @@ impl BurstArm {
 // 261109-ath.) It paces at 1x since start() with no hold-back, never blocks the
 // librespot player thread (GH #202) and hands chunks to the /stream relay.
 
+/// D-10 / Fable decision 2 item 2: where the time of a reload goes. One DEBUG line per
+/// sink start() / OGG serial change:
+/// `reload timing: headers at +X ms, first audio page at +Y ms, parked Z ms`,
+/// X = first header page written, Y = first audio page written (both measured from the
+/// start()/serial-change instant), Z = time the player thread spent in the pacing sleep
+/// before Y. Observation only: no behaviour change.
+struct ReloadTiming {
+    since: Instant,
+    headers_at: Option<Duration>,
+    parked: Duration,
+    done: bool,
+}
+
+impl ReloadTiming {
+    fn new(since: Instant) -> Self {
+        Self { since, headers_at: None, parked: Duration::ZERO, done: false }
+    }
+
+    /// A new start()/serial change: measure from `at` again.
+    fn restart(&mut self, at: Instant) {
+        *self = Self::new(at);
+    }
+
+    /// First header page written after the restart (later ones are ignored).
+    fn note_headers(&mut self, now: Instant) {
+        if !self.done && self.headers_at.is_none() {
+            self.headers_at = Some(now.saturating_duration_since(self.since));
+        }
+    }
+
+    /// Time spent in the pacing sleep (counted until the first audio page is out).
+    fn add_parked(&mut self, d: Duration) {
+        if !self.done {
+            self.parked += d;
+        }
+    }
+
+    /// First audio page written: yields the line once per restart.
+    fn finish(&mut self, now: Instant) -> Option<String> {
+        if self.done {
+            return None;
+        }
+        self.done = true;
+        let headers = self
+            .headers_at
+            .map_or_else(|| "n/a".to_owned(), |d| d.as_millis().to_string());
+        Some(format!(
+            "[spoton/unified] reload timing: headers at +{headers} ms, first audio page at +{} ms, parked {} ms",
+            now.saturating_duration_since(self.since).as_millis(),
+            self.parked.as_millis()
+        ))
+    }
+}
+
 struct UnifiedHttpStreamSink {
     pcm_tx: mpsc::Sender<Bytes>,
     #[allow(dead_code)]
@@ -331,6 +1157,8 @@ struct UnifiedHttpStreamSink {
     credit_frames: u64,
     // Rule (b) bound; a field only so tests can shrink it (production: BURST_FRESH_WINDOW).
     burst_fresh_window: Duration,
+    // D-10: reload timing line state (see ReloadTiming).
+    reload_timing: ReloadTiming,
 }
 
 impl UnifiedHttpStreamSink {
@@ -381,6 +1209,7 @@ impl UnifiedHttpStreamSink {
             burst,
             credit_frames: 0,
             burst_fresh_window: BURST_FRESH_WINDOW,
+            reload_timing: ReloadTiming::new(Instant::now()),
         }
     }
 
@@ -834,6 +1663,7 @@ impl Sink for UnifiedHttpStreamSink {
     fn start(&mut self) -> SinkResult<()> {
         self.last_track_gen = self.track_gen.load(Ordering::Acquire);
         self.began_at = Instant::now();
+        self.reload_timing.restart(self.began_at);
         self.frames_consumed = 0;
         self.granule_offset = -1; // Phase 44 fix: re-capture on first audio page
         self.ogg_serial = 0;
@@ -911,11 +1741,15 @@ impl Sink for UnifiedHttpStreamSink {
 
                 if expected_ns > elapsed_ns {
                     let park_ns = (expected_ns - elapsed_ns) as u64;
+                    self.reload_timing.add_parked(Duration::from_nanos(park_ns));
                     std::thread::sleep(Duration::from_nanos(park_ns));
                 }
 
                 let chunk = Bytes::copy_from_slice(bytes);
                 self.push_live(chunk)?;
+                if let Some(line) = self.reload_timing.finish(Instant::now()) {
+                    log::debug!("{line}");
+                }
             }
             AudioPacket::Raw(bytes) => {
                 let chunk = Bytes::from(bytes);
@@ -988,6 +1822,7 @@ impl Sink for UnifiedHttpStreamSink {
                             self.ogg_serial, serial
                         );
                         self.ogg_serial = serial;
+                        self.reload_timing.restart(Instant::now());
                         self.ogg_header_serial.store(serial, Ordering::Release);
                         self.ogg_headers_complete.store(false, Ordering::Release);
                         self.ogg_track_base_frames = last_timeline_frames
@@ -1005,6 +1840,7 @@ impl Sink for UnifiedHttpStreamSink {
                     if self.collecting_headers {
                         if granule <= 0 {
                             let header_page = chunk.slice(pos..pos + page_size);
+                            self.reload_timing.note_headers(Instant::now());
                             let mut buf = self.ogg_header_buf.lock().unwrap_or_else(|e| e.into_inner());
                             buf.push(header_page);
                         } else {
@@ -1042,6 +1878,7 @@ impl Sink for UnifiedHttpStreamSink {
 
                     if expected_ns > elapsed_ns {
                         let park_ns = (expected_ns - elapsed_ns) as u64;
+                        self.reload_timing.add_parked(Duration::from_nanos(park_ns));
                         std::thread::sleep(Duration::from_nanos(park_ns));
                     }
                 }
@@ -1049,6 +1886,11 @@ impl Sink for UnifiedHttpStreamSink {
                 // Header pages were captured into ogg_header_buf above, before this
                 // send, so a dropped chunk never loses the replay data.
                 self.push_live(chunk)?;
+                if last_timeline_frames.is_some() {
+                    if let Some(line) = self.reload_timing.finish(Instant::now()) {
+                        log::debug!("{line}");
+                    }
+                }
             }
         }
 
@@ -1119,6 +1961,10 @@ async fn unified_http_server(
     // GH #128: LMS notifier clone for the relay-start position resync.
     // Some when enable_connect and --lms are configured; None otherwise.
     lms_notify: Option<LMS>,
+    // D-03: /control/transfer bookkeeping (rate limit + play arm).
+    transfer_state: Arc<TransferState>,
+    // GH #207: AP-drop recovery state (/control answers 503, /health reports it).
+    recovery_shared: Arc<RecoveryShared>,
 ) {
     let graceful = GracefulShutdown::new();
     let mut shutdown_rx = std::pin::pin!(shutdown_rx);
@@ -1163,6 +2009,8 @@ async fn unified_http_server(
                 let connect_overflow = connect_overflow.as_ref().map(Arc::clone);
                 let connect_burst = connect_burst.as_ref().map(Arc::clone);
                 let lms_notify = lms_notify.clone();
+                let transfer_state = Arc::clone(&transfer_state);
+                let recovery_shared = Arc::clone(&recovery_shared);
 
                 let svc = hyper::service::service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
                     let session = Arc::clone(&session);
@@ -1188,6 +2036,8 @@ async fn unified_http_server(
                     let connect_overflow = connect_overflow.as_ref().map(Arc::clone);
                     let connect_burst = connect_burst.as_ref().map(Arc::clone);
                     let lms_notify = lms_notify.clone();
+                    let transfer_state = Arc::clone(&transfer_state);
+                    let recovery_shared = Arc::clone(&recovery_shared);
 
                     async move {
                         let path = req.uri().path().to_owned();
@@ -1195,9 +2045,12 @@ async fn unified_http_server(
 
                         // ---- GET /health ----
                         if method == Method::GET && path == "/health" {
-                            let session_valid = {
+                            // One session lock: validity, the user (masked inside
+                            // health_json, never logged) and the refused-key count
+                            // (Phase 89, CONTRACT-89).
+                            let (session_valid, username, audio_key_denials) = {
                                 let s = session.lock().await;
-                                !s.is_invalid()
+                                (!s.is_invalid(), s.username(), s.audio_key().consecutive_denials())
                             };
                             let age_secs = {
                                 let t = session_created_at.lock().unwrap_or_else(|e| e.into_inner());
@@ -1207,9 +2060,13 @@ async fn unified_http_server(
                                 let t = last_activity.lock().unwrap_or_else(|e| e.into_inner());
                                 t.elapsed().as_secs()
                             };
-                            let json = format!(
-                                r#"{{"status":"ok","session_valid":{},"session_age_secs":{},"idle_secs":{}}}"#,
-                                session_valid, age_secs, idle_secs
+                            let json = health_json(
+                                session_valid,
+                                age_secs,
+                                idle_secs,
+                                recovery_shared.is_recovering(),
+                                &username,
+                                audio_key_denials,
                             );
                             let body = Full::new(Bytes::from(json))
                                 .map_err(|e| match e {})
@@ -1603,17 +2460,24 @@ async fn unified_http_server(
                                         }
                                         *guard = None;
                                     }
-                                    spirc_active.store(false, Ordering::SeqCst);
+                                    recovery_shared.clear_active(&spirc_active);
                                     log::info!("[spoton/unified] Browse preempting Connect -- Spirc shut down");
                                 }
                                 *mode = ActiveMode::Browse(track_id.clone());
                             }
 
                             // Per-request PCM channel.
-                            let (pcm_tx, pcm_rx) = mpsc::channel::<Bytes>(256);
+                            let (pcm_tx, mut pcm_rx) = mpsc::channel::<Bytes>(256);
 
-                            // Status channel: serve_track_request signals 404 (Unavailable) early.
+                            // Status channel: the verdict of serve_track_request (404 Unavailable,
+                            // 409 superseded) when it ends.
                             let (status_tx, mut status_rx) = tokio::sync::oneshot::channel::<StatusCode>();
+
+                            // 89-09: tells the serve task that the handler gave up at
+                            // BROWSE_FIRST_SIGNAL_BOUND (notify_one keeps a permit, so the order of
+                            // the two tasks does not matter).
+                            let give_up = Arc::new(tokio::sync::Notify::new());
+                            let give_up_for_task = Arc::clone(&give_up);
 
                             // H13: shared slot for the cancel-listener's abort handle. The serve
                             // task must be spawned FIRST (it consumes pcm_tx by move) so its
@@ -1627,6 +2491,10 @@ async fn unified_http_server(
                                 let s = session.lock().await;
                                 s.clone()
                             };
+                            // 89 review WR-04: the refused-key count of the session this load
+                            // uses, before it asks for its key; read again at a 404 verdict.
+                            let key_session = session_snap.clone();
+                            let denials_before = key_session.audio_key().consecutive_denials();
                             let track_id_for_task = track_id.clone();
                             let content_type_for_task = content_type.clone();
                             let mode_state_for_task = Arc::clone(&mode_state);
@@ -1656,7 +2524,25 @@ async fn unified_http_server(
                                     return;
                                 }
 
-                                let status = serve_track_request(&content_type_for_task, &track_id_for_task, session_snap, pcm_tx, start_position_ms, passthrough, bitrate, enable_normalisation).await;
+                                // 89-09: the serve future owns the Player. It is boxed so that a
+                                // give-up can hand it to the blocking pool: dropping a Player joins
+                                // its threads, and its load thread runs until the load ends (up to
+                                // about 58 s in a key back-off). Dropped on an async worker, that
+                                // wait would stall the HTTP server (on a four-core host after four
+                                // give-ups).
+                                let content_type_for_serve = content_type_for_task.clone();
+                                let track_id_for_serve = track_id_for_task.clone();
+                                let mut serve: std::pin::Pin<Box<dyn std::future::Future<Output = StatusCode> + Send>> = Box::pin(async move {
+                                    serve_track_request(&content_type_for_serve, &track_id_for_serve, session_snap, pcm_tx, start_position_ms, passthrough, bitrate, enable_normalisation).await
+                                });
+                                let status = tokio::select! {
+                                    status = &mut serve => status,
+                                    _ = give_up_for_task.notified() => {
+                                        log::debug!("[spoton/unified] /track/{}: load abandoned at the bound, the Player is dropped off the async workers", track_id_for_task);
+                                        tokio::task::spawn_blocking(move || drop(serve));
+                                        StatusCode::GATEWAY_TIMEOUT
+                                    }
+                                };
 
                                 // T-30-05 (informational): post-load gen check.
                                 // serve_track_request drops pcm_tx when it returns, causing
@@ -1711,11 +2597,12 @@ async fn unified_http_server(
                                 cancel_abort.abort();
                             }
 
-                            // Wait briefly for early 404 from serve_track_request.
-                            let early_status = tokio::time::timeout(
-                                Duration::from_millis(500),
-                                &mut status_rx,
-                            ).await;
+                            // 89-09 (ACC-02): answer on the Player's first real signal, never on a
+                            // timer. 200 only with the first audio chunk in hand; a verdict is
+                            // answered as what it is however late it comes; without either the
+                            // request gives up at BROWSE_FIRST_SIGNAL_BOUND.
+                            let waited_from = Instant::now();
+                            let first_signal = browse_first_signal(&mut pcm_rx, &mut status_rx, BROWSE_FIRST_SIGNAL_BOUND).await;
 
                             // H11: supersession is signalled as 409 CONFLICT and is NOT a
                             // browse failure — rapid skipping produces supersessions as a
@@ -1723,15 +2610,49 @@ async fn unified_http_server(
                             // after only 2 skips. No failure-counter increment, no reconnect
                             // trigger, no mode touch (the newer request owns the mode; the
                             // superseded response goes to a connection LMS already abandoned).
-                            if let Ok(Ok(StatusCode::CONFLICT)) = early_status {
+                            if first_signal == BrowseFirstSignal::Verdict(StatusCode::CONFLICT) {
                                 log::info!("[spoton/unified] /track/{}: superseded — 409, not counted as failure", track_id);
                                 cancel_abort.abort();
                                 return Ok(empty_response(StatusCode::CONFLICT));
                             }
 
-                            if let Ok(Ok(StatusCode::NOT_FOUND)) = early_status {
-                                let fails = consecutive_browse_fails.fetch_add(1, Ordering::SeqCst) + 1;
-                                log::info!("[spoton/unified] track unavailable — returning 404 (consecutive_fails={})", fails);
+                            if first_signal == BrowseFirstSignal::Verdict(StatusCode::NOT_FOUND) {
+                                // Phase 88 Pitfall 4, redone for 89-09: a refused audio key during
+                                // the fork's #1844 back-off cannot land here as code 2. The Player
+                                // load path awaits `audio_key().request()` (playback/src/player.rs),
+                                // which waits out every back-off (3, 5, 10 s ...) and asks again up
+                                // to seven times; it hands the refusal back only after about 58 s,
+                                // and this request gave up at BROWSE_FIRST_SIGNAL_BOUND (10 s) long
+                                // before, in the NoAnswer arm below, which does not count.
+                                // `try_request`, the call that answers at once during a back-off,
+                                // has no caller in the Player. Pinned by
+                                // browse_first_signal_bound_sits_between_the_three_clocks.
+                                //
+                                // Phase 89 (ACC-02): a code-1 (any non-2) refusal lands here,
+                                // because the fork returns it at once and the load then fails on
+                                // the undecrypted file, however long the load took. It is
+                                // told apart through the core counter, per request (89 review
+                                // WR-04, BrowseKeyRefusals): a 404 whose load saw a refusal, or
+                                // that retries a refused title, says nothing about the session
+                                // and is not counted toward the reconnect (a refused key is no
+                                // dead session). A 404 with 0 denials, or one whose load saw
+                                // none (a key timeout on a dead channel), counts as before.
+                                let denials = key_session.audio_key().consecutive_denials();
+                                let counts = BROWSE_KEY_REFUSALS
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .counts_toward_reconnect(&track_id, denials_before, denials);
+                                let fails = if counts {
+                                    let fails = consecutive_browse_fails.fetch_add(1, Ordering::SeqCst) + 1;
+                                    log::info!("[spoton/unified] track unavailable — returning 404 (consecutive_fails={})", fails);
+                                    fails
+                                } else {
+                                    log::info!(
+                                        "[spoton/unified] track unavailable after a refused audio key - 404, not counted toward reconnect (audio_key_denials={})",
+                                        denials
+                                    );
+                                    0
+                                };
                                 cancel_abort.abort();
                                 // Reset mode to Idle since the track failed.
                                 // H12: only when the mode still holds OUR track — a newer
@@ -1745,33 +2666,82 @@ async fn unified_http_server(
                                 // Trigger session reconnect after 2+ consecutive failures.
                                 // Single failure = likely genuinely unavailable track.
                                 // Multiple failures = likely dead session (audio key channel closed).
-                                if fails >= 2 && !browse_reconnect_pending.swap(true, Ordering::AcqRel) {
+                                if counts && fails >= 2 && !browse_reconnect_pending.swap(true, Ordering::AcqRel) {
                                     log::warn!("[spoton/unified] {} consecutive Browse failures — triggering session reconnect", fails);
                                     browse_reconnect_signal.notify_one();
                                 }
                                 return Ok(empty_response(StatusCode::NOT_FOUND));
                             }
 
-                            // Track started streaming — reset consecutive failure counter ONLY if
-                            // the status channel confirmed the track actually loaded (not a slow 404).
-                            // early_was_success: channel replied with a non-404 status (happy path)
-                            // timed_out: channel did not reply in 500ms (optimistic reset; the spawned
-                            //   task's eventual drop of pcm_tx will deliver EOF if it was really a 404)
-                            // Ok(Err(_)): channel dropped without sending — don't reset (WR-01)
-                            let early_was_success = matches!(early_status, Ok(Ok(ref s)) if *s != StatusCode::NOT_FOUND);
-                            let timed_out         = early_status.is_err();
-                            if early_was_success || timed_out {
-                                consecutive_browse_fails.store(0, Ordering::SeqCst);
-                            }
+                            // 89-09: the remaining signals. A 200 goes out only with audio in hand,
+                            // with one exception that is kept as it was (the takeover abort).
+                            let first_chunk = match first_signal {
+                                BrowseFirstSignal::Verdict(status) => {
+                                    // The Player ended the title without a single audio byte and
+                                    // without calling it unavailable (EndOfTrack or Stopped before any
+                                    // audio, a URI the core rejects, a closed event channel). No 2xx:
+                                    // LMS would start the empty stream as a short track. Not a 404
+                                    // either: nothing here gets better by asking again, LMS moves on.
+                                    let answer = status_for_an_end_without_audio(status);
+                                    log::info!(
+                                        "[spoton/unified] track unavailable: the Player ended the title without audio (status {}) - answering {}",
+                                        status.as_u16(), answer.as_u16()
+                                    );
+                                    cancel_abort.abort();
+                                    {
+                                        let mut mode = mode_state.lock().await;
+                                        if matches!(*mode, ActiveMode::Browse(ref t) if *t == track_id) {
+                                            *mode = ActiveMode::Idle;
+                                        }
+                                    }
+                                    return Ok(empty_response(answer));
+                                }
+                                BrowseFirstSignal::NoAnswer => {
+                                    // Neither audio nor a verdict within the bound: the request gives up
+                                    // with the 404 the plugin retries (3 x 2 s, then skip). It says nothing
+                                    // about the session, so the reconnect counter is neither raised nor
+                                    // reset (Phase 88 Pitfall 4: a key back-off ends here, never in the
+                                    // counted arm above). The load itself cannot be cancelled; the serve
+                                    // task drops its Player off the async workers.
+                                    log::warn!(
+                                        "[spoton/unified] track unavailable: no audio and no verdict from the Player within {} s - 404, not counted toward reconnect, load abandoned",
+                                        BROWSE_FIRST_SIGNAL_BOUND.as_secs()
+                                    );
+                                    give_up.notify_one();
+                                    cancel_abort.abort();
+                                    {
+                                        let mut mode = mode_state.lock().await;
+                                        if matches!(*mode, ActiveMode::Browse(ref t) if *t == track_id) {
+                                            *mode = ActiveMode::Idle;
+                                        }
+                                    }
+                                    return Ok(empty_response(StatusCode::NOT_FOUND));
+                                }
+                                BrowseFirstSignal::Aborted => {
+                                    // The serve task was dropped before any audio and without a
+                                    // verdict: the Connect takeover listener aborted it (H13). Answered
+                                    // as before 89-09, 200 with a body that is already closed. An error
+                                    // status here would make LMS ask for the next title, and that
+                                    // request would preempt the Connect session that just took over
+                                    // (D-10). The counter is not reset (WR-01).
+                                    log::debug!("[spoton/unified] /track/{}: serve task dropped before any audio (takeover) - 200 with a closed body", track_id);
+                                    None
+                                }
+                                BrowseFirstSignal::Audio(chunk) => {
+                                    log::debug!(
+                                        "[spoton/unified] /track/{}: first audio after {} ms - 200",
+                                        track_id, waited_from.elapsed().as_millis()
+                                    );
+                                    // A title that sends audio is a live session.
+                                    consecutive_browse_fails.store(0, Ordering::SeqCst);
+                                    Some(chunk)
+                                }
+                            };
                             // Phase 36: update activity timestamp on successful Browse track
                             { *last_activity.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now(); }
 
-                            // Build streaming response.
-                            let stream = TokioStreamExt::map(
-                                ReceiverStream::new(pcm_rx),
-                                |chunk| Ok::<Frame<Bytes>, hyper::Error>(Frame::data(chunk)),
-                            );
-                            let body = BodyExt::boxed(StreamBody::new(stream));
+                            // Build streaming response: the first chunk, then the rest of the channel.
+                            let body = browse_audio_body(first_chunk, pcm_rx);
 
                             let content_type = if passthrough {
                                 "audio/ogg"
@@ -1805,6 +2775,26 @@ async fn unified_http_server(
                                 }
                             };
 
+                            // D-03: /control/transfer pulls a moved session back. It has
+                            // its own status mapping (transfer_status) and never goes
+                            // through control_status: inactive is its precondition, so the
+                            // 409-when-inactive rule must not apply (Pitfall 5, GH #223).
+                            if cmd == "transfer" {
+                                let status = dispatch_transfer(&spirc_handle, &transfer_state, recovery_shared.is_recovering());
+                                let mut builder = Response::builder()
+                                    .status(status)
+                                    .header("Content-Length", "0");
+                                if status == StatusCode::SERVICE_UNAVAILABLE {
+                                    builder = builder.header("Retry-After", "2");
+                                }
+                                let body = Full::new(Bytes::new())
+                                    .map_err(|e| match e {})
+                                    .boxed();
+                                return Ok(builder
+                                    .body(body)
+                                    .expect("transfer response builder"));
+                            }
+
                             let spirc_guard = match spirc_handle.lock() {
                                 Ok(g) => g,
                                 Err(_) => return Ok(Response::builder()
@@ -1812,7 +2802,12 @@ async fn unified_http_server(
                                     .body(BoxBody::new(Full::new(Bytes::from("Spirc mutex poisoned")).map_err(|e| match e {})))
                                     .unwrap()),
                             };
-                            let result = if let Some(spirc) = spirc_guard.as_ref() {
+                            // GH #207: while recovering nothing is dispatched (the old Spirc is
+                            // being woken, the new one is not up): control_status answers 503.
+                            let recovering = recovery_shared.is_recovering();
+                            let result = if recovering {
+                                None
+                            } else if let Some(spirc) = spirc_guard.as_ref() {
                                 match cmd {
                                     "pause" => spirc.pause().ok(),
                                     "play" => spirc.play().ok(),
@@ -1871,7 +2866,7 @@ async fn unified_http_server(
                             // is momentarily stale the dispatch keeps behavior identical
                             // to before.
                             let active = spirc_active.load(Ordering::Acquire);
-                            let status = control_status(active, result.is_some(), cmd);
+                            let status = control_status(recovering, active, result.is_some(), cmd);
                             if status == StatusCode::CONFLICT {
                                 log::warn!(
                                     "[spoton/unified] /control/{cmd}: 409 — device is not \
@@ -1884,9 +2879,13 @@ async fn unified_http_server(
                             let body = Full::new(Bytes::new())
                                 .map_err(|e| match e {})
                                 .boxed();
-                            let resp = Response::builder()
+                            let mut builder = Response::builder()
                                 .status(status)
-                                .header("Content-Length", "0")
+                                .header("Content-Length", "0");
+                            if status == StatusCode::SERVICE_UNAVAILABLE {
+                                builder = builder.header("Retry-After", "2");
+                            }
+                            let resp = builder
                                 .body(body)
                                 .expect("control response builder");
                             return Ok(resp);
@@ -2036,6 +3035,8 @@ pub async fn run_unified(
     let spirc_active = Arc::new(AtomicBool::new(false));
     let spirc_handle: Arc<std::sync::Mutex<Option<Spirc>>> =
         Arc::new(std::sync::Mutex::new(None));
+    // D-03: /control/transfer rate limit + one-shot play-after-takeover arm.
+    let transfer_state = Arc::new(TransferState::default());
     // browse_cancel: fired by Spirc event watcher when Connect takes over Browse (D-09).
     let browse_cancel = Arc::new(tokio::sync::Notify::new());
     // browse_preempting: signals /stream relay to exit cleanly on D-10 Browse takeover (Pitfall 2).
@@ -2161,6 +3162,9 @@ pub async fn run_unified(
         // the position_anchor Arc with the dispatcher's LMS instance.
         let lms_for_relay = lms.clone();
 
+        // GH #207 / D-07: recovery state shared by the dispatchers and the main loop.
+        let recovery_shared = Arc::new(RecoveryShared::new(lms.is_configured()));
+
         // LMS event dispatcher + mode transition (combined to avoid race condition).
         // Previously two separate tasks raced on the mode mutex: the LMS dispatcher
         // could see Browse mode and drop a TrackChanged event before the mode-watcher
@@ -2174,11 +3178,41 @@ pub async fn run_unified(
             let sa = Arc::clone(&spirc_active);
             let browse_cancel_lms = Arc::clone(&browse_cancel);
             let track_gen_lms = Arc::clone(&connect_track_gen);
+            let transfer_lms = Arc::clone(&transfer_state);
+            let spirc_handle_lms = Arc::clone(&spirc_handle);
+            let rs_lms = Arc::clone(&recovery_shared);
+            let session_lms = Arc::clone(&session_shared);
             event_dispatcher_handle = Some(tokio::spawn(async move {
                 let mut current_track: Option<String> = None;
                 let mut current_sink_track: Option<String> = None;
-                while let Some(event) = event_chan.recv().await {
+                loop {
+                    // GH #207: the next player event, or a recovery outcome. A failed
+                    // recovery hands the held (or rebuilt) SessionDisconnected back as
+                    // `event` with `replayed` set, so it takes the SAME
+                    // `lms.handle_player_event` call below as every other event.
+                    let (event, replayed, _ack) = tokio::select! {
+                        ev = event_chan.recv() => match ev {
+                            Some(e) => (e, false, None::<AckOnDrop>),
+                            None => break,
+                        },
+                        (outcome, ack) = rs_lms.next_outcome() => {
+                            let ack = AckOnDrop(Some(ack));
+                            match held_event_after_recovery(outcome, rs_lms.take_held(), &rs_lms.old_connection()) {
+                                Some(e) => (e, true, Some(ack)),
+                                None => continue,
+                            }
+                        }
+                    };
                     advance_connect_track_generation(&event, &mut current_sink_track, &track_gen_lms);
+
+                    // GH #207: is this event part of an AP-drop recovery?
+                    let kind = event_kind(&event);
+                    let session_invalid = !replayed
+                        && matches!(kind, EventKind::SessionDisconnected | EventKind::Paused | EventKind::Stopped)
+                        && !rs_lms.deliberate.load(Ordering::Acquire)
+                        && session_lms.lock().await.is_invalid();
+                    let suppressed = !replayed
+                        && suppress_for_recovery(kind, rs_lms.is_recovering(), session_invalid);
 
                     // Track spirc_active for SessionConnected/Playing/TrackChanged
                     if matches!(event,
@@ -2187,6 +3221,7 @@ pub async fn run_unified(
                         PlayerEvent::TrackChanged { .. }
                     ) {
                         sa.store(true, Ordering::SeqCst);
+                        rs_lms.active_snapshot.store(true, Ordering::SeqCst);
                     }
 
                     // GH #159: the Spirc fork emits SessionDisconnected from
@@ -2197,6 +3232,33 @@ pub async fn run_unified(
                     // instead of reporting success while Spirc drops them.
                     if matches!(event, PlayerEvent::SessionDisconnected { .. }) {
                         sa.store(false, Ordering::SeqCst);
+                        // A suppressed end (invalid session) keeps the snapshot: the
+                        // recovery still has to know the device was active.
+                        if !suppressed {
+                            rs_lms.active_snapshot.store(false, Ordering::SeqCst);
+                        }
+                    }
+
+                    // GH #207 / D-08: the session end and the pause it causes stay away
+                    // from LMS while the helper rebuilds the session.
+                    if suppressed {
+                        rs_lms.hold(&event);
+                        continue;
+                    }
+
+                    // D-03 / GH #223: a takeover this helper itself requested via
+                    // /control/transfer loads paused when the restored remote state
+                    // was paused. One-shot arm: play once; an app selection, a
+                    // recovery takeover or an expired arm never plays (D-09).
+                    if matches!(event, PlayerEvent::SessionConnected { .. }) {
+                        let armed = transfer_lms.take_play_arm();
+                        if play_after_takeover(armed, Instant::now()) {
+                            let guard = spirc_handle_lms.lock().unwrap_or_else(|e| e.into_inner());
+                            if let Some(spirc) = guard.as_ref() {
+                                let _ = spirc.play();
+                                log::info!("[spoton/unified] /control/transfer: play after takeover");
+                            }
+                        }
                     }
 
                     let mut mode = mode_state_lms.lock().await;
@@ -2222,7 +3284,34 @@ pub async fn run_unified(
                     }
                     drop(mode);
 
+                    // GH #207 / D-09: the takeover's own paused load after a Recovered
+                    // outcome is not the user's pause; the first Playing ends the window.
+                    if !replayed && suppress_after_recovery(kind, rs_lms.settle_until(), Instant::now()) {
+                        continue;
+                    }
+                    // GH #207 / 88-08 V4: the takeover's re-announce of the title the
+                    // session was on is not a track change (relinked id vs Spirc id).
+                    if !replayed
+                        && suppress_takeover_announce(
+                            kind,
+                            rs_lms.is_recovering(),
+                            rs_lms.settle_until(),
+                            Instant::now(),
+                            current_track.is_some(),
+                        )
+                    {
+                        log::info!(
+                            "[spoton/unified] takeover TrackChanged held back from LMS (same session, cursor {:?})",
+                            current_track.as_deref()
+                        );
+                        continue;
+                    }
+                    if kind == EventKind::Playing {
+                        rs_lms.end_settle();
+                    }
+
                     lms.handle_player_event(&event, &mut current_track).await;
+                    rs_lms.set_cursor(&current_track);
                 }
             }));
         } else {
@@ -2363,6 +3452,8 @@ pub async fn run_unified(
             bitrate_enum,
             enable_normalisation,
             Some(lms_for_relay), // GH #128: relay-start position resync
+            Arc::clone(&transfer_state),
+            Arc::clone(&recovery_shared),
         ));
 
         // Main event loop — Spirc reconnect, ZeroConf, ctrl_c.
@@ -2373,8 +3464,74 @@ pub async fn run_unified(
             Some(tokio::spawn(spirc_task));
         let mut current_discovery = discovery;
 
+        // GH #207 / D-07: AP-drop recovery inside the helper.
+        // The intent of the running recovery (None outside one).
+        let mut recovery_intent: Option<RecoveryIntent> = None;
+        // Ack receiver of the last recovery outcome; the graceful shutdown waits for
+        // it so a replayed `stop inactive` is delivered before the dispatcher is aborted.
+        let mut pending_outcome_ack: Option<tokio::sync::oneshot::Receiver<()>> = None;
+        // Fable decision 1 item 1: 1 s poll of the shared session's `is_invalid()`.
+        let mut loss_tick = tokio::time::interval(Duration::from_secs(1));
+        loss_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
         loop {
             tokio::select! {
+                // GH #207: a lost AP session is noticed within about 1 s. The Spirc task
+                // itself only tests `is_invalid()` at the top of its loop and would sleep
+                // until the next preload event (30 s before the track end).
+                _ = loss_tick.tick() => {
+                    let session_cur = {
+                        let s = session_shared.lock().await;
+                        s.clone()
+                    };
+                    let recovering_now = recovery_shared.is_recovering();
+                    if loss_poll_fires(connecting, recovering_now, session_cur.is_invalid()) {
+                        let intent = begin_recovery(
+                            &recovery_shared,
+                            &session_cur,
+                            &spirc_active,
+                            &mode_state,
+                            &lms_for_dispatcher,
+                            &transfer_state,
+                        ).await;
+                        let was_playing = intent.was_playing;
+                        recovery_intent = Some(intent);
+                        // Wake the Spirc with ONE command: pause() when it was playing (exact
+                        // position, a silent gap instead of a replay), else shutdown(). After
+                        // it the Spirc loop sees is_invalid() and leaves via handle_disconnect.
+                        let woke = {
+                            let guard = spirc_handle.lock().unwrap_or_else(|e| e.into_inner());
+                            match guard.as_ref() {
+                                Some(sp) => (if was_playing { sp.pause() } else { sp.shutdown() }).is_ok(),
+                                None => false,
+                            }
+                        };
+                        if !woke {
+                            // No Spirc to wake: rebuild directly. The intent above has
+                            // read the activity flag; the re-acquire must not (WR-02).
+                            mark_inactive_for_rebuild(&spirc_active);
+                            reconnect_times.push(std::time::Instant::now());
+                            connecting = true;
+                        }
+                    } else if let Some(ref i) = recovery_intent {
+                        if recovery_wake_stuck(recovering_now, connecting, i.at.elapsed()) {
+                            log::warn!("[spoton/unified] recovery: Spirc did not leave after the wake-up, forcing the rebuild");
+                            if let Some(ref task) = current_spirc_task {
+                                task.abort();
+                            }
+                            current_spirc_task = None;
+                            {
+                                let mut guard = spirc_handle.lock().unwrap_or_else(|e| e.into_inner());
+                                *guard = None;
+                            }
+                            // The aborted Spirc never emitted its SessionDisconnected (WR-02).
+                            mark_inactive_for_rebuild(&spirc_active);
+                            reconnect_times.push(std::time::Instant::now());
+                            connecting = true;
+                        }
+                    }
+                },
+
                 // ZeroConf new credentials (Pitfall 6: reconnect path).
                 new_creds = async {
                     match current_discovery.as_mut() {
@@ -2391,11 +3548,12 @@ pub async fn run_unified(
                             }
                             *guard = None;
                         }
-                        spirc_active.store(false, Ordering::SeqCst);
+                        recovery_shared.clear_active(&spirc_active);
                         let session_cur = {
                             let s = session_shared.lock().await;
                             s.clone()
                         };
+                        recovery_shared.deliberate.store(true, Ordering::Release);
                         if !session_cur.is_invalid() {
                             session_cur.shutdown();
                         }
@@ -2404,13 +3562,25 @@ pub async fn run_unified(
                 },
 
                 // Reconnect with new credentials (Pitfall 6: session update for Browse too).
+                // GH #207: also the rebuild of an AP-drop recovery (`recovery_intent`).
                 _ = async {}, if connecting && last_credentials.is_some() => {
+                    let recovery = recovery_intent.clone();
                     let session_cur = {
                         let s = session_shared.lock().await;
                         s.clone()
                     };
                     let new_session = if session_cur.is_invalid() {
                         let ns = Session::new(session_config.clone(), Some(reconnect_cache.clone()));
+                        // GH #207 / D-08 (Fable decision 1 item 3): the rebuilt session carries
+                        // the old session id, so Spotify's transfer data matches and Spirc
+                        // takes over by itself. ONLY when the device was active: otherwise it
+                        // could adopt a foreign playing state (D-09, T-88-09).
+                        if let Some(ref i) = recovery {
+                            if i.was_active {
+                                ns.set_session_id(&i.session_id);
+                                log::debug!("[spoton/unified] recovery: session id carried over");
+                            }
+                        }
                         // Update the shared Session reference so Browse requests use new session.
                         {
                             let mut s = session_shared.lock().await;
@@ -2424,22 +3594,73 @@ pub async fn run_unified(
                         session_cur
                     };
 
-                    let new_connect_config = ConnectConfig {
-                        name: device_name.to_string(),
-                        device_type: DeviceType::Speaker,
-                        initial_volume: initial_volume.unwrap_or(u16::MAX / 2),
-                        disable_volume: false,
-                        ..ConnectConfig::default()
-                    };
-
                     if let Some(ref mf) = mixer_fn_opt {
-                        match Spirc::new(
-                            new_connect_config,
-                            new_session,
-                            last_credentials.clone().unwrap(),
-                            connect_player_opt.clone().unwrap(),
-                            mf(MixerConfig::default()).unwrap_or_else(|_| panic!("mixer")),
-                        ).await {
+                        // GH #207 / Fable decision 1 item 6: on the recovery path a failed
+                        // Spirc::new is retried after 1/2/4 s with a NEW Session each time
+                        // (the 1 s / 2 s / 4 s pattern of the Browse-only reconnect) instead
+                        // of the immediate break; when the schedule is exhausted the helper
+                        // exits as before and the Perl backoff (GH #147) takes over. Every
+                        // retry is bounded by the shared RECONNECT_RATE_LIMIT, which counted
+                        // this recovery once when its Spirc task ended.
+                        let mut session_try = new_session;
+                        let mut attempt = 0usize;
+                        let spirc_result = loop {
+                            let try_config = ConnectConfig {
+                                name: device_name.to_string(),
+                                device_type: DeviceType::Speaker,
+                                initial_volume: initial_volume.unwrap_or(u16::MAX / 2),
+                                disable_volume: false,
+                                ..ConnectConfig::default()
+                            };
+                            // 88 review WR-03: bounded on the recovery path, so a rebuild
+                            // that never returns cannot hold `recovering` (and this arm).
+                            let limit = rebuild_limit(recovery.is_some());
+                            let attempt_started = Instant::now();
+                            match bounded_rebuild(
+                                Spirc::new(
+                                    try_config,
+                                    session_try.clone(),
+                                    last_credentials.clone().unwrap(),
+                                    connect_player_opt.clone().unwrap(),
+                                    mf(MixerConfig::default()).unwrap_or_else(|_| panic!("mixer")),
+                                ),
+                                limit,
+                            ).await {
+                                Ok(pair) => break Ok(pair),
+                                Err(e) => match (recovery.as_ref(), recovery_retry_delay(attempt)) {
+                                    (Some(i), Some(delay)) => {
+                                        log::warn!(
+                                            "[spoton/unified] recovery: Spirc::new failed ({e}), retry {}/3 in {} s",
+                                            attempt + 1,
+                                            delay.as_secs()
+                                        );
+                                        // An attempt dropped at the limit may have left its
+                                        // Session connected: invalidate it before the next one.
+                                        if limit.map(|l| attempt_started.elapsed() >= l).unwrap_or(false)
+                                            && !session_try.is_invalid()
+                                        {
+                                            session_try.shutdown();
+                                        }
+                                        tokio::time::sleep(delay).await;
+                                        attempt += 1;
+                                        let retry = Session::new(session_config.clone(), Some(reconnect_cache.clone()));
+                                        if i.was_active {
+                                            retry.set_session_id(&i.session_id);
+                                        }
+                                        {
+                                            let mut s = session_shared.lock().await;
+                                            *s = retry.clone();
+                                        }
+                                        if let Some(ref cp) = connect_player_opt {
+                                            cp.set_session(retry.clone());
+                                        }
+                                        session_try = retry;
+                                    }
+                                    _ => break Err(e),
+                                },
+                            }
+                        };
+                        match spirc_result {
                             Ok((new_spirc, new_task)) => {
                                 {
                                     let mut guard = spirc_handle.lock().unwrap_or_else(|e| e.into_inner());
@@ -2448,110 +3669,230 @@ pub async fn run_unified(
                                 current_spirc_task = Some(tokio::spawn(new_task));
                                 connecting = false;
 
-                                // R-WR-07: Abort old event dispatcher and respawn with fresh
-                                // player event channel. The old dispatcher's recv loop may have
-                                // exited when the Player's internal sender closed during Spirc
-                                // shutdown, so we must create a new one.
-                                if let Some(ref h) = event_dispatcher_handle {
-                                    h.abort();
-                                }
-                                let mut event_chan = connect_player_opt.as_ref().unwrap().get_player_event_channel();
-                                if lms_for_dispatcher.is_configured() {
-                                    let lms_d = lms_for_dispatcher.clone();
-                                    let mode_state_d = Arc::clone(&mode_state);
-                                    let sa_d = Arc::clone(&spirc_active);
-                                    let browse_cancel_d = Arc::clone(&browse_cancel);
-                                    let track_gen_d = Arc::clone(&connect_track_gen);
-                                    event_dispatcher_handle = Some(tokio::spawn(async move {
-                                        let mut current_track: Option<String> = None;
-                                        let mut current_sink_track: Option<String> = None;
-                                        while let Some(event) = event_chan.recv().await {
-                                            advance_connect_track_generation(&event, &mut current_sink_track, &track_gen_d);
+                                // R-WR-07: respawn the event dispatcher with a fresh player event
+                                // channel; the old one may have exited when the Player's internal
+                                // sender closed during Spirc shutdown. GH #207 / Fable decision 1
+                                // item 5: on the recovery path the RUNNING dispatcher is kept (it
+                                // holds `current_track`; aborting it would turn the takeover's
+                                // TrackChanged into a `start`) and respawned, seeded with the
+                                // cursor, only when it has finished.
+                                let dispatcher_finished = event_dispatcher_handle
+                                    .as_ref()
+                                    .map(|h| h.is_finished())
+                                    .unwrap_or(true);
+                                let respawn = recovery.is_none() || dispatcher_finished;
+                                let dispatcher_seed = recovery
+                                    .as_ref()
+                                    .and_then(|i| recovery_shared.cursor().or_else(|| i.track_id.clone()));
+                                if respawn {
+                                    if let Some(ref h) = event_dispatcher_handle {
+                                        h.abort();
+                                    }
+                                    // R-WR-07: Abort old event dispatcher and respawn with fresh
+                                    // player event channel. The old dispatcher's recv loop may have
+                                    // exited when the Player's internal sender closed during Spirc
+                                    // shutdown, so we must create a new one.
+                                    let mut event_chan = connect_player_opt.as_ref().unwrap().get_player_event_channel();
+                                    if lms_for_dispatcher.is_configured() {
+                                        let lms_d = lms_for_dispatcher.clone();
+                                        let mode_state_d = Arc::clone(&mode_state);
+                                        let sa_d = Arc::clone(&spirc_active);
+                                        let browse_cancel_d = Arc::clone(&browse_cancel);
+                                        let track_gen_d = Arc::clone(&connect_track_gen);
+                                        let transfer_d = Arc::clone(&transfer_state);
+                                        let spirc_handle_d = Arc::clone(&spirc_handle);
+                                        let rs_d = Arc::clone(&recovery_shared);
+                                        let session_d = Arc::clone(&session_shared);
+                                        let seed_track = dispatcher_seed.clone();
+                                        event_dispatcher_handle = Some(tokio::spawn(async move {
+                                            // GH #207: a dispatcher respawned on the recovery path
+                                            // starts from the cursor of the one it replaces.
+                                            let mut current_track: Option<String> = seed_track;
+                                            let mut current_sink_track: Option<String> = None;
+                                            loop {
+                                                // Same outcome/replay handling as the initial dispatcher.
+                                                let (event, replayed, _ack) = tokio::select! {
+                                                    ev = event_chan.recv() => match ev {
+                                                        Some(e) => (e, false, None::<AckOnDrop>),
+                                                        None => break,
+                                                    },
+                                                    (outcome, ack) = rs_d.next_outcome() => {
+                                                        let ack = AckOnDrop(Some(ack));
+                                                        match held_event_after_recovery(outcome, rs_d.take_held(), &rs_d.old_connection()) {
+                                                            Some(e) => (e, true, Some(ack)),
+                                                            None => continue,
+                                                        }
+                                                    }
+                                                };
+                                                advance_connect_track_generation(&event, &mut current_sink_track, &track_gen_d);
 
-                                            if matches!(event,
-                                                PlayerEvent::SessionConnected { .. } |
-                                                PlayerEvent::Playing { .. } |
-                                                PlayerEvent::TrackChanged { .. }
-                                            ) {
-                                                sa_d.store(true, Ordering::SeqCst);
-                                            }
-                                            // GH #159: device no longer the active Connect target.
-                                            if matches!(event, PlayerEvent::SessionDisconnected { .. }) {
-                                                sa_d.store(false, Ordering::SeqCst);
-                                            }
-                                            let mut mode = mode_state_d.lock().await;
-                                            if matches!(*mode, ActiveMode::Browse(_))
-                                                && matches!(event, PlayerEvent::TrackChanged { .. } | PlayerEvent::Playing { .. })
-                                            {
-                                                browse_cancel_d.notify_waiters();
-                                                log::info!("[spoton/unified] Connect taking over -- Browse cancelled");
-                                                *mode = ActiveMode::Connect;
-                                            } else if *mode == ActiveMode::Idle
-                                                && matches!(event, PlayerEvent::TrackChanged { .. } | PlayerEvent::Playing { .. })
-                                            {
-                                                *mode = ActiveMode::Connect;
-                                            }
-                                            if matches!(*mode, ActiveMode::Browse(_)) {
-                                                continue;
-                                            }
-                                            drop(mode);
-                                            lms_d.handle_player_event(&event, &mut current_track).await;
-                                        }
-                                    }));
-                                } else {
-                                    let sa_d = Arc::clone(&spirc_active);
-                                    let mode_state_d = Arc::clone(&mode_state);
-                                    let browse_cancel_d = Arc::clone(&browse_cancel);
-                                    let track_gen_d = Arc::clone(&connect_track_gen);
-                                    event_dispatcher_handle = Some(tokio::spawn(async move {
-                                        let mut current_sink_track: Option<String> = None;
-                                        while let Some(event) = event_chan.recv().await {
-                                            advance_connect_track_generation(&event, &mut current_sink_track, &track_gen_d);
+                                                let kind = event_kind(&event);
+                                                let session_invalid = !replayed
+                                                    && matches!(kind, EventKind::SessionDisconnected | EventKind::Paused | EventKind::Stopped)
+                                                    && !rs_d.deliberate.load(Ordering::Acquire)
+                                                && session_d.lock().await.is_invalid();
+                                                let suppressed = !replayed
+                                                    && suppress_for_recovery(kind, rs_d.is_recovering(), session_invalid);
 
-                                            // GH #159: device no longer the active Connect target.
-                                            if matches!(event, PlayerEvent::SessionDisconnected { .. }) {
-                                                sa_d.store(false, Ordering::SeqCst);
+                                                if matches!(event,
+                                                    PlayerEvent::SessionConnected { .. } |
+                                                    PlayerEvent::Playing { .. } |
+                                                    PlayerEvent::TrackChanged { .. }
+                                                ) {
+                                                    sa_d.store(true, Ordering::SeqCst);
+                                                    rs_d.active_snapshot.store(true, Ordering::SeqCst);
+                                                }
+                                                // GH #159: device no longer the active Connect target.
+                                                if matches!(event, PlayerEvent::SessionDisconnected { .. }) {
+                                                    sa_d.store(false, Ordering::SeqCst);
+                                                    if !suppressed {
+                                                        rs_d.active_snapshot.store(false, Ordering::SeqCst);
+                                                    }
+                                                }
+                                                // GH #207 / D-08: hold the session end during a recovery.
+                                                if suppressed {
+                                                    rs_d.hold(&event);
+                                                    continue;
+                                                }
+                                                // D-03 / GH #223: same one-shot play arm as the
+                                                // initial dispatcher (respawn copy).
+                                                if matches!(event, PlayerEvent::SessionConnected { .. }) {
+                                                    let armed = transfer_d.take_play_arm();
+                                                    if play_after_takeover(armed, Instant::now()) {
+                                                        let guard = spirc_handle_d.lock().unwrap_or_else(|e| e.into_inner());
+                                                        if let Some(spirc) = guard.as_ref() {
+                                                            let _ = spirc.play();
+                                                            log::info!("[spoton/unified] /control/transfer: play after takeover");
+                                                        }
+                                                    }
+                                                }
+                                                let mut mode = mode_state_d.lock().await;
+                                                if matches!(*mode, ActiveMode::Browse(_))
+                                                    && matches!(event, PlayerEvent::TrackChanged { .. } | PlayerEvent::Playing { .. })
+                                                {
+                                                    browse_cancel_d.notify_waiters();
+                                                    log::info!("[spoton/unified] Connect taking over -- Browse cancelled");
+                                                    *mode = ActiveMode::Connect;
+                                                } else if *mode == ActiveMode::Idle
+                                                    && matches!(event, PlayerEvent::TrackChanged { .. } | PlayerEvent::Playing { .. })
+                                                {
+                                                    *mode = ActiveMode::Connect;
+                                                }
+                                                if matches!(*mode, ActiveMode::Browse(_)) {
+                                                    continue;
+                                                }
+                                                drop(mode);
+                                                // GH #207 / D-09: settle window after a Recovered outcome.
+                                                if !replayed && suppress_after_recovery(kind, rs_d.settle_until(), Instant::now()) {
+                                                    continue;
+                                                }
+                                                // GH #207 / 88-08 V4: same hold as the initial dispatcher.
+                                                if !replayed
+                                                    && suppress_takeover_announce(
+                                                        kind,
+                                                        rs_d.is_recovering(),
+                                                        rs_d.settle_until(),
+                                                        Instant::now(),
+                                                        current_track.is_some(),
+                                                    )
+                                                {
+                                                    log::info!(
+                                                        "[spoton/unified] takeover TrackChanged held back from LMS (same session, cursor {:?})",
+                                                        current_track.as_deref()
+                                                    );
+                                                    continue;
+                                                }
+                                                if kind == EventKind::Playing {
+                                                    rs_d.end_settle();
+                                                }
+                                                lms_d.handle_player_event(&event, &mut current_track).await;
+                                                rs_d.set_cursor(&current_track);
                                             }
+                                        }));
+                                    } else {
+                                        let sa_d = Arc::clone(&spirc_active);
+                                        let mode_state_d = Arc::clone(&mode_state);
+                                        let browse_cancel_d = Arc::clone(&browse_cancel);
+                                        let track_gen_d = Arc::clone(&connect_track_gen);
+                                        event_dispatcher_handle = Some(tokio::spawn(async move {
+                                            let mut current_sink_track: Option<String> = None;
+                                            while let Some(event) = event_chan.recv().await {
+                                                advance_connect_track_generation(&event, &mut current_sink_track, &track_gen_d);
 
-                                            if matches!(event,
-                                                PlayerEvent::SessionConnected { .. } |
-                                                PlayerEvent::Playing { .. } |
-                                                PlayerEvent::TrackChanged { .. }
-                                            ) {
-                                                sa_d.store(true, Ordering::SeqCst);
-                                                if matches!(event, PlayerEvent::TrackChanged { .. } | PlayerEvent::Playing { .. }) {
-                                                    let mut mode = mode_state_d.lock().await;
-                                                    if matches!(*mode, ActiveMode::Browse(_)) {
-                                                        browse_cancel_d.notify_waiters();
-                                                        log::info!("[spoton/unified] Connect taking over -- Browse cancelled");
-                                                        *mode = ActiveMode::Connect;
-                                                    } else if *mode == ActiveMode::Idle {
-                                                        *mode = ActiveMode::Connect;
+                                                // GH #159: device no longer the active Connect target.
+                                                if matches!(event, PlayerEvent::SessionDisconnected { .. }) {
+                                                    sa_d.store(false, Ordering::SeqCst);
+                                                }
+
+                                                if matches!(event,
+                                                    PlayerEvent::SessionConnected { .. } |
+                                                    PlayerEvent::Playing { .. } |
+                                                    PlayerEvent::TrackChanged { .. }
+                                                ) {
+                                                    sa_d.store(true, Ordering::SeqCst);
+                                                    if matches!(event, PlayerEvent::TrackChanged { .. } | PlayerEvent::Playing { .. }) {
+                                                        let mut mode = mode_state_d.lock().await;
+                                                        if matches!(*mode, ActiveMode::Browse(_)) {
+                                                            browse_cancel_d.notify_waiters();
+                                                            log::info!("[spoton/unified] Connect taking over -- Browse cancelled");
+                                                            *mode = ActiveMode::Connect;
+                                                        } else if *mode == ActiveMode::Idle {
+                                                            *mode = ActiveMode::Connect;
+                                                        }
                                                     }
                                                 }
                                             }
-                                        }
-                                    }));
+                                        }));
+                                    }
+                                    log::info!("[spoton/unified] Event dispatcher respawned after reconnect");
                                 }
-                                log::info!("[spoton/unified] Event dispatcher respawned after reconnect");
 
                                 // Send "ready" to LMS so Connect.pm re-issues playlist play
                                 // after a ZeroConf credential rotation + Spirc reconnect.
                                 // Skip while Browse is active — the reconnect is just restoring
                                 // Spirc visibility in the Spotify app, not taking over playback.
+                                // GH #207 / Fable decision 1 item 5: never on the recovery path
+                                // (it would make Connect.pm re-issue `playlist play`).
                                 let is_browsing = matches!(*mode_state.lock().await, ActiveMode::Browse(_));
-                                if !is_browsing {
+                                if recovery.is_none() && !is_browsing {
                                     if let Some(ref lms) = lms_for_reconnect {
-                                        lms.notify("ready", "", "").await;
+                                        lms.notify("ready", "", "", "").await;
                                     }
                                 }
                                 log::debug!("[spoton/unified] Spirc reconnected");
                                 { *session_created_at.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now(); }
                                 browse_reconnect_pending.store(false, Ordering::Release);
+
+                                // A deliberate reconnect is over: its SessionDisconnected was
+                                // forwarded long ago; whatever is still held is stale.
+                                recovery_shared.deliberate.store(false, Ordering::Release);
+                                if recovery.is_none() {
+                                    let _ = recovery_shared.take_held();
+                                }
+
+                                // GH #207 / D-08: re-acquire the device and end the recovery.
+                                if let Some(intent) = recovery {
+                                    let r = reacquire_after_rebuild(&intent, &spirc_handle, &spirc_active).await;
+                                    match r.outcome {
+                                        RecoveryOutcome::Recovered => log::info!(
+                                            "[spoton/unified] recovered in {} ms (playing={})",
+                                            intent.at.elapsed().as_millis(),
+                                            r.playing as u8
+                                        ),
+                                        _ => log::info!("[spoton/unified] recovery failed: {}", r.reason),
+                                    }
+                                    pending_outcome_ack = Some(recovery_shared.finish(r.outcome));
+                                    recovery_intent = None;
+                                }
                             }
                             Err(e) => {
                                 browse_reconnect_pending.store(false, Ordering::Release);
                                 log::error!("[spoton/unified] Spirc reconnect failed: {e}");
+                                if recovery.is_some() {
+                                    log::info!("[spoton/unified] recovery failed: Spirc::new: {e}");
+                                    pending_outcome_ack = Some(recovery_shared.finish(RecoveryOutcome::Failed));
+                                    recovery_intent = None;
+                                }
                                 break;
                             }
                         }
@@ -2573,7 +3914,7 @@ pub async fn run_unified(
                         }
                         *guard = None;
                     }
-                    spirc_active.store(false, Ordering::SeqCst);
+                    recovery_shared.clear_active(&spirc_active);
 
                     // Abort the old Spirc task so "Spirc task died" doesn't also fire.
                     if let Some(ref task) = current_spirc_task {
@@ -2586,6 +3927,7 @@ pub async fn run_unified(
                         let s = session_shared.lock().await;
                         s.clone()
                     };
+                    recovery_shared.deliberate.store(true, Ordering::Release);
                     if !session_cur.is_invalid() {
                         session_cur.shutdown();
                     }
@@ -2602,7 +3944,26 @@ pub async fn run_unified(
                     }
                 }, if current_spirc_task.is_some() && !connecting => {
                     current_spirc_task = None;
-                    spirc_active.store(false, Ordering::SeqCst);
+                    // GH #207: the Spirc task noticed the loss before the poll did. Build the
+                    // intent BEFORE spirc_active is cleared below (was_active reads it).
+                    {
+                        let session_now = {
+                            let s = session_shared.lock().await;
+                            s.clone()
+                        };
+                        if loss_poll_fires(false, recovery_shared.is_recovering(), session_now.is_invalid()) {
+                            recovery_intent = Some(begin_recovery(
+                                &recovery_shared,
+                                &session_now,
+                                &spirc_active,
+                                &mode_state,
+                                &lms_for_dispatcher,
+                                &transfer_state,
+                            ).await);
+                        }
+                    }
+                    // 88 review WR-06: flag and snapshot (the intent above has read both).
+                    recovery_shared.clear_active(&spirc_active);
                     let _ = result;
 
                     const RECONNECT_RATE_LIMIT: usize = 5;
@@ -2614,12 +3975,17 @@ pub async fn run_unified(
                             let s = session_shared.lock().await;
                             s.clone()
                         };
-                        if !session_cur.is_invalid() {
-                            session_cur.shutdown();
-                        }
+                        // 88 review WR-06: the third deliberate session shutdown.
+                        end_valid_session_on_purpose(&recovery_shared, &session_cur);
                         connecting = true;
                     } else {
                         eprintln!("Spirc shut down too often. Not reconnecting.");
+                        // GH #207: a recovery that hits the shared 5-per-60 s limit ends like an
+                        // ordinary session end; the exit below hands over to the Perl backoff.
+                        if recovery_intent.take().is_some() {
+                            log::info!("[spoton/unified] recovery failed: reconnect rate limit");
+                            pending_outcome_ack = Some(recovery_shared.finish(RecoveryOutcome::Failed));
+                        }
                         break;
                     }
                 },
@@ -2640,6 +4006,20 @@ pub async fn run_unified(
         }
 
         // Graceful shutdown.
+        // GH #207: a failed recovery handed the replayed SessionDisconnected to the
+        // dispatcher; the replay is a TCP round trip (notify bound 5 s). Wait for its
+        // ack, bounded, BEFORE the dispatcher is aborted below, so `stop inactive` is
+        // delivered (or the bound elapsed) before the process ends. Every exit path of
+        // the main loop reaches this block. No pending outcome: no wait.
+        if let Some(ack_rx) = pending_outcome_ack.take() {
+            let waited_from = Instant::now();
+            if await_outcome_ack(ack_rx, OUTCOME_ACK_TIMEOUT).await == AckResult::TimedOut {
+                log::warn!(
+                    "[spoton/unified] recovery outcome not acknowledged within {} ms",
+                    waited_from.elapsed().as_millis()
+                );
+            }
+        }
         // R-WR-07: abort event dispatcher on shutdown to prevent orphaned tasks.
         if let Some(ref h) = event_dispatcher_handle {
             h.abort();
@@ -2698,6 +4078,8 @@ pub async fn run_unified(
             bitrate_enum,
             enable_normalisation,
             None,  // lms_notify (GH #128) — no Connect, no relay
+            Arc::clone(&transfer_state),
+            Arc::new(RecoveryShared::new(false)),
         ));
 
         // Pure Browse: wait for Ctrl+C or session reconnect.
@@ -2772,6 +4154,276 @@ pub async fn run_unified(
 }
 
 // -------------------------------------------------------------------------
+// /health body (Phase 89, ACC-03; CONTRACT-89)
+// -------------------------------------------------------------------------
+
+/// Mask of the session username for the LAN-visible /health body: the first
+/// min(4, L - 2) code points followed by `****`, plus L (the code-point count).
+/// At least two code points always stay hidden, so prefix plus length never
+/// spell out a short name (89 review WR-02); a name of one or two code points
+/// gives `****`. An empty name gives ("", 0). Code points, never bytes, so a
+/// multibyte name is never cut inside a character.
+fn mask_session_user(name: &str) -> (String, usize) {
+    let len = name.chars().count();
+    if len == 0 {
+        return (String::new(), 0);
+    }
+    let keep = len.saturating_sub(2).min(4);
+    let mut masked: String = name.chars().take(keep).collect();
+    masked.push_str("****");
+    (masked, len)
+}
+
+/// The GET /health JSON body. The full username never enters it; serde_json
+/// escapes whatever the mask holds.
+fn health_json(
+    session_valid: bool,
+    age_secs: u64,
+    idle_secs: u64,
+    recovering: bool,
+    username: &str,
+    audio_key_denials: u32,
+) -> String {
+    let (session_user, session_user_len) = mask_session_user(username);
+    serde_json::json!({
+        "status": "ok",
+        "session_valid": session_valid,
+        "session_age_secs": age_secs,
+        "idle_secs": idle_secs,
+        "recovering": recovering,
+        "session_user": session_user,
+        "session_user_len": session_user_len,
+        "audio_key_denials": audio_key_denials,
+    })
+    .to_string()
+}
+
+#[cfg(test)]
+mod health_json_tests {
+    use super::*;
+
+    #[test]
+    fn mask_keeps_the_first_four_code_points() {
+        assert_eq!(mask_session_user("31abcdefgh"), ("31ab****".to_string(), 10));
+    }
+
+    #[test]
+    fn mask_of_a_short_name_hides_at_least_two_code_points() {
+        // 89 review WR-02: prefix plus length must never spell out a short name
+        assert_eq!(mask_session_user("a"), ("****".to_string(), 1));
+        assert_eq!(mask_session_user("ab"), ("****".to_string(), 2));
+        assert_eq!(mask_session_user("abc"), ("a****".to_string(), 3));
+        assert_eq!(mask_session_user("abcd"), ("ab****".to_string(), 4));
+        assert_eq!(mask_session_user("abcde"), ("abc****".to_string(), 5));
+        assert_eq!(mask_session_user("abcdef"), ("abcd****".to_string(), 6));
+    }
+
+    #[test]
+    fn mask_of_an_empty_name_is_empty() {
+        assert_eq!(mask_session_user(""), (String::new(), 0));
+    }
+
+    #[test]
+    fn mask_counts_code_points_not_bytes() {
+        // four 2-byte letters + "user": 8 code points, 12 bytes
+        assert_eq!(
+            mask_session_user("\u{e4}\u{f6}\u{fc}\u{df}user"),
+            ("\u{e4}\u{f6}\u{fc}\u{df}****".to_string(), 8)
+        );
+        // eight 3-byte CJK characters: 8 code points, 24 bytes
+        assert_eq!(
+            mask_session_user("\u{65e5}\u{672c}\u{8a9e}\u{6f22}\u{5b57}\u{6587}\u{5b57}\u{5217}"),
+            ("\u{65e5}\u{672c}\u{8a9e}\u{6f22}****".to_string(), 8)
+        );
+    }
+
+    #[test]
+    fn health_json_carries_the_session_fields() {
+        let v: serde_json::Value =
+            serde_json::from_str(&health_json(true, 12, 3, false, "31abcdefgh", 5))
+                .expect("health_json must be valid JSON");
+        assert_eq!(v["status"], "ok");
+        assert_eq!(v["session_valid"], true);
+        assert_eq!(v["session_age_secs"], 12);
+        assert_eq!(v["idle_secs"], 3);
+        assert_eq!(v["recovering"], false);
+        assert_eq!(v["session_user"], "31ab****");
+        assert_eq!(v["session_user_len"], 10);
+        assert_eq!(v["audio_key_denials"], 5);
+    }
+
+    #[test]
+    fn health_json_escapes_the_mask() {
+        let body = health_json(true, 0, 0, false, "\"\\abcdef", 0);
+        let v: serde_json::Value =
+            serde_json::from_str(&body).expect("a quote and a backslash must not break the JSON");
+        assert_eq!(v["session_user"], "\"\\ab****");
+    }
+
+    #[test]
+    fn health_json_never_carries_the_full_name() {
+        let body = health_json(true, 0, 0, false, "31abcdefgh", 0);
+        assert!(!body.contains("31abcdefgh"), "full name leaked: {body}");
+        // not vacuous: the masked form must be there
+        let v: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(v["session_user"], "31ab****");
+        // 89 review WR-02: short names too (upper case: no key or value of the
+        // body holds these letters, so a hit can only be the name itself)
+        for name in ["Q", "QZ", "QZX", "QZXW", "QZXWV"] {
+            let body = health_json(true, 0, 0, false, name, 0);
+            assert!(!body.contains(name), "full short name leaked: {body}");
+            let v: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
+            assert_eq!(v["session_user_len"], name.chars().count());
+        }
+    }
+}
+
+/// Whether a Browse 404 verdict counts toward the dead-session reconnect,
+/// decided per request (89 review WR-04). The fork's refused-key count
+/// (`consecutive_denials`) is sticky: only a key that arrives resets it, so
+/// "above 0" alone would switch the reconnect off after one refusal, also for
+/// a dead key channel (key timeout), which never delivers a key. Instead the
+/// count is read before the load and at the verdict:
+/// - 0 at the verdict: no refusal is standing, the 404 counts as before (and
+///   the remembered titles are dropped, a key has arrived);
+/// - changed during the load: a refusal landed (this title's, or one beside
+///   it), the 404 does not count, and the title is remembered;
+/// - unchanged and above 0: the fork does not count the same title twice in a
+///   row, so a title remembered here is a retry or replay of a refused title
+///   and does not count either (else a refused account would reconnect on
+///   every title); any other title saw no refusal and counts.
+struct BrowseKeyRefusals {
+    tracks: Vec<String>,
+}
+
+/// More titles than the halt limit (5) lets a session refuse in a row.
+const BROWSE_KEY_REFUSALS_CAP: usize = 16;
+
+static BROWSE_KEY_REFUSALS: std::sync::Mutex<BrowseKeyRefusals> =
+    std::sync::Mutex::new(BrowseKeyRefusals::new());
+
+impl BrowseKeyRefusals {
+    const fn new() -> Self {
+        BrowseKeyRefusals { tracks: Vec::new() }
+    }
+
+    fn counts_toward_reconnect(&mut self, track: &str, before: u32, after: u32) -> bool {
+        if after == 0 {
+            self.tracks.clear();
+            return true;
+        }
+        let known = self.tracks.iter().any(|t| t == track);
+        if after != before {
+            if !known {
+                if self.tracks.len() >= BROWSE_KEY_REFUSALS_CAP {
+                    self.tracks.remove(0);
+                }
+                self.tracks.push(track.to_owned());
+            }
+            return false;
+        }
+        !known
+    }
+}
+
+#[cfg(test)]
+mod browse_denial_tests {
+    use super::*;
+
+    #[test]
+    fn a_refused_key_404_is_not_a_dead_session() {
+        let mut r = BrowseKeyRefusals::new();
+        assert!(!r.counts_toward_reconnect("T1", 0, 1));
+        assert!(!r.counts_toward_reconnect("T2", 4, 5));
+    }
+
+    #[test]
+    fn a_plain_404_still_counts_toward_reconnect() {
+        let mut r = BrowseKeyRefusals::new();
+        assert!(r.counts_toward_reconnect("T1", 0, 0));
+    }
+
+    /// 89 review WR-04: the count stays above 0 until a key arrives, and a dead
+    /// key channel never delivers one. A 404 whose own load saw no refusal
+    /// (count unchanged, a title not refused before) counts again.
+    #[test]
+    fn a_key_timeout_after_an_earlier_refusal_counts() {
+        let mut r = BrowseKeyRefusals::new();
+        assert!(!r.counts_toward_reconnect("T1", 0, 1));
+        assert!(r.counts_toward_reconnect("T2", 1, 1));
+        assert!(r.counts_toward_reconnect("T3", 1, 1));
+    }
+
+    /// The loop guard: the fork does not count the same title twice in a row,
+    /// so the LMS retries of a refused title (3 x 2 s) and a replay of it after
+    /// the halt (D-14) leave the count unchanged. None of them may count, or a
+    /// refused account would reconnect on every title.
+    #[test]
+    fn the_retries_and_replays_of_a_refused_title_never_count() {
+        let mut r = BrowseKeyRefusals::new();
+        for (n, t) in ["T1", "T2", "T3", "T4", "T5"].iter().enumerate() {
+            let n = n as u32;
+            assert!(!r.counts_toward_reconnect(t, n, n + 1), "{t}: first refusal");
+            for _ in 0..3 {
+                assert!(!r.counts_toward_reconnect(t, n + 1, n + 1), "{t}: LMS retry");
+            }
+        }
+        assert!(!r.counts_toward_reconnect("T5", 5, 5), "replay of the halted title");
+    }
+
+    #[test]
+    fn a_key_that_arrives_clears_the_memory() {
+        let mut r = BrowseKeyRefusals::new();
+        assert!(!r.counts_toward_reconnect("T1", 0, 1));
+        // a key arrived (count back at 0); the 404 counts as before
+        assert!(r.counts_toward_reconnect("X", 0, 0));
+        // T2 refused, then T1 times out: T1 is no refused title any more
+        assert!(!r.counts_toward_reconnect("T2", 0, 1));
+        assert!(r.counts_toward_reconnect("T1", 1, 1));
+    }
+
+    #[test]
+    fn the_memory_is_bounded() {
+        let mut r = BrowseKeyRefusals::new();
+        for i in 0..(BROWSE_KEY_REFUSALS_CAP as u32 + 8) {
+            assert!(!r.counts_toward_reconnect(&format!("T{i}"), i, i + 1));
+        }
+        assert_eq!(r.tracks.len(), BROWSE_KEY_REFUSALS_CAP);
+    }
+}
+
+#[cfg(test)]
+mod log_filter_tests {
+    use log::Log;
+
+    /// The WARN marker of the fork core (CONTRACT-89) must pass the filter the
+    /// plugin sets in RUST_LOG (Plugins/SpotOn/Unified/Daemon.pm), or it never
+    /// reaches the stderr the plugin tails.
+    fn marker_enabled(filter: &str, level: log::Level) -> bool {
+        let logger = env_logger::Builder::new().parse_filters(filter).build();
+        logger.enabled(
+            &log::Metadata::builder()
+                .level(level)
+                .target("librespot_core::audio_key")
+                .build(),
+        )
+    }
+
+    #[test]
+    fn the_shipped_log_filter_passes_the_core_marker() {
+        let f = "spoton=info,librespot=warn";
+        assert!(marker_enabled(f, log::Level::Warn));
+        assert!(!marker_enabled(f, log::Level::Info));
+    }
+
+    #[test]
+    fn the_diagnostic_log_filter_passes_the_core_marker() {
+        let f = "spoton=debug,librespot_connect=debug,librespot_core=debug,librespot=info";
+        assert!(marker_enabled(f, log::Level::Warn));
+    }
+}
+
+// -------------------------------------------------------------------------
 // PassthroughMixer unit tests (GH #144)
 // -------------------------------------------------------------------------
 
@@ -2829,7 +4481,7 @@ mod control_status_tests {
     fn active_dispatched_transport_is_204() {
         for cmd in TRANSPORT_CMDS {
             assert_eq!(
-                control_status(true, true, cmd),
+                control_status(false, true, true, cmd),
                 StatusCode::NO_CONTENT,
                 "active + dispatched {cmd} must stay 204 (no behavior change, GH #159)"
             );
@@ -2843,12 +4495,12 @@ mod control_status_tests {
     fn inactive_transport_is_409() {
         for cmd in TRANSPORT_CMDS {
             assert_eq!(
-                control_status(false, true, cmd),
+                control_status(false, false, true, cmd),
                 StatusCode::CONFLICT,
                 "inactive {cmd} (send ok, Spirc drops it) must be 409 — GH #159"
             );
             assert_eq!(
-                control_status(false, false, cmd),
+                control_status(false, false, false, cmd),
                 StatusCode::CONFLICT,
                 "inactive {cmd} (handle gone / channel closed) must be 409 — GH #159"
             );
@@ -2862,7 +4514,7 @@ mod control_status_tests {
     fn result_absent_transport_is_409() {
         for cmd in TRANSPORT_CMDS {
             assert_eq!(
-                control_status(true, false, cmd),
+                control_status(false, true, false, cmd),
                 StatusCode::CONFLICT,
                 "{cmd} with no Spirc handle must be 409 — GH #159"
             );
@@ -2874,15 +4526,15 @@ mod control_status_tests {
     #[test]
     fn volume_seek_unchanged() {
         for cmd in ["volume", "seek"] {
-            assert_eq!(control_status(true, true, cmd), StatusCode::NO_CONTENT);
-            assert_eq!(control_status(false, true, cmd), StatusCode::NO_CONTENT);
+            assert_eq!(control_status(false, true, true, cmd), StatusCode::NO_CONTENT);
+            assert_eq!(control_status(false, false, true, cmd), StatusCode::NO_CONTENT);
             assert_eq!(
-                control_status(true, false, cmd),
+                control_status(false, true, false, cmd),
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "{cmd} body-parse failure must stay 422"
             );
             assert_eq!(
-                control_status(false, false, cmd),
+                control_status(false, false, false, cmd),
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "{cmd} body-parse failure must stay 422 even while inactive"
             );
@@ -2892,8 +4544,130 @@ mod control_status_tests {
     /// Unknown commands stay 404.
     #[test]
     fn unknown_command_is_404() {
-        assert_eq!(control_status(true, false, "bogus"), StatusCode::NOT_FOUND);
-        assert_eq!(control_status(false, false, "bogus"), StatusCode::NOT_FOUND);
+        assert_eq!(control_status(false, true, false, "bogus"), StatusCode::NOT_FOUND);
+        assert_eq!(control_status(false, false, false, "bogus"), StatusCode::NOT_FOUND);
+    }
+
+    /// 89-09 (Phase 88 Pitfall 4 redone, PITFALL4=unreachable): the bound of a Browse
+    /// title request is 10 s. Above the fork's key timeout chain (4.5 s: three attempts of
+    /// `KEY_RESPONSE_TIMEOUT` 1.5 s in core/src/audio_key.rs), so a dead key channel still
+    /// ends as a counted 404. Below the 15 s LMS waits for a status line when it opens the
+    /// stream itself (`remotestreamtimeout`, a blocking read). Below the 58 s after which
+    /// the fork's `request` hands back a code-2 refusal (it asks again at 3, 8, 18, 28, 38,
+    /// 48 and 58 s), so that refusal cannot reach the counted 404 arm of one request. If
+    /// the bound is ever moved past one of the three, the analysis in the handler must be
+    /// redone.
+    #[test]
+    fn browse_first_signal_bound_sits_between_the_three_clocks() {
+        assert_eq!(BROWSE_FIRST_SIGNAL_BOUND, Duration::from_secs(10));
+        assert!(BROWSE_FIRST_SIGNAL_BOUND > Duration::from_millis(4500));
+        assert!(BROWSE_FIRST_SIGNAL_BOUND < Duration::from_secs(15));
+        assert!(BROWSE_FIRST_SIGNAL_BOUND < Duration::from_secs(58));
+    }
+
+    /// D-10: the reload timing line is produced once per restart, carries the three
+    /// measurements and says `n/a` when no header page was seen (PCM).
+    #[test]
+    fn reload_timing_line_is_emitted_once_per_restart() {
+        let t0 = Instant::now();
+        let mut rt = ReloadTiming::new(t0);
+        rt.note_headers(t0 + Duration::from_millis(40));
+        rt.note_headers(t0 + Duration::from_millis(90)); // ignored: first header page only
+        rt.add_parked(Duration::from_millis(120));
+        let line = rt.finish(t0 + Duration::from_millis(300)).expect("first audio page");
+        assert_eq!(
+            line,
+            "[spoton/unified] reload timing: headers at +40 ms, first audio page at +300 ms, parked 120 ms"
+        );
+        assert_eq!(rt.finish(t0 + Duration::from_millis(400)), None, "once per restart");
+        rt.restart(t0 + Duration::from_secs(1));
+        let line = rt.finish(t0 + Duration::from_millis(1250)).expect("after a restart");
+        assert_eq!(
+            line,
+            "[spoton/unified] reload timing: headers at +n/a ms, first audio page at +250 ms, parked 0 ms"
+        );
+    }
+
+    /// D-03: a Spirc handle is present and the last dispatch is older than
+    /// TRANSFER_MIN_INTERVAL (or there was none) - the transfer goes out, 204.
+    #[test]
+    fn transfer_is_204_when_dispatched() {
+        assert_eq!(transfer_status(false, true, None), StatusCode::NO_CONTENT);
+        assert_eq!(
+            transfer_status(false, true, Some(Duration::from_secs(10))),
+            StatusCode::NO_CONTENT
+        );
+    }
+
+    /// GH #223 / Pitfall 5: the transfer-back is requested precisely while
+    /// the device is NOT the active Connect target, so `transfer_status` takes
+    /// no activity flag at all and can never produce the 409 that
+    /// `control_status` gives inactive transport commands. A present handle is
+    /// the only precondition; the two calls below differ in nothing the
+    /// function can see, which is the point.
+    #[test]
+    fn transfer_is_not_409_when_inactive() {
+        let st = transfer_status(false, true, None);
+        assert_ne!(st, StatusCode::CONFLICT, "inactive is the precondition of a transfer (GH #223)");
+        assert_eq!(st, StatusCode::NO_CONTENT);
+        // control_status keeps refusing the same inactive device for transport.
+        assert_eq!(control_status(false, false, true, "play"), StatusCode::CONFLICT);
+    }
+
+    /// No Spirc handle (Browse preemption / reconnect window): 503, and the
+    /// dispatch arm adds `Retry-After: 2`. The Perl side does NOT retry a
+    /// refused transfer: `Backend/Librespot.pm::transferBack` takes the refusal
+    /// as final for that Play gesture and falls back to Browse at once (one
+    /// gesture, at most one /control/transfer, T-88-12). Only a refused
+    /// /control/play or /control/pause is retried after the Retry-After
+    /// (`_sendControlCommand`, 88 review WR-01).
+    #[test]
+    fn transfer_without_spirc_is_503() {
+        assert_eq!(transfer_status(false, false, None), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            transfer_status(false, false, Some(Duration::from_secs(60))),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
+
+    /// T-88-12: a second dispatch inside TRANSFER_MIN_INTERVAL (3 s) is
+    /// refused with 503 - proactive burst prevention.
+    #[test]
+    fn transfer_within_min_interval_is_503() {
+        assert_eq!(
+            transfer_status(false, true, Some(Duration::from_secs(1))),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_eq!(
+            transfer_status(false, true, Some(TRANSFER_MIN_INTERVAL)),
+            StatusCode::NO_CONTENT,
+            "exactly the interval is old enough"
+        );
+    }
+
+    /// D-03 / GH #223: the pull-back this helper was asked for loads PAUSED
+    /// when the restored remote state was paused; the helper starts audio
+    /// itself on the SessionConnected that follows (armed 2 s ago).
+    #[test]
+    fn takeover_after_requested_transfer_plays() {
+        let t0 = Instant::now();
+        assert!(play_after_takeover(Some(t0), t0 + Duration::from_secs(2)));
+    }
+
+    /// D-09: a takeover nobody asked for (app selection of a paused session,
+    /// 88-04's recovery takeover) never auto-plays.
+    #[test]
+    fn takeover_without_requested_transfer_does_not_play() {
+        assert!(!play_after_takeover(None, Instant::now()));
+    }
+
+    /// T-88-30: the arm expires after TRANSFER_PLAY_WINDOW (15 s); a takeover
+    /// later than that was not requested by any waiting LMS gesture. Instants
+    /// are built by adding to t0 (subtracting from now can underflow).
+    #[test]
+    fn takeover_after_play_window_does_not_play() {
+        let t0 = Instant::now();
+        assert!(!play_after_takeover(Some(t0), t0 + Duration::from_secs(16)));
     }
 }
 
@@ -3908,5 +5682,1167 @@ mod relay_recovery_tests {
         assert_eq!(got.len(), 10, "all audio of the new serial survives");
         assert!(got.iter().all(|p| p.0 == S));
         assert_eq!(discarded, 2, "the two foreign-serial chunks");
+    }
+}
+
+// -------------------------------------------------------------------------
+// AP-drop recovery decision tests (GH #207, D-07/D-08/D-09)
+// -------------------------------------------------------------------------
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+
+    fn intent(was_active: bool, was_playing: bool) -> RecoveryIntent {
+        RecoveryIntent {
+            was_active,
+            was_playing,
+            track_id: Some("4uLU6hMCjMI75M1A2tKUQC".to_owned()),
+            session_id: "old-session".to_owned(),
+            at: Instant::now(),
+        }
+    }
+
+    fn conn() -> (String, String) {
+        ("old-conn".to_owned(), "old-user".to_owned())
+    }
+
+    fn disconnected(id: &str) -> PlayerEvent {
+        PlayerEvent::SessionDisconnected {
+            connection_id: id.to_owned(),
+            user_name: "user".to_owned(),
+        }
+    }
+
+    fn connection_id_of(e: &PlayerEvent) -> Option<String> {
+        match e {
+            PlayerEvent::SessionDisconnected { connection_id, .. } => Some(connection_id.clone()),
+            _ => None,
+        }
+    }
+
+    // --- suppress_for_recovery ------------------------------------------
+
+    /// D-08: while a recovery runs, the session end is not forwarded.
+    #[test]
+    fn suppress_for_recovery_hides_disconnect_while_recovering() {
+        assert!(suppress_for_recovery(EventKind::SessionDisconnected, true, false));
+    }
+
+    /// The Spirc task noticed the loss before the poll did: the session is
+    /// invalid at event time, which covers it without a recovering flag.
+    #[test]
+    fn suppress_for_recovery_hides_disconnect_on_invalid_session() {
+        assert!(suppress_for_recovery(EventKind::SessionDisconnected, false, true));
+    }
+
+    /// A valid session and no recovery: the honest end, forwarded as
+    /// `stop inactive` (deselected in the app).
+    #[test]
+    fn suppress_for_recovery_forwards_disconnect_on_valid_session() {
+        assert!(!suppress_for_recovery(EventKind::SessionDisconnected, false, false));
+    }
+
+    /// The pause the wake-up command causes (and the Stopped of the old
+    /// Spirc) never reach LMS as `stop` while recovering.
+    #[test]
+    fn suppress_for_recovery_hides_paused_and_stopped_while_recovering() {
+        for invalid in [false, true] {
+            assert!(suppress_for_recovery(EventKind::Paused, true, invalid));
+            assert!(suppress_for_recovery(EventKind::Stopped, true, invalid));
+        }
+    }
+
+    /// TrackChanged and Playing are the takeover's own progress and must pass.
+    #[test]
+    fn suppress_for_recovery_forwards_track_and_playing() {
+        for invalid in [false, true] {
+            assert!(!suppress_for_recovery(EventKind::TrackChanged, true, invalid));
+            assert!(!suppress_for_recovery(EventKind::Playing, true, invalid));
+        }
+    }
+
+    /// Outside a recovery a plain pause is the user's pause.
+    #[test]
+    fn suppress_for_recovery_forwards_paused_when_not_recovering() {
+        assert!(!suppress_for_recovery(EventKind::Paused, false, false));
+        assert!(!suppress_for_recovery(EventKind::Stopped, false, false));
+    }
+
+    // --- recovery_plan ---------------------------------------------------
+
+    /// D-09: a device that was not active never gets a transfer or a play,
+    /// whatever else holds (it could adopt a foreign playing state).
+    #[test]
+    fn recovery_plan_inactive_at_loss_is_always_quiet() {
+        for playing in [false, true] {
+            for active_after in [false, true] {
+                for age in [0u64, 5, 29, 30, 45] {
+                    assert_eq!(
+                        recovery_plan(&intent(false, playing), active_after, Duration::from_secs(age)),
+                        RecoveryStep::Quiet,
+                        "was_active=false playing={playing} active_after={active_after} age={age}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Takeover already happened and it was playing: play, at any age.
+    #[test]
+    fn recovery_plan_active_after_rebuild_and_playing_plays_at_any_age() {
+        assert_eq!(
+            recovery_plan(&intent(true, true), true, Duration::from_secs(2)),
+            RecoveryStep::Play
+        );
+        assert_eq!(
+            recovery_plan(&intent(true, true), true, Duration::from_secs(45)),
+            RecoveryStep::Play,
+            "a takeover that succeeded is never a give-up because of elapsed time"
+        );
+    }
+
+    /// Takeover happened, it was paused: quiet, never GiveUp (age 45 s).
+    #[test]
+    fn recovery_plan_active_after_rebuild_and_paused_is_quiet_at_any_age() {
+        assert_eq!(
+            recovery_plan(&intent(true, false), true, Duration::from_secs(2)),
+            RecoveryStep::Quiet
+        );
+        assert_eq!(
+            recovery_plan(&intent(true, false), true, Duration::from_secs(45)),
+            RecoveryStep::Quiet
+        );
+    }
+
+    /// Not active after the rebuild and the age limit reached: give up.
+    #[test]
+    fn recovery_plan_not_active_at_age_limit_gives_up() {
+        assert_eq!(
+            recovery_plan(&intent(true, true), false, Duration::from_secs(30)),
+            RecoveryStep::GiveUp
+        );
+        assert_eq!(
+            recovery_plan(&intent(true, false), false, Duration::from_secs(60)),
+            RecoveryStep::GiveUp
+        );
+    }
+
+    /// Not active, young enough: one transfer, then play only if it was playing.
+    #[test]
+    fn recovery_plan_not_active_young_transfers() {
+        assert_eq!(
+            recovery_plan(&intent(true, true), false, Duration::from_secs(29)),
+            RecoveryStep::TransferThenPlay
+        );
+        assert_eq!(
+            recovery_plan(&intent(true, false), false, Duration::from_secs(4)),
+            RecoveryStep::TransferOnly
+        );
+    }
+
+    /// D-09: a session that was paused at the loss never yields Play or
+    /// TransferThenPlay, in any cell.
+    #[test]
+    fn recovery_plan_paused_at_loss_never_plays() {
+        for was_active in [false, true] {
+            for active_after in [false, true] {
+                for age in [0u64, 3, 29, 30, 45] {
+                    let step = recovery_plan(&intent(was_active, false), active_after, Duration::from_secs(age));
+                    assert!(
+                        step != RecoveryStep::Play && step != RecoveryStep::TransferThenPlay,
+                        "paused at loss must not play: was_active={was_active} active_after={active_after} age={age} -> {step:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    // --- held_event_after_recovery ----------------------------------------
+
+    /// Recovered: the session continues, the held end is dropped.
+    #[test]
+    fn held_event_after_recovery_drops_held_disconnect_when_recovered() {
+        assert!(held_event_after_recovery(RecoveryOutcome::Recovered, Some(disconnected("held")), &conn()).is_none());
+        assert!(held_event_after_recovery(RecoveryOutcome::Recovered, None, &conn()).is_none());
+    }
+
+    /// Failed / GaveUp with the end held: that very event is replayed.
+    #[test]
+    fn held_event_after_recovery_replays_held_disconnect_on_failure() {
+        for outcome in [RecoveryOutcome::Failed, RecoveryOutcome::GaveUp] {
+            let got = held_event_after_recovery(outcome, Some(disconnected("held")), &conn());
+            assert_eq!(got.as_ref().and_then(connection_id_of).as_deref(), Some("held"), "{outcome:?}");
+        }
+    }
+
+    /// Failed / GaveUp with nothing held: a SessionDisconnected built from the
+    /// old session's connection id, so the ordinary arm still ends the session.
+    #[test]
+    fn held_event_after_recovery_builds_disconnect_when_nothing_held() {
+        for outcome in [RecoveryOutcome::Failed, RecoveryOutcome::GaveUp] {
+            let got = held_event_after_recovery(outcome, None, &conn());
+            assert_eq!(got.as_ref().and_then(connection_id_of).as_deref(), Some("old-conn"), "{outcome:?}");
+        }
+    }
+
+    /// A held event that is not a SessionDisconnected is never replayed; the
+    /// replayed disconnect's `stop inactive` pauses LMS anyway.
+    #[test]
+    fn held_event_after_recovery_never_replays_a_held_pause() {
+        let stopped = || PlayerEvent::Stopped {
+            play_request_id: 1,
+            track_id: librespot_core::spotify_uri::SpotifyUri::from_uri("spotify:track:4uLU6hMCjMI75M1A2tKUQC")
+                .expect("valid track uri"),
+        };
+        let held = stopped();
+        let got = held_event_after_recovery(RecoveryOutcome::Failed, Some(held), &conn());
+        assert_eq!(got.as_ref().and_then(connection_id_of).as_deref(), Some("old-conn"));
+        let held = stopped();
+        assert!(held_event_after_recovery(RecoveryOutcome::Recovered, Some(held), &conn()).is_none());
+    }
+
+    // --- loss_poll_fires ---------------------------------------------------
+
+    /// Round-3 finding: the poll must fire ONCE per loss. A running recovery
+    /// (or the reconnect arm) is never restarted, its intent and `at` stay.
+    #[test]
+    fn loss_poll_fires_only_for_an_idle_invalid_session() {
+        assert!(loss_poll_fires(false, false, true));
+        assert!(!loss_poll_fires(false, true, true), "a running recovery is not restarted");
+        assert!(!loss_poll_fires(true, false, true), "the reconnect arm already runs");
+        assert!(!loss_poll_fires(true, true, true));
+        assert!(!loss_poll_fires(false, false, false), "a valid session is no loss");
+        assert!(!loss_poll_fires(false, true, false));
+    }
+
+    // --- RecoveryShared / recovery_wake_stuck ------------------------------
+
+    /// finish(Recovered) opens the settle window and clears `recovering`; the
+    /// outcome reaches the dispatcher side with its ack handle.
+    #[tokio::test]
+    async fn shared_finish_recovered_opens_window_and_clears_flag() {
+        let rs = RecoveryShared::new(true);
+        rs.recovering.store(true, Ordering::Release);
+        let mut ack = rs.finish(RecoveryOutcome::Recovered);
+        assert!(!rs.is_recovering());
+        let until = rs.settle_until().expect("settle window opened");
+        assert!(until > Instant::now() + Duration::from_secs(10), "RECOVERY_SETTLE is 15 s");
+        let (outcome, tx) = rs.next_outcome().await;
+        assert_eq!(outcome, RecoveryOutcome::Recovered);
+        assert!(ack.try_recv().is_err(), "not acknowledged before the dispatcher acted");
+        drop(AckOnDrop(Some(tx)));
+        assert!(ack.await.is_ok(), "the ack fires when the dispatcher side drops its guard");
+    }
+
+    /// 88 review WR-09: `RecoveryShared` owns BOTH halves of the outcome channel
+    /// and nothing closes the receiver, so the channel cannot close while the
+    /// shared state exists. With nothing queued `next_outcome` waits (it never
+    /// reports a closed channel), and every outcome `finish` hands over arrives.
+    #[tokio::test]
+    async fn outcome_channel_stays_open_for_the_life_of_the_shared_state() {
+        let rs = RecoveryShared::new(true);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), rs.next_outcome()).await.is_err(),
+            "an empty channel is a wait, not an end"
+        );
+        for outcome in [RecoveryOutcome::Failed, RecoveryOutcome::GaveUp, RecoveryOutcome::Recovered] {
+            rs.recovering.store(true, Ordering::Release);
+            let _ack = rs.finish(outcome);
+            let (got, _tx) = rs.next_outcome().await;
+            assert_eq!(got, outcome);
+        }
+    }
+
+    /// finish(Failed) opens no window; without LMS nothing consumes outcomes, so
+    /// the ack is already fired (the shutdown wait must not run into its bound).
+    #[tokio::test]
+    async fn shared_finish_failed_without_lms_is_acked_at_once() {
+        let rs = RecoveryShared::new(false);
+        rs.recovering.store(true, Ordering::Release);
+        let ack = rs.finish(RecoveryOutcome::Failed);
+        assert!(rs.settle_until().is_none());
+        assert!(!rs.is_recovering());
+        assert!(ack.await.is_ok());
+    }
+
+    /// Only a held SessionDisconnected is kept; a held pause is dropped.
+    #[test]
+    fn shared_hold_keeps_only_the_disconnect() {
+        let rs = RecoveryShared::new(true);
+        rs.hold(&PlayerEvent::Stopped {
+            play_request_id: 1,
+            track_id: librespot_core::spotify_uri::SpotifyUri::from_uri("spotify:track:4uLU6hMCjMI75M1A2tKUQC")
+                .expect("valid track uri"),
+        });
+        assert!(rs.take_held().is_none());
+        rs.hold(&disconnected("held"));
+        assert_eq!(rs.take_held().as_ref().and_then(connection_id_of).as_deref(), Some("held"));
+        assert!(rs.take_held().is_none(), "taking consumes the hold");
+    }
+
+    /// Round-4 safety net: a Spirc that never leaves after the wake-up is
+    /// forced after RECOVERY_WAKE_TIMEOUT, never earlier, never when idle.
+    #[test]
+    fn recovery_wake_stuck_only_after_timeout_while_waiting() {
+        assert!(!recovery_wake_stuck(true, false, Duration::from_secs(9)));
+        assert!(recovery_wake_stuck(true, false, RECOVERY_WAKE_TIMEOUT));
+        assert!(!recovery_wake_stuck(true, true, Duration::from_secs(60)), "the rebuild already runs");
+        assert!(!recovery_wake_stuck(false, false, Duration::from_secs(60)), "no recovery, nothing to force");
+    }
+
+    // --- deliberate session end / active snapshot (88 review WR-06) --------
+
+    /// The Spirc-task-ended arm shuts a still VALID session down on purpose
+    /// (Spirc ended after a Browse preemption or an internal error). That end
+    /// must be marked deliberate like the other two (ZeroConf rotation,
+    /// Browse-triggered reconnect): otherwise the dispatcher reads the old
+    /// Spirc's SessionDisconnected as an AP drop (invalid session, not
+    /// deliberate), holds it and discards it - LMS never gets `stop inactive`
+    /// and keeps the claim.
+    #[tokio::test]
+    async fn ending_a_valid_session_is_marked_deliberate() {
+        let rs = RecoveryShared::new(true);
+        let session = Session::new(SessionConfig::default(), None);
+        assert!(!session.is_invalid());
+        assert!(end_valid_session_on_purpose(&rs, &session));
+        assert!(session.is_invalid(), "the session is shut down");
+        assert!(rs.deliberate.load(Ordering::Acquire), "... and the end is deliberate");
+        // what the dispatcher derives from it: not part of an AP drop, so forwarded
+        let ap_drop = !rs.deliberate.load(Ordering::Acquire) && session.is_invalid();
+        assert!(!suppress_for_recovery(EventKind::SessionDisconnected, rs.is_recovering(), ap_drop));
+    }
+
+    /// A session that is ALREADY invalid when the Spirc task ends is the AP drop
+    /// itself: nothing is shut down and nothing is marked, the recovery keeps
+    /// holding the session end back.
+    #[tokio::test]
+    async fn an_already_lost_session_is_not_marked_deliberate() {
+        let rs = RecoveryShared::new(true);
+        let session = Session::new(SessionConfig::default(), None);
+        session.shutdown();
+        assert!(!end_valid_session_on_purpose(&rs, &session));
+        assert!(!rs.deliberate.load(Ordering::Acquire));
+        let ap_drop = !rs.deliberate.load(Ordering::Acquire) && session.is_invalid();
+        assert!(suppress_for_recovery(EventKind::SessionDisconnected, false, ap_drop));
+    }
+
+    /// The main loop and the HTTP handler take the device off the session on
+    /// purpose in four places. Each cleared only `spirc_active`; the snapshot
+    /// (kept on purpose by a SUPPRESSED SessionDisconnected) stayed set when the
+    /// disconnect event was suppressed or never emitted (the Browse-triggered arm
+    /// aborts the Spirc task). The next loss then read `was_active`, carried the
+    /// old session id over and could `transfer(None)` for a device that was not
+    /// active (D-09, T-88-09).
+    #[test]
+    fn deliberate_inactive_clears_the_snapshot_too() {
+        let rs = RecoveryShared::new(true);
+        let flag = AtomicBool::new(true);
+        rs.active_snapshot.store(true, Ordering::SeqCst);
+        assert!(was_active_at_loss(&flag, &rs));
+
+        // the old code: only the flag - the stale snapshot still reads "was active"
+        flag.store(false, Ordering::SeqCst);
+        assert!(was_active_at_loss(&flag, &rs), "the stale snapshot alone reads as active");
+
+        // the fix: both
+        flag.store(true, Ordering::SeqCst);
+        rs.clear_active(&flag);
+        assert!(!flag.load(Ordering::Acquire));
+        assert!(!was_active_at_loss(&flag, &rs), "a device taken off on purpose was not active at a later loss");
+    }
+
+    /// A suppressed SessionDisconnected (the Spirc task noticed the loss before
+    /// the poll) still keeps the snapshot: that is what it exists for.
+    #[test]
+    fn snapshot_alone_still_counts_as_active_at_the_loss() {
+        let rs = RecoveryShared::new(true);
+        let flag = AtomicBool::new(false);
+        rs.active_snapshot.store(true, Ordering::SeqCst);
+        assert!(was_active_at_loss(&flag, &rs));
+        rs.active_snapshot.store(false, Ordering::SeqCst);
+        assert!(!was_active_at_loss(&flag, &rs));
+    }
+
+    /// Wiring guard: the four deliberate sites (HTTP Browse preemption, ZeroConf
+    /// rotation, Browse-triggered reconnect, Spirc-task-ended arm) clear flag AND
+    /// snapshot, and the Spirc-task-ended arm ends its session through the
+    /// deliberate marker.
+    #[test]
+    fn deliberate_sites_are_wired() {
+        let src = include_str!("unified.rs");
+        let production = src.split("#[cfg(test)]").next().expect("production part");
+        assert_eq!(production.matches("recovery_shared.clear_active(&spirc_active)").count(), 4);
+        assert_eq!(production.matches("end_valid_session_on_purpose(&recovery_shared, &session_cur)").count(), 1);
+        assert_eq!(production.matches("was_active_at_loss(spirc_active, rs)").count(), 1);
+    }
+
+    // --- mark_inactive_for_rebuild (88 review WR-02) ------------------------
+
+    /// The two shortcuts into the rebuild bypass the Spirc-task-ended arm, so the
+    /// activity flag of the session that was lost is still set (a Spirc stuck in
+    /// `handle_disconnect` never emitted its SessionDisconnected). Left set, the
+    /// re-acquire reads "took over" at its first poll and plans `Play` for a
+    /// rebuilt Spirc that is not active yet; the fork drops that command. Cleared,
+    /// the re-acquire waits for the takeover and, without one, takes the transfer
+    /// path.
+    #[tokio::test]
+    async fn forced_rebuild_does_not_report_a_takeover_that_has_not_happened() {
+        let i = intent(true, true);
+        let age = RECOVERY_WAKE_TIMEOUT + Duration::from_secs(1);
+
+        // what the stale flag did: Play at once, before any takeover
+        let stale = AtomicBool::new(true);
+        assert!(wait_active(&stale, Duration::from_millis(60)).await);
+        assert_eq!(recovery_plan(&i, true, age), RecoveryStep::Play);
+
+        // the shortcut clears it: no takeover is seen until the rebuilt Spirc reports one
+        let flag = AtomicBool::new(true);
+        mark_inactive_for_rebuild(&flag);
+        assert!(!flag.load(Ordering::Acquire));
+        let seen = wait_active(&flag, Duration::from_millis(60)).await;
+        assert!(!seen, "no takeover before the rebuilt Spirc is active");
+        assert_eq!(recovery_plan(&i, seen, age), RecoveryStep::TransferThenPlay);
+
+        // a takeover that arrives during the wait is still seen
+        let flag = Arc::new(AtomicBool::new(true));
+        mark_inactive_for_rebuild(&flag);
+        let setter = Arc::clone(&flag);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(80)).await;
+            setter.store(true, Ordering::SeqCst);
+        });
+        assert!(wait_active(&flag, Duration::from_secs(2)).await);
+    }
+
+    /// Wiring guard: both shortcuts into the rebuild (no Spirc to wake, the
+    /// forced rebuild of a stuck Spirc) must clear the flag: the definition and
+    /// the two call sites in the production part of this file.
+    #[test]
+    fn both_rebuild_shortcuts_clear_the_activity_flag() {
+        let src = include_str!("unified.rs");
+        let production = src.split("#[cfg(test)]").next().expect("production part");
+        assert_eq!(production.matches("mark_inactive_for_rebuild(").count(), 3);
+    }
+
+    // --- suppress_after_recovery -------------------------------------------
+
+    /// The takeover loads paused (D-09): inside the window Paused and Stopped
+    /// stay away from LMS - for the play case and the idle case alike.
+    #[test]
+    fn suppress_after_recovery_hides_pause_inside_window() {
+        let now = Instant::now();
+        let until = Some(now + Duration::from_secs(10));
+        assert!(suppress_after_recovery(EventKind::Paused, until, now));
+        assert!(suppress_after_recovery(EventKind::Stopped, until, now));
+    }
+
+    /// Playing is never suppressed (the caller ends the window on it).
+    #[test]
+    fn suppress_after_recovery_never_hides_playing() {
+        let now = Instant::now();
+        let until = Some(now + Duration::from_secs(10));
+        assert!(!suppress_after_recovery(EventKind::Playing, until, now));
+        assert!(!suppress_after_recovery(EventKind::TrackChanged, until, now));
+    }
+
+    /// A pause after the window is the user's.
+    #[test]
+    fn suppress_after_recovery_forwards_pause_after_window() {
+        let now = Instant::now();
+        let until = Some(now);
+        assert!(!suppress_after_recovery(EventKind::Paused, until, now), "now >= settle_until");
+        assert!(!suppress_after_recovery(EventKind::Paused, until, now + Duration::from_secs(1)));
+    }
+
+    /// No window open: nothing is suppressed.
+    #[test]
+    fn suppress_after_recovery_without_window_hides_nothing() {
+        let now = Instant::now();
+        assert!(!suppress_after_recovery(EventKind::Paused, None, now));
+        assert!(!suppress_after_recovery(EventKind::Stopped, None, now));
+    }
+
+    /// A new drop inside the window is an honest end or a new recovery, never
+    /// hidden by the window.
+    #[test]
+    fn suppress_after_recovery_never_hides_a_new_disconnect() {
+        let now = Instant::now();
+        let until = Some(now + Duration::from_secs(10));
+        assert!(!suppress_after_recovery(EventKind::SessionDisconnected, until, now));
+    }
+
+    // --- suppress_takeover_announce (GH #207, 88-08 finding 1, V4) ---------
+
+    /// The live shape of run 88-gh207-play-exploratory-flac-261117-0033: the
+    /// takeover's `TrackChanged` (relinked id) arrives while the recovery still
+    /// runs - the daemon log has it BEFORE `recovered in 810 ms`.
+    #[test]
+    fn takeover_announce_is_held_while_recovering() {
+        let now = Instant::now();
+        assert!(suppress_takeover_announce(EventKind::TrackChanged, true, None, now, true));
+    }
+
+    /// Same event landing just after `finish(Recovered)` opened the settle window.
+    #[test]
+    fn takeover_announce_is_held_inside_the_settle_window() {
+        let now = Instant::now();
+        let until = Some(now + Duration::from_secs(10));
+        assert!(suppress_takeover_announce(EventKind::TrackChanged, false, until, now, true));
+    }
+
+    /// Outside a recovery and its window a `TrackChanged` is an ordinary title
+    /// change (or a re-announce after a user action) and reaches LMS.
+    #[test]
+    fn takeover_announce_is_forwarded_outside_recovery_and_window() {
+        let now = Instant::now();
+        assert!(!suppress_takeover_announce(EventKind::TrackChanged, false, None, now, true));
+        // an expired window is no window (now >= settle_until)
+        assert!(!suppress_takeover_announce(EventKind::TrackChanged, false, Some(now), now, true));
+        assert!(!suppress_takeover_announce(
+            EventKind::TrackChanged,
+            false,
+            Some(now),
+            now + Duration::from_secs(1),
+            true
+        ));
+    }
+
+    /// No cursor = no session the takeover could re-announce: the `TrackChanged`
+    /// is a session start (None -> Some, `start` to LMS) and must reach it, also
+    /// inside the window of a Quiet recovery of a device that was not active.
+    #[test]
+    fn takeover_announce_without_cursor_is_a_session_start_and_forwarded() {
+        let now = Instant::now();
+        let until = Some(now + Duration::from_secs(10));
+        assert!(!suppress_takeover_announce(EventKind::TrackChanged, true, None, now, false));
+        assert!(!suppress_takeover_announce(EventKind::TrackChanged, false, until, now, false));
+    }
+
+    /// Only `TrackChanged` is held. Playing carries the restored position and
+    /// ends the window (caller); Paused/Stopped have their own gates; a new
+    /// SessionDisconnected is never hidden.
+    #[test]
+    fn takeover_announce_never_holds_other_events() {
+        let now = Instant::now();
+        let until = Some(now + Duration::from_secs(10));
+        for kind in [
+            EventKind::Playing,
+            EventKind::Paused,
+            EventKind::Stopped,
+            EventKind::SessionDisconnected,
+            EventKind::Other,
+        ] {
+            assert!(!suppress_takeover_announce(kind, true, until, now, true), "{kind:?} while recovering");
+            assert!(!suppress_takeover_announce(kind, false, until, now, true), "{kind:?} in window");
+        }
+    }
+
+    /// Wiring guard: the decision function is only worth anything if BOTH
+    /// dispatcher copies (the initial one and the respawn copy) call it. The
+    /// production part of this file must name it exactly three times: the
+    /// definition and the two call sites. (A unit test cannot reach the dispatcher
+    /// closures; the live rig row gh207 play, V4, is the end-to-end check.)
+    #[test]
+    fn takeover_announce_gate_is_wired_into_both_dispatchers() {
+        let src = include_str!("unified.rs");
+        let production = src.split("#[cfg(test)]").next().expect("production part");
+        let calls = production.matches("suppress_takeover_announce(").count();
+        assert_eq!(calls, 3, "definition + initial dispatcher + respawn dispatcher");
+    }
+}
+
+// -------------------------------------------------------------------------
+// Damping, 503 while recovering, ack before abort (GH #207, D-07/D-08)
+// -------------------------------------------------------------------------
+
+#[cfg(test)]
+mod recovery_damping_tests {
+    use super::*;
+
+    /// D-08 "Play from LMS works again (no 409)": a recovering helper answers
+    /// 503 for every transport/volume/seek command, never 409, whatever the
+    /// activity flag says (the old Spirc is being woken, the new one is not up).
+    #[test]
+    fn control_status_is_503_while_recovering() {
+        for cmd in ["pause", "play", "next", "prev", "volume", "seek"] {
+            for active in [false, true] {
+                for present in [false, true] {
+                    let st = control_status(true, active, present, cmd);
+                    assert_eq!(st, StatusCode::SERVICE_UNAVAILABLE, "{cmd} active={active} present={present}");
+                    assert_ne!(st, StatusCode::CONFLICT);
+                }
+            }
+        }
+        // An unknown command stays a 404 even while recovering.
+        assert_eq!(control_status(true, true, false, "bogus"), StatusCode::NOT_FOUND);
+    }
+
+    /// The transfer-back is refused with 503 (Retry-After 2 added by the
+    /// caller) while recovering, whatever the handle and the rate limit say.
+    #[test]
+    fn transfer_is_503_while_recovering() {
+        assert_eq!(transfer_status(true, true, None), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            transfer_status(true, true, Some(Duration::from_secs(60))),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_eq!(transfer_status(true, false, None), StatusCode::SERVICE_UNAVAILABLE);
+        // Outside a recovery the old mapping is unchanged.
+        assert_eq!(transfer_status(false, true, None), StatusCode::NO_CONTENT);
+    }
+
+    /// Fable item 6: a failed Spirc::new on the recovery path is retried after
+    /// 1, 2, 4 s, then the schedule ends (the Perl backoff takes over).
+    #[test]
+    fn recovery_retry_delay_is_1_2_4_then_ends() {
+        assert_eq!(recovery_retry_delay(0), Some(Duration::from_secs(1)));
+        assert_eq!(recovery_retry_delay(1), Some(Duration::from_secs(2)));
+        assert_eq!(recovery_retry_delay(2), Some(Duration::from_secs(4)));
+        assert_eq!(recovery_retry_delay(3), None);
+        assert_eq!(recovery_retry_delay(100), None);
+    }
+
+    // --- bounded_rebuild (88 review WR-03) ---------------------------------
+
+    /// A rebuild that never returns (an AP that completes the handshake and then
+    /// goes quiet: `connection::authenticate` has no timeout) ends as an ordinary
+    /// failed attempt after the limit. The outer 2 s timeout turns an unbounded
+    /// wait into a failure, not a hang.
+    #[tokio::test]
+    async fn bounded_rebuild_turns_a_hang_into_a_failed_attempt() {
+        let t0 = Instant::now();
+        let hang = std::future::pending::<Result<u8, librespot_core::Error>>();
+        let r = tokio::time::timeout(
+            Duration::from_secs(2),
+            bounded_rebuild(hang, Some(Duration::from_millis(200))),
+        )
+        .await
+        .expect("the rebuild attempt must be bounded");
+        let waited = t0.elapsed();
+        let err = r.expect_err("an elapsed limit is a failed attempt");
+        assert!(err.to_string().contains("timed out"), "reason names the timeout: {err}");
+        assert!(
+            waited >= Duration::from_millis(150) && waited < Duration::from_secs(1),
+            "failed after {waited:?}, expected about 200 ms"
+        );
+    }
+
+    /// Inside the limit the attempt's own result passes through unchanged.
+    #[tokio::test]
+    async fn bounded_rebuild_passes_the_attempts_own_result_through() {
+        let ok = async { Ok::<u8, librespot_core::Error>(7) };
+        assert_eq!(bounded_rebuild(ok, Some(Duration::from_secs(5))).await.expect("ok"), 7);
+        let failed = async { Err::<u8, _>(librespot_core::Error::unavailable("ap refused")) };
+        let err = bounded_rebuild(failed, Some(Duration::from_secs(5))).await.expect_err("err");
+        assert!(err.to_string().contains("ap refused"), "the attempt's own error: {err}");
+    }
+
+    /// No limit (the ZeroConf / Browse-triggered reconnect, where `recovering`
+    /// is not set and the Perl health restart stays armed): today's unbounded
+    /// await, unchanged.
+    #[tokio::test]
+    async fn bounded_rebuild_without_a_limit_is_todays_await() {
+        let slow = async {
+            tokio::time::sleep(Duration::from_millis(120)).await;
+            Ok::<u8, librespot_core::Error>(3)
+        };
+        assert_eq!(bounded_rebuild(slow, None).await.expect("ok"), 3);
+    }
+
+    /// The limit must not cut the fork's own access-point rotation short
+    /// (Session::connect: 6 access points, 5 s connect timeout each): a new
+    /// Session starts that rotation over, so a shorter limit could never get past
+    /// the same dead access points. And only the recovery path is bounded.
+    #[test]
+    fn rebuild_limit_covers_the_ap_rotation_and_only_the_recovery_path() {
+        assert!(RECOVERY_SPIRC_NEW_TIMEOUT >= Duration::from_secs(6 * 5));
+        assert_eq!(rebuild_limit(true), Some(RECOVERY_SPIRC_NEW_TIMEOUT));
+        assert_eq!(rebuild_limit(false), None);
+    }
+
+    /// Wiring guard: the recovery rebuild (`Spirc::new` in the reconnect arm of
+    /// the Connect main loop) goes through `bounded_rebuild` with the limit of
+    /// `rebuild_limit`: one call site each in the production part of this file
+    /// (the generic definition reads `bounded_rebuild<T, F>(` and is not counted).
+    #[test]
+    fn recovery_rebuild_is_wired_through_the_bound() {
+        let src = include_str!("unified.rs");
+        let production = src.split("#[cfg(test)]").next().expect("production part");
+        assert_eq!(production.matches("match bounded_rebuild(").count(), 1);
+        assert_eq!(production.matches("= rebuild_limit(recovery.is_some())").count(), 1);
+    }
+
+    /// The wait returns when the dispatcher acks (after about 100 ms), so the
+    /// caller may abort the dispatcher only after the replay was delivered.
+    #[tokio::test]
+    async fn outcome_ack_awaited_before_abort() {
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let _ = tx.send(());
+        });
+        let t0 = Instant::now();
+        let r = await_outcome_ack(rx, OUTCOME_ACK_TIMEOUT).await;
+        let waited = t0.elapsed();
+        assert_eq!(r, AckResult::Acked);
+        assert!(
+            waited >= Duration::from_millis(80) && waited < Duration::from_secs(2),
+            "returned after {waited:?}, expected about 100 ms"
+        );
+    }
+
+    /// The wait is bounded: a sender that never acks (kept alive) times out
+    /// after about the given bound; a dropped sender returns at once. The
+    /// outer 2 s timeout turns an unbounded wait into a failure, not a hang.
+    #[tokio::test]
+    async fn outcome_ack_wait_is_bounded() {
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let t0 = Instant::now();
+        let r = tokio::time::timeout(Duration::from_secs(2), await_outcome_ack(rx, Duration::from_millis(200)))
+            .await
+            .expect("the wait must be bounded");
+        let waited = t0.elapsed();
+        assert_eq!(r, AckResult::TimedOut);
+        assert!(
+            waited >= Duration::from_millis(150) && waited < Duration::from_secs(1),
+            "timed out after {waited:?}, expected about 200 ms"
+        );
+        drop(tx);
+
+        let (tx2, rx2) = tokio::sync::oneshot::channel::<()>();
+        drop(tx2);
+        let t1 = Instant::now();
+        let r2 = tokio::time::timeout(Duration::from_secs(2), await_outcome_ack(rx2, Duration::from_secs(6)))
+            .await
+            .expect("a dropped sender must not hang");
+        assert_eq!(r2, AckResult::Dropped);
+        assert!(t1.elapsed() < Duration::from_millis(500), "a dropped sender returns at once");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 89-09 (ACC-02): what a Browse title request is answered.
+//
+// Moved here from the debug session 89-refused-track-plays-silent (2026-11-19, module
+// dbg89_refused_track_plays_silent of a scratch copy). The cells drive the REAL
+// unified_http_server, the REAL serve_track_request and the REAL fork Player. The only
+// stand-in is the upstream: the session's HTTP proxy points at a local listener that
+// holds every connection `stall` long and then drops it, so the Player's load fails
+// (PlayerEvent::Unavailable -> StatusCode::NOT_FOUND on the status channel) after about
+// `stall`. That stands for the network-bound load in front of the verdict
+// (extended-metadata, storage-resolve, file head, key round trip). The verdict comes from
+// a failed metadata load, not from a refused key; the handler sees the same NOT_FOUND on
+// the same channel in both cases (the session has 0 refused keys, so these 404s count
+// toward the reconnect).
+//
+// On the code before 89-09 the handler answered `200 OK` 500 ms after the request
+// whenever the verdict was not in yet, and the body then ended with 0 bytes: LMS started
+// that empty stream as a short track (run 89-05 of 2026-11-19 12:22, a player silent for
+// 275 s).
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod browse_title_answer_tests {
+    use super::*;
+    use std::net::SocketAddr;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// The time a request waits for the Player's first signal before it gives up. Written
+    /// out here on purpose: the cell below measures the real wait against it.
+    const EXPECTED_BOUND: Duration = Duration::from_secs(10);
+
+    /// Local stand-in for everything upstream of the helper. It runs on plain threads, not
+    /// on the cell's runtime: a load that is still held when a cell ends has to be let go by
+    /// the clock, not by a runtime that is already shutting down (dropping a Player waits
+    /// for its load).
+    fn stalled_upstream(stall: Duration) -> SocketAddr {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind upstream");
+        let addr = l.local_addr().expect("upstream addr");
+        std::thread::spawn(move || {
+            for sock in l.incoming() {
+                let Ok(sock) = sock else { break };
+                std::thread::spawn(move || {
+                    std::thread::sleep(stall);
+                    drop(sock);
+                });
+            }
+        });
+        addr
+    }
+
+    struct Helper {
+        addr: SocketAddr,
+        /// The handler's count of consecutive Browse failures (2 trigger a session reconnect).
+        fails: Arc<AtomicU32>,
+        /// The Connect takeover signal (D-09): notifying it aborts a running serve task.
+        cancel: Arc<tokio::sync::Notify>,
+        _shutdown: tokio::sync::oneshot::Sender<()>,
+    }
+
+    /// The helper's HTTP server exactly as the Browse-only arm of run_unified starts it
+    /// (enable_connect = false), passthrough on (the rig's vm-flac player is served audio/ogg).
+    async fn start_helper(upstream: SocketAddr) -> Helper {
+        let config = SessionConfig {
+            proxy: Some(format!("http://{upstream}").parse().expect("proxy url")),
+            ..SessionConfig::default()
+        };
+        let session = Session::new(config, None);
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind helper");
+        let addr = listener.local_addr().expect("helper addr");
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let fails = Arc::new(AtomicU32::new(0));
+        let cancel = Arc::new(tokio::sync::Notify::new());
+        tokio::spawn(unified_http_server(
+            listener,
+            Arc::new(tokio::sync::Mutex::new(session)),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(std::sync::Mutex::new(None)),
+            Arc::new(tokio::sync::Mutex::new(ActiveMode::Idle)),
+            Arc::clone(&cancel),
+            false,
+            None,
+            None,
+            shutdown_rx,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicU64::new(0)),
+            Arc::new(tokio::sync::Notify::new()),
+            Arc::new(AtomicBool::new(false)),
+            Arc::clone(&fails),
+            Arc::new(std::sync::Mutex::new(Instant::now())),
+            Arc::new(std::sync::Mutex::new(Instant::now())),
+            true,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Bitrate::Bitrate320,
+            false,
+            None,
+            Arc::new(TransferState::default()),
+            Arc::new(RecoveryShared::new(false)),
+        ));
+        Helper { addr, fails, cancel, _shutdown: shutdown_tx }
+    }
+
+    struct Answer {
+        status_line: String,
+        headers_after: Duration,
+        body_len: usize,
+        /// None when the body was still open after `body_wait`.
+        eof_after: Option<Duration>,
+    }
+
+    /// One GET as squeezelite sends it (run 1222, squeezelite-flac.log). Reads the header
+    /// block, then the body until EOF or until `body_wait` has passed since the headers.
+    async fn get(helper: SocketAddr, path: &str, body_wait: Duration) -> Answer {
+        let mut s = tokio::net::TcpStream::connect(helper).await.expect("connect helper");
+        let t0 = Instant::now();
+        let req = format!(
+            "GET {path} HTTP/1.0\r\nAccept: */*\r\nCache-Control: no-cache\r\nConnection: close\r\nHost: {helper}\r\n\r\n"
+        );
+        s.write_all(req.as_bytes()).await.expect("send request");
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 4096];
+        let mut headers_after = None;
+        let mut head_len = 0usize;
+        let mut eof_after = None;
+        loop {
+            let limit = match headers_after {
+                None => Duration::from_secs(30),
+                Some(_) => body_wait,
+            };
+            let n = match tokio::time::timeout(limit, s.read(&mut chunk)).await {
+                Ok(n) => n.expect("read answer"),
+                Err(_) => {
+                    assert!(headers_after.is_some(), "no header block from the helper within 30 s");
+                    break;
+                }
+            };
+            if n == 0 {
+                eof_after = Some(t0.elapsed());
+                break;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+            if headers_after.is_none() {
+                if let Some(p) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                    headers_after = Some(t0.elapsed());
+                    head_len = p + 4;
+                }
+            }
+        }
+        let text = String::from_utf8_lossy(&buf).to_string();
+        Answer {
+            status_line: text.lines().next().unwrap_or("").to_string(),
+            headers_after: headers_after.expect("no complete header block"),
+            body_len: buf.len() - head_len,
+            eof_after,
+        }
+    }
+
+    /// One title request against a helper whose upstream lets the load fail after `stall_ms`.
+    async fn cell(stall_ms: u64, body_wait: Duration) -> (Answer, Helper) {
+        let upstream = stalled_upstream(Duration::from_millis(stall_ms));
+        let helper = start_helper(upstream).await;
+        let a = get(helper.addr, "/track/1111111111111111111111", body_wait).await;
+        eprintln!(
+            "BROWSE-ANSWER cell stall_ms={stall_ms} status_line={:?} headers_after_ms={} body_len={} eof_after_ms={} consecutive_fails={}",
+            a.status_line,
+            a.headers_after.as_millis(),
+            a.body_len,
+            a.eof_after.map(|d| d.as_millis().to_string()).unwrap_or_else(|| "open".into()),
+            helper.fails.load(Ordering::SeqCst)
+        );
+        (a, helper)
+    }
+
+    fn assert_404_for_a_judged_title(a: &Answer, helper: &Helper, stall_ms: u64) {
+        assert!(
+            a.status_line.contains(" 404 "),
+            "a title the Player judged unavailable {stall_ms} ms after the request was answered {:?} after {} ms, with a body of {} bytes",
+            a.status_line, a.headers_after.as_millis(), a.body_len
+        );
+        assert_eq!(a.body_len, 0, "a 404 carries no body");
+        assert_eq!(
+            helper.fails.load(Ordering::SeqCst), 1,
+            "a 404 without a refused key counts once toward the reconnect, however late the verdict came"
+        );
+    }
+
+    /// Control: the load fails at once. Passes before 89-09 too: it shows that this harness
+    /// CAN read a 404 for a title the Player judges unavailable.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn control_a_title_judged_unavailable_at_once_is_answered_404() {
+        let (a, helper) = cell(0, Duration::from_secs(20)).await;
+        assert_404_for_a_judged_title(&a, &helper, 0);
+    }
+
+    /// Control: a load time as in 47 of the 48 field requests of 2026-11-19 (230 to 556 ms
+    /// on the player's clock). Passes before 89-09 too (300 ms was inside the old window).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn control_a_title_judged_unavailable_after_300_ms_is_answered_404() {
+        let (a, helper) = cell(300, Duration::from_secs(20)).await;
+        assert_404_for_a_judged_title(&a, &helper, 300);
+    }
+
+    /// The edge: 700 ms was 200 ms past the old 500 ms window.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_title_judged_unavailable_after_700_ms_is_answered_404_not_an_empty_200() {
+        let (a, helper) = cell(700, Duration::from_secs(20)).await;
+        assert_404_for_a_judged_title(&a, &helper, 700);
+    }
+
+    /// The field case: run 1222, second request for title 0, verdict 1860 ms after the GET.
+    /// The title is judged unavailable all the same, so the answer has to be the 404 the
+    /// plugin's retry and skip handling is built on (ProtocolHandler handleDirectError).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_title_judged_unavailable_after_1860_ms_is_answered_404_not_an_empty_200() {
+        let (a, helper) = cell(1860, Duration::from_secs(20)).await;
+        assert_404_for_a_judged_title(&a, &helper, 1860);
+    }
+
+    /// No verdict and no audio: the upstream holds the load for 12 s. The request gives up
+    /// at the bound with a 404 (never a 200 without audio), leaves the reconnect counter
+    /// alone, and the helper keeps answering while the abandoned load is still running. One
+    /// async worker on purpose: a give-up that waited for the load on a worker would stall
+    /// the /health answer until the upstream lets go.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn a_title_without_a_verdict_is_answered_404_at_the_bound_not_200() {
+        let upstream = stalled_upstream(Duration::from_secs(12));
+        let helper = start_helper(upstream).await;
+        helper.fails.store(1, Ordering::SeqCst);
+        let a = get(helper.addr, "/track/1111111111111111111111", Duration::from_secs(1)).await;
+        eprintln!(
+            "BROWSE-ANSWER cell stall_ms=12000 status_line={:?} headers_after_ms={} body_len={} eof_after_ms={} consecutive_fails={}",
+            a.status_line,
+            a.headers_after.as_millis(),
+            a.body_len,
+            a.eof_after.map(|d| d.as_millis().to_string()).unwrap_or_else(|| "open".into()),
+            helper.fails.load(Ordering::SeqCst)
+        );
+        assert!(
+            a.status_line.contains(" 404 "),
+            "a title without a verdict was answered {:?} after {} ms (a 200 without audio is an empty stream LMS starts as a short track)",
+            a.status_line, a.headers_after.as_millis()
+        );
+        assert!(
+            a.headers_after >= EXPECTED_BOUND - Duration::from_millis(500)
+                && a.headers_after <= EXPECTED_BOUND + Duration::from_millis(1500),
+            "the request gave up after {} ms, expected about {} ms",
+            a.headers_after.as_millis(), EXPECTED_BOUND.as_millis()
+        );
+        assert_eq!(a.body_len, 0, "the give-up answer carries no body");
+        assert_eq!(
+            helper.fails.load(Ordering::SeqCst), 1,
+            "a give-up says nothing about the session: the reconnect counter is neither raised nor reset"
+        );
+        let t = Instant::now();
+        let h = get(helper.addr, "/health", Duration::from_secs(1)).await;
+        let health_after = t.elapsed();
+        eprintln!("BROWSE-ANSWER health status_line={:?} after_ms={}", h.status_line, health_after.as_millis());
+        assert!(h.status_line.contains(" 200 "), "health status line: {:?}", h.status_line);
+        assert!(
+            health_after < Duration::from_secs(1),
+            "the helper answered /health only after {} ms: the abandoned load was waited for on an async worker",
+            health_after.as_millis()
+        );
+    }
+
+    /// The one 200 without audio that stays (89-09 orchestrator decision W2): the serve task
+    /// aborted by the Connect takeover listener (D-09, H13) before any audio and without a
+    /// verdict. The request is answered `200` with a body that is already closed, never an
+    /// error status: an error would make LMS ask for the next title, and that request would
+    /// preempt the Connect session that just took over (D-10). Two workers: the abort drops
+    /// the Player on a worker, which waits for the held load.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_takeover_abort_during_the_wait_is_answered_200_with_a_closed_body() {
+        let upstream = stalled_upstream(Duration::from_secs(4));
+        let helper = start_helper(upstream).await;
+        let cancel = Arc::clone(&helper.cancel);
+        // The listener of the cancel signal is spawned by the handler: give it time to
+        // register before notifying (notify_waiters keeps no permit).
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(700)).await;
+            cancel.notify_waiters();
+        });
+        let a = get(helper.addr, "/track/1111111111111111111111", Duration::from_secs(20)).await;
+        eprintln!(
+            "BROWSE-ANSWER cell takeover_abort status_line={:?} headers_after_ms={} body_len={} eof_after_ms={} consecutive_fails={}",
+            a.status_line,
+            a.headers_after.as_millis(),
+            a.body_len,
+            a.eof_after.map(|d| d.as_millis().to_string()).unwrap_or_else(|| "open".into()),
+            helper.fails.load(Ordering::SeqCst)
+        );
+        assert!(
+            a.status_line.contains(" 200 "),
+            "a takeover abort was answered {:?} after {} ms: an error status makes LMS ask for the next title and preempt the Connect session (D-10)",
+            a.status_line, a.headers_after.as_millis()
+        );
+        assert_eq!(a.body_len, 0, "the aborted serve task sent no audio");
+        assert!(a.eof_after.is_some(), "the body of a takeover abort is closed, not left open");
+        assert_eq!(helper.fails.load(Ordering::SeqCst), 0, "a takeover abort says nothing about the session: not counted");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 89-09 (ACC-02): the first signal of a Browse title request, without a Player. The
+// cells of browse_title_answer_tests above cover the verdict and the give-up through the
+// real handler; a real Player cannot deliver audio without Spotify, so the audio side is
+// pinned here on the function the handler waits in.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod browse_first_signal_tests {
+    use super::*;
+
+    fn channels() -> (
+        mpsc::Sender<Bytes>,
+        mpsc::Receiver<Bytes>,
+        tokio::sync::oneshot::Sender<StatusCode>,
+        tokio::sync::oneshot::Receiver<StatusCode>,
+    ) {
+        let (pcm_tx, pcm_rx) = mpsc::channel::<Bytes>(4);
+        let (status_tx, status_rx) = tokio::sync::oneshot::channel::<StatusCode>();
+        (pcm_tx, pcm_rx, status_tx, status_rx)
+    }
+
+    /// Audio that comes after the old 500 ms window (here after 700 ms) is the first signal.
+    #[tokio::test]
+    async fn the_first_audio_chunk_is_the_first_signal_however_late_before_the_bound() {
+        let (pcm_tx, mut pcm_rx, _status_tx, mut status_rx) = channels();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(700)).await;
+            let _ = pcm_tx.send(Bytes::from_static(b"OggS first page")).await;
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        });
+        let t0 = Instant::now();
+        let signal = browse_first_signal(&mut pcm_rx, &mut status_rx, Duration::from_secs(5)).await;
+        let waited = t0.elapsed();
+        assert_eq!(signal, BrowseFirstSignal::Audio(Bytes::from_static(b"OggS first page")));
+        assert!(
+            waited >= Duration::from_millis(650) && waited < Duration::from_secs(3),
+            "returned after {waited:?}, expected about 700 ms"
+        );
+    }
+
+    /// serve_track_request drops its audio sender when it ends and the verdict follows a
+    /// moment later: the closed channel is not the answer, the verdict is.
+    #[tokio::test]
+    async fn a_verdict_that_follows_the_closed_audio_channel_is_the_first_signal() {
+        let (pcm_tx, mut pcm_rx, status_tx, mut status_rx) = channels();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            drop(pcm_tx);
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let _ = status_tx.send(StatusCode::NOT_FOUND);
+        });
+        let signal = browse_first_signal(&mut pcm_rx, &mut status_rx, Duration::from_secs(5)).await;
+        assert_eq!(signal, BrowseFirstSignal::Verdict(StatusCode::NOT_FOUND));
+    }
+
+    /// Neither audio nor a verdict: the wait ends at the bound, not before and not much later.
+    #[tokio::test]
+    async fn no_audio_and_no_verdict_within_the_bound_is_no_answer() {
+        let (_pcm_tx, mut pcm_rx, _status_tx, mut status_rx) = channels();
+        let t0 = Instant::now();
+        let signal = browse_first_signal(&mut pcm_rx, &mut status_rx, Duration::from_millis(400)).await;
+        let waited = t0.elapsed();
+        assert_eq!(signal, BrowseFirstSignal::NoAnswer);
+        assert!(
+            waited >= Duration::from_millis(380) && waited < Duration::from_secs(2),
+            "returned after {waited:?}, expected about 400 ms"
+        );
+    }
+
+    /// The serve task dropped (the Connect takeover listener aborted it): both senders go
+    /// without audio and without a verdict.
+    #[tokio::test]
+    async fn a_dropped_serve_task_without_audio_is_an_abort_not_a_verdict() {
+        let (pcm_tx, mut pcm_rx, status_tx, mut status_rx) = channels();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            drop(pcm_tx);
+            drop(status_tx);
+        });
+        let signal = browse_first_signal(&mut pcm_rx, &mut status_rx, Duration::from_secs(5)).await;
+        assert_eq!(signal, BrowseFirstSignal::Aborted);
+    }
+
+    /// A title short enough to fit the channel whole has audio AND its end verdict ready
+    /// at the same time: it still plays.
+    #[tokio::test]
+    async fn audio_wins_over_a_verdict_that_is_ready_at_the_same_time() {
+        let (pcm_tx, mut pcm_rx, status_tx, mut status_rx) = channels();
+        pcm_tx.send(Bytes::from_static(b"OggS whole title")).await.expect("channel has room");
+        drop(pcm_tx);
+        status_tx.send(StatusCode::OK).expect("receiver alive");
+        let signal = browse_first_signal(&mut pcm_rx, &mut status_rx, Duration::from_secs(5)).await;
+        assert_eq!(signal, BrowseFirstSignal::Audio(Bytes::from_static(b"OggS whole title")));
+    }
+
+    /// An end without audio is never answered 2xx; an error status stays what it is.
+    #[test]
+    fn an_end_without_audio_is_never_answered_2xx() {
+        assert_eq!(status_for_an_end_without_audio(StatusCode::OK), StatusCode::BAD_GATEWAY);
+        assert_eq!(status_for_an_end_without_audio(StatusCode::INTERNAL_SERVER_ERROR), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(status_for_an_end_without_audio(StatusCode::BAD_REQUEST), StatusCode::BAD_REQUEST);
+    }
+
+    /// The chunk the handler took out of the channel to decide the status is the first
+    /// thing the body sends (in passthrough mode it is the Ogg header page).
+    #[tokio::test]
+    async fn the_answer_body_starts_with_the_chunk_that_was_the_first_signal() {
+        let (pcm_tx, mut pcm_rx, _status_tx, mut status_rx) = channels();
+        pcm_tx.send(Bytes::from_static(b"one,")).await.expect("room");
+        pcm_tx.send(Bytes::from_static(b"two,")).await.expect("room");
+        pcm_tx.send(Bytes::from_static(b"three")).await.expect("room");
+        drop(pcm_tx);
+        let first = match browse_first_signal(&mut pcm_rx, &mut status_rx, Duration::from_secs(5)).await {
+            BrowseFirstSignal::Audio(chunk) => chunk,
+            other => panic!("expected audio, got {other:?}"),
+        };
+        let body = browse_audio_body(Some(first), pcm_rx);
+        let all = BodyExt::collect(body).await.expect("body").to_bytes();
+        assert_eq!(&all[..], b"one,two,three");
     }
 }

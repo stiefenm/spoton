@@ -11,16 +11,20 @@ license = "MIT"
 # When building without passthrough, omit this feature to make --check report false.
 passthrough-decoder = []
 default = ["passthrough-decoder"]
+# D-16 (phase 88): test builds only. Makes the fork refuse audio keys with code 2 while
+# /tmp/spoton-rig-refuse exists. Never in `default`; --check reports it and
+# t/librespot/06_binary_check.t fails a binary that carries it.
+rig-fault = ["librespot-core/rig-fault"]
 
 [[bin]]
 name = "spoton"
 path = "src/main.rs"
 
 [dependencies]
-librespot-core      = { git = "https://github.com/stiefenm/librespot", branch = "fix/audio-key-retry-v2-skip-to-empty", default-features = false, features = ["rustls-tls-native-roots"] }
-librespot-connect   = { git = "https://github.com/stiefenm/librespot", branch = "fix/audio-key-retry-v2-skip-to-empty", default-features = false, features = ["rustls-tls-native-roots"] }
+librespot-core      = { git = "https://github.com/stiefenm/librespot", branch = "spoton/rebase-2026-11", default-features = false, features = ["rustls-tls-native-roots"] }
+librespot-connect   = { git = "https://github.com/stiefenm/librespot", branch = "spoton/rebase-2026-11", default-features = false, features = ["rustls-tls-native-roots"] }
 librespot-discovery = { path = "librespot-discovery-patched", default-features = false, features = ["with-libmdns", "rustls-tls-native-roots"] }
-librespot-playback  = { git = "https://github.com/stiefenm/librespot", branch = "fix/audio-key-retry-v2-skip-to-empty", default-features = false, features = ["passthrough-decoder", "rustls-tls-native-roots"] }
+librespot-playback  = { git = "https://github.com/stiefenm/librespot", branch = "spoton/rebase-2026-11", default-features = false, features = ["passthrough-decoder", "rustls-tls-native-roots"] }
 serde_json     = "1"
 tokio          = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "signal"] }
 futures-util   = "0.3"

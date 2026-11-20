@@ -649,4 +649,30 @@ SKIP: {
     is($val{PLUGIN_SPOTON_PLAYER_SECTION_GENERAL}{DE} // '', 'Allgemein', '79-60: DE General section "Allgemein"');
 }
 
+# ============================================================
+# 89-02 (D-10/D-11a): the two-line text a player shows when Spotify refuses its account's audio keys.
+# Exactly the eleven languages, the EN texts exact, plain hyphen only, L1 at most 48 and L2 at most 32 code
+# points (the player display is narrow). The file is decoded before the length is taken.
+# ============================================================
+{
+    use utf8;
+    open(my $fh, '<:encoding(UTF-8)', "$project_dir/Plugins/SpotOn/strings.txt") or die "Cannot read strings.txt: $!";
+    my $content = do { local $/; <$fh> };
+    close($fh);
+    my (%val, $cur);
+    for my $l (split /\n/, $content) {
+        if ($l =~ /^(PLUGIN_SPOTON\w*)\s*$/) { $cur = $1; next; }
+        $val{$cur}{$1} = $2 if defined $cur && $l =~ /^\t([A-Z]{2})\t(.+)$/;
+    }
+    my %MAX = (PLUGIN_SPOTON_AUDIOKEY_PLAYER_L1 => 48, PLUGIN_SPOTON_AUDIOKEY_PLAYER_L2 => 32);
+    for my $k (sort keys %MAX) {
+        my $V = $val{$k} || {};
+        is(join(',', sort keys %$V), 'CS,DA,DE,EN,ES,FR,IT,NL,NO,PL,SV', "89-02: $k has exactly the eleven languages");
+        is(join(',', grep { $V->{$_} =~ /[\x{2013}\x{2014}]/ } sort keys %$V), '', "89-02: $k carries no em or en dash in any language");
+        is(join(',', grep { length($V->{$_}) > $MAX{$k} } sort keys %$V), '', "89-02: $k is at most $MAX{$k} code points in every language");
+    }
+    is($val{PLUGIN_SPOTON_AUDIOKEY_PLAYER_L1}{EN} // '', 'Spotify: this account cannot play here', '89-02: L1 EN text exact');
+    is($val{PLUGIN_SPOTON_AUDIOKEY_PLAYER_L2}{EN} // '', 'See SpotOn settings', '89-02: L2 EN text exact');
+}
+
 done_testing();

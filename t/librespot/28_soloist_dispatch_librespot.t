@@ -182,20 +182,28 @@ END
 
 write_stub($stub_dir, 'Slim::Networking::SimpleAsyncHTTP', <<'END');
 package Slim::Networking::SimpleAsyncHTTP;
-sub new { return bless {}, shift }
-sub get { }
+# 89-02: when $BODY is set, get() answers at once through the success callback
+# with an object whose content() is that body (the helper's /health answer the
+# denial attribution asks for); unset, get() does nothing as before.
+our $BODY;
+sub new { my ($c, @cb) = @_; return bless { cb => [@cb] }, $c }
+sub get { my ($self) = @_; $self->{cb}[0]->(bless {}, 'Slim::Networking::SimpleAsyncHTTP::Resp') if defined $BODY; return; }
 sub post { }
+package Slim::Networking::SimpleAsyncHTTP::Resp;
+sub content { return $Slim::Networking::SimpleAsyncHTTP::BODY }
 1;
 END
 
 write_stub($stub_dir, 'JSON::XS::VersionOneAndTwo', <<'END');
 package JSON::XS::VersionOneAndTwo;
+use JSON::PP ();
 sub import {
     my $class = shift;
     my $caller = caller;
     no strict 'refs';
     *{"${caller}::to_json"}   = sub { '{}' };
-    *{"${caller}::from_json"} = sub { {} };
+    # 89-02: a real parse where the body is JSON (the /health answer), {} otherwise as before.
+    *{"${caller}::from_json"} = sub { my $r = eval { JSON::PP->new->utf8->decode($_[0]) }; return defined $r ? $r : {} };
 }
 1;
 END
@@ -267,6 +275,7 @@ package Plugins::SpotOn::Unified::Daemon;
 our $TAIL    = '';
 our $ACCOUNT = 'ACCT0123456789abcdef';
 our $HEALTH  = undef;
+our $PORT    = undef;
 sub new {
     my ($class, $mac) = @_;
     return bless { mac => $mac, alive => 1 }, $class;
@@ -278,9 +287,10 @@ sub alive               { return $_[0]->{alive} }
 sub pid                 { return 4242 }
 sub name                { return undef }
 sub _accountId          { return $ACCOUNT }
-sub _streamPort         { return undef }
+sub _streamPort         { return $PORT }
 sub _lastHealthSession  { return $HEALTH }
 sub stderrTail          { return $TAIL }
+sub _healthCheckCount   { my $s = shift; $s->{hc} = shift if @_; return $s->{hc} }
 sub stop                { $_[0]->{alive} = 0; return }
 1;
 END
@@ -561,7 +571,17 @@ sub reset_all {
         $poll->('error audio key 0 2', 'timeout');
         is($Slim::Utils::Cache::STORE{$cacheKey}, 'throttled', "74b WR-03: cached timeout is still replaced by throttled");
 
-        $poll->('error audio key 0 1', 'throttled');
+        # 89-02 (D-09): a denial is filed under the paired account only when the
+        # helper's /health names that account's credentials.json username, so the
+        # cell plants the credentials username and the matching /health answer.
+        {
+            require Plugins::SpotOn::API::Credentials;
+            no warnings 'redefine';
+            local *Plugins::SpotOn::API::Credentials::verifyCredentials = sub { return { username => 'abcdefgh12' } };
+            local $Plugins::SpotOn::Unified::Daemon::PORT = 4242;
+            local $Slim::Networking::SimpleAsyncHTTP::BODY = '{"session_user":"abcd****","session_user_len":10,"audio_key_denials":5}';
+            $poll->('error audio key 0 1', 'throttled');
+        }
         is($Slim::Utils::Cache::STORE{$cacheKey}, 'denied', "74b WR-03: cached throttled is still replaced by denied");
         $e = $entries->();
         is(scalar(@$e) . '/' . ($e->[0][0] // ''), '1/error', "74b WR-03: ... and the ring ends with one denied error");
@@ -570,6 +590,12 @@ sub reset_all {
         # the tail while the account is actively streaming.
         {
             local $Plugins::SpotOn::Unified::Daemon::HEALTH = { idle_secs => 1, checked_at => time() };
+            # 89-07: the 89-02 cell a few lines above filed this same helper as paired with
+            # audio_key_denials 5, so its clean-tail clear waits for a /health with 0, which is
+            # what a granted key produces (D-14); the pin stays a pin of the GH #141 exit.
+            $poll->('', 'denied');
+            is($Slim::Utils::Cache::STORE{$cacheKey}, 'denied', '89-07: the helper filed as paired above keeps the denied on a clean tail until its /health reports audio_key_denials 0');
+            { local $Slim::Networking::SimpleAsyncHTTP::BODY = '{"status":"ok","session_valid":true,"session_age_secs":10,"idle_secs":1,"audio_key_denials":0}'; $DM->_onHealthResponse($helper, bless({}, 'Slim::Networking::SimpleAsyncHTTP::Resp')); }
             $poll->('', 'denied');
             ok(!defined $Slim::Utils::Cache::STORE{$cacheKey}, "74b WR-03 GH #141: a clean tail on an actively streaming daemon still clears the cached denied");
             is(scalar(@{ $entries->() }), 0, "74b WR-03 GH #141: ... and clears the ring entry");
@@ -590,13 +616,18 @@ sub reset_all {
     my $src = do { local (@ARGV, $/) = ($module); <> };
     my ($poll) = $src =~ /(sub _streamAlivePoll \{.*?)\nsub /s;
     $poll //= '';
-    like($poll, qr/\$cache->set\(\$cacheKey, 'denied', 'never'\);\s*\$class->_reportAudioKeyState\(\$helper->_accountId, 'denied'\)/,
-        "74b-03 D-09: _streamAlivePoll reports denied right after the cache set");
+    # 89-02: the permanent set left the poll; it lives only in _fileAudioKeyDenial, paired branch
+    my ($file) = $src =~ /(sub _fileAudioKeyDenial \{.*?)\nsub /s;
+    $file //= '';
+    like($file, qr/\$cache->set\("spoton_audiokey_state_\$acct", 'denied', 'never'\);\s*\$class->_reportAudioKeyState\(\$acct, 'denied'\)/,
+        "89-02 D-09: _fileAudioKeyDenial reports denied right after the paired cache set");
+    like($poll, qr/_attributeAudioKeyDenial/, "89-02 D-09: _streamAlivePoll hands a denied classification to _attributeAudioKeyDenial");
+    unlike($poll, qr/'denied', 'never'/, "89-02 D-09: the permanent 'never' set is no longer inside _streamAlivePoll");
     like($poll, qr/\$cache->set\(\$cacheKey, 'throttled', 600\);\s*\$class->_reportAudioKeyState\(\$helper->_accountId, 'throttled'\)/,
         "74b-03 D-09: _streamAlivePoll reports throttled right after the cache set");
     like($poll, qr/\$cache->remove\("spoton_audiokey_state_" \. \$helper->_accountId\);\s*\$class->_reportAudioKeyState\(\$helper->_accountId, undef\)/,
         "74b-03 D-09: _streamAlivePoll clears the entry in the GH #141 branch");
-    is(scalar(() = $poll =~ /_reportAudioKeyState/g), 3, "74b-03 D-09: exactly three report calls in the poll (denied, throttled, GH #141 clear)");
+    is(scalar(() = $poll =~ /_reportAudioKeyState/g), 2, "89-02 D-09: exactly two report calls left in the poll (throttled, GH #141 clear)");
 
     @Plugins::SpotOn::Status::RECORDED = ();
     %Slim::Utils::Cache::STORE = ();

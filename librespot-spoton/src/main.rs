@@ -301,6 +301,7 @@ async fn main() {
                 "ogg-direct": has_passthrough,
                 "passthrough": has_passthrough,
                 "passthrough-mixer": true, // Phase 64: PassthroughMixer (GH #144) — no PCM double attenuation
+                "rig-fault": cfg!(feature = "rig-fault"), // D-16: test-only refusal switch; true must never ship
                 "token-env": true,        // Phase 51 CR-01: SPOTON_TOKEN env var support
                 "token-login": true,
                 "unified": true,          // Phase 29: unified Browse+Connect daemon capability

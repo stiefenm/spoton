@@ -284,6 +284,32 @@ PLUGIN_SPOTON_SOLOIST_NOT_PAIRED
 	PL	Jeszcze nie sparowano - odtwarzanie nie powiedzie się, dopóki ten odtwarzacz nie zostanie jednorazowo wybrany w aplikacji Spotify.
 	SV	Inte parkopplad ännu - uppspelning misslyckas tills den här spelaren har valts en gång i Spotify-appen.
 
+PLUGIN_SPOTON_AUDIOKEY_PLAYER_L1
+	CS	Spotify: tento účet zde nemůže přehrávat
+	DA	Spotify: Denne konto kan ikke afspille her
+	DE	Spotify: Dieses Konto kann hier nicht spielen
+	EN	Spotify: this account cannot play here
+	ES	Spotify: esta cuenta no puede reproducir aquí
+	FR	Spotify : ce compte ne peut pas lire ici
+	IT	Spotify: questo account non può riprodurre qui
+	NL	Spotify: dit account kan hier niet afspelen
+	NO	Spotify: denne kontoen kan ikke spille her
+	PL	Spotify: to konto nie może tu odtwarzać
+	SV	Spotify: det här kontot kan inte spela här
+
+PLUGIN_SPOTON_AUDIOKEY_PLAYER_L2
+	CS	Viz nastavení SpotOn
+	DA	Se SpotOn-indstillinger
+	DE	Siehe SpotOn-Einstellungen
+	EN	See SpotOn settings
+	ES	Ver ajustes de SpotOn
+	FR	Voir les réglages de SpotOn
+	IT	Vedi le impostazioni di SpotOn
+	NL	Zie SpotOn-instellingen
+	NO	Se SpotOn-innstillinger
+	PL	Zobacz ustawienia SpotOn
+	SV	Se SpotOn-inställningar
+
 PLUGIN_SPOTON_SOLOIST_PAIR_HOWTO
 	CS	Zapněte backend Soloist a počkejte, až se spustí daemon, poté jednou vyberte tento přehrávač ve výběru zařízení v aplikaci Spotify. Párování probíhá pro každý přehrávač zvlášť a zcela automaticky - není potřeba žádný příkazový řádek; přihlašovací údaje se ukládají lokálně.
 	DA	Aktivér Soloist-backenden, og vent til daemonen starter, vælg derefter denne afspiller én gang i enhedsvælgeren i din Spotify-app. Parring foregår pr. afspiller og er helt automatisk - ingen kommandolinje nødvendig; loginoplysninger gemmes lokalt.

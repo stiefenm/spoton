@@ -59,6 +59,25 @@ use constant STAGGER_DELAY => 3;
 # daemon crash. Mirrors Credentials.pm's own bounded-read discipline.
 use constant STDERR_TAIL_BYTES => 8192;
 
+# 89-02 (D-10): seconds the two-line "this account cannot play here" text stays
+# on the player display after the fork's refused-key limit marker.
+use constant AUDIOKEY_POPUP_S => 6;
+
+# 89-02 (D-09): lifetime of a guest entry (a refused key that is not the paired
+# account's). Finite on purpose: a guest session ends by itself, and a
+# permanent entry for the wrong account is the GH #141 poisoning. Equal to
+# Status WARN_TTL_S so the guest ring entry and the advice row that Status.pm
+# renders from the cache key leave the status page together (a cell in
+# t/librespot/80 pins the equality).
+use constant AUDIOKEY_GUEST_TTL_S => 3600;
+
+# 89-02 (D-09 cleanup): one-shot guard of the attribution migration.
+use constant AUDIOKEY_MIGRATION_KEY => 'spoton_audiokey_attrib_v89';
+
+# 89-02 (D-11a): the troubleshooting link of the status page advice rows lives
+# in status.html only (89 review IN-01); t/core/13 pins its anchor against the
+# TROUBLESHOOTING.md heading.
+
 # GH #147 D-05: exponential backoff for non-credential crash restarts.
 # Without it, any persistent crash cause restarts the daemon every 5s
 # (STREAM_WATCHDOG_INTERVAL) forever. Resulting cadence for a persistently
@@ -66,6 +85,16 @@ use constant STDERR_TAIL_BYTES => 8192;
 use constant CRASH_BACKOFF_BASE        => 5;    # seconds, first restart delay
 use constant CRASH_BACKOFF_MAX         => 300;  # cap between restart attempts
 use constant CRASH_BACKOFF_RESET_AFTER => 600;  # quiet/alive this long = recovered
+
+# 88 review WR-03: how long a helper may report `recovering:true` on /health
+# before the GH #149 health restart applies again. The helper bounds its own
+# recovery (unified.rs: wake-up 10 s, each Spirc::new 30 s, retries after
+# 1/2/4 s, re-acquire 3 s + 5 s) and a recovery the gh207 rule accepts ends
+# within 15 s; a helper still recovering after 60 s is stuck or on a network
+# its own schedule will not get through, and the restart (then the crash
+# backoff, GH #147) is the better answer. Counted from the first health
+# response that reports the recovery, per helper process.
+use constant RECOVERING_MAX_S => 60;
 
 # Phase 83.3 plan 04 (D-07): a switch-anchored automatic-rollback window.
 # Anchored at %switchedAt (the moment THIS player's daemon actually picked
@@ -132,6 +161,33 @@ my $log         = logger('plugin.spoton');
 my $cache = Slim::Utils::Cache->new('spoton', Plugins::SpotOn::Plugin::SPOTON_CACHE_VERSION());
 
 my %helperInstances;
+
+# 89-08 (ACC-02): due time (Time::HiRes epoch, the clock setTimer uses) of the
+# armed _streamAlivePoll tick, undef while none is armed. LMS has no public query
+# for a pending timer, so every arm and kill of the poll goes through the three
+# subs below and keeps this stamp. Why: the 60 s watchdog calls startHelper for
+# every player and each re-arm pushed the pending tick back, a 15 s silent poll
+# once a minute with three players.
+my $pollDueAt;
+
+sub _armStreamAlivePoll {
+    Slim::Utils::Timers::killTimers(__PACKAGE__, \&_streamAlivePoll);
+    $pollDueAt = Time::HiRes::time() + STREAM_WATCHDOG_INTERVAL;
+    Slim::Utils::Timers::setTimer(__PACKAGE__, $pollDueAt, \&_streamAlivePoll);
+}
+
+sub _killStreamAlivePoll {
+    Slim::Utils::Timers::killTimers(__PACKAGE__, \&_streamAlivePoll);
+    undef $pollDueAt;
+}
+
+# A pending tick keeps its due time. A stamp more than two intervals past due
+# means the timer was lost (LMS fires late only by a main-loop stall), so the
+# poll is armed again instead of trusting the stamp forever.
+sub _ensureStreamAlivePoll {
+    return if defined $pollDueAt && Time::HiRes::time() <= $pollDueAt + 2 * STREAM_WATCHDOG_INTERVAL;
+    _armStreamAlivePoll();
+}
 
 # 84-07 (SEAM-6.2): per-mac backend role objects (backendFor) and the
 # once-per-process flag of the pref watcher that clears them.
@@ -301,6 +357,86 @@ sub _maskAccountId {
     my ($accountId) = @_;
     return 'unknown' unless defined $accountId && length $accountId;
     return substr($accountId, 0, 4) . '****';
+}
+
+# 89-02 (D-05/D-15): per helper (keyed by player mac) the last refused-key
+# limit marker line (CONTRACT-89) the poll acted on. The marker line is only a
+# dedupe key: one reaction per new line, zero on the same tail polled again.
+# Cleared when a helper process starts, stops, and on shutdown. It decides
+# nothing about any later play (D-07: no fail-fast).
+my %audioKeyLastHalt;
+
+# 89-02 (D-09): per helper the last "error audio key 0 1" line a /health
+# attribution was started for (one GET per new denial line), and the helpers
+# with such a GET in flight. Cleared with %audioKeyLastHalt.
+# 89 review WR-03: the in-flight value is a per-GET token (from
+# $audioKeyAttribSeq), so the answer of a GET started for an earlier process
+# never clears the flag of a GET started after a restart.
+my %audioKeyLastDenial;
+my %audioKeyAttribPending;
+my $audioKeyAttribSeq = 0;
+
+# 89-07 (D-09, D-07): per helper (keyed by player mac) the account id a PAIRED
+# audio-key denial was filed for by that helper process. Set only in the paired
+# branch of _fileAudioKeyDenial; deleted in _clearAudioKeyMarks (process start,
+# stop, shutdown) and in _onHealthResponse when that helper's /health reports
+# audio_key_denials as exactly 0. Read only by _pairedDenialLive, which only
+# gates the GH #141 clear; nothing reads it to refuse, skip or delay a play.
+my %audioKeyPairedDenial;
+
+# 89-07 (D-20): per helper the session user of its last periodic /health:
+# { user => masked token (four code points plus ****), len => code-point length,
+# at => epoch }. Masked token only, process memory only, never logged. Kept out
+# of _lastHealthSession because that snapshot is sent to the status page.
+# Cleared with the marks (a new process has a new session).
+my %helperSessionUser;
+
+# 89-07 (D-20 amendment): per helper the epoch of the first poll that saw live
+# SpotOn playback on its LMS player; deleted on the first poll that sees none.
+# Session evidence only counts when it was fetched after this moment.
+# Cleared with the marks.
+my %helperLiveSince;
+
+# _clearAudioKeyMarks($mac) -- forget the per-helper audio-key dedupe state of
+# one player (a new or stopped helper process has a fresh tail), or of all
+# players when no mac is given (shutdown). Covers %audioKeyPairedDenial,
+# %helperSessionUser and %helperLiveSince as well (89-07).
+sub _clearAudioKeyMarks {
+    my ($mac) = @_;
+    if (defined $mac) {
+        delete $audioKeyLastHalt{$mac};
+        delete $audioKeyLastDenial{$mac};
+        delete $audioKeyAttribPending{$mac};
+        delete $audioKeyPairedDenial{$mac};
+        delete $helperSessionUser{$mac};
+        delete $helperLiveSince{$mac};
+    }
+    else {
+        %audioKeyLastHalt = ();
+        %audioKeyLastDenial = ();
+        %audioKeyAttribPending = ();
+        %audioKeyPairedDenial = ();
+        %helperSessionUser = ();
+        %helperLiveSince = ();
+    }
+    return;
+}
+
+# _pairedDenialLive($acct) -> 1 when an ALIVE helper of %helperInstances holds a
+# paired-denial mark for $acct, else 0 (89-07). Alive helpers only: a dead, not
+# yet restarted helper holds no evidence. A mark and not the health snapshot:
+# the snapshot carries no audio-key count, and the mark is seeded by the filing
+# itself, so there is no window until the next periodic /health. Only the GH #141
+# clear reads this (D-07: it never refuses, skips or delays a play).
+sub _pairedDenialLive {
+    my ($acct) = @_;
+    return 0 unless defined $acct && length $acct;
+    for my $h (values %helperInstances) {
+        next unless $h && $h->alive;
+        my $m = $audioKeyPairedDenial{ $h->mac };
+        return 1 if defined $m && $m eq $acct;
+    }
+    return 0;
 }
 
 # _isConnectEnabled($client)
@@ -629,6 +765,60 @@ sub _isStreamActive {
     return 0 unless defined $health->{idle_secs};
     return 0 if time() - ($health->{checked_at} // 0) > 120;
     return $health->{idle_secs} < 300;
+}
+
+# _isLivePlayback($class, $client) -> 1 exactly when the first (live) branch of
+# _isStreamActive answers 1, else 0 (89-07). The live half as its own sub, so the
+# GH #141 gate can let real playback through (live playback of the account proves
+# keys are granted) while the snapshot fallback is gated by the paired-denial
+# mark. _isStreamActive itself stays as it is: its sync callers (WR-01) need the
+# combined answer.
+sub _isLivePlayback {
+    my ($class, $client) = @_;
+    return 1 if $client && $client->isPlaying
+        && $client->playingSong
+        && ($client->playingSong->track->url // '') =~ /^spoton/;
+    return 0;
+}
+
+# _helperSessionPaired($class, $helper) -> 1 when the helper's current session is
+# the paired account itself, else 0 (89-07, D-20 and its amendment). The evidence
+# is the session user of the last periodic /health (%helperSessionUser): at most
+# 120 s old AND fetched strictly after live playback began on that helper
+# (%helperLiveSince), compared with 89-02's rule (_sessionUserMatch). Fail closed:
+# no evidence, stale evidence, evidence from before the playback start, a guest or
+# an unknown session all answer 0. Why: the helper's account id stays the paired
+# account during a ZeroConf guest session, and the last /health can predate a new
+# takeover that rebuilt the session in process.
+sub _helperSessionPaired {
+    my ($class, $helper) = @_;
+    my $mac = $helper->mac;
+    my $ev  = $helperSessionUser{$mac} or return 0;
+    return 0 if time() - ($ev->{at} // 0) > 120;
+    my $since = $helperLiveSince{$mac};
+    return 0 unless defined $since && ($ev->{at} // 0) > $since;
+    my ($kind) = _sessionUserMatch($helper->_accountId,
+        { session_user => $ev->{user}, session_user_len => $ev->{len} });
+    return $kind eq 'paired' ? 1 : 0;
+}
+
+# _noteLivePlayback($class, $helper) -- sets or deletes the helper's
+# %helperLiveSince entry from the live check of its LMS client (89-07, D-20
+# amendment). Called on every poll of an audio-key-checked helper, so a playback
+# break always resets the start. A client whose live check dies counts as not
+# live (eval, fail closed; the poll never breaks here).
+sub _noteLivePlayback {
+    my ($class, $helper) = @_;
+    my $mac  = $helper->mac;
+    my $live = eval { $class->_isLivePlayback(Slim::Player::Client::getClient($mac)) };
+    main::DEBUGLOG && $log->is_debug && $log->debug("SpotOn: live check failed for $mac: $@") if $@;
+    if ($live) {
+        $helperLiveSince{$mac} //= time();
+    }
+    else {
+        delete $helperLiveSince{$mac};
+    }
+    return;
 }
 
 # _crashStateFor($class, $mac) -- the single accessor for %crashRestarts'
@@ -1087,6 +1277,11 @@ sub initHelpers {
     # 74b-03 (D-09, T-74b-11): re-assert the standing status-page entries
     # (glibc below 2.38 under Soloist, a refused librespot audio key). Idempotent,
     # eval-guarded, message only.
+    # 89-02 (D-09): once, drop the permanent denied entries filed before the
+    # attribution existed; it runs before the standing conditions are re-asserted.
+    eval { $class->_migrateAudioKeyAttribution(); 1 }
+        or $log->warn("SpotOn: audio-key attribution migration failed: " . ($@ || 'unknown error'));
+
     eval { $class->assertStandingConditions(); 1 };
 
     Slim::Utils::Timers::killTimers($class, \&initHelpers);
@@ -1629,7 +1824,7 @@ sub _soloistHealthExpireNotice {
 sub _streamAlivePoll {
     my $class = __PACKAGE__;
 
-    Slim::Utils::Timers::killTimers($class, \&_streamAlivePoll);
+    _killStreamAlivePoll();   # 89-08: this tick fired, none is pending (also for the empty-registry return below)
 
     # Unified daemon is always a streaming daemon when alive — no _streamMode gate
     # (matches Browse::DaemonManager pattern, not Connect::DaemonManager pattern).
@@ -1817,26 +2012,38 @@ sub _streamAlivePoll {
         if ($helper->alive && $helper->backendName eq 'librespot' && $helper->_accountId) {
             require Plugins::SpotOn::API::Credentials;
             my $tail  = $helper->stderrTail(STDERR_TAIL_BYTES);
+            $class->_noteLivePlayback($helper);
+
+            # 89-02 (D-05, D-06, D-15): the fork's limit marker (CONTRACT-89).
+            # One reaction per new marker line; a failure here never breaks the poll.
+            my $haltLine = Plugins::SpotOn::API::Credentials->lastAudioKeyLine($tail, 'halt');
+            if (defined $haltLine && $haltLine ne ($audioKeyLastHalt{ $helper->mac } // '')) {
+                $audioKeyLastHalt{ $helper->mac } = $haltLine;
+                eval { _onAudioKeyHalt($helper, $haltLine); 1 }
+                    or $log->warn("SpotOn: refused-key marker handling failed: " . ($@ || 'unknown error'));
+            }
+
             my $state = Plugins::SpotOn::API::Credentials->classifyAudioKeyError($tail);
 
             if (defined $state) {
                 my $cacheKey = "spoton_audiokey_state_" . $helper->_accountId;
                 my $cached   = $cache->get($cacheKey);
 
-                if (($cached // '') ne $state) {
-                    if ($state eq 'denied') {
-                        # Permanent cohort property -- persists until explicitly
-                        # cleared, mirrors _markNeedsReauth's 'never' TTL discipline.
-                        $cache->set($cacheKey, 'denied', 'never');
-                        $class->_reportAudioKeyState($helper->_accountId, 'denied');
-                    }
+                if ($state eq 'denied') {
+                    # 89-02 (D-09): who is refused is decided by the helper's /health
+                    # (session user against the credentials username), not by the
+                    # paired account alone. Acts once per new denial line; the
+                    # permanent 'never' entry is only ever set there, on a match.
+                    $class->_attributeAudioKeyDenial($helper, $tail);
+                }
+                elsif (($cached // '') ne $state) {
                     # 74b WR-03: a cached 'denied' is permanent and only the
                     # GH #141 branch below may end it. A softer answer from the
                     # same 8 KB tail (both signatures can sit in it at once)
                     # must not replace the never-TTL entry with a 600 s / 300 s
                     # one -- assertStandingConditions is driven by this cache
                     # and would clear the standing error when that TTL ran out.
-                    elsif ($state eq 'throttled' && ($cached // '') ne 'denied') {
+                    if ($state eq 'throttled' && ($cached // '') ne 'denied') {
                         # Transient rapid-skip state (~2min actual) -- 600s TTL
                         # gives generous margin for auto-clear back to 'ok'.
                         $cache->set($cacheKey, 'throttled', 600);
@@ -1851,10 +2058,14 @@ sub _streamAlivePoll {
             }
             # GH #141: classifier returned undef — no error signature in current
             # tail. If a stale 'denied' is cached and the account is actively
-            # streaming, audio keys ARE being granted — clear the false positive.
+            # streaming, audio keys ARE being granted - clear the false positive.
+            # 89-07: not while another alive helper of the account holds the paired
+            # denial it filed, unless this helper really plays with the paired
+            # account's own session (D-20).
             elsif (($cache->get("spoton_audiokey_state_" . $helper->_accountId) // '') eq 'denied') {
                 my $client = Slim::Player::Client::getClient($helper->mac);
-                if ($class->_isStreamActive($helper, $client)) {
+                if (($class->_isLivePlayback($client) && $class->_helperSessionPaired($helper))
+                    || (!_pairedDenialLive($helper->_accountId) && $class->_isStreamActive($helper, $client))) {
                     $cache->remove("spoton_audiokey_state_" . $helper->_accountId);
                     $class->_reportAudioKeyState($helper->_accountId, undef);
                 }
@@ -1884,11 +2095,7 @@ sub _streamAlivePoll {
         }
     }
 
-    Slim::Utils::Timers::setTimer(
-        $class,
-        Time::HiRes::time() + STREAM_WATCHDOG_INTERVAL,
-        \&_streamAlivePoll
-    );
+    _armStreamAlivePoll();   # 89-08: the poll's own cadence, one interval after this tick
 }
 
 # D-09 division of responsibility (verified, not rebuilt in Perl): the Rust
@@ -2568,12 +2775,317 @@ sub soloistMissingLibraryProblem {
          . "Install the package that provides it (Debian: $pkg), then restart LMS.";
 }
 
+# audioKeyAdvice() -- which platform answer a refused audio key gets (D-11,
+# D-17): 'linux_server' on macOS and Windows (no Soloist build exists there),
+# 'soloist' on a Linux that has the Soloist role available and fit to run,
+# 'unavailable' on any other Linux. The Soloist role is reached through the
+# backend registry only (the core names no Soloist package).
+# Callable as a function or as a class method.
+sub audioKeyAdvice {
+    return 'linux_server' unless platformSupportsSoloist();
+
+    my $fit = eval {
+        require Plugins::SpotOn::Backend;
+        (grep { $_ eq 'soloist' } Plugins::SpotOn::Backend::available())
+            && Plugins::SpotOn::Backend::classFor('soloist')->platformFit ? 1 : 0;
+    };
+    return $fit ? 'soloist' : 'unavailable';
+}
+
+# audioKeyAdviceText($advice) -- the ADVICE sentence of audioKeyAdvice(). The
+# same three sentences stand in status.html's advice rows (a cell in
+# t/core/13 pins them against each other). An unknown value answers like
+# 'unavailable'. Callable as a function or as a class method.
+sub audioKeyAdviceText {
+    my $advice = pop;
+    return 'There is no way out on this system (macOS or Windows). On a Linux server this account plays with the Soloist backend, for example LMS in Docker, in a VM or on a small Linux machine.'
+        if defined $advice && $advice eq 'linux_server';
+    return 'Select the Soloist backend in the SpotOn settings.'
+        if defined $advice && $advice eq 'soloist';
+    return 'Soloist is not available on this system.';
+}
+
+# _onAudioKeyHalt($helper, $line) (89-02, D-05/D-06/D-10/D-11/D-11a/D-15)
+# The fork logged its limit marker for this helper (CONTRACT-89): n refused
+# audio keys in a row, Connect playback already paused by the fork itself.
+#   * a Browse player (current song URL spoton://track: or spoton://episode:)
+#     gets its pending 404 retry and skip timers cancelled and then LMS `stop`;
+#     playlist and index stay, so the next play asks for the same title again
+#     (D-07: nothing is remembered here, no later play is refused or delayed);
+#   * every player gets the two-line text: on its display, as a Jive popup
+#     and, since 89-12, as Material Skin's notification (PlayerMessage);
+#   * one server.log WARN per event, with the platform advice, no link and no
+#     account id.
+# A dead Connect history entry translated to Browse (streamUrl spoton://track:
+# or spoton://episode:, 88-06) counts as Browse and is stopped too. A player on
+# any other URL (spoton://connect-...) is not stopped here: the fork pauses
+# Connect itself. The caller wraps this in an eval.
+sub _onAudioKeyHalt {
+    my ($helper, $line) = @_;
+
+    my $mac = $helper->mac;
+    my ($n) = ($line // '') =~ /refused audio keys for (\d+) tracks in a row/;
+    $n = '?' unless defined $n;
+
+    my $client = Slim::Player::Client::getClient($mac);
+    # 89 review WR-01: a dead spoton://connect-* history entry translated to
+    # Browse (88-06, ProtocolHandler::_openDeadConnectUrl) keeps its track URL
+    # but streams spoton://track:<id>; that is Browse playback, as
+    # Connect.pm _playsOwnLiveConnectStream reads it, so the streamUrl decides.
+    my $url = $client ? eval {
+        my $song = $client->streamingSong || $client->playingSong;
+        return undef unless $song;
+        my $streamUrl = $song->can('streamUrl') ? ($song->streamUrl || '') : '';
+        return $streamUrl if $streamUrl =~ m{^spoton://(?:track|episode):};
+        my $track = $song->track;
+        $track ? $track->url : undef;
+    } : undef;
+
+    my $browse = (defined $url && $url =~ m{^spoton://(?:track|episode):}) ? 1 : 0;
+
+    if ($client) {
+        if ($browse) {
+            require Plugins::SpotOn::ProtocolHandler;
+            Plugins::SpotOn::ProtocolHandler->cancelBrowseRetries($client);
+            $client->execute(['stop']);
+        }
+
+        # 89-12: through PlayerMessage, which keeps this showBriefly and adds
+        # Material Skin's notification (Material shows no showBriefly).
+        eval {
+            require Slim::Utils::Strings;
+            require Plugins::SpotOn::PlayerMessage;
+            my @text = (
+                Slim::Utils::Strings::cstring($client, 'PLUGIN_SPOTON_AUDIOKEY_PLAYER_L1'),
+                Slim::Utils::Strings::cstring($client, 'PLUGIN_SPOTON_AUDIOKEY_PLAYER_L2'),
+            );
+            my $err = Plugins::SpotOn::PlayerMessage::show($client, \@text,
+                { type => 'error', line => 1, duration => AUDIOKEY_POPUP_S });
+            die $err if defined $err;
+            1;
+        } or $log->warn("SpotOn: refused-key player message failed on $mac: " . ($@ || 'unknown error'));
+    }
+
+    my $name = ($client && eval { $client->name }) || $mac;
+    $log->warn(sprintf(
+        'SpotOn: player %s %s after %s tracks in a row with refused audio keys - the account playing on it cannot play with librespot. %s',
+        $name, ($browse ? 'stopped' : 'paused'), $n, audioKeyAdviceText(audioKeyAdvice())));
+
+    return;
+}
+
+# _attributeAudioKeyDenial($class, $helper, $tail) (89-02, D-09)
+# A denial line ("error audio key 0 1") sits in the helper's stderr tail. WHO
+# is refused is not the paired account by default: a ZeroConf guest on this
+# player's daemon is refused under the manager's id (GH #141 poisoning). So on
+# a denial line not seen before for this helper, ask the helper itself once
+# (GET /health on 127.0.0.1: a masked session user, its length and the
+# consecutive refused-track count) and file the denial by that answer. Never the
+# 60 s cached health snapshot (too stale: #227 saw the denial 4 s after a
+# takeover). The line is a dedupe key only; one GET per new line, none while a
+# GET is in flight.
+sub _attributeAudioKeyDenial {
+    my ($class, $helper, $tail) = @_;
+
+    require Plugins::SpotOn::API::Credentials;
+    my $line = Plugins::SpotOn::API::Credentials->lastAudioKeyLine($tail, 'denied');
+    return unless defined $line;
+
+    my $mac = $helper->mac;
+    return if $line eq ($audioKeyLastDenial{$mac} // '');
+    return if $audioKeyAttribPending{$mac};
+    $audioKeyLastDenial{$mac} = $line;
+
+    my $port = $helper->_streamPort;
+    return $class->_fileAudioKeyDenial($helper, undef) unless $port;
+
+    # 89 review WR-03: the dead-helper branch of startHelper restarts the SAME
+    # object, so an answer that lands after a restart would be filed against a
+    # process that never saw this denial. The pid of the process asked is
+    # captured here and both callbacks drop the answer when it changed (the
+    # same guard as recovering_pid in _onHealthResponse).
+    my $pid   = $helper->can('pid') ? $helper->pid : undef;
+    my $token = ++$audioKeyAttribSeq;
+    $audioKeyAttribPending{$mac} = $token;
+    my $file = sub {
+        my ($health) = @_;
+        delete $audioKeyAttribPending{$mac}
+            if ($audioKeyAttribPending{$mac} // 0) == $token;
+        my $now = $helper->can('pid') ? $helper->pid : undef;
+        return unless ($now // '') eq ($pid // '');
+        $class->_fileAudioKeyDenial($helper, $health);
+    };
+    Slim::Networking::SimpleAsyncHTTP->new(
+        sub {
+            my $http = shift;
+            my $json = eval { from_json($http->content // '') };
+            $file->((ref $json eq 'HASH') ? $json : undef);
+        },
+        sub {
+            $file->(undef);
+        },
+        { timeout => 5 },
+    )->get("http://127.0.0.1:$port/health");
+
+    return;
+}
+
+# _audioKeySessionMatch($acct, $health) -> ('paired' | 'guest' | 'unknown', $masked)
+# T-89-05: $health is untrusted LAN-reachable input. 'unknown' (no token) unless
+# it is a hash with audio_key_denials >= 1 (checked here, 89-07), then
+# _sessionUserMatch answers.
+sub _audioKeySessionMatch {
+    my ($acct, $health) = @_;
+
+    return ('unknown', undef) unless ref $health eq 'HASH';
+
+    my $denials = $health->{audio_key_denials};
+    return ('unknown', undef)
+        unless defined $denials && !ref $denials && $denials =~ /^\d+$/ && $denials >= 1;
+
+    return _sessionUserMatch($acct, $health);
+}
+
+# _sessionUserMatch($acct, $health) -> ('paired' | 'guest' | 'unknown', $masked)
+# The session-user half of _audioKeySessionMatch, split out in 89-07 (D-20) so
+# the live-playback bypass compares with the same rule. 'unknown' (no token)
+# unless $health is a hash with numeric session_user_len > 0 and a session_user
+# of zero to four characters followed by ****. Otherwise the
+# session user is compared with the username of the paired account:
+#   A5 rule (SpClient.pm _username): the reference is the credentials.json
+#   username through verifyCredentials, NEVER the prefs-held user id of the
+#   accounts pref, which may differ from it.
+# No valid credentials -> 'guest'. Compared in code points on decoded copies
+# (a UTF-8 byte string from the file is decoded on a copy first): the prefix
+# equals as many leading code points of the reference as it holds AND same
+# length -> 'paired'. The helper keeps min(4, L - 2) code points (89 review
+# WR-02), so a short name arrives with a shorter prefix or none at all
+# ("****"); a fixed four-character compare would never match it. The
+# returned token is rebuilt
+# here (prefix without control characters + ****), never the raw helper text.
+sub _sessionUserMatch {
+    my ($acct, $health) = @_;
+
+    return ('unknown', undef) unless ref $health eq 'HASH';
+
+    my ($len, $user) = @$health{qw(session_user_len session_user)};
+    return ('unknown', undef)
+        unless defined $len  && !ref $len  && $len  =~ /^\d+$/ && $len > 0
+            && defined $user && !ref $user;
+
+    my $cp = sub {
+        my $c = shift;
+        utf8::decode($c) unless utf8::is_utf8($c);
+        return $c;
+    };
+
+    my $shown = $cp->($user);
+    return ('unknown', undef) unless $shown =~ /\A(.*)\*{4}\z/s;
+    my $prefix = $1;
+    return ('unknown', undef) if length($prefix) > 4;
+
+    my $masked = $prefix;
+    $masked =~ s/[[:cntrl:]]//g;
+    $masked .= '****';
+
+    require Plugins::SpotOn::API::Credentials;
+    # A5 rule (SpClient.pm _username): the credentials.json username, never the prefs user id.
+    my $creds = Plugins::SpotOn::API::Credentials->verifyCredentials($acct);
+    my $ref   = (ref $creds eq 'HASH' && defined $creds->{username} && length $creds->{username})
+              ? $cp->($creds->{username}) : undef;
+    return ('guest', $masked) unless defined $ref;
+
+    return ($prefix eq substr($ref, 0, length($prefix)) && $len == length($ref))
+        ? ('paired', $masked)
+        : ('guest',  $masked);
+}
+
+# _fileAudioKeyDenial($class, $helper, $health) (89-02, D-09)
+# Files one denial by the /health answer (undef = unknown):
+#   paired            spoton_audiokey_state_<acct> = denied, TTL never (the one
+#                     place that sets it), then the standing status entry;
+#   guest or unknown  a finite guest entry for the PLAYER: the status ring
+#                     entry first, then the cache key (the ring entry is
+#                     re-recorded on every filing so its WARN_TTL_S clock
+#                     restarts with the cache key's TTL, never the other way).
+# D-07: nothing here refuses, skips or delays a play.
+sub _fileAudioKeyDenial {
+    my ($class, $helper, $health) = @_;
+    return unless $helper && $helper->alive;
+
+    my $acct = $helper->_accountId;
+    my $mac  = $helper->mac;
+    my ($kind, $masked) = _audioKeySessionMatch($acct, $health);
+
+    if ($kind eq 'paired') {
+        $cache->set("spoton_audiokey_state_$acct", 'denied', 'never');
+        $class->_reportAudioKeyState($acct, 'denied');
+        $audioKeyPairedDenial{$mac} = $acct;   # 89-07: holds the GH #141 clear (a paired filing only)
+    }
+    else {
+        $class->_reportGuestAudioKeyState($mac, $kind eq 'guest' ? $masked : undef);
+        $cache->set('spoton_audiokey_guest_' . $mac, 'denied', AUDIOKEY_GUEST_TTL_S);
+    }
+
+    main::INFOLOG && $log->is_info && $log->info(
+        "SpotOn: audio-key denial on player $mac filed as $kind"
+        . ($kind eq 'guest' ? " ($masked)" : ''));
+    return;
+}
+
+# _reportGuestAudioKeyState($class, $mac, $masked) (89-02, D-09/D-11a)
+# The status-ring entry of a guest denial on one player: key audiokey:guest:<mac>,
+# level warn, module Connect. $masked is the Perl-rebuilt token of the guest
+# (undef = unknown account). Refreshed on every call: clearError first, then
+# recordError, so there is one entry whose expiry clock restarts.
+sub _reportGuestAudioKeyState {
+    my ($class, $mac, $masked) = @_;
+    return unless defined $mac && length $mac;
+
+    my $key  = 'audiokey:guest:' . $mac;
+    my $name = eval {
+        my $client = Slim::Player::Client::getClient($mac);
+        $client ? $client->name : undef;
+    } || $mac;
+    my $who = defined $masked ? "account $masked" : 'the account playing on it';
+
+    eval {
+        require Plugins::SpotOn::Status;
+        Plugins::SpotOn::Status->clearError('Connect', $key);
+        Plugins::SpotOn::Status->recordError('warn', 'Connect',
+            "Player $name: $who cannot play with librespot: Spotify refuses its audio keys. "
+            . audioKeyAdviceText(audioKeyAdvice()) . ' (AesKeyError 0x0001)', $key);
+        1;
+    } or main::INFOLOG && $log->is_info && $log->info("_reportGuestAudioKeyState failed: $@");
+
+    return;
+}
+
+# _migrateAudioKeyAttribution($class) (89-02, D-09 cleanup)
+# One-shot: before 89 every denial was filed under the paired account with the
+# permanent 'never' TTL, whoever was really refused. Those entries are poisoned
+# (GH #141) and the cache cannot list keys, so walk the paired accounts, drop
+# spoton_audiokey_state_<acct> and its status entry once, guarded by
+# AUDIOKEY_MIGRATION_KEY. A truly refused paired account is re-derived by the
+# next poll (the helper restarts with a fresh tail).
+sub _migrateAudioKeyAttribution {
+    my $class = shift;
+    return if $cache->get(AUDIOKEY_MIGRATION_KEY);
+
+    for my $acct (sort keys %{ $prefs->get('accounts') || {} }) {
+        $cache->remove("spoton_audiokey_state_$acct");
+        $class->_reportAudioKeyState($acct, undef);
+    }
+    $cache->set(AUDIOKEY_MIGRATION_KEY, 1, 'never');
+    return;
+}
+
 # _reportAudioKeyState($acct, $state) -- the status-page side of the
 # audio-key cohort classification (Credentials->classifyAudioKeyError, cached
 # by _streamAlivePoll as spoton_audiokey_state_<account>).
 #   denied    standing 'error' (leaves only through clearError): Spotify
-#             refuses audio keys for this account with librespot; the way out
-#             is the Soloist backend.
+#             refuses audio keys for this account with librespot; the text
+#             carries the platform advice (89-02: audioKeyAdvice).
 #   throttled one-shot 'warn' (expires after Status::WARN_TTL_S, longer than
 #             the 600 s cache TTL): rapid skipping, recovers by itself.
 #   timeout   nothing (transient, GH #150).
@@ -2599,8 +3111,8 @@ sub _reportAudioKeyState {
             unless (Plugins::SpotOn::Status->hasError('Connect', $key, 'error')) {
                 Plugins::SpotOn::Status->clearError('Connect', $key);
                 Plugins::SpotOn::Status->recordError('error', 'Connect',
-                    "Spotify refuses audio keys for account $masked with the librespot backend (AesKeyError 0x0001) - "
-                    . "playback cannot work for this account. Select the Soloist backend in the SpotOn settings.", $key);
+                    "Account $masked cannot play with librespot: Spotify refuses its audio keys. "
+                    . audioKeyAdviceText(audioKeyAdvice()) . ' (AesKeyError 0x0001)', $key);
             }
         }
         elsif ($state eq 'throttled') {
@@ -2971,12 +3483,7 @@ sub startHelper {
                 # Phase 83.3 plan 17 (WR-02): the poll owns this restart --
                 # make sure it is actually running (re-arms only the poll,
                 # never a restart, never an anchor).
-                Slim::Utils::Timers::killTimers($class, \&_streamAlivePoll);
-                Slim::Utils::Timers::setTimer(
-                    $class,
-                    Time::HiRes::time() + STREAM_WATCHDOG_INTERVAL,
-                    \&_streamAlivePoll
-                );
+                _ensureStreamAlivePoll();   # 89-08: never postpones a pending tick
                 return;
             }
             return $class->_deferStartWhileTerminating($clientId, $opts)
@@ -3007,13 +3514,10 @@ sub startHelper {
         # block still runs after every ALLOWED restart (construction or the
         # dead-helper branch above), so the poll ends up armed exactly once
         # either way -- never a restart, never an anchor, only the poll.
+        # Since 89-08 the arm goes through _ensureStreamAlivePoll, which arms only
+        # when no tick is pending, so the watchdog fan-out no longer postpones the poll.
         if ($helper && $helper->alive) {
-            Slim::Utils::Timers::killTimers($class, \&_streamAlivePoll);
-            Slim::Utils::Timers::setTimer(
-                $class,
-                Time::HiRes::time() + STREAM_WATCHDOG_INTERVAL,
-                \&_streamAlivePoll
-            );
+            _ensureStreamAlivePoll();   # 89-08: never postpones a pending tick
         }
 
         return $helper if $helper && $helper->alive;
@@ -3177,8 +3681,10 @@ sub startHelper {
         main::INFOLOG && $log->is_info && $log->info("Need to create Unified daemon for $clientId");
         my $daemonClass = _daemonClass();
         $helper = $helperInstances{$clientId} = $daemonClass->new($clientId);
+        _clearAudioKeyMarks($clientId);   # 89-02: a new process, a new tail
     }
     elsif (!$helper->alive) {
+        _clearAudioKeyMarks($clientId);   # 89-02: a restart reads a fresh tail
         # Phase 83.3 plan 16 (G-83.3-5): librespot twin of the soloist gate
         # above -- while a crash incident is live for this MAC, only the 5s
         # _streamAlivePoll (crash_restart => 1) may restart it.
@@ -3195,12 +3701,7 @@ sub startHelper {
             # Phase 83.3 plan 17 (WR-02): the poll owns this restart -- make
             # sure it is actually running (re-arms only the poll, never a
             # restart, never an anchor).
-            Slim::Utils::Timers::killTimers($class, \&_streamAlivePoll);
-            Slim::Utils::Timers::setTimer(
-                $class,
-                Time::HiRes::time() + STREAM_WATCHDOG_INTERVAL,
-                \&_streamAlivePoll
-            );
+            _ensureStreamAlivePoll();   # 89-08: never postpones a pending tick
             return;
         }
         return $class->_deferStartWhileTerminating($clientId, $opts)
@@ -3212,15 +3713,10 @@ sub startHelper {
         $helper->start;
     }
 
-    # Unified daemon is always streaming when alive — activate fast poll unconditionally
+    # Unified daemon is always streaming when alive - make sure the fast poll runs (89-08: never postpones a pending tick)
     # (matches Browse::DaemonManager pattern)
     if ($helper && $helper->alive) {
-        Slim::Utils::Timers::killTimers($class, \&_streamAlivePoll);
-        Slim::Utils::Timers::setTimer(
-            $class,
-            Time::HiRes::time() + STREAM_WATCHDOG_INTERVAL,
-            \&_streamAlivePoll
-        );
+        _ensureStreamAlivePoll();   # 89-08: never postpones a pending tick
     }
 
     return $helper if $helper && $helper->alive;
@@ -3238,13 +3734,46 @@ sub _onHealthResponse {
                    . ": $@ (body: " . substr($raw, 0, 200) . ")");
     }
 
+    # 88 review WR-03: when this helper process first reported `recovering:true`.
+    # Carried from the previous health record while the SAME process (pid) keeps
+    # reporting it; cleared by the first response without it.
+    my $pid = $helper->can('pid') ? $helper->pid : undef;
+    my $recoveringSince;
+    if ($json && $json->{recovering}) {
+        my $prev = $helper->_lastHealthSession;
+        $recoveringSince = $prev->{recovering_since}
+            if ref $prev eq 'HASH' && defined $prev->{recovering_since}
+               && ($prev->{recovering_pid} // '') eq ($pid // '');
+        $recoveringSince //= time();
+    }
+
     # Always store health data on daemon (even before restart checks)
     $helper->_lastHealthSession({
         session_valid    => $json ? ($json->{session_valid} ? 1 : 0) : undef,
         session_age_secs => $json ? ($json->{session_age_secs} // 0) : undef,
         idle_secs        => $json ? ($json->{idle_secs} // 0) : undef,
         checked_at       => time(),
+        recovering_since => $recoveringSince,
+        recovering_pid   => (defined $recoveringSince ? $pid : undef),
     });
+
+    # 89-07 (D-20): the session user of this periodic /health, masked token only,
+    # kept apart from the snapshot above (that one goes to the status page).
+    if (ref $json eq 'HASH'
+        && defined $json->{session_user}     && !ref $json->{session_user}     && $json->{session_user} =~ /\*{4}\z/
+        && defined $json->{session_user_len} && !ref $json->{session_user_len} && $json->{session_user_len} =~ /^\d+$/) {
+        $helperSessionUser{ $helper->mac } = { user => $json->{session_user}, len => $json->{session_user_len}, at => time() };
+    }
+    else {
+        delete $helperSessionUser{ $helper->mac };
+    }
+
+    # 89-07 (D-14): audio_key_denials exactly 0 means a key was granted (or the
+    # session was rebuilt), so the paired-denial mark of this helper is lifted.
+    # An absent, non-numeric or non-zero field leaves it.
+    delete $audioKeyPairedDenial{ $helper->mac }
+        if ref $json eq 'HASH' && defined $json->{audio_key_denials} && !ref $json->{audio_key_denials}
+           && $json->{audio_key_denials} =~ /^\d+$/ && $json->{audio_key_denials} == 0;
 
     # Malformed response: daemon is confused, restart
     unless ($json && defined $json->{status} && $json->{status} eq 'ok') {
@@ -3256,8 +3785,19 @@ sub _onHealthResponse {
     # GH #149: idle guard — defer restart while actively playing/streaming.
     # A genuinely dead session stops producing audio on its own, idle_secs
     # climbs past the threshold, and the restart proceeds on a later cycle.
-    if (!$json->{session_valid} && ($json->{idle_secs} // 0) > 30) {
-        $class->_restartForHealth($helper, 'session_valid=false');
+    # GH #207: a helper that reports `recovering:true` rebuilds the dropped AP
+    # session itself (unified.rs); restarting it mid-recovery would kill the
+    # player and the /stream relay the recovery keeps alive.
+    # 88 review WR-03: ... for at most RECOVERING_MAX_S. The helper awaits the
+    # rebuild inline in its main loop; before the bound a rebuild that never
+    # returned kept `recovering:true` forever and this backstop stayed off.
+    my $recoveringFor = defined $recoveringSince ? time() - $recoveringSince : undef;
+    my $recovering    = defined $recoveringFor && $recoveringFor < RECOVERING_MAX_S;
+    if (!$json->{session_valid} && ($json->{idle_secs} // 0) > 30 && !$recovering) {
+        $class->_restartForHealth($helper,
+            defined $recoveringFor
+                ? sprintf('session_valid=false (recovering for %ds)', $recoveringFor)
+                : 'session_valid=false');
         return;
     }
 
@@ -3287,12 +3827,17 @@ sub _onHealthError {
 
     # Mark last health data as unavailable so Status UI shows stale-data indicator
     # rather than displaying the previous (potentially outdated) snapshot (WR-05).
+    # 88 review WR-03: the start of a reported recovery survives a failed poll,
+    # so RECOVERING_MAX_S keeps counting.
+    my $prev = $helper->_lastHealthSession;
     $helper->_lastHealthSession({
         session_valid    => undef,
         session_age_secs => undef,
         idle_secs        => undef,
         checked_at       => time(),
         error            => $http->error || 'connection failed',
+        recovering_since => (ref $prev eq 'HASH' ? $prev->{recovering_since} : undef),
+        recovering_pid   => (ref $prev eq 'HASH' ? $prev->{recovering_pid}   : undef),
     });
 }
 
@@ -3379,6 +3924,8 @@ sub stopHelper {
     # path already invokes unconditionally.
     _releasePendingTrackRequest($clientId, 'Soloist daemon shut down') if $clientId;
 
+    _clearAudioKeyMarks($clientId);   # 89-02: the marks belong to this process
+
     my $helper = delete $helperInstances{$clientId};
 
     if ($helper) {
@@ -3403,7 +3950,7 @@ sub stopHelper {
 
     # Stop the fast poll when the last Unified daemon is removed
     unless (grep { $_->alive } values %helperInstances) {
-        Slim::Utils::Timers::killTimers($class, \&_streamAlivePoll);
+        _killStreamAlivePoll();
     }
 }
 
@@ -3423,6 +3970,7 @@ sub shutdown {
     # inactive-only shutdown leaves still-connected players free to defer
     # normally, so it must NOT set this marker.
     $shuttingDown = 1 unless ($mode && $mode eq 'inactive-only');
+    _clearAudioKeyMarks() unless ($mode && $mode eq 'inactive-only');   # 89-02
 
     # 'inactive-only': only stop helpers for players no longer connected
     my %activeClientIds;
@@ -3473,7 +4021,7 @@ sub shutdown {
         _releasePendingTrackRequest($_, 'Soloist daemon shut down') for keys %pendingTrackRequests;
 
         Slim::Utils::Timers::killTimers($class, \&initHelpers);
-        Slim::Utils::Timers::killTimers($class, \&_streamAlivePoll);
+        _killStreamAlivePoll();
         Slim::Utils::Timers::killTimers($class, \&_staggeredStart);
 
         # M10: unregister the event subscriptions added in init() — otherwise

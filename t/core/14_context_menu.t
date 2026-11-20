@@ -1839,4 +1839,48 @@ my @gone_hints = qw(PLUGIN_SPOTON_MIGRATION_REQUIRED PLUGIN_SPOTON_REAUTH_REQUIR
 
 Plugins::SpotOn::API::Client::reset_queue_calls();
 
+# --- 89-12: Like and Add-to-playlist send no Material notification -------------
+# Their text reaches Material as the menu reply: a single text item on an entry
+# with nextWindow, which Material turns into its toast (6.4.9, browse-functions.js
+# 270-281, browseHandleNextWindow; confirmed by the user on 2026-11-19). A
+# notification on top would show the same text twice, so the two paths keep
+# their plain showBriefly and stay off Plugins::SpotOn::PlayerMessage.
+{
+    package Client12;
+    sub new { return bless { brief => [] }, $_[0] }
+    sub id  { return 'aa:bb:cc:dd:ee:14' }
+    sub showBriefly { my ($s, @a) = @_; push @{ $s->{brief} }, [@a]; return }
+}
+{
+    my (@notes, @reply);
+    no warnings qw(redefine once);
+    local *Slim::Utils::PluginManager::isEnabled   = sub { return ($_[1] // '') eq 'Plugins::MaterialSkin::Plugin' ? { version => '6.4.9' } : undef };
+    local *Slim::Control::Request::notifyFromArray = sub { push @notes, [@_]; return };
+    local *Plugins::SpotOn::API::SpClient::saveTracks    = sub { my ($class, $acct, $uris, $cb) = @_; $cb->({}, undef); return };
+    local *Plugins::SpotOn::API::SpClient::addToPlaylist = sub { my ($class, $acct, $pl, $uris, $cb) = @_; $cb->({}, undef); return };
+    # the added-to-playlist string is a format with one %s; the stub's bare key would make sprintf warn
+    local *Plugins::SpotOn::Plugin::cstring = sub { return $_[1] eq 'PLUGIN_SPOTON_ADDED_TO_PLAYLIST' ? 'Added to %s' : $_[1] };
+
+    my $c = Client12->new;
+    Plugins::SpotOn::Plugin::_doLibraryAction($c, sub { push @reply, $_[0] },
+        { trackUri => 'spotify:track:4uLU6hMCjMI75M1A2tKUQC', accountId => 'acct12', cacheKey => 'spoton_like_8912' },
+        'saveTracks', 'PLUGIN_SPOTON_LIKED');
+    is(scalar @notes, 0, 'like_sends_no_material_notification: the menu reply is the Material toast, a notification would double it');
+    is_deeply([ scalar @{ $c->{brief} }, $c->{brief}[0] ? $c->{brief}[0][0] : undef ],
+        [ 1, { jive => { type => 'popupplay', text => [ 'PLUGIN_SPOTON_LIKED' ] } } ],
+        'like_keeps_the_popup: one showBriefly with the jive popup for the players');
+    is_deeply($reply[0], { items => [ { name => 'PLUGIN_SPOTON_LIKED', nextWindow => 'grandparent' } ] },
+        'like_menu_reply: one text item with nextWindow grandparent');
+
+    @notes = (); @reply = (); $c = Client12->new;
+    Plugins::SpotOn::Plugin::_doAddToPlaylist($c, sub { push @reply, $_[0] }, {},
+        { playlistId => 'pl12', playlistName => 'Mix', spotifyUri => 'spotify:track:4uLU6hMCjMI75M1A2tKUQC', accountId => 'acct12' });
+    is(scalar @notes, 0, 'playlist_sends_no_material_notification: the menu reply is the Material toast, a notification would double it');
+    is_deeply([ scalar @{ $c->{brief} }, $c->{brief}[0] ? $c->{brief}[0][0] : undef ],
+        [ 1, { jive => { type => 'popupplay', text => [ 'Added to Mix' ] } } ],
+        'playlist_keeps_the_popup: one showBriefly with the jive popup for the players');
+    is_deeply($reply[0], { items => [ { name => 'Added to Mix', nextWindow => 'grandparent' } ] },
+        'playlist_menu_reply: one text item with nextWindow grandparent');
+}
+
 done_testing();

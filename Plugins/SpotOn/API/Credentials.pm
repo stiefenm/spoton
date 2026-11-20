@@ -216,6 +216,32 @@ sub classifyAudioKeyError {
     return undef;
 }
 
+# lastAudioKeyLine($class, $stderrText, $kind) (89-02, ACC-02/ACC-03)
+# The last whole line of a daemon stderr tail that carries an audio-key
+# signature, or undef:
+#   'halt'   -- the fork's limit marker (CONTRACT-89): "refused audio keys for
+#               <n> tracks in a row"
+#   'denied' -- the permanent-denial signature "error audio key 0 1"
+# The line is a DEDUPE KEY only: a caller compares it with the line it saw on
+# the previous poll to act once per new line. It is never shown, logged or
+# stored anywhere a user can read it (a helper line may carry account data).
+# Capped at 300 characters so a runaway line cannot grow a per-helper hash.
+sub lastAudioKeyLine {
+    my ($class, $stderrText, $kind) = @_;
+    return undef unless defined $stderrText && length $stderrText && defined $kind;
+
+    my $re = $kind eq 'halt'   ? qr/refused audio keys for (\d+) tracks in a row/
+           : $kind eq 'denied' ? qr/error audio key 0 1/
+           :                     return undef;
+
+    my $last;
+    for my $line (split /\r?\n/, $stderrText) {
+        $last = $line if $line =~ $re;
+    }
+    return undef unless defined $last;
+    return length($last) > 300 ? substr($last, 0, 300) : $last;
+}
+
 # ============================================================
 # ZeroConf pairing engine (GH #147 plan 65-02, D-02 primary path)
 # All async -- Proc::Background + Slim::Utils::Timers, never blocking

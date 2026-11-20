@@ -499,6 +499,29 @@ sub _collectAuthHealth {
             : ($cache->get("spoton_audiokey_state_" . $accountId) || 'ok'),
     };
 
+    # 89-02 (D-11a, ACC-03): the platform advice and the docs link of a refused
+    # key get their own rows on the page, so the data carries them. `guests` =
+    # the players of this account with a live spoton_audiokey_guest_<mac> key
+    # (a refusal that was not the paired account's, filed by DaemonManager):
+    # the player NAME only, never the mac. `advice` = DaemonManager's platform
+    # answer (soloist | linux_server | unavailable) under a denied state or any
+    # guest. Nothing is read to refuse or delay a play; this is display only.
+    if ($health{audioKey}{state} ne 'not_used') {
+        my @guests;
+        for my $h (@matching) {
+            next unless $cache->get('spoton_audiokey_guest_' . $h->mac);
+            my $client = eval { Slim::Player::Client::getClient($h->mac) };
+            my $name   = ($client && eval { $client->name }) || '';
+            push @guests, { player => $name };
+        }
+        $health{audioKey}{guests} = \@guests if @guests;
+
+        if ($health{audioKey}{state} eq 'denied' || @guests) {
+            my $advice = eval { Plugins::SpotOn::Unified::DaemonManager->audioKeyAdvice };
+            $health{audioKey}{advice} = $advice if defined $advice && length $advice;
+        }
+    }
+
     # 4. Playback Credentials (D-08, GH #147 plan 66-02) -- the librespot
     # playback credentials, the other half of the chain next to the login5
     # state above: "can this account actually stream". hasCredentials is a

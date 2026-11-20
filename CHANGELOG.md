@@ -5,6 +5,28 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.1.0-beta.1] - 2026-11-20
+
+**Installing this beta.** This is the first beta of SpotOn 4.1. It comes through the beta repository URL `https://stiefenm.github.io/spoton/beta/repo.xml`; if you removed it after 4.0.0, add it again under **Settings > Plugins > Additional Repositories** and save. The Plugins page then offers SpotOn 4.1.0beta1 as an update over 4.0.0. Restart LMS after the update. The changes below are for the librespot backend; the Soloist backend only gets the Material Skin notification for its pairing hint.
+
+### Changed
+- **librespot updated** - the librespot helper is now built on a current librespot with fixes that are not yet in a librespot release, among them a back-off when Spotify briefly refuses audio keys (for example after rapid skipping) and a retry when an audio key request times out.
+- **Accounts that Spotify refuses audio keys for** - after 5 titles in a row that Spotify refused, SpotOn now stops (Browse) or pauses (Spotify Connect, queue and session are kept) instead of skipping through the whole queue. The player shows `Spotify: this account cannot play here` and `See SpotOn settings`: on a Squeezebox screen, and in Material Skin as a notification for about 15 seconds. Pressing play tries once more; on a Spotify Connect player, resume from the Spotify app. ([#227](https://github.com/stiefenm/spoton/issues/227))
+- **Status page explains refused audio keys** - the SpotOn status page names the refused account masked, explains what it means with a link to the troubleshooting guide, and gives the advice that fits your system: the Soloist backend on Linux where it can run, or a Linux server for this account on macOS and Windows. [TROUBLESHOOTING.md](https://github.com/stiefenm/spoton/blob/main/TROUBLESHOOTING.md) describes the cause: Spotify refuses librespot's kind of key request per account, mostly for newer accounts, and SpotOn cannot change that for librespot.
+- **Refusals filed under the account that really plays** - when someone else's Spotify app takes over a player (for example a family member), the refusal is shown for that account and that player and no longer marks the account that set up SpotOn. Such an entry leaves the status page one hour after the last refused title on that player.
+- **Soloist** - the hint that a player is not paired yet also appears as a Material Skin notification.
+
+### Fixed
+- Spotify Connect: when the connection to Spotify's servers drops, the session now reconnects by itself and keeps playing if it was playing, instead of stopping about 30 seconds before the end of the current title. ([#207](https://github.com/stiefenm/spoton/issues/207))
+- Spotify Connect: Play on an LMS player whose Connect session moved to another device or another LMS player now takes the session back to this player; if it does not arrive within about 8 seconds, the last title plays without Connect. ([#223](https://github.com/stiefenm/spoton/issues/223))
+- Spotify Connect: a late stop message from an earlier Connect session can no longer pause or end the current one, and a pause in the Spotify app right after a title started is remembered, so a later Next in LMS follows it. ([#219](https://github.com/stiefenm/spoton/issues/219))
+- Spotify Connect: an outdated device update from Spotify that arrives while a player takes over the session no longer ends that session.
+- Browse: a title that Spotify refused while LMS already showed it as playing without sound is now retried and skipped like any other unavailable title, instead of staying silent for its full length.
+- A refusal that 4.0.0 remembered, which could be filed under the wrong account, is cleared once after the update; an account that is really refused shows up again with its next refused title.
+
+### Known issues
+- The known issues of 4.0.0 still apply.
+
 ## [4.0.0] - 2026-11-15
 
 **SpotOn 4.0 is a large update over 3.5.x.** It no longer uses the Spotify Web API, needs no Spotify Developer App or client ID, and adds a second playback backend, Soloist (Spotify's own client, Linux only), next to librespot. The plugin manager offers it as an update over 3.5.8 and over every 4.0 beta. Restart LMS after the update. The sections below summarise what changes when you come from 3.5.x; the 4.0 beta entries further down list every change in detail.

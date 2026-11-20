@@ -488,4 +488,24 @@ cmp_ok(scalar(@core), '>=', 1, 'core.files lists at least one module');
 cmp_ok($compiled, '>=', scalar(@core) + 1,
     'compiled >= count(core.files) + 1 (every core module plus t/core/66)');
 
+# 89 review IN-04: no product module carries a line of only blanks (the vendored
+# third-party tree under Vendor/ is left as shipped).
+{
+    my (@pm, @blank);
+    find(sub { push @pm, $File::Find::name if -f $_ && /\.pm\z/ && $File::Find::name !~ m{/Vendor/} },
+        "$project_dir/Plugins/SpotOn");
+    for my $f (sort @pm) {
+        open(my $fh, '<', $f) or die "$f: $!";
+        while (my $l = <$fh>) {
+            push @blank, ($f =~ s{^\Q$project_dir\E/}{}r) . ":$." if $l =~ /^[ \t]+\r?\n?\z/;
+        }
+        close($fh);
+    }
+    # Floor derived from core.files, not a fixed number: every core module
+    # survives both amputations, so the floor holds on the full tree and on
+    # each amputation leg (a fixed 30 was red without the Soloist side, 26).
+    cmp_ok(scalar(@pm), '>=', scalar(@core), 'blank-line sweep: the product module tree was found');
+    is_deeply(\@blank, [], 'blank-line sweep: no product module has a line of only spaces or tabs');
+}
+
 done_testing();

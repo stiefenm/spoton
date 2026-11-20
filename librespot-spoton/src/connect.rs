@@ -102,6 +102,11 @@ pub struct LMS {
     /// GH #128: last known playback position for the relay-start resync.
     /// Updated by handle_player_event; consumed by resync_position_at_relay_start.
     pub position_anchor: Arc<std::sync::Mutex<Option<PositionAnchor>>>,
+    /// D-20: per-process Connect session counter. Incremented at every session
+    /// start (None -> Some TrackChanged) and sent as decimal digits on `start`
+    /// (LMS `_p4`) and `stop inactive` (`_p3`), so LMS can tell a stale
+    /// `stop inactive` from the current session's.
+    pub session_counter: Arc<AtomicU64>,
 }
 
 impl LMS {
@@ -122,6 +127,7 @@ impl LMS {
             last_session_start: Arc::new(std::sync::Mutex::new(None)),
             was_paused: Arc::new(AtomicBool::new(false)),
             position_anchor: Arc::new(std::sync::Mutex::new(None)),
+            session_counter: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -147,6 +153,8 @@ impl Clone for LMS {
             last_session_start: Arc::clone(&self.last_session_start),
             was_paused: Arc::clone(&self.was_paused),
             position_anchor: Arc::clone(&self.position_anchor),
+            // D-20: shared, so the respawned dispatcher's clone keeps counting.
+            session_counter: Arc::clone(&self.session_counter),
         }
     }
 }
@@ -198,7 +206,7 @@ impl LMS {
             log::info!(
                 "[spoton] /stream relay start — resyncing LMS position to {secs:.3}s (GH #128)"
             );
-            self.notify("seek", &format!("{secs:.3}"), "").await;
+            self.notify("seek", &format!("{secs:.3}"), "", "").await;
         } else {
             log::debug!(
                 "[spoton] /stream relay start — no position resync (no anchor / paused / <=1s, GH #128)"
@@ -239,13 +247,13 @@ impl LMS {
                         // swap(false) clears the flag atomically to avoid double-resume.
                         if self.was_paused.swap(false, Ordering::AcqRel) {
                             let secs = f64::from(*position_ms) / 1000.0;
-                            self.notify("resume", &new_id, &format!("{secs:.3}")).await;
+                            self.notify("resume", &new_id, &format!("{secs:.3}"), "").await;
                         }
                         // Position sync runs independently of resume (05.2 review fix).
                         if self.needs_position_sync.swap(false, Ordering::AcqRel) {
                             let secs = f64::from(*position_ms) / 1000.0;
                             if secs > 1.0 {
-                                self.notify("seek", &format!("{secs:.3}"), "").await;
+                                self.notify("seek", &format!("{secs:.3}"), "", "").await;
                             }
                         }
                     }
@@ -256,10 +264,10 @@ impl LMS {
                         // (Connect.pm #158 contract), so `resume` follows `change`.
                         let resumed = self.was_paused.swap(false, Ordering::AcqRel);
                         let prev = current_track.replace(new_id.clone()).unwrap_or_default();
-                        self.notify("change", &new_id, &prev).await;
+                        self.notify("change", &new_id, &prev, "").await;
                         if resumed {
                             let secs = f64::from(*position_ms) / 1000.0;
-                            self.notify("resume", &new_id, &format!("{secs:.3}")).await;
+                            self.notify("resume", &new_id, &format!("{secs:.3}"), "").await;
                         }
                         // A session-start sync armed before this change (TrackChanged
                         // None->Some -> TrackChanged Some->Some -> Playing) is still
@@ -267,7 +275,7 @@ impl LMS {
                         if self.needs_position_sync.swap(false, Ordering::AcqRel) {
                             let secs = f64::from(*position_ms) / 1000.0;
                             if secs > 1.0 {
-                                self.notify("seek", &format!("{secs:.3}"), "").await;
+                                self.notify("seek", &format!("{secs:.3}"), "", "").await;
                             }
                         }
                     }
@@ -297,7 +305,7 @@ impl LMS {
                 }
                 if current_track.is_some() {
                     self.was_paused.store(true, Ordering::Release);
-                    self.notify("stop", "", "").await;
+                    self.notify("stop", "", "", "").await;
                 }
             }
             PlayerEvent::Stopped { .. } => {
@@ -305,7 +313,7 @@ impl LMS {
                 // GH #128: playback ended — no position to resync to.
                 self.clear_anchor();
                 if current_track.is_some() {
-                    self.notify("stop", "", "").await;
+                    self.notify("stop", "", "", "").await;
                     // Reset cursor so that the next SessionConnected + TrackChanged(same_id)
                     // takes the None→Some branch and emits "start" to LMS.
                     // Without this, reconnect with the same track silently hits the
@@ -324,7 +332,7 @@ impl LMS {
                     return;
                 }
                 let pct = (u32::from(*volume) * 100 + 32767) / 65535;
-                self.notify("volume", &pct.to_string(), "").await;
+                self.notify("volume", &pct.to_string(), "", "").await;
             }
 
             // Seeked: report position in seconds (3 decimals).
@@ -335,7 +343,7 @@ impl LMS {
                 self.update_anchor_position(*position_ms);
                 if current_track.is_some() {
                     let secs = f64::from(*position_ms) / 1000.0;
-                    self.notify("seek", &format!("{secs:.3}"), "").await;
+                    self.notify("seek", &format!("{secs:.3}"), "", "").await;
                 }
                 if let Some(tx) = &self.flush_tx {
                     let new_gen = self.seek_gen.fetch_add(1, Ordering::Release) + 1;
@@ -373,7 +381,17 @@ impl LMS {
             PlayerEvent::SessionDisconnected { .. } => {
                 log::debug!("[spoton] SessionDisconnected: current_track={:?}", current_track.as_deref());
                 if current_track.is_some() {
-                    self.notify("stop", "inactive", "").await;
+                    // D-20: the counter of the session this stop ends (`_p3`). 0 means
+                    // no start was counted (cursor set by the Playing fallback): the
+                    // slot stays absent and LMS treats absence as a match.
+                    let counter = self.session_counter.load(Ordering::Acquire);
+                    let counter = if counter == 0 { String::new() } else { counter.to_string() };
+                    self.notify("stop", "inactive", &counter, "").await;
+                    // D-03 / Pitfall 3: reset the cursor (mirror of the Stopped arm).
+                    // The session is over; a transfer-back of the SAME title must
+                    // take the None->Some branch of handle_track_changed and emit
+                    // `start`, otherwise LMS never hears about it (GH #223).
+                    *current_track = None;
                 }
             }
 
@@ -402,7 +420,7 @@ impl LMS {
             Some(prev) if prev == new_id => {}
             Some(_) => {
                 let prev = current_track.replace(new_id.to_owned()).unwrap_or_default();
-                self.notify("change", new_id, &prev).await;
+                self.notify("change", new_id, &prev, "").await;
             }
             None => {
                 // D-03: Session start — set grace timer to suppress spurious
@@ -415,17 +433,21 @@ impl LMS {
                 log::debug!("[spoton] TrackChanged (session start): grace timer set");
                 self.needs_position_sync.store(true, Ordering::Release);
                 *current_track = Some(new_id.to_owned());
-                self.notify("start", new_id, "").await;
+                // D-20: `start <id> 0 <counter>` - position 0 lands in `_p3` (ignored
+                // by Connect.pm's `> 0` guard), the per-process session counter in
+                // `_p4` (decimal digits only; Soloist's 'restored' marker shares `_p4`).
+                let counter = self.session_counter.fetch_add(1, Ordering::AcqRel) + 1;
+                self.notify("start", new_id, "0", &counter.to_string()).await;
             }
         }
     }
 
-    /// POST a `spottyconnect <cmd> <p1> <p2>` JSON-RPC slim.request to LMS.
+    /// POST a `spottyconnect <cmd> <p1> <p2> <p3>` JSON-RPC slim.request to LMS.
     ///
     /// Opens a fresh TCP connection per event (no keep-alive). Errors are
     /// swallowed with a warning — the daemon must never panic on LMS outage.
     /// If `auth` is set, adds `Authorization: Basic <creds>` header.
-    pub async fn notify(&self, cmd: &str, p1: &str, p2: &str) {
+    pub async fn notify(&self, cmd: &str, p1: &str, p2: &str, p3: &str) {
         let host_port = match self.host_port.as_deref() {
             Some(h) => h,
             None => return,
@@ -439,11 +461,12 @@ impl LMS {
         let mut params: Vec<serde_json::Value> = Vec::with_capacity(4);
         params.push(json!("spottyconnect"));
         params.push(json!(cmd));
-        if !p1.is_empty() {
-            params.push(json!(p1));
-        }
-        if !p2.is_empty() {
-            params.push(json!(p2));
+        // Trailing empty params are dropped; an empty slot BEFORE a non-empty
+        // one is kept so the positions never shift (D-20, `_p3`/`_p4`).
+        let tail = [p1, p2, p3];
+        let used = tail.iter().rposition(|p| !p.is_empty()).map_or(0, |i| i + 1);
+        for p in &tail[..used] {
+            params.push(json!(p));
         }
         let body = json!({
             "id": 1,
@@ -607,7 +630,7 @@ mod event_translation_tests {
         /// connections in arrival order, so once a sentinel is recorded
         /// everything sent before it is recorded too.
         async fn drain(&self, lms: &LMS) -> Vec<String> {
-            lms.notify("sentinel", "", "").await;
+            lms.notify("sentinel", "", "", "").await;
             for _ in 0..200 {
                 {
                     let seen = self.seen.lock().unwrap();
@@ -743,6 +766,114 @@ mod event_translation_tests {
         assert_eq!(fake.drain(&lms).await, Vec::<String>::new());
     }
 
+    fn session_disconnected() -> PlayerEvent {
+        PlayerEvent::SessionDisconnected {
+            connection_id: "conn".to_owned(),
+            user_name: "user".to_owned(),
+        }
+    }
+
+    /// D-03 / Pitfall 3 (GH #223): the app moves the session away
+    /// (SessionDisconnected -> `stop inactive`), LMS pulls it back and the
+    /// SAME title comes up again. The cursor must have been reset by the
+    /// disconnect, otherwise TrackChanged(A) hits the Some(prev)==new_id
+    /// branch and LMS never hears the second `start`.
+    #[tokio::test]
+    async fn same_track_after_session_disconnect_emits_start() {
+        let (fake, addr) = FakeLms::start().await;
+        let lms = LMS::new(Some(addr), Some("aa:bb:cc:dd:ee:ff".into()), None, None);
+        let mut cur: Option<String> = None;
+        lms.handle_track_changed(TRACK_A, &mut cur).await;
+        lms.handle_player_event(&playing(TRACK_A, 0), &mut cur).await;
+        lms.handle_player_event(&session_disconnected(), &mut cur).await;
+        lms.handle_track_changed(TRACK_A, &mut cur).await;
+        lms.handle_player_event(&playing(TRACK_A, 0), &mut cur).await;
+        assert_eq!(
+            fake.drain(&lms).await,
+            vec![
+                format!("start {TRACK_A} 0 1"),
+                "stop inactive 1".to_owned(),
+                format!("start {TRACK_A} 0 2"),
+            ]
+        );
+    }
+
+    /// D-20 / Pitfall 2: the first session start of the process carries the
+    /// start position `0` (ignored by Connect.pm's `> 0` guard) in `_p3` and the
+    /// per-process session counter in `_p4`.
+    #[tokio::test]
+    async fn start_carries_position_zero_and_counter() {
+        let (fake, addr) = FakeLms::start().await;
+        let lms = LMS::new(Some(addr), Some("aa:bb:cc:dd:ee:ff".into()), None, None);
+        let mut cur: Option<String> = None;
+        lms.handle_track_changed(TRACK_A, &mut cur).await;
+        assert_eq!(fake.drain(&lms).await, vec![format!("start {TRACK_A} 0 1")]);
+    }
+
+    /// D-20: `stop inactive` carries the counter of the session it ends in
+    /// `_p3`, so LMS can tell a stale one from the current session's.
+    #[tokio::test]
+    async fn stop_inactive_carries_counter() {
+        let (fake, addr) = FakeLms::start().await;
+        let lms = LMS::new(Some(addr), Some("aa:bb:cc:dd:ee:ff".into()), None, None);
+        let mut cur: Option<String> = None;
+        lms.handle_track_changed(TRACK_A, &mut cur).await;
+        lms.handle_player_event(&session_disconnected(), &mut cur).await;
+        assert_eq!(
+            fake.drain(&lms).await,
+            vec![format!("start {TRACK_A} 0 1"), "stop inactive 1".to_owned()]
+        );
+    }
+
+    /// D-20: the counter advances once per session start (None -> Some), not
+    /// per track change inside a session.
+    #[tokio::test]
+    async fn counter_increments_per_session() {
+        let (fake, addr) = FakeLms::start().await;
+        let lms = LMS::new(Some(addr), Some("aa:bb:cc:dd:ee:ff".into()), None, None);
+        let mut cur: Option<String> = None;
+        lms.handle_track_changed(TRACK_A, &mut cur).await;
+        lms.handle_track_changed(TRACK_B, &mut cur).await;
+        lms.handle_player_event(&session_disconnected(), &mut cur).await;
+        lms.handle_track_changed(TRACK_B, &mut cur).await;
+        assert_eq!(
+            fake.drain(&lms).await,
+            vec![
+                format!("start {TRACK_A} 0 1"),
+                format!("change {TRACK_B} {TRACK_A}"),
+                "stop inactive 1".to_owned(),
+                format!("start {TRACK_B} 0 2"),
+            ]
+        );
+    }
+
+    /// T-88-14: the counter rides only on `start` and `stop inactive`. A plain
+    /// `stop` (pause), `change`, `resume`, `volume` and `seek` keep their exact
+    /// wire form (no trailing empty param, nothing shifted).
+    #[tokio::test]
+    async fn other_notifies_unchanged() {
+        let (fake, lms, mut cur) = session_on_a().await;
+        lms.handle_player_event(&PlayerEvent::VolumeChanged { volume: 32768 }, &mut cur).await;
+        lms.handle_player_event(&paused(TRACK_A, 84_858), &mut cur).await;
+        lms.handle_player_event(&playing(TRACK_A, 84_858), &mut cur).await;
+        lms.handle_track_changed(TRACK_B, &mut cur).await;
+        lms.handle_player_event(
+            &PlayerEvent::Seeked { play_request_id: 1, track_id: uri(TRACK_B), position_ms: 5_000 },
+            &mut cur,
+        )
+        .await;
+        assert_eq!(
+            fake.drain(&lms).await,
+            vec![
+                "volume 50".to_owned(),
+                "stop".to_owned(),
+                format!("resume {TRACK_A} 84.858"),
+                format!("change {TRACK_B} {TRACK_A}"),
+                "seek 5.000".to_owned(),
+            ]
+        );
+    }
+
     /// Edge: a pause that is followed by a load which stays paused (app
     /// start_playing=false: TrackChanged -> Paused) keeps exactly one pending
     /// resume; the later Playing resumes once.
@@ -760,5 +891,54 @@ mod event_translation_tests {
             "{got:?}"
         );
         assert_eq!(got.last().unwrap(), &format!("resume {TRACK_B} 0.000"));
+    }
+
+    /// The relinked twin of TRACK_A (88-03 observation 3): `TrackChanged` names
+    /// this id, the Spirc-side `Playing` names TRACK_A.
+    const TRACK_A_RELINKED: &str = "0yNttAVwMr39qyODHNIkrY";
+
+    /// Mechanism of GH #207 / 88-08 finding 1 (V4), characterisation: a takeover
+    /// that re-announces the SAME relinked title through the ordinary path reads
+    /// as two track changes, `change <relinked> <A>` then `change <A> <relinked>`
+    /// (the two server.log `Track change` lines 28 ms apart in run
+    /// 88-gh207-play-exploratory-flac-261117-0033), and Connect.pm resets the LMS
+    /// clock on each. This is why unified.rs holds the takeover's `TrackChanged`
+    /// back (`suppress_takeover_announce`); in an ordinary session this reading is
+    /// right (the title restarted) and stays as it is.
+    #[tokio::test]
+    async fn relinked_reannounce_through_the_ordinary_path_reads_as_two_changes() {
+        let (fake, lms, mut cur) = session_on_a().await;
+        lms.handle_track_changed(TRACK_A_RELINKED, &mut cur).await;
+        lms.handle_player_event(&playing(TRACK_A, 51_424), &mut cur).await;
+        assert_eq!(
+            fake.drain(&lms).await,
+            vec![
+                format!("change {TRACK_A_RELINKED} {TRACK_A}"),
+                format!("change {TRACK_A} {TRACK_A_RELINKED}"),
+            ]
+        );
+    }
+
+    /// With the takeover's `TrackChanged` held back, the cursor still holds the
+    /// Spirc-side id and the `Playing` carrying the restored position (51424 ms
+    /// against 51261 ms at the loss) is a same-id no-op: LMS hears nothing and
+    /// its clock keeps running (no `seek`: `needs_position_sync` is armed only on
+    /// a session start).
+    #[tokio::test]
+    async fn playing_after_a_held_takeover_trackchanged_emits_nothing() {
+        let (fake, lms, mut cur) = session_on_a().await;
+        lms.handle_player_event(&playing(TRACK_A, 51_424), &mut cur).await;
+        assert!(fake.drain(&lms).await.is_empty());
+        assert_eq!(cur.as_deref(), Some(TRACK_A));
+    }
+
+    /// The other side of the gate: when the takeover really restored a DIFFERENT
+    /// title, the held `TrackChanged` costs nothing - `Playing` for an id that
+    /// differs from the cursor still reaches LMS as `change`.
+    #[tokio::test]
+    async fn playing_other_id_after_a_held_takeover_trackchanged_still_emits_change() {
+        let (fake, lms, mut cur) = session_on_a().await;
+        lms.handle_player_event(&playing(TRACK_B, 0), &mut cur).await;
+        assert_eq!(fake.drain(&lms).await, vec![format!("change {TRACK_B} {TRACK_A}")]);
     }
 }

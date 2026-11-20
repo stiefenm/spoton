@@ -553,6 +553,24 @@ my @SRV_CATS = (
     # would be vacuous. The name keeps its `server.log: 84-26 repairs` prefix (t/46 matches by prefix).
     { name => 'server.log: 84-26 repairs (resume refusal / autoplay re-adoption hold / transfer-in re-open follows the daemon / resume position set / change unpause skipped) / 84.2-05 (dormant-session handoff / context-end re-adoption hold)',
       pat  => qr/requestResume refused -- daemon on|plays the autoplay-paused title .* -- not re-adopting|LMS re-open after transfer-in at|resume while LMS paused with the stream gone|change while LMS paused with the stream gone|-- handing over to browse|plays the context-end title .* -- not re-adopting/, count => 1 },
+    # 89-02 (ACC-02/ACC-03): the two server.log lines of the refused-audio-key reaction -- the stop (or pause) WARN that
+    # DaemonManager _onAudioKeyHalt writes once per limit marker of the fork, and the INFO line _fileAudioKeyDenial writes
+    # when it files a denial (paired, guest or unknown). Without a category both would be counted, never printed (rule 4).
+    # The title carries none of the literals the pattern matches (an empty block prints the title too).
+    { name => 'server.log: phase-89 refused-key stop and attribution (DaemonManager _onAudioKeyHalt, _fileAudioKeyDenial)',
+      pat  => qr/in a row with refused audio keys - the account playing on it|audio-key denial on player \S+ filed as /, count => 1 },
+    # debug 89-refused-track-plays-silent (2026-11-19): what the plugin did with the helper's answer to a Browse title
+    # request. ProtocolHandler handleDirectError writes one WARN per 404 it is handed -- the retry line (`retry n/3 in 2s`),
+    # the exhausted line (`n attempts exhausted, skipping to next track`) and the line of the skip it schedules at the end of
+    # the title LMS holds as playing (`prefetch context, scheduling skip in <s>s`). A title request with NONE of them was
+    # not answered with an error. Second category: the `newsong` LMS announces, as the plugin watchdog logs it at DIAG
+    # (Plugin.pm _onNewSongWatchdog, carries no MAC) -- the only server.log trace on the rig's WARN+DIAG level that LMS took
+    # a title as started. Before these entries both were only counted, never printed (rule 4). The titles carry none of the
+    # literals the patterns match (an empty block prints the title too).
+    { name => 'server.log: phase-89 Browse stream error handling (ProtocolHandler handleDirectError: retry, exhausted, skip at the end of the playing title)',
+      pat  => qr/Browse daemon 404 for /, count => 1 },
+    { name => 'server.log: title announced as started (plugin watchdog DIAG line of the LMS song-start notification; Plugin.pm _onNewSongWatchdog, carries no MAC)',
+      pat  => qr/Watchdog: newsong url=/, count => 1 },
 );
 
 my @DMN_CATS = (
@@ -626,6 +644,90 @@ my @DMN_CATS = (
     # im Fenster", never "no arm was consumed".
     { name => 'Daemon-Log: seek-arm consumed by an already-happened flush (browse-keep flush / pending flush-disconnect)',
       pat  => qr/\] seek_arm: consumed by (?:browse-keep flush|pending flush-disconnect) /, count => 1 },
+    # phase 88 plan 03 (D-07 spike, #207): the five groups of unified-log lines that phase 88 judges by (rule 4: before
+    # these entries they were only counted, never printed). The TITLES carry none of the literals the patterns match,
+    # because emit_categories prints `--- <title> ---` and `[MUSTER NICHT GEFUNDEN IM FENSTER] <title>` even for an empty
+    # block, so a literal in a title would satisfy a gate that greps the extract for it. Patterns match message text only,
+    # never a source line number.
+    # AP lifecycle: `Connecting to AP "<host>:<port>"` and `Connection to server closed.` (target librespot_core::session,
+    # fork core/src/session.rs:216/895/900) and the WARN `unexpected shutdown` (target librespot_connect::spirc, fork
+    # connect/src/spirc.rs:610 -- NOT session.rs).
+    { name => 'Daemon-Log: phase-88 AP lifecycle (AP connect, server close, shutdown notice; core session and connect spirc)',
+      pat  => qr/Connecting to AP |Connection to server closed|unexpected shutdown/,   count => 1 },
+    # Connect takeover after a new Spirc: spirc.rs ~926-935 -- INFO `active device is <..> with session <..>`, DEBUG
+    # `got empty transfer state, do nothing`, INFO `trying to take over control automatically, session_id: ..`.
+    { name => 'Daemon-Log: phase-88 Connect takeover (automatic takeover, empty-state answer, active-device line; librespot_connect)',
+      pat  => qr/trying to take over control automatically|got empty transfer state|active device is /, count => 1 },
+    # Helper recovery anchors (Fable D-07 item 9) and the throwaway spike markers (`spike207 ...`, plan 88-03 only).
+    # 88 review WR-07: plus the helper lines that mark an ABNORMAL recovery, which had no category and were therefore only
+    # counted (rule 4), so a run through one of them read like a clean one: the forced rebuild (`recovery: Spirc did not
+    # leave after the wake-up, forcing the rebuild`), a failed or timed-out rebuild (`recovery: Spirc::new failed (..), retry
+    # N/3 in N s`), the announce of the 88-08 V4 repair (`takeover TrackChanged held back from LMS ..`) and `recovery outcome
+    # not acknowledged within N ms`. Patterns only: the title is unchanged and still carries none of the literals.
+    { name => 'Daemon-Log: phase-88 recovery anchors (loss, takeover, done, failure; Fable D-07 item 9 and spike markers)',
+      pat  => qr/\[spoton\/unified\] (?:spike207 |session lost|(?:recovery: )?takeover via|(?:recovery: )?recovered in|recovery failed|recovery: Spirc|recovery outcome not acknowledged|takeover TrackChanged held back)/, count => 1 },
+    # Fork player.rs `same-track reload: seek skipped (delta N ms)` (B1) and helper unified.rs `reload timing: headers at
+    # +X ms, first audio page at +Y ms, parked Z ms` (88-05).
+    { name => 'Daemon-Log: phase-88 same-track reload (B1 redundant-seek skip, reload cost line)',
+      pat  => qr/same-track reload: seek skipped|reload timing:/,                      count => 1 },
+    # Helper `/control/transfer` (88-05): `dispatched`, `refused (<reason>)`, `play after takeover`.
+    { name => 'Daemon-Log: phase-88 transfer endpoint (dispatch, refusal or play-after-takeover of the helper transfer control)',
+      pat  => qr/\[spoton\/unified\] \/control\/transfer:/,                             count => 1 },
+    # phase 88 plan 19: the activation guard of the fork (connect/src/spirc.rs, target librespot_connect::spirc) prints INFO
+    # `stale cluster update ignored (N ms after activation, registered yes|no)` per push it ignores, and the probe build of
+    # the same plan prints DEBUG `probe88 push: ..`, `probe88 put: ..`, `probe88 activate: ..` (numbers only). Both line
+    # families come from that one source file. The title carries none of the literals the pattern matches (an empty block
+    # prints the title too).
+    { name => 'Daemon-Log: phase-88 cluster staleness (activation guard verdicts and probe stamps; librespot_connect)',
+      pat  => qr/stale cluster update ignored|probe88 (?:push|put|activate):/,          count => 1 },
+    # 89-02 (ACC-02/ACC-03): the audio-key refusal evidence of the helper. Key-error lines `error audio key 0 1` / `0 2` (the
+    # Spotify code in the line decides denial versus throttle), the fork's limit marker `Spotify refused audio keys for <n>
+    # tracks in a row (code <c>), playback is paused` (core/src/audio_key.rs, 89-01, target librespot_core::audio_key) and the
+    # Connect pause line `paused after <n> tracks with refused audio keys, queue kept` (connect/src/spirc.rs, 89-01, target
+    # librespot_connect::spirc). The title carries none of the literals the pattern matches (an empty block prints the title too).
+    { name => 'Daemon-Log: phase-89 audio key refusals (key errors, limit marker, Connect pause; librespot_core, librespot_connect)',
+      pat  => qr/error audio key [0-9a-f]+ [0-9a-f]+|refused audio keys for \d+ tracks in a row|tracks with refused audio keys, queue kept/, count => 1 },
+    # debug 89-refused-track-plays-silent (2026-11-19): the life of one Browse title request in the helper. Request line
+    # `[spoton/unified] GET /track/<id> start_position_ms=<n>` (or /episode/), the load stages of the fork Player that
+    # precede a refused-key verdict (`Unable to load key, continuing without decryption`, `Unable to read audio file`), the
+    # verdict of serve_track_request (`[spoton/browse] track <uri> unavailable`), the end of the serve task (`Browse track
+    # completed`) and the helper's answer lines (`track unavailable ... returning 404`, `track unavailable after a refused
+    # audio key - 404 ...`, `track unavailable: the Player ended the title without audio ... - answering <n>`, `track
+    # unavailable: no audio and no verdict ... - 404 ...`, `/track/<id>: superseded`). Reading rule (89 review IN-02), by
+    # helper build: since 89-09 the status line waits for the Player's first real signal (unified.rs,
+    # BROWSE_FIRST_SIGNAL_BOUND); every answer without audio has an INFO/WARN line above, and a 200 goes out only with audio
+    # in hand and is logged at DEBUG only (`/track/<id>: first audio after <n> ms - 200`, or `/track/<id>: serve task
+    # dropped before any audio (takeover) - 200 with a closed body`), both printed here. So a verdict line without an
+    # answer line means a 200 (visible only with a debug filter) whose title the Player gave up after audio, or the
+    # takeover case. Before 89-09 the helper answered 200 after a fixed 500 ms wait without a line, so in such a log the
+    # same shape means a 200 sent before the verdict. Patterns are ASCII only (the dash in `Browse track completed` is not
+    # matched: it can be double encoded in a log copy). Before this entry the lines were only counted, never printed
+    # (rule 4). The title carries none of the literals the pattern matches (an empty block prints the title too).
+    { name => 'Daemon-Log: phase-89 Browse title request (helper request line, Player load stages, load verdict, answer line; spoton::unified, spoton::browse, librespot_playback)',
+      pat  => qr/\[spoton\/unified\] GET \/(?:track|episode)\/|Unable to load key, continuing without decryption|Unable to read audio file|\[spoton\/browse\] track \S+ unavailable|\[spoton\/unified\] Browse track completed|\[spoton\/unified\] track unavailable|\[spoton\/unified\] \/track\/\S+ (?:superseded|first audio after \d+ ms - 200|serve task dropped before any audio)/, count => 1 },
+    # debug 89-connect-refused-no-skip (2026-11-19): the life of a Connect handover whose first title cannot be played.
+    # Fork lines, message text only: the context of the handover (`couldn't load context info because: ..` from
+    # set_active_context, `found initial track <..>`, the resolver request `Requesting ..context-resolve/v1/<uri>` - one
+    # line per (re)started request, `handling next context ..`, `updated context <type> to <..> (N tracks)`, `last item of
+    # type <..>, finishing state setup`, `active track is <..> with index .. in <type> context, has N tracks`, `set track to:
+    # .. at I of N tracks`, `finished filling up next_tracks (N)`), the Player side (`Loading <title> .. with Spotify URI`,
+    # `Starting passthrough track ..` = the decoder mode, `Skipping to next track, unable to ..`), the Spirc reaction
+    # (`marking <uri> as unavailable`, `could not dispatch player event: ..`, `Not playing next track because ..`) and the
+    # play status the device reports (`updated connect play status playing: .., paused: .., buffering: ..`). Reading rule:
+    # a `marking .. as unavailable` line that is NOT followed by `finished filling up next_tracks` and a new `Loading <`
+    # line is a skip that did not happen. Before this entry the lines were only counted, never printed (rule 4). The title
+    # carries none of the literals the pattern matches (an empty block prints the title too).
+    { name => 'Daemon-Log: phase-89 Connect skip chain (context setup after a handover, title load and give-up, unavailable mark, event dispatch failure, reported play status; librespot_connect, librespot_playback)',
+      pat  => qr/couldn't load context info because|found initial track <|Requesting \S+\/context-resolve\/v1\/|handling next context |updated context \w+ to <|finishing state setup|active track is <|set track to: |finished filling up next_tracks|\] Loading <|Starting passthrough track|Skipping to next track, unable to|marking \S+ as unavailable|could not dispatch player event|Not playing next track because|updated connect play status/, count => 1 },
+    # debug 89-connect-refused-no-skip (2026-11-19): every device push the helper receives names the device Spotify holds
+    # as the playing one (`cluster update: <reason> from <sender ids>, active device: <id>`, fork connect/src/spirc.rs
+    # handle_cluster_update) and a new play session shows as `session update: <..>`. These lines, read in a BYSTANDER
+    # helper's log too, answer "which device has the session" without the app's display (recipe of debug
+    # 88-18-new2-gh207-gh223-fail). The stale-guard verdict line stays in its own phase-88 category (it has no colon after
+    # `update`). Before this entry the lines were only counted, never printed (rule 4). The title carries none of the
+    # literals the pattern matches. The ids in these lines are NOT redacted by this tool.
+    { name => 'Daemon-Log: phase-89 Connect device pushes (which device Spotify names as the playing one per push, play session notices; librespot_connect)',
+      pat  => qr/\] cluster update: |\] session update: </, count => 1 },
 );
 
 # Rauschkategorien des Daemon-Logs: eigene Behandlung, aber sie zaehlen als

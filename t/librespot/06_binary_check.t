@@ -31,15 +31,22 @@ like($lines[0], qr/^ok spoton v[\d\.]+/i,
 # Second line must be parseable JSON
 SKIP: {
     my $json_line = $lines[1];
-    skip "--check did not produce a second line", 2 unless defined $json_line && length($json_line);
+    skip "--check did not produce a second line", 3 unless defined $json_line && length($json_line);
 
     my $data = eval { decode_json($json_line) };
     ok(!$@, "Second line of --check output is parseable JSON")
         or diag("JSON parse error: $@\nLine was: $json_line");
 
     SKIP: {
-        skip "JSON parse failed", 1 if $@;
+        skip "JSON parse failed", 2 if $@;
         ok(exists $data->{version}, "JSON capability manifest contains 'version' key");
+
+        # D-16 / T-88-13 release gate: the test-only rig-fault build (the fork refuses
+        # audio keys while /tmp/spoton-rig-refuse exists) must never be a shipped binary.
+        # Absent or false passes (older binaries do not report the key).
+        ok(!$data->{'rig-fault'},
+            "--check does not report rig-fault true (test-only build must not ship)")
+            or diag("binary reports \"rig-fault\": true - this is the test build, not a release binary");
     }
 }
 

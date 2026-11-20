@@ -5336,6 +5336,396 @@ subtest 'extract-run-79-28-unified' => sub {
     unlike($out2, qr/handling: 'endpoint: pause'/, 'extract-run-79-28-unified: --date 2026-10-22 prints none of the 2026-10-21 lines');
 };
 
+# 88 review WR-07: the phase-88 recovery category printed the five ordinary anchors only. The helper lines that mark an
+# ABNORMAL recovery (the forced rebuild of a Spirc that never left, a failed or timed-out Spirc::new with its retry, the
+# takeover announce held back from LMS, the unacknowledged outcome at shutdown) had no category, and under architecture
+# rule 4 an uncategorised line is counted and never printed: a run that went through one of them looked like a clean one
+# in every extract. SYNTHETIC fixture: no archive holds an instance of the abnormal lines; each is built from the helper's
+# own format string (librespot-spoton/src/unified.rs) in the unified-log form `[YYYY-MM-DDTHH:MM:SSZ LEVEL target] text`.
+# The window is 2026-11-17 10:00:00..10:01:00 local (CET, UTC + 1 h).
+subtest 'extract-run-88-recovery-abnormal' => sub {
+    my $stubdir   = tempdir(CLEANUP => 1);
+    my $sudo_stub = write_sudo_passthrough_stub($stubdir);
+    my ($sfh, $server_log) = tempfile();
+    close($sfh);   # empty: this subtest is about the daemon log only
+
+    my %line = (
+        lost     => '[2026-11-17T09:00:01Z INFO  spoton::unified] [spoton/unified] session lost (active=1 playing=1 track=4uLU6hMCjMI75M1A2tKUQC pos=51261)',
+        forced   => '[2026-11-17T09:00:11Z WARN  spoton::unified] [spoton/unified] recovery: Spirc did not leave after the wake-up, forcing the rebuild',
+        retry    => '[2026-11-17T09:00:41Z WARN  spoton::unified] [spoton/unified] recovery: Spirc::new failed (Deadline expired before operation could complete { Spirc::new timed out after 30000 ms }), retry 1/3 in 1 s',
+        held     => '[2026-11-17T09:00:43Z INFO  spoton::unified] [spoton/unified] takeover TrackChanged held back from LMS (same session, cursor Some("4uLU6hMCjMI75M1A2tKUQC"))',
+        takeover => '[2026-11-17T09:00:43Z INFO  spoton::unified] [spoton/unified] recovery: takeover via session-id',
+        done     => '[2026-11-17T09:00:44Z INFO  spoton::unified] [spoton/unified] recovered in 43000 ms (playing=1)',
+        noack    => '[2026-11-17T09:00:50Z WARN  spoton::unified] [spoton/unified] recovery outcome not acknowledged within 6001 ms',
+        other    => '[2026-11-17T09:00:51Z INFO  spoton::unified] [spoton/unified] Event dispatcher respawned after reconnect',
+    );
+    my ($dfh, $daemon_log) = tempfile();
+    print $dfh "$line{$_}\n" for qw(lost forced retry held takeover done noack other);
+    close($dfh);
+
+    my ($exit, $out, $err) = run_perl_tool($extract_run_script,
+        ['02:00:00:5a:11:01', '10:00:00', '10:01:00', '--server-log', $server_log, '--daemon-log', $daemon_log, '--date', '2026-11-17'],
+        SUDO_BIN => $sudo_stub, TZ => 'Europe/Berlin');
+    is($exit, 0, 'extract-run-88-recovery-abnormal: extract-run runs (exit 0)') or diag("stderr: $err");
+
+    my $cat = 'Daemon-Log: phase-88 recovery anchors';
+    like($out, qr/^--- \Q$cat\E[^\n]*\(Anzahl: 7 im Fenster/m,
+        'extract-run-88-recovery-abnormal: the category counts the three ordinary and the four abnormal lines');
+    my ($sec) = $out =~ /^--- \Q$cat\E[^\n]*---\n(.*?)(?=\n---|\z)/ms;
+    $sec //= '';
+    for my $k (qw(lost takeover done)) {
+        ok(index($sec, $line{$k}) >= 0, "extract-run-88-recovery-abnormal: the ordinary anchor '$k' is still printed verbatim");
+    }
+    ok(index($sec, $line{forced}) >= 0, 'extract-run-88-recovery-abnormal: the forced rebuild (Spirc did not leave) is printed');
+    ok(index($sec, $line{retry})  >= 0, 'extract-run-88-recovery-abnormal: the failed / timed-out Spirc::new with its retry is printed');
+    ok(index($sec, $line{held})   >= 0, 'extract-run-88-recovery-abnormal: the takeover announce held back from LMS is printed');
+    ok(index($sec, $line{noack})  >= 0, 'extract-run-88-recovery-abnormal: the unacknowledged recovery outcome is printed');
+    ok(index($sec, $line{other})  <  0, 'extract-run-88-recovery-abnormal: an unrelated helper line stays out of the category');
+    unlike($out, qr/Restzaehler-Selbsttest[^\n]*FEHLGESCHLAGEN/,
+        'extract-run-88-recovery-abnormal: Restzaehler self-test stays silent');
+
+    unlink($server_log, $daemon_log);
+};
+
+# 88-19: the stale cluster guard of the fork (connect/src/spirc.rs) prints one INFO line per ignored push, and the probe
+# build of the same plan prints three DEBUG line families (probe88 push / put / activate). Before the category existed all
+# of them were only counted (architecture rule 4). SYNTHETIC fixture in the unified-log form
+# `[YYYY-MM-DDTHH:MM:SSZ LEVEL target] text`; placeholder ids only. The window is 2026-11-17 10:00:00..10:01:00 local
+# (CET, UTC + 1 h).
+subtest 'extract-run-88-cluster-staleness' => sub {
+    my $stubdir   = tempdir(CLEANUP => 1);
+    my $sudo_stub = write_sudo_passthrough_stub($stubdir);
+    my ($sfh, $server_log) = tempfile();
+    close($sfh);   # empty: this subtest is about the daemon log only
+
+    my %line = (
+        stale    => '[2026-11-17T09:00:01Z INFO  librespot_connect::spirc] stale cluster update ignored (65 ms after activation, registered no)',
+        push     => '[2026-11-17T09:00:02Z DEBUG librespot_connect::spirc] probe88 push: changed 1790000000000 server 1790000000500 now 1790000000600 self 0 own_change 1 active 1',
+        put      => '[2026-11-17T09:00:03Z DEBUG librespot_connect::spirc] probe88 put: changed 1790000000700 server 1790000000800 now 1790000000900 self 1 active 1',
+        activate => '[2026-11-17T09:00:04Z DEBUG librespot_connect::spirc] probe88 activate: now 1790000000100',
+        ordinary => '[2026-11-17T09:00:05Z DEBUG librespot_connect::spirc] cluster update: Ok(DEVICE_STATE_CHANGED) from DEVICE-1, active device: DEVICE-2',
+    );
+    my ($dfh, $daemon_log) = tempfile();
+    print $dfh "$line{$_}\n" for qw(stale push put activate ordinary);
+    close($dfh);
+
+    my ($exit, $out, $err) = run_perl_tool($extract_run_script,
+        ['02:00:00:5a:11:01', '10:00:00', '10:01:00', '--server-log', $server_log, '--daemon-log', $daemon_log, '--date', '2026-11-17'],
+        SUDO_BIN => $sudo_stub, TZ => 'Europe/Berlin');
+    is($exit, 0, 'extract-run-88-cluster-staleness: extract-run runs (exit 0)') or diag("stderr: $err");
+
+    my $cat = 'Daemon-Log: phase-88 cluster staleness';
+    like($out, qr/^--- \Q$cat\E[^\n]*\(Anzahl: 4 im Fenster/m,
+        'extract-run-88-cluster-staleness: the category counts the guard line and the three probe line families');
+    my ($sec) = $out =~ /^--- \Q$cat\E[^\n]*---\n(.*?)(?=\n---|\z)/ms;
+    $sec //= '';
+    for my $k (qw(stale push put activate)) {
+        ok(index($sec, $line{$k}) >= 0, "extract-run-88-cluster-staleness: the '$k' line is printed verbatim");
+    }
+    ok(index($sec, $line{ordinary}) < 0, 'extract-run-88-cluster-staleness: an ordinary cluster update line stays out of the category');
+
+    # second call: empty daemon log -> the empty-block marker, and the title carries none of the pattern literals
+    my ($efh, $empty_log) = tempfile();
+    close($efh);
+    my ($exit2, $out2, $err2) = run_perl_tool($extract_run_script,
+        ['02:00:00:5a:11:01', '10:00:00', '10:01:00', '--server-log', $server_log, '--daemon-log', $empty_log, '--date', '2026-11-17'],
+        SUDO_BIN => $sudo_stub, TZ => 'Europe/Berlin');
+    is($exit2, 0, 'extract-run-88-cluster-staleness: extract-run on an empty daemon log runs (exit 0)') or diag("stderr: $err2");
+    my $n_head = () = $out2 =~ /^--- \Q$cat\E[^\n]* ---$/mg;   # emit_categories prints the title as header and in the marker
+    is($n_head, 1, 'extract-run-88-cluster-staleness: the category block appears once on an empty log');
+    like($out2, qr/\[MUSTER NICHT GEFUNDEN IM FENSTER\] \Q$cat\E/,
+        'extract-run-88-cluster-staleness: an empty window carries the not-found marker');
+    unlike($out2, qr/stale cluster update ignored/,
+        'extract-run-88-cluster-staleness: the title carries none of the literals its pattern matches');
+
+    unlink($server_log, $daemon_log, $empty_log);
+};
+
+# 89-02: the refused-key evidence of phase 89. Daemon side: the key-error lines of the audio-key exchange, the fork's
+# limit marker (89-01, core/src/audio_key.rs) and the Connect pause line (89-01, connect/src/spirc.rs). server.log side:
+# the stop WARN (DaemonManager _onAudioKeyHalt) and the filing INFO line (_fileAudioKeyDenial). Before the categories existed
+# all of them were only counted (architecture rule 4), so the 89-05 rig run could not quote them. SYNTHETIC fixtures, placeholder
+# ids only; window 2026-11-17 10:00:00..10:01:00 local (CET, UTC + 1 h).
+subtest 'extract-run-89-audio-key' => sub {
+    my $stubdir   = tempdir(CLEANUP => 1);
+    my $sudo_stub = write_sudo_passthrough_stub($stubdir);
+
+    my %dl = (
+        code1    => '[2026-11-17T09:00:01Z WARN  librespot_core::audio_key] error audio key 0 1',
+        code2    => '[2026-11-17T09:00:02Z WARN  librespot_core::audio_key] error audio key 0 2',
+        marker   => '[2026-11-17T09:00:03Z WARN  librespot_core::audio_key] Spotify refused audio keys for 5 tracks in a row (code 1), playback is paused',
+        pause    => '[2026-11-17T09:00:04Z WARN  librespot_connect::spirc] paused after 5 tracks with refused audio keys, queue kept',
+        ordinary => '[2026-11-17T09:00:05Z DEBUG librespot_connect::spirc] cluster update: Ok(DEVICE_STATE_CHANGED) from DEVICE-1, active device: DEVICE-2',
+    );
+    my %sl = (
+        stop     => '[26-11-17 10:00:30.1000] Plugins::SpotOn::Unified::DaemonManager::_onAudioKeyHalt (1717) '
+                  . 'SpotOn: player Kitchen stopped after 5 tracks in a row with refused audio keys - the account playing on it cannot play with librespot. Select the Soloist backend in the SpotOn settings.',
+        filed    => '[26-11-17 10:00:31.2000] Plugins::SpotOn::Unified::DaemonManager::_fileAudioKeyDenial (2000) '
+                  . 'SpotOn: audio-key denial on player 02:00:00:86:00:02 filed as guest (zzzz****)',
+        ordinary => '[26-11-17 10:00:32.3000] Plugins::SpotOn::Plugin::_pollStatus (300) status poll finished',
+    );
+    my ($sfh, $server_log) = tempfile();
+    print $sfh "$sl{$_}\n" for qw(stop filed ordinary);
+    close($sfh);
+    my ($dfh, $daemon_log) = tempfile();
+    print $dfh "$dl{$_}\n" for qw(code1 code2 marker pause ordinary);
+    close($dfh);
+
+    my ($exit, $out, $err) = run_perl_tool($extract_run_script,
+        ['02:00:00:86:00:02', '10:00:00', '10:01:00', '--server-log', $server_log, '--daemon-log', $daemon_log, '--date', '2026-11-17'],
+        SUDO_BIN => $sudo_stub, TZ => 'Europe/Berlin');
+    is($exit, 0, 'extract-run-89-audio-key: extract-run runs (exit 0)') or diag("stderr: $err");
+
+    my $dcat = 'Daemon-Log: phase-89 audio key refusals';
+    like($out, qr/^--- \Q$dcat\E[^\n]*\(Anzahl: 4 im Fenster/m,
+        'extract-run-89-audio-key: the daemon category counts both key errors, the limit marker and the Connect pause line');
+    my ($dsec) = $out =~ /^--- \Q$dcat\E[^\n]*---\n(.*?)(?=\n---|\z)/ms;
+    $dsec //= '';
+    for my $k (qw(code1 code2 marker pause)) {
+        ok(index($dsec, $dl{$k}) >= 0, "extract-run-89-audio-key: the '$k' daemon line is printed verbatim");
+    }
+    ok(index($dsec, $dl{ordinary}) < 0, 'extract-run-89-audio-key: an ordinary cluster update line stays out of the daemon category');
+
+    my $scat = 'server.log: phase-89 refused-key stop and attribution';
+    like($out, qr/^--- \Q$scat\E[^\n]*\(Anzahl: 2 im Fenster/m,
+        'extract-run-89-audio-key: the server.log category counts the stop WARN and the filing INFO line');
+    my ($ssec) = $out =~ /^--- \Q$scat\E[^\n]*---\n(.*?)(?=\n---|\z)/ms;
+    $ssec //= '';
+    for my $k (qw(stop filed)) {
+        ok(index($ssec, $sl{$k}) >= 0, "extract-run-89-audio-key: the '$k' server.log line is printed verbatim");
+    }
+    ok(index($ssec, $sl{ordinary}) < 0, 'extract-run-89-audio-key: an ordinary server.log line stays out of the category');
+
+    # empty logs: the not-found marker for both categories, and neither title carries its pattern's literals
+    my ($e1, $empty_srv) = tempfile();
+    close($e1);
+    my ($e2, $empty_dmn) = tempfile();
+    close($e2);
+    my ($exit2, $out2, $err2) = run_perl_tool($extract_run_script,
+        ['02:00:00:86:00:02', '10:00:00', '10:01:00', '--server-log', $empty_srv, '--daemon-log', $empty_dmn, '--date', '2026-11-17'],
+        SUDO_BIN => $sudo_stub, TZ => 'Europe/Berlin');
+    is($exit2, 0, 'extract-run-89-audio-key: extract-run on empty logs runs (exit 0)') or diag("stderr: $err2");
+    like($out2, qr/\[MUSTER NICHT GEFUNDEN IM FENSTER\] \Q$dcat\E/, 'extract-run-89-audio-key: an empty window carries the not-found marker (daemon category)');
+    like($out2, qr/\[MUSTER NICHT GEFUNDEN IM FENSTER\] \Q$scat\E/, 'extract-run-89-audio-key: an empty window carries the not-found marker (server.log category)');
+    unlike($out2, qr/error audio key|refused audio keys for|in a row with refused audio keys|filed as /,
+        'extract-run-89-audio-key: neither title carries the literals its pattern matches');
+
+    unlink($server_log, $daemon_log, $empty_srv, $empty_dmn);
+};
+
+# debug 89-refused-track-plays-silent (2026-11-19): the life of a Browse title request. Daemon side: the helper's request
+# line, the Player load stages in front of a refused-key verdict, the verdict of serve_track_request, the end of the serve task
+# and the helper's answer line -- which is MISSING when the helper answered 200 before the verdict (the second request below:
+# the shape of run 89-05-code1-browse-flac-261119-1222, a helper before 89-09). 89 review IN-02: since 89-09 the helper logs
+# its 200 at debug (`/track/<id>: first audio after <n> ms - 200`, `serve task dropped before any audio (takeover)`); the
+# category prints both (requests four and five). server.log side: the three handleDirectError lines and the newsong
+# line of the plugin watchdog. Before the categories existed all of them were only counted (architecture rule 4). SYNTHETIC
+# fixtures in the shape of that run, placeholder ids only; window 2026-11-17 10:00:00..10:01:00 local (CET, UTC + 1 h).
+subtest 'extract-run-89-browse-answer' => sub {
+    my $stubdir   = tempdir(CLEANUP => 1);
+    my $sudo_stub = write_sudo_passthrough_stub($stubdir);
+
+    my @dl = (
+        [ get1     => '[2026-11-17T09:00:01Z DEBUG spoton::unified] [spoton/unified] GET /track/TRACKAAAAAAAAAAAAAAAAA start_position_ms=0' ],
+        [ loading  => '[2026-11-17T09:00:01Z INFO  librespot_playback::player] Loading <Title A> from <Artist> with Spotify URI <spotify:track:TRACKAAAAAAAAAAAAAAAAA>' ],
+        [ nokey1   => '[2026-11-17T09:00:01Z WARN  librespot_playback::player] Unable to load key, continuing without decryption: Service unavailable { audio key error 0x0001 }' ],
+        [ noread1  => '[2026-11-17T09:00:01Z ERROR librespot_playback::player] Unable to read audio file: Passthrough Decoder Error: No Ogg capture pattern found' ],
+        [ verdict1 => '[2026-11-17T09:00:01Z INFO  spoton::browse] [spoton/browse] track spotify:track:TRACKAAAAAAAAAAAAAAAAA unavailable' ],
+        [ done1    => '[2026-11-17T09:00:01Z DEBUG spoton::unified] [spoton/unified] Browse track completed - mode set to Idle' ],
+        [ answer1  => '[2026-11-17T09:00:01Z INFO  spoton::unified] [spoton/unified] track unavailable after a refused audio key - 404, not counted toward reconnect (audio_key_denials=1)' ],
+        [ get2     => '[2026-11-17T09:00:03Z DEBUG spoton::unified] [spoton/unified] GET /track/TRACKAAAAAAAAAAAAAAAAA start_position_ms=0' ],
+        [ verdict2 => '[2026-11-17T09:00:05Z INFO  spoton::browse] [spoton/browse] track spotify:track:TRACKAAAAAAAAAAAAAAAAA unavailable' ],
+        [ done2    => '[2026-11-17T09:00:05Z DEBUG spoton::unified] [spoton/unified] Browse track completed - mode set to Idle' ],
+        [ get3     => '[2026-11-17T09:00:05Z DEBUG spoton::unified] [spoton/unified] GET /episode/EPISODEBBBBBBBBBBBBBBB start_position_ms=0' ],
+        [ plain404 => '[2026-11-17T09:00:05Z INFO  spoton::unified] [spoton/unified] track unavailable - returning 404 (consecutive_fails=1)' ],
+        [ supersed => '[2026-11-17T09:00:06Z INFO  spoton::unified] [spoton/unified] /track/TRACKAAAAAAAAAAAAAAAAA: superseded - 409, not counted as failure' ],
+        [ ordinary => '[2026-11-17T09:00:07Z DEBUG librespot_core::session] Session strong=6 weak=8' ],
+        [ get4     => '[2026-11-17T09:00:08Z DEBUG spoton::unified] [spoton/unified] GET /track/TRACKCCCCCCCCCCCCCCCCC start_position_ms=0' ],
+        [ first200 => '[2026-11-17T09:00:08Z DEBUG spoton::unified] [spoton/unified] /track/TRACKCCCCCCCCCCCCCCCCC: first audio after 412 ms - 200' ],
+        [ get5     => '[2026-11-17T09:00:09Z DEBUG spoton::unified] [spoton/unified] GET /track/TRACKDDDDDDDDDDDDDDDDD start_position_ms=0' ],
+        [ dropped  => '[2026-11-17T09:00:09Z DEBUG spoton::unified] [spoton/unified] /track/TRACKDDDDDDDDDDDDDDDDD: serve task dropped before any audio (takeover) - 200 with a closed body' ],
+    );
+    my %dl = map { $_->[0] => $_->[1] } @dl;
+    my @sl = (
+        [ retry    => '[26-11-17 10:00:01.4000] Plugins::SpotOn::ProtocolHandler::handleDirectError (456) Browse daemon 404 for http://192.0.2.10:41933/track/TRACKAAAAAAAAAAAAAAAAA - retry 1/3 in 2s' ],
+        [ newsong  => '[26-11-17 10:00:05.0200] Plugins::SpotOn::Plugin::_onNewSongWatchdog (4485) [DIAG] Watchdog: newsong url=spoton://track:TRACKAAAAAAAAAAAAAAAAA duration=275.386s' ],
+        [ prefetch => '[26-11-17 10:00:05.3000] Plugins::SpotOn::ProtocolHandler::handleDirectError (442) Browse daemon 404 for http://192.0.2.10:41933/episode/EPISODEBBBBBBBBBBBBBBB - prefetch context, scheduling skip in 275.386s' ],
+        [ exhaust  => '[26-11-17 10:00:20.0000] Plugins::SpotOn::ProtocolHandler::handleDirectError (465) Browse daemon 404 for http://192.0.2.10:41933/track/TRACKAAAAAAAAAAAAAAAAA - 4 attempts exhausted, skipping to next track' ],
+        [ ordinary => '[26-11-17 10:00:32.3000] Plugins::SpotOn::Backend::Librespot::streamUrl (336) [DIAG] canDirectStream: unified browse url=http://192.0.2.10:41933/track/TRACKAAAAAAAAAAAAAAAAA' ],
+    );
+    my %sl = map { $_->[0] => $_->[1] } @sl;
+    my ($sfh, $server_log) = tempfile();
+    print $sfh "$_->[1]\n" for @sl;
+    close($sfh);
+    my ($dfh, $daemon_log) = tempfile();
+    print $dfh "$_->[1]\n" for @dl;
+    close($dfh);
+
+    my ($exit, $out, $err) = run_perl_tool($extract_run_script,
+        ['02:00:00:86:00:02', '10:00:00', '10:01:00', '--server-log', $server_log, '--daemon-log', $daemon_log, '--date', '2026-11-17'],
+        SUDO_BIN => $sudo_stub, TZ => 'Europe/Berlin');
+    is($exit, 0, 'extract-run-89-browse-answer: extract-run runs (exit 0)') or diag("stderr: $err");
+
+    my $dcat = 'Daemon-Log: phase-89 Browse title request';
+    like($out, qr/^--- \Q$dcat\E[^\n]*\(Anzahl: 16 im Fenster/m,
+        'extract-run-89-browse-answer: the daemon category counts request, load stage, verdict, end and answer lines');
+    my ($dsec) = $out =~ /^--- \Q$dcat\E[^\n]*---\n(.*?)(?=\n---|\z)/ms;
+    $dsec //= '';
+    for my $k (qw(get1 nokey1 noread1 verdict1 done1 answer1 get2 verdict2 done2 get3 plain404 supersed get4 first200 get5 dropped)) {
+        ok(index($dsec, $dl{$k}) >= 0, "extract-run-89-browse-answer: the '$k' daemon line is printed verbatim");
+    }
+    for my $k (qw(loading ordinary)) {
+        ok(index($dsec, $dl{$k}) < 0, "extract-run-89-browse-answer: the '$k' daemon line stays out of the category");
+    }
+    # the reading the category exists for: a request whose verdict has no answer line before the next request line
+    my @kinds = map { /\] GET \// ? 'G' : /\[spoton\/browse\] track / ? 'V' : /\[spoton\/unified\] track unavailable/ ? 'A' : /first audio after|serve task dropped before any audio/ ? 'D' : () } split /\n/, $dsec;
+    is(join('', @kinds), 'GVAGVGAGDGD',
+        'extract-run-89-browse-answer: request 2 reads as verdict without an answer line (answered before the verdict), requests 4 and 5 carry the debug-level 200');
+
+    my $scat = 'server.log: phase-89 Browse stream error handling';
+    like($out, qr/^--- \Q$scat\E[^\n]*\(Anzahl: 3 im Fenster/m,
+        'extract-run-89-browse-answer: the server.log category counts the retry, the deferred-skip and the exhausted line');
+    my ($ssec) = $out =~ /^--- \Q$scat\E[^\n]*---\n(.*?)(?=\n---|\z)/ms;
+    $ssec //= '';
+    for my $k (qw(retry prefetch exhaust)) {
+        ok(index($ssec, $sl{$k}) >= 0, "extract-run-89-browse-answer: the '$k' server.log line is printed verbatim");
+    }
+    for my $k (qw(newsong ordinary)) {
+        ok(index($ssec, $sl{$k}) < 0, "extract-run-89-browse-answer: the '$k' server.log line stays out of the error-handling category");
+    }
+
+    my $ncat = 'server.log: title announced as started';
+    like($out, qr/^--- \Q$ncat\E[^\n]*\(Anzahl: 1 im Fenster/m,
+        'extract-run-89-browse-answer: the song-start category counts the one watchdog line');
+    my ($nsec) = $out =~ /^--- \Q$ncat\E[^\n]*---\n(.*?)(?=\n---|\z)/ms;
+    $nsec //= '';
+    ok(index($nsec, $sl{newsong}) >= 0, 'extract-run-89-browse-answer: the newsong line is printed verbatim');
+    ok(index($nsec, $sl{retry}) < 0, 'extract-run-89-browse-answer: a handleDirectError line stays out of the song-start category');
+
+    # empty logs: the not-found marker for the three categories, and no title carries its pattern's literals
+    my ($e1, $empty_srv) = tempfile();
+    close($e1);
+    my ($e2, $empty_dmn) = tempfile();
+    close($e2);
+    my ($exit2, $out2, $err2) = run_perl_tool($extract_run_script,
+        ['02:00:00:86:00:02', '10:00:00', '10:01:00', '--server-log', $empty_srv, '--daemon-log', $empty_dmn, '--date', '2026-11-17'],
+        SUDO_BIN => $sudo_stub, TZ => 'Europe/Berlin');
+    is($exit2, 0, 'extract-run-89-browse-answer: extract-run on empty logs runs (exit 0)') or diag("stderr: $err2");
+    for my $c ($dcat, $scat, $ncat) {
+        like($out2, qr/\[MUSTER NICHT GEFUNDEN IM FENSTER\] \Q$c\E/, "extract-run-89-browse-answer: an empty window carries the not-found marker ($c)");
+    }
+    unlike($out2, qr/Browse daemon 404 for |Watchdog: newsong url=|GET \/track\/|GET \/episode\/|Unable to load key|Unable to read audio file|track \S+ unavailable|Browse track completed|track unavailable|superseded/,
+        'extract-run-89-browse-answer: no title carries the literals its pattern matches');
+
+    unlink($server_log, $daemon_log, $empty_srv, $empty_dmn);
+};
+
+# debug 89-connect-refused-no-skip (2026-11-19): a Connect handover whose first title cannot be played. Two daemon
+# categories: the skip chain (context setup after the handover, the Player's load and give-up, Spirc's mark step, the event
+# dispatch failure, the reported play status) and the device pushes (which device Spotify names as the playing one). Before
+# the categories existed all of these lines were only counted (architecture rule 4), so the run
+# 89-05-code1-connect-flac-261119-1448 could not quote the order "give-up before the context". SYNTHETIC fixture in the
+# shape of that run (the stalled handover) followed by the shape of a working skip, placeholder ids only; window
+# 2026-11-17 10:00:00..10:01:00 local (CET, UTC + 1 h).
+subtest 'extract-run-89-connect-skip-chain' => sub {
+    my $stubdir   = tempdir(CLEANUP => 1);
+    my $sudo_stub = write_sudo_passthrough_stub($stubdir);
+
+    my @chain = (
+        [warn      => "[2026-11-17T09:00:01Z WARN  librespot_connect::state::context] couldn't load context info because: context is not available. type: Default"],
+        [initial   => '[2026-11-17T09:00:01Z DEBUG librespot_connect::spirc] found initial track <spotify:track:TRACK1>'],
+        [status    => '[2026-11-17T09:00:01Z DEBUG librespot_connect::state] updated connect play status playing: true, paused: false, buffering: true'],
+        [loading   => '[2026-11-17T09:00:01Z INFO  librespot_playback::player] Loading <Title One> from <Artist> with Spotify URI <spotify:track:TRACK1>'],
+        [resolve   => '[2026-11-17T09:00:01Z DEBUG librespot_core::http_client] Requesting https://example-spclient.spotify.com:443/context-resolve/v1/spotify:album:ALBUM1'],
+        [decoder   => '[2026-11-17T09:00:02Z INFO  librespot_playback::decoder::passthrough_decoder] Starting passthrough track with serial 1'],
+        [giveup    => '[2026-11-17T09:00:02Z ERROR librespot_playback::player] Skipping to next track, unable to load track <SpotifyUri("spotify:track:TRACK1")>: ()'],
+        [mark      => '[2026-11-17T09:00:02Z DEBUG librespot_connect::state::tracks] marking spotify:track:TRACK1 as unavailable'],
+        [dispatch  => '[2026-11-17T09:00:02Z ERROR librespot_connect::spirc] could not dispatch player event: Invalid state { context is not available. type: Default }'],
+        [next_ctx  => '[2026-11-17T09:00:02Z DEBUG librespot_connect::spirc] handling next context Some("spotify:album:ALBUM1")'],
+        [updated   => '[2026-11-17T09:00:02Z DEBUG librespot_connect::state::context] updated context Default to <Some("spotify:album:ALBUM1")> (13 tracks)'],
+        [finishing => '[2026-11-17T09:00:02Z DEBUG librespot_connect::context_resolver] last item of type <Default>, finishing state setup'],
+        [active    => '[2026-11-17T09:00:02Z DEBUG librespot_connect::state::transfer] active track is <spotify:track:TRACK1> with index Ok(0) in Default context, has 13 tracks'],
+        [set_track => '[2026-11-17T09:00:02Z DEBUG librespot_connect::state::tracks] set track to: spotify:track:TRACK1 at 0 of 13 tracks'],
+        [fillup    => '[2026-11-17T09:00:02Z DEBUG librespot_connect::state::tracks] finished filling up next_tracks (12)'],
+        [no_more   => '[2026-11-17T09:00:09Z INFO  librespot_connect::spirc] Not playing next track because there are no more tracks left in queue.'],
+    );
+    my %push = (
+        cluster => '[2026-11-17T09:00:03Z DEBUG librespot_connect::spirc] cluster update: Ok(DEVICE_STATE_CHANGED) from DEVICE-1, active device: DEVICE-2',
+        session => '[2026-11-17T09:00:03Z INFO  librespot_connect::spirc] session update: <Ok(NEW_SESSION)> for self, current session_id S1, new session_id S2',
+    );
+    my %other = (
+        stale    => '[2026-11-17T09:00:04Z INFO  librespot_connect::spirc] stale cluster update ignored (65 ms after activation, registered no)',
+        takeover => '[2026-11-17T09:00:04Z INFO  librespot_connect::spirc] active device is <DEVICE-1> with session <S1>',
+        position => '[2026-11-17T09:00:05Z DEBUG librespot_connect::state] update position to 0:06 at 09:00:05.143',
+        put      => '[2026-11-17T09:00:05Z DEBUG librespot_core::http_client] Requesting https://example-spclient.spotify.com:443/connect-state/v1/devices/DEVICE-2?product=0',
+        wifi     => '[2026-11-17T09:00:05Z DEBUG librespot_connect::spirc] Received SessionUpdate::WIFI_BROADCAST_CHANGED',
+    );
+    my ($sfh, $server_log) = tempfile();
+    close($sfh);
+    my ($dfh, $daemon_log) = tempfile();
+    print $dfh "$_->[1]\n" for @chain;
+    print $dfh "$push{$_}\n" for qw(cluster session);
+    print $dfh "$other{$_}\n" for qw(stale takeover position put wifi);
+    close($dfh);
+
+    my ($exit, $out, $err) = run_perl_tool($extract_run_script,
+        ['02:00:00:86:00:02', '10:00:00', '10:01:00', '--server-log', $server_log, '--daemon-log', $daemon_log, '--date', '2026-11-17'],
+        SUDO_BIN => $sudo_stub, TZ => 'Europe/Berlin');
+    is($exit, 0, 'extract-run-89-connect-skip-chain: extract-run runs (exit 0)') or diag("stderr: $err");
+
+    my $ccat = 'Daemon-Log: phase-89 Connect skip chain';
+    my $n    = scalar @chain;
+    like($out, qr/^--- \Q$ccat\E[^\n]*\(Anzahl: $n im Fenster/m,
+        "extract-run-89-connect-skip-chain: the chain category counts all $n chain lines");
+    my ($csec) = $out =~ /^--- \Q$ccat\E[^\n]*---\n(.*?)(?=\n---|\z)/ms;
+    $csec //= '';
+    for my $c (@chain) {
+        ok(index($csec, $c->[1]) >= 0, "extract-run-89-connect-skip-chain: the '$c->[0]' line is printed verbatim");
+    }
+    for my $k (qw(cluster session)) {
+        ok(index($csec, $push{$k}) < 0, "extract-run-89-connect-skip-chain: the '$k' push line stays out of the chain category");
+    }
+    for my $k (qw(stale takeover position put wifi)) {
+        ok(index($csec, $other{$k}) < 0, "extract-run-89-connect-skip-chain: the '$k' line stays out of the chain category");
+    }
+    # the reading rule of the category: the mark step of the stalled handover is followed by the dispatch failure, with no
+    # fill-up line and no new load in between
+    my $i_mark = index($csec, $chain[7][1]);
+    my $i_fail = index($csec, $chain[8][1]);
+    my $i_fill = index($csec, $chain[14][1]);
+    ok($i_mark >= 0 && $i_fail > $i_mark && $i_fill > $i_fail,
+        'extract-run-89-connect-skip-chain: file order is kept (mark, dispatch failure, only then the fill-up of the arriving context)');
+
+    my $pcat = 'Daemon-Log: phase-89 Connect device pushes';
+    like($out, qr/^--- \Q$pcat\E[^\n]*\(Anzahl: 2 im Fenster/m,
+        'extract-run-89-connect-skip-chain: the push category counts the cluster line and the session line');
+    my ($psec) = $out =~ /^--- \Q$pcat\E[^\n]*---\n(.*?)(?=\n---|\z)/ms;
+    $psec //= '';
+    for my $k (qw(cluster session)) {
+        ok(index($psec, $push{$k}) >= 0, "extract-run-89-connect-skip-chain: the '$k' push line is printed verbatim");
+    }
+    for my $k (qw(stale takeover position put wifi)) {
+        ok(index($psec, $other{$k}) < 0, "extract-run-89-connect-skip-chain: the '$k' line stays out of the push category");
+    }
+
+    # empty logs: the not-found marker for both categories, and neither title carries its pattern's literals
+    my ($e1, $empty_srv) = tempfile();
+    close($e1);
+    my ($e2, $empty_dmn) = tempfile();
+    close($e2);
+    my ($exit2, $out2, $err2) = run_perl_tool($extract_run_script,
+        ['02:00:00:86:00:02', '10:00:00', '10:01:00', '--server-log', $empty_srv, '--daemon-log', $empty_dmn, '--date', '2026-11-17'],
+        SUDO_BIN => $sudo_stub, TZ => 'Europe/Berlin');
+    is($exit2, 0, 'extract-run-89-connect-skip-chain: extract-run on empty logs runs (exit 0)') or diag("stderr: $err2");
+    for my $c ($ccat, $pcat) {
+        like($out2, qr/\[MUSTER NICHT GEFUNDEN IM FENSTER\] \Q$c\E/, "extract-run-89-connect-skip-chain: an empty window carries the not-found marker ($c)");
+    }
+    unlike($out2, qr/couldn't load context info|found initial track|context-resolve\/v1\/|handling next context|updated context|finishing state setup|active track is|set track to|finished filling up|Loading <|Starting passthrough|Skipping to next track|as unavailable|could not dispatch|Not playing next track|updated connect play status|cluster update: |session update: /,
+        'extract-run-89-connect-skip-chain: neither title carries the literals its pattern matches');
+
+    unlink($server_log, $daemon_log, $empty_srv, $empty_dmn);
+};
+
 my $ctl_cat  = 'server.log: librespot control command sent ([DIAG] control_cmd_sent; Backend/Librespot.pm _sendControlCommand, 79-28 D-23)';
 my $ctl_line = '[26-10-09 21:09:28.0005] Plugins::SpotOn::Backend::Librespot::_sendControlCommand (337) '
              . '[DIAG] control_cmd_sent: mac=02:00:00:5a:11:01 endpoint=/control/seek body={"position_ms":42000}';

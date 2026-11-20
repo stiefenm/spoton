@@ -63,11 +63,25 @@ On other distributions, install the package that provides the library named in t
 
 Copy the key again from Spotify (without spaces or line breaks) and save once more. As long as no key is stored, the Soloist fields say "No Spotify Soloist API key configured - Soloist cannot start without one.". Get the key with your Spotify Premium account as described in [Spotify's Soloist documentation](https://developer.spotify.com/documentation/soloist/concepts/authentication).
 
-**Spotify refuses audio keys (librespot).** For some accounts Spotify refuses the audio keys librespot asks for. Playback then cannot work with librespot for that account, and the SpotOn status page shows:
+**Spotify refuses audio keys (librespot).** Every track Spotify delivers is encrypted, and a player needs the matching key to play it. librespot, the library behind the default backend, asks Spotify for that key with an older kind of request. Spotify has replaced that with a newer copy-protection scheme (DRM) and moves accounts over in groups. Once an account is on the new scheme, Spotify no longer answers the old request for it: the key is refused from the first track on, for every track, whatever the login method, the player or the librespot version. The account itself is fine: Spotify's own apps and certified devices use the new scheme and play.
 
-> Spotify refuses audio keys for account abcd**** with the librespot backend (AesKeyError 0x0001) - playback cannot work for this account. Select the Soloist backend in the SpotOn settings.
+Spotify decides per account which ones are moved. Accounts created recently are on the new scheme from the start, which is why it is typically newer accounts that fail. Older accounts are moved group by group, so an old account can be hit as well, and accounts that play today may follow; the switch goes one way only. It is per account, not per plan: in one family plan single members can be refused while the others, including the plan owner, keep playing, and adding or removing a member changes nothing for the rest. How the player was paired does not matter either. SpotOn cannot change this for the librespot backend: the new scheme is not documented, and librespot cannot use it without reverse engineering and shipping secrets taken from Spotify's apps.
 
-The way out is the Soloist backend (Linux with glibc 2.38 or newer, own Spotify Soloist API key). Rapid skipping can also cause a short throttling warning ("Spotify is throttling audio keys ..."); that one recovers within a few minutes by itself.
+What SpotOn does: after 5 titles in a row that Spotify refused, it stops (Browse) or pauses (Spotify Connect, queue and session are kept) instead of skipping through the whole queue. The message reads `Spotify: this account cannot play here` and `See SpotOn settings`. Where you see it depends on how you control the player:
+
+- Material Skin: a notification at the top of the window for about 15 seconds, only in a browser where this player is the selected player.
+- A Squeezebox with a screen: on its screen.
+- Default skin with a player without a screen, for example squeezelite: no message anywhere. Check the SpotOn status page, which lists the refusal (see below).
+
+Pressing play tries once more; if that title is refused again, SpotOn stops again at once. On a Spotify Connect player, resume playback from the Spotify app: Play on the LMS side does nothing there. The SpotOn status page shows:
+
+> Account abcd**** cannot play with librespot: Spotify refuses its audio keys. Select the Soloist backend in the SpotOn settings. (AesKeyError 0x0001)
+
+If someone else's Spotify app took over the player (for example a family member), the status page names that account masked and the player, shows the same advice and link as its own row, and does not mark the account that set up SpotOn. That entry and its advice row leave the status page one hour after the last refused title on that player (each refusal starts the hour again).
+
+What to do: on Linux with glibc 2.38 or newer and your own Spotify Soloist API key, select the Soloist backend in the SpotOn settings. On macOS or Windows the status page says: There is no way out on this system (macOS or Windows). On a Linux server this account plays with the Soloist backend, for example LMS in Docker, in a VM or on a small Linux machine. On a Linux system where Soloist cannot run, the status page says that this account cannot play with librespot and that Soloist is not available on this system.
+
+Rapid skipping can also cause a short throttling warning ("Spotify is throttling audio keys ..."); that one is a different thing and recovers within a few minutes by itself.
 
 ## Soloist: pairing a player (tap in the Spotify app)
 

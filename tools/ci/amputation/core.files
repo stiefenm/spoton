@@ -11,10 +11,13 @@ Plugins/SpotOn/API/SpClient.pm
 Plugins/SpotOn/API/TokenManager.pm
 Plugins/SpotOn/Backend.pm
 Plugins/SpotOn/Connect.pm
+Plugins/SpotOn/Diagnostics.pm
 Plugins/SpotOn/DisplayFormat.pm
 Plugins/SpotOn/DontStopTheMusic.pm
 Plugins/SpotOn/Helper.pm
 Plugins/SpotOn/HomeExtras.pm
+Plugins/SpotOn/MenuCopy.pm
+Plugins/SpotOn/PlayerMessage.pm
 Plugins/SpotOn/Plugin.pm
 Plugins/SpotOn/ProtocolHandler.pm
 Plugins/SpotOn/Settings.pm

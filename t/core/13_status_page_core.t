@@ -427,6 +427,12 @@ sub helperInstances { return @HELPERS }
 # stay undef/null for a helper the tick has never touched).
 sub soloistHealthFor  { return undef }
 sub crashStateSnapshot { return undef }
+# 89-02: the audio-key advice of the status row (the real one is DaemonManager::audioKeyAdvice) and a
+# controllable backendName; unset, backendName dies as the stub always did (Status.pm then reads the raw state).
+our $ADVICE  = 'soloist';
+our $BACKEND = undef;
+sub audioKeyAdvice { return $ADVICE }
+sub backendName    { die "stub: no backend\n" unless defined $BACKEND; return $BACKEND }
 # 74b-03 (D-09): the status data handler re-asserts the standing conditions
 # before it builds errors[]. Counter plus an order probe: the first call
 # records an entry the response must already contain.
@@ -661,7 +667,7 @@ require Plugins::SpotOn::Plugin;
 # Tests
 # ============================================================
 
-plan tests => 91;   # 261111-j57: +2 (capped ok run, skipped 0 keeps the partial text); 261110-k1b: +12 (Library metadata row: 7 collectAll cells, 4 node cells, 1 render order);  79-81 D-54: +1 (Audio Keys not_used branch); 79-63 R1: +1 (Status.pm names no backend-side module); 79-60: +7 (Connect row render, English labels, librespot match); 74b WR-01: +3 hasError level cells; 84-09: 57 before the split; 21 Soloist cells moved to t/soloist/13_status_page_soloist.t
+plan tests => 119;   # 89 review IN-01: +1 (docs anchor against the TROUBLESHOOTING.md slug, unread AUDIOKEY_ constants); 89-02: +27 (audio-key advice rows: 11 collect and parity cells, 16 node render cells); 261111-j57: +2 (capped ok run, skipped 0 keeps the partial text); 261110-k1b: +12 (Library metadata row: 7 collectAll cells, 4 node cells, 1 render order);  79-81 D-54: +1 (Audio Keys not_used branch); 79-63 R1: +1 (Status.pm names no backend-side module); 79-60: +7 (Connect row render, English labels, librespot match); 74b WR-01: +3 hasError level cells; 84-09: 57 before the split; 21 Soloist cells moved to t/soloist/13_status_page_soloist.t
 
 # Test 1: Status.pm compiles
 require_ok('Plugins::SpotOn::Status');
@@ -883,7 +889,9 @@ sub extract_js_function {
 
 sub run_page_render {
     my ($fn, @payloads) = @_;
-    my $fns = join "\n", map { extract_js_function($page_js, $_) } qw(val createMetricRow formatRelTime formatUptime), $fn;
+    # 89-02: createAudioKeyAdviceRow joins the extracted functions once the page defines it
+    my @helpers = ('val', 'createMetricRow', 'formatRelTime', 'formatUptime', ($page_js =~ /\bfunction\s+createAudioKeyAdviceRow\s*\(/ ? ('createAudioKeyAdviceRow') : ()));
+    my $fns = join "\n", map { extract_js_function($page_js, $_) } @helpers, $fn;
     my $json = JSON::PP->new->canonical->encode(\@payloads);
     my $harness = <<"NODE";
 function El(tag) { return { tag: tag, className: '', textContent: '', children: [], appendChild: function(c) { this.children.push(c); return c; } }; }
@@ -900,7 +908,11 @@ var out = payloads.map(function(p) {
     var rows = [];
     Object.keys(bodies).forEach(function(id) {
         bodies[id].children.forEach(function(r) {
-            if (r.children.length === 2) rows.push([r.children[0].textContent, r.children[1].textContent, r.children[1].className]);
+            if ((r.className || '').indexOf('audiokey-advice') >= 0 && r.children.length === 2) {
+                var lk = r.children[1];
+                rows.push([r.children[0].textContent, lk.textContent, lk.className, 'ADVICE', lk.href, lk.target, lk.rel, r.className]);
+            }
+            else if (r.children.length === 2) rows.push([r.children[0].textContent, r.children[1].textContent, r.children[1].className]);
             else rows.push([r.children.length ? r.children[0].textContent : '', '', '']);
         });
     });
@@ -1135,6 +1147,118 @@ SKIP: {
     is_deeply(\@got, [ [ 'Not used (Soloist)', 'metric-value dot-unknown' ], [ 'Denied', 'metric-value dot-dead' ], [ 'Throttled', 'metric-value dot-warn' ], [ 'OK', 'metric-value dot-alive' ] ],
         "D54-B6 (D-54, GH #188): status.html maps audioKey.state not_used to 'Not used (Soloist)' / dot-unknown, denied/throttled/ok unchanged")
         or diag(JSON::PP->new->canonical->encode(\@got));
+}
+
+# 89-02 (D-11a, ACC-03): the platform advice and the docs link of a refused audio key stand in their OWN rows of the
+# Auth Health card (never only inside errors[], where status.html cuts the text at 80 characters). Collect side:
+# audioKey.advice under a denied state or a live guest entry, audioKey.guests = the players with a live
+# spoton_audiokey_guest_<mac> key (the player name only, never the mac).
+{
+    my $prefs = Slim::Utils::Prefs::preferences('plugin.spoton');
+    $prefs->set(accounts => { fixtureAcct1 => {} });
+    my $cache = Slim::Utils::Cache->new;
+    my $gmac  = '02:00:00:00:89:01';
+    my $DMS   = 'Plugins::SpotOn::Unified::DaemonManager';
+    my @adv   = ('soloist', 'linux_server', 'unavailable');
+    my %TEXT  = (
+        soloist      => 'Select the Soloist backend in the SpotOn settings.',
+        linux_server => 'There is no way out on this system (macOS or Windows). On a Linux server this account plays with the Soloist backend, for example LMS in Docker, in a VM or on a small Linux machine.',
+        unavailable  => 'Soloist is not available on this system.',
+    );
+    my $URL = 'https://github.com/stiefenm/spoton/blob/main/TROUBLESHOOTING.md#key-refused-spotify-soloist-api-key-not-saved-or-spotify-refuses-audio-keys';
+
+    require Plugins::SpotOn::Unified::Daemon;
+    local @Plugins::SpotOn::Unified::DaemonManager::HELPERS = (
+        Plugins::SpotOn::Unified::Daemon->new(mac => $gmac, alive => 1, pid => 89, uptime => 5, accountId => 'fixtureAcct1'),
+    );
+    no warnings 'redefine';
+    local *Test::FakeStatusClient::name = sub { return 'Kitchen' };
+    local $Plugins::SpotOn::Unified::DaemonManager::BACKEND = 'librespot';
+    my $collect = sub { return (eval { Plugins::SpotOn::Status::_collectAuthHealth('fixtureAcct1') } || {})->{audioKey} || {} };
+
+    $cache->remove("spoton_audiokey_guest_$gmac");
+    $cache->set('spoton_audiokey_state_fixtureAcct1', 'denied');
+    my @got;
+    for my $a (@adv) {
+        local $Plugins::SpotOn::Unified::DaemonManager::ADVICE = $a;
+        push @got, $collect->()->{advice} // '';
+    }
+    is_deeply(\@got, \@adv, '89-02 collect: a denied state carries audioKey.advice from DaemonManager->audioKeyAdvice (soloist, linux_server, unavailable)');
+
+    $cache->remove('spoton_audiokey_state_fixtureAcct1');
+    my $okk = $collect->();
+    ok(!exists $okk->{advice} && !exists $okk->{guests}, '89-02 collect: state ok and no guest key -> no advice key and no guests key');
+
+    $cache->set("spoton_audiokey_guest_$gmac", 'denied');
+    my $g = $collect->();
+    is_deeply($g->{guests}, [ { player => 'Kitchen' } ], '89-02 collect: a live guest key lists the player by name under audioKey.guests');
+    is($g->{advice}, 'soloist', '89-02 collect: a live guest key brings audioKey.advice with it');
+    is($g->{state}, 'ok', '89-02 collect: the paired state of a guest-only account stays ok');
+    unlike(JSON::PP->new->canonical->encode($g), qr/\Q$gmac\E|02:00:00/, '89-02 collect: no mac string anywhere in the audioKey hash');
+
+    {
+        local $Plugins::SpotOn::Unified::DaemonManager::BACKEND = 'soloist';
+        my $s = $collect->();
+        ok(!exists $s->{guests} && !exists $s->{advice} && $s->{state} eq 'not_used', '89-02 collect: under a non-librespot backend a guest key shows neither guests nor advice');
+    }
+    $cache->remove("spoton_audiokey_guest_$gmac");
+
+    # The three advice sentences and the docs URL: status.html and DaemonManager.pm carry them character for character.
+    my $dm_src = do { open(my $fh, '<:raw', "$project_dir/Plugins/SpotOn/Unified/DaemonManager.pm") or die "DaemonManager.pm: $!"; local $/; <$fh> };
+    for my $a (@adv) {
+        ok(index($page_js, $TEXT{$a}) >= 0 && index($dm_src, $TEXT{$a}) >= 0, "89-02 parity: the '$a' advice sentence is the same in status.html and DaemonManager.pm");
+    }
+    # 89 review IN-01: status.html is the one place that carries the docs URL, and
+    # its anchor must be the GitHub slug of a TROUBLESHOOTING.md heading, so a
+    # heading rename fails here. DaemonManager.pm keeps no unread copy of it.
+    my $ts = do { open(my $fh, '<:encoding(UTF-8)', "$project_dir/TROUBLESHOOTING.md") or die "TROUBLESHOOTING.md: $!"; local $/; <$fh> };
+    my %slugs = map { my $h = lc $_; $h =~ s/[^\w\- ]//g; $h =~ s/ /-/g; ($h => 1) } ($ts =~ /^#{1,6}[ \t]+(.+?)[ \t]*\r?$/mg);
+    my ($anchor) = $page_js =~ m{link\.href\s*=\s*'https://github\.com/stiefenm/spoton/blob/main/TROUBLESHOOTING\.md#([^']+)'};
+    ok(index($page_js, $URL) >= 0 && defined $anchor && $slugs{$anchor}, '89 review IN-01: the status.html docs anchor is the slug of a TROUBLESHOOTING.md heading');
+    my @unread = grep { my $c = $_; my $n = () = $dm_src =~ /\b\Q$c\E\b/g; $n < 2 } ($dm_src =~ /^use constant (AUDIOKEY_\w+)/mg);
+    is_deeply(\@unread, [], '89 review IN-01: every AUDIOKEY_ constant of DaemonManager.pm is read there');
+
+    # Render side
+    SKIP: {
+        skip 'node unavailable (Test 28 reported it)', 16 unless $NODE;
+        my $acct = sub { my ($ak) = @_; return { authHealth => { acctG => { login => {}, playback => {}, connect => {}, audioKey => $ak } } } };
+        my $r = eval { run_page_render('renderAuthHealth',
+            (map { $acct->({ state => 'denied', advice => $_ }) } @adv),                        # 0..2
+            $acct->({ state => 'ok', advice => 'soloist' }),                                    # 3
+            $acct->({ state => 'denied' }),                                                     # 4
+            $acct->({ state => 'denied', advice => 'bogus' }),                                  # 5
+            $acct->({ state => 'ok', advice => 'soloist', guests => [ { player => 'Kitchen' } ] }),    # 6
+            $acct->({ state => 'denied', advice => 'linux_server', guests => [ { player => 'Kitchen' } ] }),   # 7
+            $acct->({ state => 'ok', guests => [ { player => 'Kitchen' } ] }),                  # 8
+            $acct->({ state => 'ok', advice => 'unavailable', guests => [ { player => '' } ] }),   # 9
+        ) } || do { diag("renderAuthHealth 89-02: $@"); [ map { [] } 1 .. 10 ] };
+        my $adv_rows = sub { return [ grep { @$_ >= 8 } @{ $_[0] } ] };
+
+        for my $i (0 .. 2) {
+            my $rows = $r->[$i];
+            my ($ak) = grep { $rows->[$_][0] eq 'Audio Keys' } 0 .. $#$rows;
+            my $a = $adv_rows->($rows);
+            is(scalar(@$a) . '/' . (defined $ak && $rows->[$ak + 1] && @{ $rows->[$ak + 1] } >= 8 ? 'after' : 'elsewhere'), '1/after',
+                "89-02 render: denied + advice '$adv[$i]' -> one advice row, directly after the Audio Keys row");
+            is_deeply([ map { $a->[0][$_] // '' } (0, 1, 4, 5, 6) ], [ $TEXT{ $adv[$i] }, 'What this means', $URL, '_blank', 'noopener noreferrer' ],
+                "89-02 render: the '$adv[$i]' advice row carries the sentence and a real link (href, target _blank, rel noopener noreferrer)");
+        }
+        is(scalar(@{ $adv_rows->($r->[3]) }), 0, '89-02 render: state ok with advice -> no advice row');
+        is(scalar(@{ $adv_rows->($r->[4]) }), 0, '89-02 render: denied without advice -> no advice row');
+        is(scalar(@{ $adv_rows->($r->[5]) }), 0, '89-02 render: denied with an unknown advice value -> no advice row');
+
+        my $g1 = $adv_rows->($r->[6]);
+        is(scalar(@$g1), 1, '89-02 render guest: state ok + one guest -> exactly one advice row');
+        is_deeply([ map { $g1->[0][$_] // '' } (0, 1, 4) ], [ 'Player Kitchen: ' . $TEXT{soloist}, 'What this means', $URL ],
+            '89-02 render guest: the row reads "Player <name>: <ADVICE>" with the docs link');
+        like($g1->[0][7] // '', qr/audiokey-advice--guest/, '89-02 render guest: the row carries the guest class');
+        my $g2 = $adv_rows->($r->[7]);
+        is(scalar(@$g2), 2, '89-02 render guest: denied + one guest -> two advice rows');
+        is_deeply([ $g2->[0][0], $g2->[1][0] ], [ $TEXT{linux_server}, 'Player Kitchen: ' . $TEXT{linux_server} ], '89-02 render guest: the paired row first, then the guest row');
+        is(scalar(@{ $adv_rows->($r->[8]) }), 0, '89-02 render guest: guests without an advice value -> no advice row');
+        my $g4 = $adv_rows->($r->[9]);
+        is($g4->[0][0] // '', $TEXT{unavailable}, '89-02 render guest: an empty player name shows the advice sentence alone');
+    }
 }
 
 # 261110-k1b Task 3 (GH #200): the passive "Library metadata" row. SpClient->libraryMetaStatus (seven plain keys, no

@@ -335,8 +335,10 @@ sub reset_state {
             seekdata   => $a{seekdata},
             startOffset => undef,
             duration   => undef,
+            streamUrl  => $a{streamUrl},
         }, $class;
     }
+    sub streamUrl   { my $s = shift; $s->{streamUrl} = shift if @_; return $s->{streamUrl}; }
     sub master      { return $_[0]->{client}; }
     sub track       { return $_[0]->{track}; }
     sub currentTrack { return $_[0]->{track}; }
@@ -582,6 +584,53 @@ sub reset_state {
     my $r2 = $pkg->new({ url => 'spoton://connect-99', client => $client });
     ok(!defined $r2, 'new(): Connect URL with no alive daemon -> undef');
     is(scalar(@Slim::Player::Protocols::HTTP::NEW_ARGS), 0, 'new(): base class HTTP->new is not called when the daemon is missing');
+}
+
+# ------------------------------------------------------------
+# 88-06 (D-03 Browse repair, GH #223): a translated Connect entry
+# (getNextTrack set song->streamUrl to spoton://track:ID) must be streamed
+# from the helper's /track/<id> endpoint, never from the dead /stream relay.
+# ------------------------------------------------------------
+{
+    reset_state();
+    my $client = MockClient->new();
+    $Plugins::SpotOn::Unified::DaemonManager::HELPER = MockHelper->new(port => 4242);
+
+    my $tr = MockSong->new(client => $client, track => MockTrack->new(url => 'spoton://connect-5'),
+                           streamUrl => 'spoton://track:ID123');
+    $pkg->new({ url => 'spoton://connect-5', client => $client, song => $tr });
+    is($Slim::Player::Protocols::HTTP::NEW_ARGS[-1]{url}, 'http://127.0.0.1:4242/track/ID123',
+        'GH223-N1: new() of a translated connect-* entry builds the /track/<id> Browse URL, never the /stream relay');
+
+    @Slim::Player::Protocols::HTTP::NEW_ARGS = ();
+    my $ep = MockSong->new(client => $client, track => MockTrack->new(url => 'spoton://connect-5'),
+                           streamUrl => 'spoton://episode:EP9');
+    $pkg->new({ url => 'spoton://connect-5', client => $client, song => $ep });
+    is($Slim::Player::Protocols::HTTP::NEW_ARGS[-1]{url}, 'http://127.0.0.1:4242/episode/EP9',
+        'GH223-N1: a translated episode entry builds /episode/<id>');
+
+    @Slim::Player::Protocols::HTTP::NEW_ARGS = ();
+    my $live = MockSong->new(client => $client, track => MockTrack->new(url => 'spoton://connect-5'));
+    $pkg->new({ url => 'spoton://connect-5', client => $client, song => $live });
+    is($Slim::Player::Protocols::HTTP::NEW_ARGS[-1]{url}, 'http://127.0.0.1:4242/stream',
+        'GH223-N1: an untranslated (live) connect-* entry keeps the /stream URL');
+
+    # T-88-15: only the anchored track|episode form is accepted as a substitute
+    for my $bad ('spoton://track:abc/../x', 'spoton://track:', 'spoton://connect-9', 'http://evil.invalid/x', 'spoton://track:ab cd') {
+        @Slim::Player::Protocols::HTTP::NEW_ARGS = ();
+        my $h = MockSong->new(client => $client, track => MockTrack->new(url => 'spoton://connect-5'), streamUrl => $bad);
+        $pkg->new({ url => 'spoton://connect-5', client => $client, song => $h });
+        is($Slim::Player::Protocols::HTTP::NEW_ARGS[-1]{url}, 'http://127.0.0.1:4242/stream',
+            "GH223-N1: a malformed streamUrl ($bad) is not substituted (T-88-15)");
+    }
+
+    # a Browse entry is not touched by the connect branch
+    @Slim::Player::Protocols::HTTP::NEW_ARGS = ();
+    my $br = MockSong->new(client => $client, track => MockTrack->new(url => 'spoton://track:abc'),
+                           streamUrl => 'spoton://track:OTHER');
+    $pkg->new({ url => 'spoton://track:abc', client => $client, song => $br });
+    is($Slim::Player::Protocols::HTTP::NEW_ARGS[-1]{url}, 'http://127.0.0.1:4242/track/abc',
+        'GH223-N1: a Browse URL keeps its own id (the streamUrl substitution is connect-* only)');
 }
 
 # ============================================================

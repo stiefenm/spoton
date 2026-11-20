@@ -8205,6 +8205,62 @@ sub s53_cleanup {
     s53_cleanup($ctl);
 }
 
+# --- 89-12: the same refusal with Material Skin enabled. The pairing hint went
+# out through showBriefly only, which Material has not shown since 2.10.2 (gap of
+# the 89-05 eye check); Plugins::SpotOn::PlayerMessage adds Material's
+# notification for that player. Order, hint and warning stay as in S1. Material
+# is "enabled" through the two LMS entry points the helper asks, both doubles of
+# this block.
+{
+    my (@notes, $material);
+    no warnings 'redefine';
+    local *Slim::Utils::PluginManager::isEnabled   = sub { return ($_[1] // '') eq 'Plugins::MaterialSkin::Plugin' ? $material : undef };
+    local *Slim::Control::Request::notifyFromArray = sub { push @notes, [@_]; return };
+
+    my $refuse = sub {
+        my ($mac) = @_;
+        s53_reset();
+        @notes = ();
+        $Plugins::SpotOn::Soloist::FS{$mac} = 0;
+        my ($ctl, $daemon, $ws) = s53_state($mac);
+        $ctl->requestTrack($TID, 0, { source => 'getNextTrack', errorCb => sub { push @Slim::Player::Client::ORDER, 'errorCb' } });
+        my @w = grep { /requestTrack refused \(daemon not paired, no stored session\)/ } @Slim::Utils::Log::WARNINGS;
+        s53_cleanup($ctl);
+        return ([ @Slim::Player::Client::ORDER ], scalar(grep { /pairing hint shown/ } @w), [ @w ]);
+    };
+    my $ORDER = [ 'exec:stop', 'hint:STR(PLUGIN_SPOTON_SOLOIST_NOT_PAIRED)', 'errorCb' ];
+
+    $material = { version => '6.4.9' };
+    my ($order, $warned) = $refuse->('aa:bb:cc:dd:53:12');
+    is(scalar(@notes), 1, "89-12 unpaired_material_one_notification: the refusal sends one Material notification");
+    is_deeply($notes[0], [ undef, [ 'material-skin', 'notification', 'info', 'STR(PLUGIN_SPOTON_SOLOIST_NOT_PAIRED)', undef, 'aa:bb:cc:dd:53:12', 15 ] ],
+        "89-12 unpaired_material_shape: the pairing hint for that player, 15 s, as info for Material 6.4.9");
+    is_deeply([ $order, $warned ], [ $ORDER, 1 ],
+        "89-12 unpaired_material_order: stop, hint, errorCb and one 'pairing hint shown' warning as without Material")
+        or diag("ORDER=@$order warned=$warned");
+
+    $material = { version => '6.5.0' };
+    $refuse->('aa:bb:cc:dd:53:13');
+    is(($notes[0] ? $notes[0][1][2] : undef) // 'none', 'error',
+        "89-12 unpaired_material_650_is_error: a Material that shows an error text gets the error type");
+
+    $material = { version => '6.4.9' };
+    my $w;
+    {
+        local *Slim::Player::Client::Recorder::showBriefly = sub { die "display boom\n" };
+        ($order, $warned, $w) = $refuse->('aa:bb:cc:dd:53:15');
+    }
+    is_deeply([ scalar(@notes), scalar(grep { /: stop sent, pairing hint failed: display boom\z/ } @$w) ], [ 1, 1 ],
+        "89-12 unpaired_display_dies: the warning says 'pairing hint failed' as before and the notification still goes out")
+        or diag("notes=" . scalar(@notes) . " warnings=@$w");
+
+    $material = undef;
+    ($order, $warned) = $refuse->('aa:bb:cc:dd:53:14');
+    is_deeply([ scalar(@notes), $order, $warned ], [ 0, $ORDER, 1 ],
+        "89-12 unpaired_no_material: without the Material plugin nothing is sent, order and warning stay")
+        or diag("notes=" . scalar(@notes) . " ORDER=@$order warned=$warned");
+}
+
 # --- 79-53 S2: stored session (FS=1) -> still deferred, no stop, no hint; a
 # login inside the window replays it, no errorCb (the 82-42A race survives).
 {

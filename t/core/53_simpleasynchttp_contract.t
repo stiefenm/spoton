@@ -398,13 +398,17 @@ else {
             'API/Pathfinder.pm'   => 2,
             'API/SpClient.pm'     => 2,
             'Soloist/Quality.pm'  => 1,
+            # 89-02 (D-09): the GET /health of _attributeAudioKeyDenial (the attribution of a refused audio key), 1 inline site
+            'Unified/DaemonManager.pm' => 1,
         },
         named => {
             'Soloist.pm'               => 2,
             'Unified/DaemonManager.pm' => 1,
         },
         skipped => {
-            'Backend/Librespot.pm' => 1,    # the _sendControlCommand ok-callback (moved from Connect.pm in 84-07)
+            # the _sendControlCommand ok-callback (moved from Connect.pm in 84-07) and, 88-06, the ok-callback of
+            # transferBack's POST /control/transfer (204 = dispatched; it reads nothing from the response object)
+            'Backend/Librespot.pm' => 2,
         },
     );
     my $optional = amputation_optional($project_dir);

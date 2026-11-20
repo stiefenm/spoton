@@ -94,6 +94,15 @@ my %_browse404Retries;  # "$clientId|$trackUrl" => attempt_count
 # instead of the definitive case's 60s so a later success still lands promptly.
 use constant META_REFETCH_TRANSIENT_TTL => 15;
 
+# 88 review WR-04: how long a pull-back that fell back to Browse keeps the
+# player's entry from pulling again. LMS retries a failed stream start by
+# itself (StreamingController::_StopNextIfMore) and that retry has the shape of
+# an explicit Play (see getNextTrack); it arrives while the fallback stream is
+# still being opened, seconds after the fallback. 30 s covers that and is short
+# enough that a later Play of the user is a new gesture with its own pull-back
+# (D-03). The helper refuses a second transfer inside 3 s anyway (T-88-12).
+use constant PULLBACK_FALLBACK_HOLD_S => 30;
+
 # 84-08 (SEAM-6.2): the former runtime backend-pref check of Phase 72 D-01
 # is gone. spoton:// URLs are unchanged across backends; every entry point
 # below asks the backend role (DaemonManager->backendFor / backendClass)
@@ -415,6 +424,24 @@ sub _daemonRequestString {
     return undef;
 }
 
+# _playingTitleIsSilent($client) (89-10, ACC-02)
+# True when the title LMS holds as playing has produced no audio: LMS reads
+# elapsed 0 for it AND the player reports an empty output buffer (0 bytes
+# decoded and waiting). LMS starts a stream that ended while buffering as a
+# short track (StreamingController _StartStreamout -> _Playing), so a stream
+# that ended with 0 bytes becomes a "playing" title that never sounds and
+# never reports an end. A title that sounds has one of the two: its decode is
+# complete before LMS asks for the next title (the player's decoder-ready
+# report triggers that request), so its audio is either played (elapsed
+# above 0) or waiting in the output buffer. No output buffer report (undef)
+# proves nothing and reads as not silent.
+sub _playingTitleIsSilent {
+    my ($client) = @_;
+    return 0 if $client->controller()->playingSongElapsed();
+    my $out = $client->can('outputBufferFullness') ? $client->outputBufferFullness() : undef;
+    return (defined $out && $out == 0) ? 1 : 0;
+}
+
 # handleDirectError($class, $client, $url, $response, $status_line)
 # Called by Squeezebox2::directHeaders when the direct stream returns a non-2xx/3xx status.
 # For Browse daemon 404: retry up to MAX_BROWSE_404_RETRIES times with a delay before skipping.
@@ -425,7 +452,18 @@ sub handleDirectError {
     if ($response == 404 && $url && $url =~ m{:\d+/(?:track|episode)/}) {
         my $streaming = $client->streamingSong();
         my $playing   = $client->playingSong();
-        if ($streaming && $playing && $streaming != $playing) {
+        my $prefetch = ($streaming && $playing && $streaming != $playing) ? 1 : 0;
+        if ($prefetch && _playingTitleIsSilent($client)) {
+            # 89-10 (ACC-02): LMS holds a title as playing that has produced no
+            # audio (run 89-05 of 2026-11-19: the helper's empty 200). Waiting
+            # for its end would park the queue for the whole title length
+            # (275.386 s there) with a silent player; there is no sounding
+            # title to preserve (the reason for the deferred skip, 29-03
+            # cbe61f7c). Handled as play context: the retry chain below.
+            $log->warn("Browse daemon 404 for $url - the playing title has no audio (elapsed 0 s, output buffer 0) - handling as play context");
+            $prefetch = 0;
+        }
+        if ($prefetch) {
             # Prefetch context: current track still playing, schedule skip at track end
             my $remaining = ($client->controller()->playingSongDuration() || 0)
                           - ($client->controller()->playingSongElapsed() || 0);
@@ -465,6 +503,24 @@ sub handleDirectError {
     }
 
     $client->failedDirectStream($status_line);
+}
+
+# cancelBrowseRetries($class, $client) (89-02, D-15)
+# Drops every pending Browse 404 retry or skip of one player: both timers and
+# the player's entries of the retry hash. DaemonManager calls it right before
+# the LMS stop it sends at the fork's refused-key limit marker -- a pending
+# _retryStream would otherwise re-start the very title 2 s after the stop,
+# and a pending _skipUnavailable would skip it at track end.
+sub cancelBrowseRetries {
+    my ($class, $client) = @_;
+    return unless $client;
+
+    Slim::Utils::Timers::killTimers($client, \&_retryStream);
+    Slim::Utils::Timers::killTimers($client, \&_skipUnavailable);
+
+    my $prefix = $client->id . '|';
+    delete @_browse404Retries{ grep { index($_, $prefix) == 0 } keys %_browse404Retries };
+    return;
 }
 
 # _retryStream($client)
@@ -541,6 +597,24 @@ sub new {
 
     my $url = $args->{url} || '';
 
+    # 88-06 (D-03 Browse repair, GH #223): getNextTrack translated a dead
+    # spoton://connect-* entry to Browse by setting the song's streamUrl to
+    # spoton://track|episode:<id>. LMS still hands new() the connect-* URL,
+    # and the (b) branch below would then stream the helper's /stream relay
+    # (dead after the session moved: the player hangs at 0:00). Continue with
+    # the translated URL so the (b2) block builds the /track/<id> (or
+    # /episode/<id>) Browse URL. T-88-15: only the anchored track|episode form
+    # is accepted, only for connect-* URLs; a live Connect entry has no
+    # translated streamUrl and keeps the /stream relay (getNextTrack never
+    # translates the librespot claim holder's own live entry, GH #219 WR-01).
+    if ($url =~ m{^spoton://connect-} && blessed($args->{song}) && $args->{song}->can('streamUrl')) {
+        my $translated = $args->{song}->streamUrl;
+        if (defined $translated && $translated =~ m{^spoton://(?:track|episode):[A-Za-z0-9]+$}) {
+            $url  = $translated;
+            $args = { %$args, url => $translated };
+        }
+    }
+
     # (a) D-08: spoton:// (Browse/single-track) URL while Connect is active.
     # Unified daemon handles Browse/Connect mutual exclusion internally via D-09/D-10 ActiveMode mutex.
     if ($url =~ m{^spoton://(?!connect-)}) {
@@ -614,6 +688,45 @@ sub new {
     return Plugins::SpotOn::ProtocolHandler::Stream->new($args);
 }
 
+# _openDeadConnectUrl($song, $url, $successCb, $errorCb) -- today's dead-URL
+# handling of getNextTrack for a spoton://connect-* URL, moved here unchanged
+# (88-06): a cached spotifyUri translates the entry to a Browse URL, otherwise
+# the open fails. Terminal: it never calls the transfer path again.
+sub _openDeadConnectUrl {
+    my ($song, $url, $successCb, $errorCb) = @_;
+
+    # A history URL has a cached spotifyUri (written by _fetchTrackMetadata after
+    # the original Connect playback).
+    my $meta = $cache->get('spoton_meta_' . md5_hex($url));
+    if ($meta && $meta->{spotifyUri}
+        && $meta->{spotifyUri} =~ m/^spotify:track:([A-Za-z0-9]+)$/) {
+        my $browseUrl = "spoton://track:$1";
+        main::INFOLOG && $log->is_info && $log->info(
+            "getNextTrack: translating dead Connect URL to $browseUrl"
+        );
+        $song->streamUrl($browseUrl);
+        if (keys %_translatedConnectUrls >= 200) {
+            delete $_translatedConnectUrls{(keys %_translatedConnectUrls)[0]};
+        }
+        $_translatedConnectUrls{$url} = 1;
+
+        # Set duration from cached metadata for the translated Browse URL
+        my $browseMeta = $cache->get('spoton_meta_' . md5_hex($browseUrl));
+        if ($browseMeta && $browseMeta->{duration} && $browseMeta->{duration} > 0) {
+            $song->duration($browseMeta->{duration});
+        }
+
+        $successCb->();
+        return;
+    }
+
+    main::INFOLOG && $log->is_info && $log->info(
+        "getNextTrack: dead Connect URL with no cached spotifyUri - cannot translate"
+    );
+    $errorCb->('PROBLEM_OPENING', 'No cached track ID for Connect history URL');
+    return;
+}
+
 # getNextTrack($class, $song, $successCb, $errorCb)
 # Called by StreamingController before transcoding pipeline starts.
 # Translates dead Connect history URLs to Browse URLs so the binary
@@ -635,36 +748,121 @@ sub getNextTrack {
     if ($url =~ m{spoton://connect-}) {
         my $client = $song->master;
 
-        # Dead history URL check FIRST — takes priority over active Connect session.
-        # A history URL has a cached spotifyUri (written by _fetchTrackMetadata after
-        # the original Connect playback). Translate to Browse regardless of whether
-        # the phone is still connected.
-        my $meta = $cache->get('spoton_meta_' . md5_hex($url));
-        if ($meta && $meta->{spotifyUri}
-            && $meta->{spotifyUri} =~ m/^spotify:track:([A-Za-z0-9]+)$/) {
-            my $browseUrl = "spoton://track:$1";
-            main::INFOLOG && $log->is_info && $log->info(
-                "getNextTrack: translating dead Connect URL to $browseUrl"
-            );
-            $song->streamUrl($browseUrl);
-            if (keys %_translatedConnectUrls >= 200) {
-                delete $_translatedConnectUrls{(keys %_translatedConnectUrls)[0]};
+        require Plugins::SpotOn::Connect;
+        if (!Plugins::SpotOn::Connect->isSpotifyConnect($client)) {
+            # 88-06 (D-03, D-05, GH #223/#159): Play on a player whose Connect
+            # session moved away opens the player's own last Connect entry. The
+            # pull-back is tried FIRST, the dead-URL translation to Browse below
+            # is the fallback. This open is the ONLY transfer site (the 409 on
+            # /control/play only ejects and reopens the entry, so one Play
+            # gesture causes at most one /control/transfer, T-88-12). The Browse
+            # fallback (_openDeadConnectUrl) is terminal in STATE, not by
+            # construction: on_fallback records the entry (connectPullbackFellBack)
+            # and an open of the same entry inside PULLBACK_FALLBACK_HOLD_S goes
+            # straight to Browse (88 review WR-04, see below).
+            #
+            # LMS holds the song in TRACKWAIT until one of the two callbacks
+            # runs (StreamingController::_getNextTrack, 629-760), so the open can
+            # wait for the transfer outcome. A callback of a superseded open is
+            # discarded by nextTrackCallbackId (_nextTrackReady 742-747,
+            # _nextTrackError 758): when the session's own `start` issues its own
+            # `playlist play`, this open simply never answers.
+            #
+            # Only an explicit Play of the player's own last Connect entry may
+            # pull (T-88-31). LMS's _getNextTrack also runs for look-ahead
+            # (_NextIfMore / _PlayAndNext, 1000-1025 and 1383, with $ifMoreTracks
+            # and another song playing); an explicit Play goes through
+            # _StopGetNext (972), which stops first, so the opened song is the
+            # controller's only queued song and playingSong returns it
+            # (playingSong is songqueue->[-1], 1805). Every other connect-*
+            # open (a history entry, a look-ahead) translates at once as before.
+            #
+            # 88 review WR-04: ONE more caller has the shape of an explicit Play.
+            # _StopNextIfMore (1017-1026, the StreamingFailed action in BUFFERING
+            # and WAITING_TO_SYNC) also stops first and then opens a FRESH Song
+            # for the entry as the only queued song. When the Browse fallback of
+            # a pulled entry fails to stream (404 from /track/<id>, a daemon
+            # restart, PROBLEM_OPENING), that retry came back here and sent a
+            # second /control/transfer with no user gesture. The Song carries
+            # nothing that tells the two apart (a new object each time), so the
+            # fallback itself is recorded per player and holds for
+            # PULLBACK_FALLBACK_HOLD_S; Connect.pm clears the record when it
+            # stores a new entry (_rememberConnectPlayUrl).
+            my $playing = $client ? $client->playingSong : undef;
+            my $last    = Plugins::SpotOn::Connect->lastConnectPlayUrl($client);
+            my $fellBack = $client ? $client->pluginData('connectPullbackFellBack') : undef;
+            my $fellBackAge = (ref $fellBack eq 'HASH' && ($fellBack->{url} // '') eq $url)
+                ? Time::HiRes::time() - ($fellBack->{at} // 0) : undef;
+            if (defined $fellBackAge && $fellBackAge < PULLBACK_FALLBACK_HOLD_S) {
+                main::INFOLOG && $log->is_info && $log->info(sprintf(
+                    "getNextTrack: pull-back fell back %.1f s ago - no second transfer, Browse fallback for %s",
+                    $fellBackAge, $url
+                ));
             }
-            $_translatedConnectUrls{$url} = 1;
-
-            # Set duration from cached metadata for the translated Browse URL
-            my $browseMeta = $cache->get('spoton_meta_' . md5_hex($browseUrl));
-            if ($browseMeta && $browseMeta->{duration} && $browseMeta->{duration} > 0) {
-                $song->duration($browseMeta->{duration});
+            elsif (defined $last && $last eq $url && $playing && $playing == $song) {
+                require Plugins::SpotOn::Unified::DaemonManager;
+                my $be = Plugins::SpotOn::Unified::DaemonManager->backendFor($client);
+                if ($be && $be->can('transferBack')) {
+                    my $waiting = $be->transferBack(
+                        on_fallback  => sub {
+                            my ($why) = @_;
+                            main::INFOLOG && $log->is_info && $log->info(
+                                "getNextTrack: pull-back did not happen (" . ($why // '?') . ") - Browse fallback for $url"
+                            );
+                            # 88 review WR-04: the fallback is terminal for LMS's own retry
+                            $client->pluginData(connectPullbackFellBack => { url => $url, at => Time::HiRes::time() });
+                            _openDeadConnectUrl($song, $url, $successCb, $errorCb);
+                        },
+                        on_confirmed => sub {
+                            my ($cmd, $issuedPlay) = @_;
+                            # the start handler's own `playlist play` superseded this open
+                            return if $issuedPlay;
+                            require Plugins::SpotOn::Unified::DaemonManager;
+                            _applySampleHints($song, Plugins::SpotOn::Unified::DaemonManager->backendClass->capabilitiesDefault);
+                            $successCb->();
+                        },
+                    );
+                    return if $waiting;
+                }
             }
-
-            $successCb->();
+            _openDeadConnectUrl($song, $url, $successCb, $errorCb);
             return;
         }
 
-        # No cached spotifyUri — either a live Connect session or an untranslatable URL
-        require Plugins::SpotOn::Connect;
-        if (Plugins::SpotOn::Connect->isSpotifyConnect($client)) {
+        # The claim holder: today's order, the dead history URL check first --
+        # a history URL has a cached spotifyUri (written by _fetchTrackMetadata
+        # after the original Connect playback) and translates to Browse
+        # regardless of whether the phone is still connected.
+        #
+        # GH #219 WR-01 (88-08 rig run 0031, debug gh219-wr01-next-after-pause):
+        # the one exception is the player's OWN live entry, the URL Connect.pm
+        # last put into `playlist play` (librespot role only, the one with a
+        # transferBack, as above; Soloist keeps today's rule, D-06). A live title
+        # is cached with a spotifyUri exactly like a history one (Connect.pm
+        # _isDeadHistoryUrl note), so the record cannot tell them apart. Translated,
+        # the live entry became a Browse URL since 88-06 (new() adopts the
+        # translation): an LMS jump (Next) on a live session opened the helper's
+        # /track/<id>, the helper shut the player's own Spirc down (D-10) and the
+        # /control/next + /control/play that _onPlaylistJump sends once the jump
+        # request is done answered 409. The live entry is the running session:
+        # it opens the /stream relay like the session's own first open.
+        my $liveUrl;
+        {
+            require Plugins::SpotOn::Unified::DaemonManager;
+            my $liveBe = Plugins::SpotOn::Unified::DaemonManager->backendFor($client);
+            $liveUrl = Plugins::SpotOn::Connect->lastConnectPlayUrl($client)
+                if $liveBe && $liveBe->can('transferBack');
+        }
+        unless (defined $liveUrl && $liveUrl eq $url) {
+            my $meta = $cache->get('spoton_meta_' . md5_hex($url));
+            if ($meta && $meta->{spotifyUri}
+                && $meta->{spotifyUri} =~ m/^spotify:track:([A-Za-z0-9]+)$/) {
+                _openDeadConnectUrl($song, $url, $successCb, $errorCb);
+                return;
+            }
+        }
+
+        {
             # D-08 (Phase 76) / CR-01: the sample-size hint comes from the
             # backend role, set EXPLICITLY for every backend (S32LE from
             # fake-libpulse's /stream, S16LE from librespot) so the $SAMPLESIZE$
@@ -679,12 +877,6 @@ sub getNextTrack {
             $successCb->();
             return;
         }
-
-        main::INFOLOG && $log->is_info && $log->info(
-            "getNextTrack: dead Connect URL with no cached spotifyUri - cannot translate"
-        );
-        $errorCb->('PROBLEM_OPENING', 'No cached track ID for Connect history URL');
-        return;
     }
 
     # Set duration from cached metadata for Browse URLs before transcoding starts.

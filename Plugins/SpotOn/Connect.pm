@@ -344,6 +344,69 @@ sub _isDeadHistoryUrl {
     return ($meta && $meta->{spotifyUri}) ? 1 : 0;
 }
 
+# _songIsLiveConnect($song) -- the live-stream classification _onPause hoisted (GH #159, GH #216 D-16)
+# and 88-06's stop-inactive clause shares: the song's url (track url, else streamUrl) is a
+# spoton://connect-* entry, and not a dead history record (a cached spotifyUri WITHOUT the
+# live song's 'info' pluginData; a live track also gets its spotifyUri cached during playback,
+# so the cache entry alone would false-positive).
+sub _songIsLiveConnect {
+    my ($song) = @_;
+    return 0 unless $song;
+    my $url = $song->track->url || $song->streamUrl || '';
+    return 0 unless $url =~ m{spoton://connect-};
+    return (!$song->pluginData('info') && _isDeadHistoryUrl($url)) ? 0 : 1;
+}
+
+# _playsOwnLiveConnectStream($client) -- 88-06 (D-05): the player's playing song is its own LIVE
+# connect stream and not a Browse fallback: a translated entry (getNextTrack set the song's
+# streamUrl to spoton://track|episode:<id>) is the Browse playback of a history track, not
+# the Connect session, even while its pluginData still carries the live song's 'info'.
+sub _playsOwnLiveConnectStream {
+    my ($client) = @_;
+    my $song = $client ? $client->playingSong() : undef;
+    return 0 unless _songIsLiveConnect($song);
+    my $streamUrl = $song->streamUrl || '';
+    return ($streamUrl =~ m{^spoton://(?:track|episode):}) ? 0 : 1;
+}
+
+# _rememberConnectPlayUrl($client, $url) -- 88-06 (D-03): the spoton://connect-<ts> URL
+# this module last put into `playlist play` for the player, stored per player (keyed by
+# the master's id, like isSpotifyConnect) in the persistent plugin cache so the pull-back
+# also applies after an LMS restart. ProtocolHandler::getNextTrack compares the entry LMS
+# opens with it: only the player's OWN last Connect entry, opened as an explicit Play,
+# may pull a moved session back (T-88-31). Any other URL is not stored.
+# 88 review WR-04: a new entry also ends the "this entry's pull-back fell back to
+# Browse" record ProtocolHandler keeps for the old one (connectPullbackFellBack;
+# 0, not undef - LMS's pluginData does not write undef).
+sub _rememberConnectPlayUrl {
+    my ($client, $url) = @_;
+    return unless $client && defined $url && $url =~ m{^spoton://connect-};
+    $client = $client->master if $client->can('master') && $client->master;
+    $cache->set('spoton_connect_last_' . $client->id, $url, 30 * 86400);
+    $client->pluginData(connectPullbackFellBack => 0);
+    return;
+}
+
+# _transferConfirmed($be, $client, $cmd, $issuedPlay) -- 88-06 (D-03): tell the backend role that
+# the session reached this player (`start`/`change`) and whether the handler issued its own
+# `playlist play`. Only the librespot role owns a pull-back (D-06: a role without
+# transferConfirmed, Soloist, is not asked); the role delivers the outcome to the open that
+# waits for it, one main-loop tick after this handler finished its own commands.
+sub _transferConfirmed {
+    my ($be, $client, $cmd, $issuedPlay) = @_;
+    return unless $be && $be->can('transferConfirmed');
+    $be->transferConfirmed($client, $cmd, $issuedPlay ? 1 : 0);
+    return;
+}
+
+# lastConnectPlayUrl($class, $client) -- the stored URL or undef (88-06).
+sub lastConnectPlayUrl {
+    my ($class, $client) = @_;
+    return unless $client;
+    $client = $client->master if $client->can('master') && $client->master;
+    return $cache->get('spoton_connect_last_' . $client->id);
+}
+
 # shutdown($class)
 # Cleanly unsubscribes all event handlers.
 # Daemon shutdown is handled by Unified::DaemonManager via Plugin.pm shutdownPlugin().
@@ -1429,20 +1492,22 @@ sub _onPause {
         # Live-stream classification (hoisted for the GH #159 pass-through
         # below and read again by the D-16 guard).
         my $onPauseSong = $client->playingSong();
-        my $onPauseUrl  = $onPauseSong ? ($onPauseSong->track->url || $onPauseSong->streamUrl || '') : '';
-        my $isLiveConnectStream = 0;
-        if ($onPauseUrl =~ m{spoton://connect-}) {
-            $isLiveConnectStream = (!$onPauseSong->pluginData('info') && _isDeadHistoryUrl($onPauseUrl)) ? 0 : 1;
-        }
+        my $isLiveConnectStream = _songIsLiveConnect($onPauseSong);
 
         unless (__PACKAGE__->isSpotifyConnect($client)) {
             # GH #159 kept alive by the GH #216 release: with the claim gone at
             # session end, an LMS unpause of the paused stale connect stream
             # would return here and hang in BUFFERING. The daemon is the
-            # authority (409 -> Backend::Librespot ejects the stream). Only an
-            # unpause, only a live connect-* stream, only while NO player holds
-            # the claim (a claim on another player keeps the early return).
-            return unless $isUnpause && $isLiveConnectStream && !$_activeConnectPlayer;
+            # authority (409 -> Backend::Librespot ejects the stream and reopens
+            # the entry, whose open tries the pull-back). Only an unpause, only a
+            # live connect-* stream.
+            # 88-06 (D-05): also while ANOTHER player holds the claim. The session moved
+            # from this LMS player P1 to P2 (e.g. P2's `start` took the claim), and Play on
+            # P1 must pull it back the same way as Play on a stopped P1 (the open path).
+            # The daemon of P1 answers 409 for a deselected device, so the forward is
+            # harmless when P1 is not active; plain pause/stop/Browse stay on the early
+            # return (only this exact gesture passes: unpause + live connect stream).
+            return unless $isUnpause && $isLiveConnectStream;
             # GH #216 review IN-04: only a flag here. The echo/grace/history guards below can
             # still return without forwarding, so the log text belongs to the outcome line at
             # the end (written only when control() really ran).
@@ -1513,7 +1578,9 @@ sub _onPause {
 
         # Player-switch guard: if another player has taken over the active Connect
         # session, suppress this player's stop event.
-        if ($_activeConnectPlayer && $_activeConnectPlayer ne $client->id) {
+        # 88-06 (D-05): not for the stale-eject gesture -- Play on the player the
+        # session moved away from is exactly the command that must reach its daemon.
+        if (!$staleEject && $_activeConnectPlayer && $_activeConnectPlayer ne $client->id) {
             main::INFOLOG && $log->is_info && $log->info(
                 "Ignoring stop/pause from " . $client->id . " - active Connect player is $_activeConnectPlayer"
             );
@@ -2244,6 +2311,7 @@ sub _connectEvent {
                     $client->pluginData(progress => $position);
                 }
             }
+            _rememberConnectPlayUrl($client, $playUrl);    # 88-06: the player's own last Connect entry
             my $playReq = Slim::Control::Request->new($client->id, [
                 'playlist', 'play', $playUrl
             ]);
@@ -2393,6 +2461,18 @@ sub _connectEvent {
     # (CON-17: progress stored BEFORE playlist play command)
     # -----------------------------------------------------------------
     if ($cmd eq 'start') {
+        # 88-10 (D-20, IN-05 of the #216 review): the helper's session counter rides on _p4
+        # (`start <id> <pos> <counter>`, 88-05 wire). Stored FIRST, above the restart-gate
+        # suppression return below: a suppressed start is still the current session, and its own
+        # later `stop inactive` would otherwise compare against an older counter and be ignored.
+        # Digits only: Soloist's 'restored' marker in the same slot keeps its meaning and stores
+        # nothing (D-06).
+        {
+            my $sessionCounter = $request->getParam('_p4');
+            if (defined $sessionCounter && $sessionCounter =~ /^\d+$/) {
+                $client->pluginData(connectSessionCounter => $sessionCounter);
+            }
+        }
         _holdCancel($client, 'start');    # 84-17 (H-c): a new session
         _settleCancel($client, 'start');  # 84.3-01
         my ($kind, $trackId, $kindKnown) = _requestItem($request);    # 79-68
@@ -2466,6 +2546,10 @@ sub _connectEvent {
             # suppressed, so there is no pending start to protect.
             $client->pluginData(pendingConnect => 0);
 
+            # 88-06 (D-03): a pull-back waits for this start; no play was issued, so the
+            # pending open continues on the live stream itself (issuedPlay 0).
+            _transferConfirmed($evBe, $client, 'start', 0);
+
             return;
         }
 
@@ -2538,6 +2622,7 @@ sub _connectEvent {
                 }
             }
         }
+        _rememberConnectPlayUrl($client, $startPlayUrl);    # 88-06: the player's own last Connect entry
         my $playReq = Slim::Control::Request->new($client->id, [
             'playlist', 'play', $startPlayUrl
         ]);
@@ -2545,6 +2630,10 @@ sub _connectEvent {
         $playReq->execute();
 
         $client->pluginData(pendingConnect => 0);
+
+        # 88-06 (D-03): the session came back while a pull-back is pending -- the
+        # open waiting for it was superseded by the `playlist play` just issued.
+        _transferConfirmed($evBe, $client, 'start', 1);
 
         # Fetch metadata for NowPlaying display via API::SpClient (D-08/D-13)
         if ($trackId) {
@@ -2565,6 +2654,38 @@ sub _connectEvent {
     # -----------------------------------------------------------------
     if ($cmd eq 'change') {
         _settleCancel($client, 'change');    # 84.3-01
+        # 88-06 (D-03): a change while a pull-back is pending is the session's arrival
+        # on this player. Reported BEFORE the connect-guard below, which drops a change
+        # for a player that holds no claim yet; no play was issued here (issuedPlay 0),
+        # so the pending open continues on the live stream.
+        # 88 review WR-05: ... and the player that continues on the live stream must
+        # HOLD the claim. The claim was only written on `start` and on the resume
+        # re-entry, so a pull-back confirmed by `change` left a player streaming the
+        # session with isSpotifyConnect false: later changes were dropped by the guard
+        # below (stale title), an app pause was not applied and LMS pause/stop were not
+        # forwarded. Bound here, only while a pull-back is pending for this player (a
+        # change for a player with nothing pending keeps the guard), and the handler
+        # then goes on like for any claim holder (metadata of the new title), with
+        # two exceptions marked $confirmsPullback below: LMS holds the opened song in
+        # TRACKWAIT, so there is no running clock to reset, and the forced unpause
+        # would be a `pause 0` on a STOPPED player, which LMS turns into a second
+        # `playlist jump` (Commands::playcontrolCommand) on top of the open that
+        # continues by itself.
+        # 88 review round 2 R2-WR-02: ... and only while the player still sits on the open
+        # the pull-back belongs to, i.e. its own last Connect entry. The pending record
+        # outlives an open that other content superseded (until the session arrives or
+        # TRANSFER_WAIT_S); a change then must not bind a claim for a player that plays a
+        # radio station or a local file (connect-metadata-bleed). _transferConfirmed below
+        # keeps running unconditionally.
+        my $confirmsPullback = 0;
+        if ($evBe && $evBe->can('transferPending') && $evBe->transferPending($client)) {
+            my $open    = $client->playingSong();
+            my $openUrl = $open ? ($open->track->url // '') : '';
+            my $last    = __PACKAGE__->lastConnectPlayUrl($client);
+            $confirmsPullback = 1 if defined $last && $openUrl eq $last;
+        }
+        __PACKAGE__->bindConnectClaim($client, 'transfer-back') if $confirmsPullback;
+        _transferConfirmed($evBe, $client, 'change', 0);
         # Guard (formerly grouped under "H6", 46-01): ignore Spirc change
         # events for players not in an active Connect session — a change for
         # a player back in Browse mode would overwrite Browse metadata
@@ -2643,6 +2764,10 @@ sub _connectEvent {
             # daemon reports during the hold applies to the new song.
             $client->pluginData(progress => 0);
         }
+        elsif ($confirmsPullback) {
+            # 88 review WR-05: the open this change confirms has not streamed yet
+            # (TRACKWAIT) - nothing to reset.
+        }
         elsif ($song) {
             # Reset progress bar for the new track: in stream mode,
             # songElapsedSeconds counts from the original stream start,
@@ -2695,8 +2820,11 @@ sub _connectEvent {
                 );
             }
         }
+        # 88 review WR-05: nor for the change that confirms a pull-back - the pending
+        # open starts the stream itself ($confirmsPullback above).
         if (!$client->isPlaying && __PACKAGE__->isSpotifyConnect($client)
-            && !$client->pluginData('connectSessionPaused') && !$skipChangeUnpause) {
+            && !$client->pluginData('connectSessionPaused') && !$skipChangeUnpause
+            && !$confirmsPullback) {
             $client->pluginData(connectPauseTs => Time::HiRes::time());
             my $playReq = Slim::Control::Request->new($client->id, ['pause', 0]);
             $playReq->source(__PACKAGE__);
@@ -2791,6 +2919,24 @@ sub _connectEvent {
         # pre-Connect power state. The generic un-marked stop (app pause)
         # never restores power.
         if (($request->getParam('_p2') || '') eq 'inactive') {
+            # 88-10 (D-20, IN-05): a late `stop inactive` of an EARLIER session (counter in _p3)
+            # must not end the current one. Compared before anything is touched - no hold/settle
+            # cancel, no pause, no power restore, no claim release. Absent or non-digit counter
+            # (Soloist, old helper) or no stored counter = a match: today's rule (D-06).
+            my $stopCounter   = $request->getParam('_p3');
+            my $storedCounter = $client->pluginData('connectSessionCounter');
+            if (defined $stopCounter && $stopCounter =~ /^\d+$/
+                && defined $storedCounter && $storedCounter =~ /^\d+$/
+                && $stopCounter != $storedCounter)
+            {
+                main::INFOLOG && $log->is_info && $log->info(
+                    "stale stop inactive (counter $stopCounter, current $storedCounter) ignored for " . $client->id
+                );
+                return;
+            }
+            # the session is over: its counter goes with it ('' - LMS ignores an undef write)
+            $client->pluginData(connectSessionCounter => '');
+
             _holdCancel($client, 'session_end');    # 84-17 (H-c)
             _settleCancel($client, 'session_end');  # 84.3-01
             # 79-61 (FULL-2 WR-03): in a two-player transfer the NEW player's
@@ -2799,8 +2945,17 @@ sub _connectEvent {
             # session end failed the claim test and was never paused. Its
             # Control emits this stop BEFORE leaving connect mode, so a
             # connect-mode emitter is paused as well.
+            # 88-06 (D-05, #159): "P2 stops" in BOTH arrival orders. When the session
+            # was pulled back to P1, P1's `start` moved the claim to P1 BEFORE P2's own
+            # `stop inactive` arrived: P2 then fails the claim test, and the librespot
+            # role has no mode (state()->{mode} undef), so P2 kept playing a silent
+            # connect-* stream. Third clause, librespot only (connectClaimGate role;
+            # Soloist keeps today's two-part rule, D-06): the player plays its OWN live
+            # connect stream, claim or not. A Browse playback of a translated entry is
+            # never paused here (_playsOwnLiveConnectStream).
             my $endsOwnSession = __PACKAGE__->isSpotifyConnect($client)
-                || (($ctlMode->() // '') eq 'connect');
+                || (($ctlMode->() // '') eq 'connect')
+                || ($evBe && $evBe->capabilities->{connectClaimGate} && _playsOwnLiveConnectStream($client));
             if ($client->isPlaying && $endsOwnSession) {
                 main::INFOLOG && $log->is_info && $log->info(
                     "Connect session ended (device inactive) - pausing " . $client->id
@@ -2849,6 +3004,13 @@ sub _connectEvent {
             main::INFOLOG && $log->is_info && $log->info(
                 "Ignoring spurious stop during Connect session setup grace period"
             );
+
+            # 88-10 (D-19, #219 residual IN-03): only the echo forwarding is spurious here. The app
+            # pause itself is real, so remember it like the post-grace branch below does (GH #158):
+            # a later Next in LMS then follows the paused session (/control/next, /control/play).
+            if (__PACKAGE__->isSpotifyConnect($client)) {
+                $client->pluginData(connectSessionPaused => 1);
+            }
 
             $log->warn("[DIAG] [$diagTs] stop: player=" . $client->id
                 . " isPlaying=" . ($client->isPlaying ? 1 : 0)
@@ -2962,6 +3124,7 @@ sub _connectEvent {
                     $readyPlayUrl = sprintf("spoton://connect-%u", $ts);
                 }
             }
+            _rememberConnectPlayUrl($client, $readyPlayUrl);    # 88-06: the player's own last Connect entry
             my $playReq = Slim::Control::Request->new($client->id, [
                 'playlist', 'play', $readyPlayUrl
             ]);

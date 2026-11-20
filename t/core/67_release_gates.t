@@ -285,18 +285,39 @@ EOT
     is($rc1, 0, 'WR-06 real descriptor and install.xml: backstop exits 0');
     like($o1, qr/^CHECK beta ok /m, 'WR-06 real files: the backstop checks the beta descriptor (CHECK beta ok)');
 
-    # MUST-FAIL: the real descriptor with the trap version form (cmp-checked mutant)
-    (my $trap = $real_repo) =~ s/(<plugin\b[^>]*?\sversion=")(\d+\.\d+\.\d+)beta(\d+(?:\.\d+)?)"/$1$2-beta.$3"/s;
-    isnt($trap, $real_repo, 'WR-06 mutant: the trap-form copy differs from the real descriptor');
-    my ($o2, $rc2, $r2) = $candidate->($trap, $real_inst);
+    # Mutant base: the trap-form and url mutants need a beta descriptor. After a stable
+    # release the real descriptor carries X.Y.Z (f2fb1762, 4.0.0), the beta regexes below
+    # match nothing and the mutants equal the original. Then derive the beta pair
+    # X.Y.Zbeta1 (descriptor version, url tag vX.Y.Z-beta.1, install.xml) from the real
+    # files and prove it passes the backstop before mutating it.
+    my ($mrepo, $minst) = ($real_repo, $real_inst);
+    if ($real_repo =~ /<plugin\b[^>]*?\sversion="(\d+\.\d+\.\d+)"/s) {
+        my $v = $1;
+        $mrepo =~ s/(<plugin\b[^>]*?\sversion=")\Q$v\E"/${1}${v}beta1"/s;
+        $mrepo =~ s{/releases/download/v\Q$v\E/SpotOn-v\Q$v\E\.zip}{/releases/download/v$v-beta.1/SpotOn-v$v-beta.1.zip};
+        # install.xml may already be ahead of the stable descriptor: a release
+        # commit of the next beta (4.1.0beta1) lands before the descriptor
+        # follow-up, so replace whatever version install.xml carries.
+        $minst =~ s{<version>[^<]*</version>}{<version>${v}beta1</version>};
+        isnt($mrepo, $real_repo, 'WR-06 stable descriptor: the derived beta base differs from the real descriptor');
+        isnt($minst, $real_inst, 'WR-06 stable descriptor: the derived beta install.xml differs from the real one');
+        my ($ob, $rb) = $candidate->($mrepo, $minst);
+        is($rb, 0, 'WR-06 derived beta base: backstop exits 0');
+        like($ob, qr/^CHECK beta ok /m, 'WR-06 derived beta base: CHECK beta ok');
+    }
+
+    # MUST-FAIL: the beta descriptor with the trap version form (cmp-checked mutant)
+    (my $trap = $mrepo) =~ s/(<plugin\b[^>]*?\sversion=")(\d+\.\d+\.\d+)beta(\d+(?:\.\d+)?)"/$1$2-beta.$3"/s;
+    isnt($trap, $mrepo, 'WR-06 mutant: the trap-form copy differs from the real descriptor');
+    my ($o2, $rc2, $r2) = $candidate->($trap, $minst);
     isnt(compare("$r2/docs/beta/repo.xml", "$project_dir/docs/beta/repo.xml"), 0, 'WR-06 mutant: cmp says the committed copy differs from the real file');
     is($rc2, 1, 'WR-06 trap form 4.0.0-beta.N in the descriptor: backstop exits 1');
     like($o2, qr/^BACKSTOP=FAIL reason=beta /m, 'WR-06 trap form: BACKSTOP=FAIL reason=beta');
 
     # MUST-FAIL: the url names a different tag than the version
-    (my $url = $real_repo) =~ s{(/releases/download/v)(\d+\.\d+\.\d+-beta\.\d+(?:\.\d+)?)(/SpotOn-v)\2(\.zip)}{${1}9.9.9-beta.9${3}9.9.9-beta.9$4};
-    isnt($url, $real_repo, 'WR-06 mutant: the url copy differs from the real descriptor');
-    my ($o3, $rc3) = $candidate->($url, $real_inst);
+    (my $url = $mrepo) =~ s{(/releases/download/v)(\d+\.\d+\.\d+-beta\.\d+(?:\.\d+)?)(/SpotOn-v)\2(\.zip)}{${1}9.9.9-beta.9${3}9.9.9-beta.9$4};
+    isnt($url, $mrepo, 'WR-06 mutant: the url copy differs from the real descriptor');
+    my ($o3, $rc3) = $candidate->($url, $minst);
     is($rc3, 1, 'WR-06 url names another tag: backstop exits 1');
     like($o3, qr/^BACKSTOP=FAIL reason=beta /m, 'WR-06 url names another tag: BACKSTOP=FAIL reason=beta');
 

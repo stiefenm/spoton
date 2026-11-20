@@ -3409,7 +3409,8 @@ sub _hasStoredSession {
 #      errorCb in step 4 reaches _nextTrackError as a stale id and returns
 #      without advancing (without the stop, LMS answers an errorCb with
 #      "next title" and walks the whole playlist).
-#   2. The pairing hint (existing string PLUGIN_SPOTON_SOLOIST_NOT_PAIRED).
+#   2. The pairing hint (existing string PLUGIN_SPOTON_SOLOIST_NOT_PAIRED):
+#      Jive popup and, since 89-12, Material Skin's notification.
 #   3. One warning line, so the refusal is visible in server.log.
 #   4. The errorCb ALWAYS fires, even without a client or when the hint
 #      died, so getNextTrack never wedges (T-77-10).
@@ -3452,14 +3453,15 @@ sub _refuseUnpaired {
         else {
             $client->execute(['stop']);
 
+            # 89-12: through PlayerMessage, which keeps this showBriefly and
+            # adds Material Skin's notification (Material shows no showBriefly).
             my $ok = eval {
                 require Slim::Utils::Strings;
-                $client->showBriefly({
-                    jive => {
-                        type => 'popupplay',
-                        text => [ Slim::Utils::Strings::cstring($client, 'PLUGIN_SPOTON_SOLOIST_NOT_PAIRED') ],
-                    },
-                });
+                require Plugins::SpotOn::PlayerMessage;
+                my $err = Plugins::SpotOn::PlayerMessage::show($client,
+                    [ Slim::Utils::Strings::cstring($client, 'PLUGIN_SPOTON_SOLOIST_NOT_PAIRED') ],
+                    { type => 'error' });
+                die $err if defined $err;
                 1;
             };
             my $hint = $ok ? 'pairing hint shown' : 'pairing hint failed: ' . ($@ || 'unknown error');
