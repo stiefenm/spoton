@@ -6195,4 +6195,198 @@ subtest 'd50-hang-replay-category' => sub {
     unlike($body, qr/Control: dispatch play/, 'd50: an unrelated line stays out of the category');
 };
 
+# ============================================================
+# 90-02 (GAP-02): the PR #212 evidence lines and the untimed shim startup section. SYNTHETIC input, real line FORMS: the
+# server.log lines are the Control.pm / Squeezebox.pm format strings as written in the tree (the leftover-connect subtest
+# reads Control.pm itself, see below), the daemon lines are the `[fakepulse HH:MM:SS.mmm]` forms of fake-libpulse.c. No archive
+# holds the PR's new lines (new code). The rig MAC is the synthetic vm-flac one. The real old-shim startup line is covered by
+# tools/vm-rig/gate/tests/test_gap_eval.py (real archived daemon log).
+# ============================================================
+my $p90_mac = '02:00:00:86:00:02';
+my $p90_run = sub {
+    my (%a) = @_;
+    my $stubdir = tempdir(CLEANUP => 1);
+    my $sudo_stub = write_sudo_passthrough_stub($stubdir);
+    my ($sfh, $srv) = tempfile(); print $sfh map { "$_\n" } @{ $a{server} || [] }; close($sfh);
+    my ($dfh, $dmn) = tempfile(); print $dfh map { "$_\n" } @{ $a{daemon} || [] }; close($dfh);
+    my ($exit, $stdout, $stderr) = run_perl_tool($extract_run_script,
+        [ $p90_mac, ($a{t0} // '12:00:00'), ($a{t1} // '12:00:10'),
+          '--server-log', $srv, '--daemon-log', $dmn, '--date', '2026-11-20',
+          (defined $a{sq} ? ('--squeezelite-log', $a{sq}) : ()) ],
+        SUDO_BIN => $sudo_stub, TZ => 'Europe/Berlin');
+    unlink($srv, $dmn);
+    return ($exit, $stdout, $stderr);
+};
+my $p90_section = sub {
+    my ($stdout, $hdr) = @_;
+    return ($stdout =~ /^--- \Q$hdr\E[^\n]*---\n(.*?)(?=\n---|\z)/ms) ? $1 : '';
+};
+my $p90_pfx = '[26-11-20 12:00:0';
+my $p90_old = 'spotify:track:AAAAAAAAAAAAAAAAAAAAAA';
+my $p90_new = 'spotify:track:BBBBBBBBBBBBBBBBBBBBBB';
+
+subtest 'extract-run-90-gapless' => sub {
+    my @srv = (
+        "${p90_pfx}1.0000] Plugins::SpotOn::Soloist::Control::_earlyEndOutcome (6298) Control: end gap $p90_old -> $p90_new: early EOF used, LMS opened the next title 1.2 s before the daemon's change ($p90_mac)",
+        "${p90_pfx}1.1000] Plugins::SpotOn::Soloist::Control::_nearEndLog (6090) Control: near end of $p90_old (2300 ms left, next $p90_new) -- marked for the end gap ($p90_mac)",
+        "${p90_pfx}1.2000] Plugins::SpotOn::Soloist::Control::_earlyEndFallback (6342) Control: the daemon did not change to $p90_new within the end gap -- requesting it ($p90_mac)",
+        "${p90_pfx}1.3000] Plugins::SpotOn::Soloist::Control::_earlyEndClear (6366) Control: end-gap early EOF state dropped (teardown) ($p90_mac)",
+        "${p90_pfx}1.4000] Plugins::SpotOn::Soloist::Control::_hangWatchArm (5966) Control: hang watch not armed (near end) $p90_old pos=200000 ($p90_mac)",
+        "${p90_pfx}2.0000] Plugins::SpotOn::Soloist::Control::_dispatch (2592) Control: consuming own queue leftover $p90_old (skip_next) before playing $p90_new ($p90_mac)",
+        "${p90_pfx}2.1000] Plugins::SpotOn::Soloist::Control::_onFrame (5162) Control: track_changed $p90_old is our leftover consume, swallowed ($p90_mac)",
+        "${p90_pfx}3.0000] Plugins::SpotOn::Soloist::Control::_onFrame (5466) Control: prefetch hit on $p90_mac ($p90_new)",
+        "${p90_pfx}4.0000] Slim::Player::Squeezebox::play (1023) Starting decoder with format: f flags: 0x0 autostart: 1 buffer threshold: 255 output threshold: 0 samplesize: 1 samplerate: 1 endian: 1 channels: 2, transitionType: 0",
+        # unrelated lines of other categories: they must stay out of every phase-90 category
+        "${p90_pfx}5.0000] Plugins::SpotOn::Soloist::Control::_dispatch (100) Control: dispatch play armed=0 ($p90_mac)",
+        "${p90_pfx}5.1000] Slim::Networking::Slimproto::_stat_handler (810) $p90_mac: STAT-STMd: fullness=1, output_fullness=2, elapsed=3.000",
+    );
+    my @dmn = (
+        '2026-11-20 12:00:00.100: soloist 1.3.10.49 build 1 (20261120) (linux/x86_64)',
+        '[fakepulse 12:00:01.050] near-end: near_end=armed ms=2300 sink_ms=3000',
+        '[fakepulse 12:00:01.060] early-end: old stream ends now (gap 400 ms, sink still 3000 ms)',
+        '[fakepulse BOUNDARY ts=12:00:01.061] near_end: near_end=armed ms=2300 sink_ms=3000',
+        '[fakepulse 12:00:01.070] cork: ignored line of another category',
+    );
+    my ($exit, $stdout, $stderr) = $p90_run->(server => \@srv, daemon => \@dmn);
+    is($exit, 0, 'extract-run-90-gapless: Exit 0') or diag("stderr: $stderr");
+
+    my %body = (
+        outcome  => $p90_section->($stdout, 'server.log: phase-90 end gap outcome'),
+        control  => $p90_section->($stdout, 'server.log: phase-90 early-end control'),
+        leftover => $p90_section->($stdout, 'server.log: phase-90 leftover consume'),
+        prefetch => $p90_section->($stdout, 'server.log: phase-90 prefetch hit'),
+        decoder  => $p90_section->($stdout, 'server.log: LMS decoder start'),
+        daemon   => $p90_section->($stdout, 'Daemon-Log: phase-90 end-gap early EOF'),
+    );
+    # Must-Match: one line per category
+    like($body{outcome},  qr/Control: end gap \S+ -> \S+: early EOF used/,                      'Must-Match end gap outcome');
+    like($body{control},  qr/Control: near end of \S+ \(2300 ms left/,                          'Must-Match early-end control: near end');
+    like($body{control},  qr/did not change to \S+ within the end gap -- requesting it/,        'Must-Match early-end control: fallback request');
+    like($body{control},  qr/end-gap early EOF state dropped \(teardown\)/,                    'Must-Match early-end control: state dropped');
+    like($body{control},  qr/hang watch not armed \(near end\)/,                                'Must-Match early-end control: hang watch guard');
+    like($body{leftover}, qr/consuming own queue leftover \S+ \(skip_next\) before playing/,    'Must-Match leftover: consume');
+    like($body{leftover}, qr/is our leftover consume, swallowed/,                               'Must-Match leftover: swallowed consume');
+    like($body{prefetch}, qr/Control: prefetch hit on \Q$p90_mac\E \(\Q$p90_new\E\)/,           'Must-Match prefetch hit');
+    like($body{decoder},  qr/Starting decoder with format: .* buffer threshold: 255 /,          'Must-Match decoder start with the buffer threshold');
+    like($body{daemon},   qr/\] near-end: near_end=armed ms=2300/,                              'Must-Match daemon: near-end');
+    like($body{daemon},   qr/\] early-end: old stream ends now \(gap 400 ms/,                   'Must-Match daemon: early-end outcome');
+    # Must-NOT-Match: cross-leaks
+    unlike($body{control},  qr/Control: end gap /,            'Must-NOT-Match: the end gap outcome line stays out of the early-end control category');
+    unlike($body{outcome},  qr/Control: near end of/,         'Must-NOT-Match: the near-end line stays out of the outcome category');
+    unlike($body{leftover}, qr/prefetch hit/,                 'Must-NOT-Match: the prefetch hit stays out of the leftover category');
+    unlike($body{daemon},   qr/near_end: /,                   'Must-NOT-Match: the BOUNDARY twin `near_end:` (underscore) stays out of the daemon category');
+    unlike($body{daemon},   qr/cork:/,                        'Must-NOT-Match: a cork line stays out of the daemon category');
+    for my $k (qw(outcome control leftover prefetch decoder daemon)) {
+        unlike($body{$k}, qr/Control: dispatch play|STAT-STMd/, "Must-NOT-Match: unrelated lines stay out of $k");
+    }
+    # every PR line prints in exactly ONE phase-90 category
+    for my $needle ('Control: end gap ', 'Control: near end of ', 'did not change to', 'state dropped', 'hang watch not armed',
+                    'consuming own queue leftover', 'is our leftover consume', 'prefetch hit on', 'Starting decoder with format') {
+        my $n = grep { index($body{$_}, $needle) >= 0 } qw(outcome control leftover prefetch decoder);
+        is($n, 1, "exactly one phase-90 server.log category prints '$needle'");
+    }
+    unlike($stdout, qr/Restzaehler-Selbsttest[^\n]*FEHLGESCHLAGEN/, 'Restzaehler self-test stays silent');
+};
+
+subtest 'extract-run-90-shim-startup' => sub {
+    # SYNTHETIC daemon log with TWO daemon starts in one file (the log is appended across starts): the old start (vsink only)
+    # and the new start (early-end line, then vsink line), each followed by a timed line; a third start whose next timed
+    # line lies AFTER the window end must not be listed; one start has no timed line after it (kept, flagged).
+    my $early = '[fakepulse] early-end: gap_ms=400 min_stream_ms=12000 source=default';
+    my @dmn = (
+        '[fakepulse] vsink: T_ms=3000 source=default',
+        '[fakepulse] constructor: loaded (trace level=1)',
+        '2026-11-20 12:00:01.000: soloist old start',
+        '[fakepulse 12:00:02.000] cork: a timed line',
+        $early,
+        '[fakepulse] vsink: T_ms=3000 source=default',
+        '2026-11-20 12:00:03.500: soloist new start',
+        '[fakepulse] vsink: T_ms=3000 source=default',
+        '2026-11-20 12:00:30.000: soloist start after the window end',
+    );
+    my ($exit, $stdout, $stderr) = $p90_run->(daemon => \@dmn, t0 => '12:00:00', t1 => '12:00:10');
+    is($exit, 0, 'extract-run-90-shim-startup: Exit 0') or diag("stderr: $stderr");
+    my $hdr  = 'Daemon-Log: shim startup lines (untimed; [fakepulse] early-end: / vsink:)';
+    my $body = $p90_section->($stdout, $hdr);
+    my @l = grep { /^L\d+ / } split /\n/, $body;
+    is(scalar @l, 3, 'three startup lines listed (old vsink, new early-end, new vsink); the later start is not');
+    like($l[0], qr/^L1 \[fakepulse\] vsink: T_ms=3000 source=default \[ABGELEITET: naechste Zeile mit Zeitstempel \@2026-11-20 12:00:01\.000\]$/, 'the old start: vsink line with its derived anchor');
+    like($l[1], qr/^L5 \Q$early\E \[ABGELEITET: naechste Zeile mit Zeitstempel \@2026-11-20 12:00:03\.500\]$/, 'the new start: early-end line first, with its derived anchor');
+    like($l[2], qr/^L6 \[fakepulse\] vsink: /, 'the new start: vsink line after it, file order kept');
+    unlike($body, qr/L8 /, 'a start whose next timed line is after the window end is not listed');
+    # the Restzaehler still counts them as no_ts_fakepulse
+    like($stdout, qr/\[fakepulse\] ohne ts: 5,/, 'the untimed lines stay counted in the Restzaehler hint (4 startup + the constructor line = 5)');
+    unlike($stdout, qr/Restzaehler-Selbsttest[^\n]*FEHLGESCHLAGEN/, 'Restzaehler self-test stays silent');
+
+    # no startup line at all -> the section reads "nicht gefunden", never an empty pass
+    my ($e2, $o2) = $p90_run->(daemon => [ '2026-11-20 12:00:01.000: soloist start' ]);
+    like($p90_section->($o2, $hdr), qr/^nicht gefunden vor dem Fensterende$/m, 'no startup line: "nicht gefunden vor dem Fensterende"');
+
+    # a startup line with no timed line after it: listed and flagged
+    my ($e3, $o3) = $p90_run->(daemon => [ '2026-11-20 12:00:01.000: soloist start', '[fakepulse] vsink: T_ms=3000 source=default' ]);
+    like($p90_section->($o3, $hdr), qr/^L2 \[fakepulse\] vsink: T_ms=3000 source=default \[ABGELEITET: keine Zeile mit Zeitstempel danach\]$/m,
+        'a startup line with no timed line after it is listed and flagged');
+};
+
+# Plan-check round 3 W2: the Connect take-over skip (6be35fbe) and the swallowed frames of the skipped leftover, through the REAL
+# extract-run.pl. SYNTHETIC (no archive holds these lines, new PR code), but the wording is NOT retyped here: it is read from
+# the format strings of Control.pm in this tree, so a wording change in Control.pm that the category pattern does not follow
+# fails here and not after the 90-03 freeze.
+subtest 'extract-run-90-leftover-connect' => sub {
+    my $src = _slurp("$project_dir/Plugins/SpotOn/Soloist/Control.pm");
+    my ($skip_fmt) = $src =~ /"(Control: the daemon reached \$uri, a title SpotOn queued for LMS before the Spotify app took over -- skipping it \(skip_next\) \()"/;
+    my ($swal_fmt) = $src =~ /"(Control: \$type of the skipped leftover swallowed \()"/;
+    ok(defined $skip_fmt && defined $swal_fmt, 'both format strings found in Control.pm') or return;
+    my $uri = 'spotify:track:CCCCCCCCCCCCCCCCCCCCCC';
+    (my $skip = $skip_fmt) =~ s/\$uri/$uri/;
+    (my $swal = $swal_fmt) =~ s/\$type/track_changed/;
+    my @srv = (
+        "${p90_pfx}1.0000] Plugins::SpotOn::Soloist::Control::_onFrame (5181) ${skip}$p90_mac)",
+        "${p90_pfx}1.5000] Plugins::SpotOn::Soloist::Control::_onFrame (4866) ${swal}$p90_mac)",
+        # near-miss: the skip wording without the take-over part
+        "${p90_pfx}2.0000] Plugins::SpotOn::Soloist::Control::_onFrame (100) Control: the daemon reached $uri -- skipping it (skip_next) ($p90_mac)",
+    );
+    my ($exit, $stdout, $stderr) = $p90_run->(server => \@srv);
+    is($exit, 0, 'extract-run-90-leftover-connect: Exit 0') or diag("stderr: $stderr");
+    my $body = $p90_section->($stdout, 'server.log: phase-90 leftover consume');
+    like($body, qr/a title SpotOn queued for LMS before the Spotify app took over -- skipping it \(skip_next\) \(\Q$p90_mac\E\)/, 'Must-Match: the Connect take-over skip line');
+    like($body, qr/track_changed of the skipped leftover swallowed \(\Q$p90_mac\E\)/, 'Must-Match: the swallowed frame of the skipped leftover');
+    unlike($body, qr/reached \S+ -- skipping it/, 'Must-NOT-Match: the near-miss without the take-over part');
+};
+
+# 90-03 (rule v2, C3 reference and C5): the squeezelite INFO line `track start sample rate` (output.c:153) is the only clock of what the output
+# really played. REAL line form (two consecutive starts and their neighbours copied from the rig's squeezelite-flac.log of the beta.1 exploratory
+# run 90-gap90-natural-alone-beta1-exploratory-1-261120-2228, lines 4392-4416), the filler lines are SYNTHETIC. The log carries a time of day
+# only; the window of the extract is cut by it, and the last start BEFORE the window is printed first (the old title's start lies up to a title
+# length before the change).
+subtest 'extract-run-90-squeezelite-track-start' => sub {
+    my ($fh, $sq) = tempfile(UNLINK => 1);
+    print $fh map { "$_\n" } (
+        # SYNTHETIC: an earlier DAY of the same log (the file is never rotated, the stamp has no date): the time of day wraps, the older
+        # day's starts inside the same hours must stay out (found in 90-03 on the real log, a start of a run one day earlier at 09:41:33)
+        '[22:29:24.000000] _output_frames:153 track start sample rate: 44100 replay_gain: 65536',
+        '[23:59:59.000000] decode_flush:244 decode flush',
+        '[22:28:17.612978] decode_flush:244 decode flush',
+        '[22:28:19.088510] _output_frames:65 start buffer frames: 70272',
+        '[22:28:19.088636] _output_frames:153 track start sample rate: 44100 replay_gain: 65536',
+        '[22:29:22.387691] decode_thread:100 decode complete',
+        '[22:29:25.452409] _output_frames:153 track start sample rate: 44100 replay_gain: 65536',
+        '[22:29:55.000001] _output_frames:153 track start sample rate: 44100 replay_gain: 65536',
+    );
+    close($fh);
+    my ($exit, $stdout, $stderr) = $p90_run->(sq => $sq, t0 => '22:29:20', t1 => '22:29:30');
+    is($exit, 0, 'extract-run-90-squeezelite: Exit 0') or diag("stderr: $stderr");
+    my $body = $p90_section->($stdout, 'squeezelite: track start');
+    like($body, qr/^PRECEDING \[22:28:19\.088636\] _output_frames:153 track start sample rate: 44100/m, 'Must-Match: the last start before the window comes first, flagged PRECEDING');
+    like($body, qr/^\[22:29:25\.452409\] _output_frames:153 track start sample rate: 44100/m, 'Must-Match: the start inside the window');
+    unlike($body, qr/22:29:55/, 'Must-NOT-Match: a start after the window end');
+    unlike($body, qr/22:29:24\.000000/, 'Must-NOT-Match: a start of an earlier day of the same log (the time of day wraps)');
+    unlike($body, qr/start buffer frames|decode complete/, 'Must-NOT-Match: other squeezelite lines');
+    my ($e2, $o2) = $p90_run->(t0 => '22:29:20', t1 => '22:29:30');
+    unlike($o2, qr/squeezelite: track start/, 'Must-NOT-Match: without the option no such section (every other extract is unchanged)');
+    my ($e3, $o3) = $p90_run->(sq => '/nonexistent/squeezelite.log', t0 => '22:29:20', t1 => '22:29:30');
+    is($e3, 0, 'an unreadable squeezelite log does not abort the extract');
+    like($o3, qr/!! squeezelite-log nicht lesbar: \/nonexistent\/squeezelite\.log/, 'Must-Match: the missing evidence is announced, never silent');
+};
+
 done_testing();

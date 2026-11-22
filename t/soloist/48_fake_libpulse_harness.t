@@ -150,6 +150,9 @@
 # 79-75 IN-01 (Fable-Review beta.5): K2b (Arm 20 ms nach dem Flush, im 50-ms-Fenster, aber nach dem Durchgang, bleibt ein gewoehnlicher
 # Arm) und der fuenfte Mutant MUT_KEEP_FLAGCHECK (ein Textschnitt IM Block KEEP_CONSUME, der beide Flag-Pruefungen aus der Bedingung nimmt;
 # der Produktcode bleibt ungemarkt und das gebaute libpulse.so.0 byte-gleich) MUSS K2b verfehlen. Sieben Namen, Untergrenze 109.
+# 90-01 (Review der Uebernahme von PR #212, A1): die neun early-end-Zellen des Beitrags (Enden am Titelende, ff, Flush, Cork, aus, kurzer
+# Strom, Env-Parse) stehen jetzt einzeln in der Liste; ein gestrichener oder umbenannter Name laesst den Test fehlschlagen. Untergrenze
+# der ok:-Zeilen 120 (gezaehlt am Uebernahmestand, nicht geschaetzt).
 #
 # Der Test uebersetzt fake-libpulse.c mit -DFAKE_LIBPULSE_TEST in ein
 # Temp-Verzeichnis (kein Build-Artefakt im Quellbaum), fuehrt den Harness
@@ -203,7 +206,7 @@ fail("harness: $_") for @fail;
 
 is($run_rc, 0, 'harness exits 0') or diag($out);
 like($out, qr/^All fake-libpulse HTTP mode tests passed$/m, 'harness reports all tests passed');
-cmp_ok(scalar(@ok), '>=', 109, 'harness ran at least the 109 known checks') or diag($out);
+cmp_ok(scalar(@ok), '>=', 120, 'harness ran at least the 120 known checks') or diag($out);
 
 # The regression tests of this session must stay in the harness -- a
 # silently deleted test would otherwise still leave "All ... passed".
@@ -316,6 +319,25 @@ for my $want (
     qr/^ok: skiparm: K3 a GET \/stream queued unread at the keep flush still takes over and gets the new title/m,
     qr/^ok: skiparm: K4 during a stalled client write an arm queued before the keep flush and read by the write loop right after it is consumed by it/m,
     qr/^ok: skiparm: K5 during a stalled client write an arm read 150 ms after the keep flush is a plain arm for the next flush/m,
+    # 90-01 (review of the PR #212 takeover, A1): the nine end-gap early EOF cells of the contributor's harness. A cell dropped or
+    # renamed would still leave "All ... passed" and a floor met by the other cells.
+    qr/^ok: early-end: a marked title end closes the old stream in the gap, the next client gets the whole next title/m,
+    qr/^ok: early-end: ff=<all> empties the virtual sink at the early end, the next client gets the underflow edge at once/m,
+    qr/^ok: early-end: ff=500 takes 500 ms out of the virtual sink, the rest drains as before/m,
+    qr/^ok: early-end: without the mark the old stream stays open through the gap \(behaviour as before\)/m,
+    qr/^ok: early-end: a seek flush after the mark voids it \(no early close in the next gap\)/m,
+    qr/^ok: early-end: a corked \(paused\) stream is not ended early/m,
+    qr/^ok: early-end: EARLY_END_GAP_MS 0 switches it off \(near_end=off, the stream stays open\)/m,
+    qr/^ok: early-end: a stream younger than EARLY_END_MIN_STREAM_MS is not ended early \(LMS sync skipAhead guard\)/m,
+    qr/^ok: early-end: SPOTON_FAKEPULSE_EARLY_END_GAP_MS parse \(env \/ default \/ invalid\)/m,
+    # Fable WR-04: a mark further from the end than the sink depth (a stall) is refused
+    qr/^ok: early-end: a mark further from the end than the sink depth is refused \(near_end=off reason=not_end, the stream stays open\)/m,
+    # Fable recheck N-06: the not_end limit as literals and the voiding of an older mark by a refusal
+    qr/^ok: early-end: the not_end limit against T 3000 is 4000 ms \(4001 refused, 4000 armed and ends the stream\)/m,
+    qr/^ok: early-end: a not_end refusal voids an older mark \(armed, then refused, the stream stays open\)/m,
+    # Fable WR-05: the T + 5 s freshness of the early record. (Its sibling, `POST /near-end is refused off-loopback`,
+    # prints `skip:` on a host without a non-loopback IPv4 and is not listed, like the other off-loopback cells.)
+    qr/^ok: early-end: an early record older than T \+ 5 s is stale, the \/boundary plants as before \(anchor not early\)/m,
 ) {
     like($out, $want, "regression check present: $want");
 }

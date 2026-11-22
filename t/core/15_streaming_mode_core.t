@@ -742,4 +742,86 @@ subtest 'i18n: PLUGIN_SPOTON_STREAMING_MODE* keys have all 11 locales' => sub {
     is($p3{mp3Limit} // '', 'PLUGIN_SPOTON_MP3_LIMIT_NONE', '79-60: maxBitrate unset => "no limit" text');
 }
 
+
+# End-gap early EOF: ProtocolHandler::bufferThreshold gives the gapless continuation stream (the
+# backend role answers query('earlyEndContinues') with 1) a small threshold; every other stream gets
+# what Squeezebox.pm play() computes without the method (bitrate/8 * bufferSecs / 1000, max 255,
+# 20 without a bitrate; bufferSecs unset here -> 3).
+{
+    package EEBackendStub;
+    sub new   { my ($c, $a) = @_; return bless { a => $a, asked => [] }, $c; }
+    sub query { my ($s, $w, %a) = @_; push @{ $s->{asked} }, [ $w, $a{url} ]; return $w eq 'earlyEndContinues' ? $s->{a} : undef; }
+    package EEBackendDies;
+    sub query { die "backend gone\n" }
+    package EESong;
+    sub new           { my ($c, $br) = @_; return bless { br => $br }, $c; }
+    sub streambitrate { return $_[0]{br}; }
+    package EEController;    # like Slim::Player::StreamingController: streamingSong, NO song method
+    sub new           { my ($c, $song) = @_; return bless { song => $song }, $c; }
+    sub streamingSong { return $_[0]{song}; }
+    package EEClient;
+    sub new        { my ($c, $br) = @_; return bless { ctl => EEController->new(EESong->new($br)) }, $c; }
+    sub controller { return $_[0]{ctl}; }
+    sub id         { return 'ee:00:00:00:00:01'; }
+    package main;
+
+    require Plugins::SpotOn::ProtocolHandler;
+    require Plugins::SpotOn::Unified::DaemonManager;
+    no warnings qw(redefine once);
+    my $be;
+    local *Plugins::SpotOn::Unified::DaemonManager::backendFor = sub { return $be; };
+    my $PH  = 'Plugins::SpotOn::ProtocolHandler';
+    my $url = 'spoton://track:eeNextTitle0000000000';
+
+    $be = EEBackendStub->new(1);
+    is($PH->bufferThreshold(EEClient->new(705600), $url), 20, 'early-end: the continuation stream gets 20 KB');
+    is_deeply($be->{asked}, [ [ 'earlyEndContinues', $url ] ], 'early-end: asked the backend role for exactly this url');
+
+    $be = EEBackendStub->new(0);
+    is($PH->bufferThreshold(EEClient->new(705600), $url), 255, 'early-end: any other FLAC stream keeps LMS\'s 255 KB');
+    is($PH->bufferThreshold(EEClient->new(320000), $url), 120, 'early-end: a 320 kbps stream keeps LMS\'s 120 KB');
+    is($PH->bufferThreshold(EEClient->new(undef), $url), 20, 'early-end: no known bitrate -> LMS\'s 20 KB');
+
+    $be = EEBackendStub->new(undef);
+    is($PH->bufferThreshold(EEClient->new(705600), $url), 255, 'early-end: a backend without an opinion (librespot) -> LMS\'s value');
+    $be = undef;
+    is($PH->bufferThreshold(EEClient->new(705600), $url), 255, 'early-end: no backend role at all -> LMS\'s value');
+    $be = bless {}, 'EEBackendDies';
+    is($PH->bufferThreshold(EEClient->new(705600), $url), 255, 'early-end: a backend query that dies -> LMS\'s value, no die');
+    my $bare = bless {}, 'EEClientNoController';
+    is($PH->bufferThreshold($bare, $url), 20, 'early-end: a client without a controller -> 20, no die');
+}
+
+# LMS's Pipeline frees its source (the handler's stream object, ProtocolHandler::Stream) between the transcoder's EAGAIN and the caller's errno
+# check; RemoteStream::DESTROY closes the closed socket again (EBADF). The handler's DESTROY keeps $!.
+{
+    use Errno qw(EAGAIN EBADF);
+    no warnings 'redefine';
+    local *Slim::Player::Protocols::HTTP::DESTROY = sub { $! = EBADF; $@ = 'parent destroy'; };
+    {
+        package Test::PlainSource;
+        our @ISA = ('Slim::Player::Protocols::HTTP');
+    }
+    my $plain = bless {}, 'Test::PlainSource';
+    $! = EAGAIN;
+    undef $plain;
+    is($! + 0, EBADF, 'DESTROY errno: a source without the guard turns the EAGAIN into EBADF (the LMS bug)');
+
+    my $ours = bless {}, 'Plugins::SpotOn::ProtocolHandler::Stream';
+    $! = EAGAIN;
+    $@ = '';
+    undef $ours;
+    is($! + 0, EAGAIN, "DESTROY errno: SpotOn's handler keeps the EAGAIN across its destruction");
+    is($@, '', 'DESTROY errno: and $@');
+
+    local *Slim::Player::Protocols::HTTP::DESTROY = sub { $! = EBADF; die "boom\n" };
+    my $dying = bless {}, 'Plugins::SpotOn::ProtocolHandler::Stream';
+    $! = EAGAIN;
+    my $warned = '';
+    local $SIG{__WARN__} = sub { $warned .= $_[0] };
+    undef $dying;
+    is($! + 0, EAGAIN, 'DESTROY errno: a parent DESTROY that dies changes nothing either');
+    is($warned, '', 'DESTROY errno: and warns nothing');
+}
+
 done_testing();

@@ -5,6 +5,26 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.1.0-beta.2] - 2026-11-22
+
+**Installing this beta.** This is the second beta of SpotOn 4.1. It comes through the beta repository URL `https://stiefenm.github.io/spoton/beta/repo.xml`; if you do not have it yet, add it under **Settings > Plugins > Additional Repositories** and save. The Plugins page then offers SpotOn 4.1.0beta2 as an update over 4.1.0beta1 and over 4.0.0. Restart LMS after the update. The changes below are for the Soloist backend.
+
+### Fixed
+
+- Soloist: the first title change after you start, skip or seek no longer leaves a gap of silence (about 1.5 s on a single player, about 5 s in a sync group). At the end of a title Soloist waits about 3 seconds for its audio to drain before it starts the next title. LMS only opened the next stream after that wait, and right after a start, skip or seek the player's buffer is too short to cover both. SpotOn now ends the old stream as soon as the title's last audio has been sent, so LMS opens the next title during the wait, and the player starts decoding it at once instead of waiting for about 2 seconds of it. Soloist also starts the next title up to about 2.5 seconds earlier, so the players still have enough of the old title left when the new one arrives (`pref plugin.spoton:soloistEarlyEndLeadMs 0` switches only this part off). After a seek into roughly the last 15 seconds of a title, and for a title shorter than that, nothing changes: after such a short stream LMS's sync can skip the first seconds of the next title in a sync group, and ending that stream early would make this happen every time. To compare with the old behaviour, `pref plugin.spoton:soloistEarlyEnd 0` on the LMS CLI switches this off and `pref plugin.spoton:soloistEarlyEnd 1` switches it on again, without a restart. `SPOTON_FAKEPULSE_EARLY_END_GAP_MS=0` in LMS's environment also switches it off; the Soloist daemon reads it when it starts, so restart LMS after you set it. ([#213](https://github.com/stiefenm/spoton/issues/213))
+
+- Soloist: the last seconds of a title that ends quietly, for example in a fade-out, are no longer cut off. At the end of a Soloist stream LMS often ended the song before its FLAC encoder had written the last of it, and dropped that. On a quiet ending the encoder holds several seconds, because quiet audio compresses to a few bytes; in a sync group the players then ran out and the group was silent for several seconds before the next title. ([#213](https://github.com/stiefenm/spoton/issues/213))
+
+- Soloist: when SpotOn takes over the Spotify session from another device, the next title is queued in Soloist again, so the first title change no longer stops for about 4 seconds while Soloist's autoplay starts a different title. ([#213](https://github.com/stiefenm/spoton/issues/213))
+
+- Soloist: starting an album or a playlist in the Spotify app on a player SpotOn is playing now always hands that player to the app. When you had played the same album in the last few minutes, SpotOn took the app's first title for its own autoplay and paused it, and LMS went on with its own next title.
+
+- Soloist: when Soloist moves on to the next title by itself in Browse, SpotOn now lets LMS start the next title's stream after a small buffer instead of waiting for a full one, so the players have the new title before the old one runs out. In our measurements this is what carried the title changes, on a single player and in a sync group. `pref plugin.spoton:soloistEarlyEnd 0` switches it off together with the early end above. ([#213](https://github.com/stiefenm/spoton/issues/213))
+
+### Known issues
+- Soloist, Spotify Connect: when the Spotify app started the playback, the gap at the first title change after a seek is unchanged. This is a known limitation and is planned for a later release.
+- Soloist: a seek into the last seconds of a title (roughly the last 15 seconds) keeps the old behaviour. The next title change can still have a short silence, and in a sync group LMS may skip the first seconds of the next title. This is a known limitation. ([#213](https://github.com/stiefenm/spoton/issues/213))
+
 ## [4.1.0-beta.1] - 2026-11-20
 
 **Installing this beta.** This is the first beta of SpotOn 4.1. It comes through the beta repository URL `https://stiefenm.github.io/spoton/beta/repo.xml`; if you removed it after 4.0.0, add it again under **Settings > Plugins > Additional Repositories** and save. The Plugins page then offers SpotOn 4.1.0beta1 as an update over 4.0.0. Restart LMS after the update. The changes below are for the librespot backend; the Soloist backend only gets the Material Skin notification for its pairing hint.
@@ -23,9 +43,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Spotify Connect: an outdated device update from Spotify that arrives while a player takes over the session no longer ends that session.
 - Browse: a title that Spotify refused while LMS already showed it as playing without sound is now retried and skipped like any other unavailable title, instead of staying silent for its full length.
 - A refusal that 4.0.0 remembered, which could be filed under the wrong account, is cleared once after the update; an account that is really refused shows up again with its next refused title.
+- librespot: after a pause in the last 30 seconds of a title, Next in the LMS web interface no longer leaves the Spotify app showing the player as paused, and playback no longer stops at the end of that title. (Known issue of 4.0.0)
+- librespot: tapping the same title again after a pause no longer stalls for about 3 seconds before it plays. (Known issue of 4.0.0)
 
 ### Known issues
-- The known issues of 4.0.0 still apply.
+- The other known issues of 4.0.0 still apply: the Soloist time display in web interfaces that poll LMS on their own timer, Soloist in the official Lyrion Docker image, and Made for You names in English.
 
 ## [4.0.0] - 2026-11-15
 

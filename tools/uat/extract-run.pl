@@ -553,6 +553,34 @@ my @SRV_CATS = (
     # would be vacuous. The name keeps its `server.log: 84-26 repairs` prefix (t/46 matches by prefix).
     { name => 'server.log: 84-26 repairs (resume refusal / autoplay re-adoption hold / transfer-in re-open follows the daemon / resume position set / change unpause skipped) / 84.2-05 (dormant-session handoff / context-end re-adoption hold)',
       pat  => qr/requestResume refused -- daemon on|plays the autoplay-paused title .* -- not re-adopting|LMS re-open after transfer-in at|resume while LMS paused with the stream gone|change while LMS paused with the stream gone|-- handing over to browse|plays the context-end title .* -- not re-adopting/, count => 1 },
+    # 90-02 (GAP-02, PR #212 end-gap early EOF): the server.log lines the phase-90 measurement protocol greps for. Before
+    # these entries they were only counted, never printed (rule 4), so gap_eval.py (L2, the shim gate's partner checks) and
+    # a reader of the extract could not see them. Each pattern is copied from the Control.pm format string it matches; the
+    # absence of a category reads "nicht gefunden im Fenster", never "the feature did not run". The titles carry none of the
+    # literals the patterns match (an empty block prints the title too). They sit AFTER the 84-26 entry and before the 89 entries: t/46 'extract-run-84.3-settle' reads the section of the 84.3 buffering entry up to the `--- server.log: 84-26 repairs` header, so nothing may sit between them, and the last entry of @SRV_CATS must stay a non-phase-90 one (its section is followed by the remainder line).
+    # (1) the outcome of the end gap, one INFO line per title change (Control.pm _earlyEndOutcome: `Control: end gap <old> ->
+    # <new>: early EOF used ... / early EOF not used ...`).
+    { name => 'server.log: phase-90 end gap outcome (Control: end gap <old> -> <new>: early EOF used / not used; Control.pm, PR #212)',
+      pat  => qr/Control: end gap \S+ -> \S+: early EOF /,                           count => 1 },
+    # (2) the control side of the early end: the near-end mark (`Control: near end of <uri> (<n> ms left, next ..) -- marked for
+    # the end gap / mark not sent / mark refused by the shim (reason=..)`, INFO with a top-up, DEBUG without), the fallback
+    # request when the daemon did not change within the end gap (WARN, also the form at LMS's resume), the dropped state, and
+    # the two hang-watch guards that stay silent near the end. One prefix per line form; none of them carries `early EOF`.
+    { name => 'server.log: phase-90 early-end control (near end of / did not change within the end gap / end-gap state dropped / hang watch or replay skipped near end; Control.pm, PR #212)',
+      pat  => qr/Control: near end of \S+ \(|Control: the daemon did not change to \S+ within the end gap|Control: end-gap early EOF state dropped \(|Control: hang (?:watch not armed|replay skipped) \(near end\) /, count => 1 },
+    # (3) the leftover queue entries of SpotOn's own queue: the consume before a Browse jump (`consuming own queue leftover
+    # <list> (skip_next) before playing <uri>`), the track_changed of that consume (`... is our leftover consume, swallowed`),
+    # the Connect take-over skip of 6be35fbe (`the daemon reached <uri>, a title SpotOn queued for LMS before the Spotify app
+    # took over -- skipping it (skip_next)`) and the frames of the skipped leftover (`<type> of the skipped leftover swallowed`).
+    { name => 'server.log: phase-90 leftover consume (consuming own queue leftover / our leftover consume, swallowed / Connect skip of a title SpotOn queued before the app took over / swallowed frames of the skipped leftover; Control.pm, PR #212)',
+      pat  => qr/Control: consuming own queue leftover |is our leftover consume, swallowed|a title SpotOn queued for LMS before the Spotify app took over -- skipping it|of the skipped leftover swallowed/, count => 1 },
+    # (4) the prefetch hit (`Control: prefetch hit on <mac> (<uri>)`, DEBUG): the daemon's echo of the previous title paid off.
+    { name => 'server.log: phase-90 prefetch hit (Control: prefetch hit on <mac>; Control.pm)',
+      pat  => qr/Control: prefetch hit on /,                                         count => 1 },
+    # (5) LMS's own decoder start (Slim::Player::Squeezebox::play, logger network.protocol.slimproto, INFO): the `buffer
+    # threshold` the player starts the next title with is the PR's bufferThreshold effect, readable only here.
+    { name => 'server.log: LMS decoder start (Starting decoder ... buffer threshold: N; Squeezebox.pm, network.protocol.slimproto INFO)',
+      pat  => qr/Starting decoder with format: .* buffer threshold: \S+/,            count => 1 },
     # 89-02 (ACC-02/ACC-03): the two server.log lines of the refused-audio-key reaction -- the stop (or pause) WARN that
     # DaemonManager _onAudioKeyHalt writes once per limit marker of the fork, and the INFO line _fileAudioKeyDenial writes
     # when it files a denial (paired, guest or unknown). Without a category both would be counted, never printed (rule 4).
@@ -728,6 +756,15 @@ my @DMN_CATS = (
     # literals the pattern matches. The ids in these lines are NOT redacted by this tool.
     { name => 'Daemon-Log: phase-89 Connect device pushes (which device Spotify names as the playing one per push, play session notices; librespot_connect)',
       pat  => qr/\] cluster update: |\] session update: </, count => 1 },
+    # 90-02 (GAP-02, PR #212): the shim's timed end-gap lines, written at debug trace as `[fakepulse <ts>] near-end: <reply
+    # body>` (the answer to POST /near-end: `near_end=armed ..` or `near_end=off reason=..`) and `[fakepulse <ts>] early-end:
+    # mark expired unused / not used, the stream is only N ms old / old stream ends now (gap N ms, sink still N ms[,
+    # fast-forward N ms])`. Only the timed HYPHEN forms: the BOUNDARY twin is written with an underscore (`near_end: `) and
+    # the untimed startup line (`[fakepulse] early-end: gap_ms=..`) has no timestamp, so it cannot be windowed -- it has its
+    # own section (emit_shim_startup). Before this entry the lines were only counted, never printed (rule 4). Absence reads
+    # "nicht gefunden im Fenster" (no early end attempted in that window), never "the shim ignored the mark".
+    { name => 'Daemon-Log: phase-90 end-gap early EOF (near-end mark / early-end outcome; fake-libpulse PR #212)',
+      pat  => qr/\] (?:near-end|early-end): /, count => 1 },
 );
 
 # Rauschkategorien des Daemon-Logs: eigene Behandlung, aber sie zaehlen als
@@ -771,7 +808,7 @@ sub usage {
     return <<'USAGE';
 tools/uat/extract-run.pl <mac> <T0> <T1> [--out FILE] [--recorder FILE]
   [--recorder-seconds N] [--server-log FILE] [--daemon-log FILE]
-  [--date YYYY-MM-DD] [--daemon-end-epoch E]
+  [--date YYYY-MM-DD] [--daemon-end-epoch E] [--squeezelite-log FILE]
 
   <mac>   Spieler-MAC, z.B. 02:00:00:5a:11:03
   <T0>    Fensteranfang-Anker, HH:MM:SS[.mmm] (lokale Zeit)
@@ -791,6 +828,10 @@ Flags:
   --daemon-end-epoch E    Ende-Anker der Tagesrekonstruktion des Daemon-Logs
                           (Epoche der letzten Zeile; Default: mtime der Datei;
                           fuer Kopien ohne erhaltene mtime)
+  --squeezelite-log FILE  squeezelite-Log des Spielers (90-03): druckt die INFO-Zeilen
+                          `track start sample rate` des Fensters und die letzte davor
+                          (Abschnitt 'squeezelite: track start'); ohne die Option
+                          bleibt die Ausgabe unveraendert
   --help / -h             diese Hilfe
 
 WICHTIG: Laufnamen wie "L1" sind zwischen Messreihen mehrdeutig (z.B. G3-L1
@@ -1236,6 +1277,13 @@ sub scan_log {
     my @win;
     my @attach;
     my $fh = $a{fh};
+    # 90-02 (shim startup lines): the shim writes `[fakepulse] early-end: gap_ms=.. min_stream_ms=.. source=..` and
+    # `[fakepulse] vsink: T_ms=.. source=..` ONCE at start WITHOUT a timestamp (fake-libpulse.c, startup block), so
+    # parse_line discards them as no_ts_fakepulse and no window category can ever print them. Remember each such line
+    # with its line number; the next timed line of the same file (any record parse_line accepts) is its derived anchor.
+    # The lines stay counted as no_ts_fakepulse (the Restzaehler is unchanged); the section is emit_shim_startup().
+    my @pending;
+    $agg{untimed} = [];
 
     while (defined(my $line = <$fh>)) {
         $agg{bytes} += length $line;
@@ -1251,7 +1299,17 @@ sub scan_log {
         $state->{lineno} = $agg{lines};   # 84-22 splice fix: same numbering as daemon_day_plan()
 
         my $r = parse_line($a{source}, $line, $state);
-        if ($r->{discard}) { $agg{ $r->{discard} }++; next; }
+        if ($r->{discard}) {
+            $agg{ $r->{discard} }++;
+            push @pending, { lineno => $agg{lines}, raw => $line }
+                if $a{source} eq 'daemon' && $r->{discard} eq 'no_ts_fakepulse'
+                   && $line =~ /^\[fakepulse\] (?:early-end|vsink): /;
+            next;
+        }
+        if (@pending) {
+            $_->{anchor} = { stamp => $r->{stamp}, day => $r->{day}, epoch => $r->{epoch} } for @pending;
+            push @{ $agg{untimed} }, splice(@pending);
+        }
 
         $agg{timestamped}++;
         $agg{lenient_ts}++ if $r->{ts_lenient};
@@ -1292,7 +1350,81 @@ sub scan_log {
         push @win, $r;
     }
 
+    push @{ $agg{untimed} }, splice(@pending);   # no timed line follows: kept, anchor undef (never silent)
     return (\@win, \%agg, \@attach);
+}
+
+# ---------------------------------------------------------------------------
+# emit_shim_startup -- 90-02: the untimed shim startup lines ([fakepulse] early-end: / vsink:) as an own section.
+# Rule 3 (every line carries source and time basis): the line has none of its own, so it is printed with its daemon-log
+# line number and the stamp of the next timed line as ABGELEITET. A line is listed when that anchor is at or before the
+# window end (day first when --date is given and the day is known, then the time of day); a line with no timed line
+# after it is listed too, flagged. The gate gap_eval.py `shim` reads this section: the governing start is the LAST
+# vsink line, and its early-end line (if any) lies between the previous timed line and that vsink line.
+# ---------------------------------------------------------------------------
+sub emit_shim_startup {
+    my (%a) = @_;
+    my $out = $a{out};
+    push @$out, '--- Daemon-Log: shim startup lines (untimed; [fakepulse] early-end: / vsink:) ---';
+    my $n = 0;
+    for my $u (@{ $a{agg}{untimed} || [] }) {
+        my $an = $u->{anchor};
+        if ($an) {
+            my $cmp = ($a{date_short} && $an->{day} ne '?') ? (daykey($an->{day}) cmp daykey($a{date_short})) : 0;
+            next unless $cmp < 0 || ($cmp == 0 && $an->{epoch} <= $a{win_end});
+            push @$out, sprintf('L%d %s [ABGELEITET: naechste Zeile mit Zeitstempel @%s]', $u->{lineno}, $u->{raw}, $an->{stamp});
+        }
+        else {
+            push @$out, sprintf('L%d %s [ABGELEITET: keine Zeile mit Zeitstempel danach]', $u->{lineno}, $u->{raw});
+        }
+        $n++;
+    }
+    push @$out, 'nicht gefunden vor dem Fensterende' unless $n;
+    push @$out, '';
+    return $n;
+}
+
+# ---------------------------------------------------------------------------
+# emit_squeezelite_starts -- 90-03: the squeezelite INFO line `track start sample rate` (output.c:153, the moment the first frame of a
+# new track is consumed by the output) with the log's own time of day (local, no date). The difference of two consecutive starts is
+# the length the old title really played; the old title's start lies up to a title length before the change, so the last start BEFORE
+# the window is printed first, flagged PRECEDING. Only with --squeezelite-log (the other extracts stay unchanged); an unreadable file is
+# announced, never silent. gap_eval.py reads this section (rule v2: C3 reference, C5).
+# ---------------------------------------------------------------------------
+sub emit_squeezelite_starts {
+    my (%a) = @_;
+    my $out = $a{out};
+    my $file = $a{file};
+    push @$out, '--- squeezelite: track start (INFO, output.c:153; time of day of the squeezelite log; last start before the window first as PRECEDING) ---';
+    my $fh;
+    if (!-r $file || !open($fh, '<', $file)) {
+        push @$out, "!! squeezelite-log nicht lesbar: $file";
+        push @$out, '';
+        return 0;
+    }
+    # The squeezelite log is never rotated and its stamp has no date: it holds every day since the player started, and the time of day
+    # wraps at each midnight. The lines are cut into day segments (a jump back of more than an hour starts a new one) and the LAST segment
+    # that has a start inside the window is used; one without a start in the window but with one before it comes second.
+    my (@segs, $cur, $last);
+    while (my $ln = <$fh>) {
+        chomp $ln;
+        next unless $ln =~ /^\[([0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+)\] /;
+        my ($sec) = parse_hms($1);
+        if (!defined $last || $sec < $last - 3600) { $cur = { prev => undef, in => [] }; push @segs, $cur; }
+        $last = $sec;
+        next unless $ln =~ /^\[[0-9:.]+\] _output_frames:[0-9]+ track start sample rate:/;
+        if    ($sec < $a{win_start}) { $cur->{prev} = $ln; }
+        elsif ($sec <= $a{win_end})  { push @{ $cur->{in} }, $ln; }
+    }
+    close $fh;
+    my ($seg) = grep { @{ $_->{in} } } reverse @segs;
+    ($seg) = grep { defined $_->{prev} } reverse @segs unless $seg;
+    my ($prev, @in) = $seg ? ($seg->{prev}, @{ $seg->{in} }) : (undef);
+    push @$out, "PRECEDING $prev" if defined $prev;
+    push @$out, @in;
+    push @$out, 'nicht gefunden im Fenster' unless defined $prev || @in;
+    push @$out, '';
+    return scalar(@in) + (defined $prev ? 1 : 0);
 }
 
 # ---------------------------------------------------------------------------
@@ -2548,7 +2680,7 @@ sub emit_leftovers {
 sub main {
     my @argv = @_;
     my %o = (out => '', recorder => '', recorder_seconds => '', full => 0,
-             server_log => $SERVER_LOG_DEFAULT, daemon_log => '', date => '', daemon_end_epoch => '');
+             server_log => $SERVER_LOG_DEFAULT, daemon_log => '', date => '', daemon_end_epoch => '', squeezelite_log => '');
     my @pos;
     while (@argv) {
         my $x = shift @argv;
@@ -2560,6 +2692,7 @@ sub main {
         elsif ($x eq '--daemon-log')          { $o{daemon_log} = @argv ? shift @argv : ''; }
         elsif ($x eq '--date')                { $o{date}    = @argv ? shift @argv : ''; }
         elsif ($x eq '--daemon-end-epoch')    { $o{daemon_end_epoch} = @argv ? shift @argv : ''; }
+        elsif ($x eq '--squeezelite-log')     { $o{squeezelite_log} = @argv ? shift @argv : ''; }
         elsif ($x eq '--full')                { $o{full}    = 1; }
         elsif ($x =~ /^--/)                   { abort("ABBRUCH: unbekannte Option '$x'"); }
         else                                  { push @pos, $x; }
@@ -2760,6 +2893,7 @@ sub main {
         emit_categories(out => \@out, recs => $dmn_win, cats => \@DMN_CATS,
                         t1 => $t1s, win_start => $win_start, win_end => $win_end,
                         mac_note => 0, mark_day => $mark_day);
+        emit_shim_startup(out => \@out, agg => $dmn_agg, win_end => $win_end, date_short => $date_short);
         $uf_count = emit_underflow(\@out, $dmn_win, $o{full}, $mark_day);
         $ws_count = emit_write_summary(out => \@out, recs => $dmn_win, t0 => $t0s,
                                       t1 => $t1s, full => $o{full}, mark_day => $mark_day);
@@ -2768,6 +2902,9 @@ sub main {
                            scalar @duncat, scalar @$dmn_win);
         push @out, '';
     }
+
+    emit_squeezelite_starts(out => \@out, file => $o{squeezelite_log}, win_start => $win_start, win_end => $win_end)
+        if $o{squeezelite_log} ne '';
 
     # Fenster ohne jede Signalzeile (N-WR-02: Rauschkategorien zaehlen mit,
     # sonst behauptet der Banner "nichts gefunden, Parameter pruefen", waehrend

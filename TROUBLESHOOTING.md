@@ -148,6 +148,16 @@ If the issue persists, collect a diagnostic bundle and include your Docker setup
 
 **If a squeezelite on PulseAudio/PipeWire stutters in groups:** such a player gets PipeWire's 2 s default buffer, which makes LMS skip it by about 2 s after each start. Use the ALSA build of squeezelite (for example on HiFiBerry hardware), or set `PULSE_LATENCY_MSEC=100` in the player's service environment.
 
+### Soloist: gap or cut-off at a title change
+
+**Symptoms:** With the Soloist backend, a short silence at a title change, or the last seconds of a quietly ending title are cut off.
+
+**Cause:** Since 4.1.0-beta.2, SpotOn hands the next title over without a gap: when Soloist moves on to the next title by itself, SpotOn lets LMS start the next title's stream after a small buffer instead of waiting for a full one. Two cases are known limitations:
+- A seek into the last seconds of a title (roughly the last 15 seconds) keeps the old behaviour. The next title change can still have a short silence, and in a sync group LMS may skip the first seconds of the next title.
+- In Spotify Connect mode (the Spotify app started the playback), the gap at the first title change after a seek is unchanged.
+
+**Solution:** To compare with the old behaviour, or to switch the new handover off, enter `pref plugin.spoton:soloistEarlyEnd 0` on the LMS command line interface (CLI, port 9090 by default). `pref plugin.spoton:soloistEarlyEnd 1` switches it on again. No restart is needed. If you hear a gap outside the two cases above, collect a diagnostic bundle right after it happens and open an issue.
+
 ### Spotify-Konto koppeln (pair a Spotify account)
 
 **Symptoms:** SpotOn Settings shows no account, an account is marked "Bitte Konto einmal koppeln" / "Please pair this account once", or the Spotify app never lists the pairing device.

@@ -136,6 +136,43 @@ sub contentType { Plugins::SpotOn::Unified::DaemonManager->backendClass->capabil
 
 sub isRemote    { 1 }
 
+# End-gap early EOF (Soloist): the stream LMS opens for the queued next title DURING the end gap
+# of the old one (fake-libpulse ended the old stream early, Control::_earlyEndPlan answered the
+# request) is a gapless continuation: the players are still playing the old title's tail from their
+# buffers. LMS's remote-stream start threshold (255 KB for FLAC, ~2.3 s of audio) would hold the
+# decoder until real-time data had accumulated past the daemon's ~1.5 s prebuffer burst, and the old
+# tail runs out first (measured: STMo with 262144 bytes waiting in the decoder). That one stream
+# gets EARLY_END_BUFFER_KB. Every other stream gets exactly what Squeezebox.pm play() computes when
+# a handler has no bufferThreshold: bitrate/8 * bufferSecs / 1000 KB, at most 255, 20 without a
+# known bitrate.
+use constant EARLY_END_BUFFER_KB => 20;
+
+sub bufferThreshold {
+    my ($class, $client, $url) = @_;
+
+    # Asked through the backend role (the librespot role has no opinion: undef).
+    my $continues = eval {
+        require Plugins::SpotOn::Unified::DaemonManager;
+        my $be = Plugins::SpotOn::Unified::DaemonManager->backendFor($client);
+        $be ? $be->query('earlyEndContinues', url => $url) : undef;
+    };
+    return EARLY_END_BUFFER_KB if $continues;
+
+    # The song LMS is about to stream (Squeezebox.pm play() reads it from its SongStreamController;
+    # here only the client's StreamingController is at hand: streamingSong). Never dies: this runs
+    # inside LMS's stream start.
+    my $bitrate = eval {
+        my $controller = ($client && blessed($client) && $client->can('controller')) ? $client->controller : undef;
+        my $song = ($controller && $controller->can('streamingSong')) ? $controller->streamingSong : undef;
+        $song ? $song->streambitrate : undef;
+    };
+    return 20 unless $bitrate;
+
+    my $bufferSecs = $serverPrefs->get('bufferSecs') || 3;
+    my $threshold  = (int($bitrate / 8) * $bufferSecs) / 1000;
+    return $threshold > 255 ? 255 : $threshold;
+}
+
 sub trackGain {
     my ($class, $client, $url) = @_;
 
@@ -1909,6 +1946,25 @@ sub _metaCurrent {
 package Plugins::SpotOn::ProtocolHandler::Stream;
 
 our @ISA = ('Slim::Player::Protocols::HTTP');
+
+# LMS 9.1's transcoding path (Slim::Player::Pipeline::sysread, taken by every Soloist stream LMS
+# transcodes, e.g. FLAC via sox; the PCM passthrough has no Pipeline) closes this stream object, its source, at the source's EOF, drops the last reference to it and
+# reads the transcoder (sox) in the same call. sox writes its last output only once its input is
+# closed, so that read fails with EAGAIN. Leaving the call frees this object; RemoteStream::DESTROY
+# closes the closed socket again, which sets $! to EBADF before Source::_readNextChunk checks it.
+# LMS takes the EAGAIN for a read error, ends the song and throws away what sox still writes.
+# How much that is depends on the music: FLAC packs a quiet or silent passage into a few bytes per
+# frame, and sox keeps its output in a 4 KB stdio buffer until it is full, so the last seconds of a
+# fade-out can sit in sox and are lost (measured 2026-11-15: up to ~4 s, with and without the
+# end-gap early EOF; strace and a debug build showed errno 11 entering this DESTROY and 9 after
+# the parent's). Keeping $! (and $@) across the destruction leaves LMS the real EAGAIN: it waits
+# for sox's last output and ends the song on sox's EOF.
+sub DESTROY {
+    local ($!, $@);
+    my $self = shift;
+    eval { $self->SUPER::DESTROY(@_) };
+    return;
+}
 
 sub requestString {
     my ($self, $client, $url, $post, $seekdata) = @_;

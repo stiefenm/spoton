@@ -208,9 +208,15 @@ sub controller {
 package Slim::Player::Client::_StubController;
 our @JUMPS;
 our $ON_JUMP;
-sub new       { return bless { paused => 0, stopped => 0 }, shift; }
+# The real StreamingController's play-state readers, each from its own knob: isPlaying(1) is
+# playingState PLAYING, isPlaying() is neither stopped nor paused, buffering() is 1/2 while
+# BUFFERING/WAITING_TO_SYNC (end-gap early EOF: Control::_lmsPlayersStopped). The default is a
+# playing LMS.
+sub new       { return bless { paused => 0, stopped => 0, playing => 1, buffering => 0 }, shift; }
 sub isPaused  { return $_[0]->{paused}; }
 sub isStopped { return $_[0]->{stopped}; }
+sub isPlaying { return $_[1] ? $_[0]->{playing} : (!$_[0]->{stopped} && !$_[0]->{paused}); }
+sub buffering { return $_[0]->{buffering} // 0; }
 sub jumpToTime {
     my ($self, @args) = @_;
     push @JUMPS, [ @args ];
@@ -252,7 +258,8 @@ sub playmode {
     }
     return $PLAYMODE;
 }
-sub songTime { return 0; }
+our $SONGTIME = 0;    # LMS's play point of the playing song (the lead top-up cases set it)
+sub songTime { return $SONGTIME; }
 sub streamingSongIndex { return $INDEX; }
 sub playingSongIndex   { return $INDEX; }
 1;
@@ -472,6 +479,9 @@ our $ON_KEEP_WRITE;
 # moved out of @CALLS/@REQUESTS/@SYSWRITE_CALLS into @SEEK_KEEP_WRITES so no
 # pre-existing /boundary or /seek-arm count shifts.
 our @SEEK_KEEP_WRITES;
+# End-gap early EOF: POST /near-end?ms=<remaining> is its own channel too (no /boundary or
+# /seek-arm count shifts); @NEAR_END_WRITES holds the request lines in order.
+our @NEAR_END_WRITES;
 sub syswrite {
     my $self = shift;
     my ($data) = @_;
@@ -479,6 +489,13 @@ sub syswrite {
         pop @CALLS;
         pop @REQUESTS;
         push @SEEK_KEEP_WRITES, $data;
+        print { $self } $data;
+        return length($data);
+    }
+    if ($data =~ m{^POST /near-end\?}) {
+        pop @CALLS;
+        pop @REQUESTS;
+        push @NEAR_END_WRITES, $data;
         print { $self } $data;
         return length($data);
     }
@@ -3091,6 +3108,26 @@ my $NEXT_TID = 'spotify:track:3n3Ppam7vgaVa1iaRUc9Lp';    # s01-pure-daemon-queu
         . "(S1: CR-01's postSeek 0 waits for the first position frame)");
 }
 
+# --- a LATE track_changed echo (after T1 released the play; a take-over's activate delays it) queues the successor
+# just like the timely echo: live 2026-11-15 06:50 nothing was queued, the daemon's autoplay took over at the end ---
+{
+    local @Slim::Player::Playlist::ENTRIES = ( undef, Test::MockTrack->new("spoton://track:3n3Ppam7vgaVa1iaRUc9Lp") );
+    local $Slim::Player::Source::INDEX = 0;
+
+    my ($ctl, $daemon, $ws) = fresh_control(
+        mac => 'aa:bb:cc:dd:ee:2f',
+        observed => { wsConnected => 1, meta => { $TID => { duration => 200 } }, track => 'spotify:track:previousXYZ', status => 'playing' },
+    );
+
+    $ctl->requestTrack($TID, 0, {});
+    Slim::Utils::Timers::fire_due(Time::HiRes::time() + 0.6);    # T1 fires -- pending released, expectEcho armed
+    ok($ctl->observed->{expectEcho}, "prefetch: late echo setup -- T1 armed the late-echo expectation");
+    $ctl->onEvent(decode_frame(load_fixture('track_changed.json')));    # the late echo
+    is($ctl->observed->{expectEcho}, undef, "prefetch: late echo -- recognized as our own (expectation consumed)");
+    is_deeply($ws->sent, [ [ 'play', { uri => $TID } ], [ 'add_to_queue', { uri => $NEXT_TID } ] ],
+        "prefetch: a late track_changed echo queues the successor too (add_to_queue)");
+}
+
 # --- next entry is an episode -> no add_to_queue ---
 {
     local @Slim::Player::Playlist::ENTRIES = ( undef, Test::MockTrack->new('spoton://episode:someEpisodeId12345') );
@@ -3273,6 +3310,308 @@ sub n4_queue_changed {
         "D-49: no origin marker for the successor when nothing was queued");
 }
 
+# --- Leftover consume: own entries at the head of the daemon's queue that LMS does not want now are consumed with
+# one skip_next each before the play (the daemon has no queue removal); their track_changed echoes are swallowed.
+my $LC_L1 = 'spotify:track:ownLeftoverTitle0001';
+my $LC_L2 = 'spotify:track:ownLeftoverTitle0002';
+sub lc_session {
+    my ($mac, $entries, $own) = @_;
+    my ($ctl, $daemon, $ws) = fresh_control(
+        mac => $mac, mode => 'browse',
+        observed => { wsConnected => 1, meta => { $TID => { duration => 200 } }, track => 'spotify:track:previousXYZ',
+                      status => 'playing', is_active => 1 },
+    );
+    # the production order: add_to_queue (_markOwnQueue) first, then the daemon's queue_changed with the entries
+    $ctl->_markOwnQueue($_) for @$own;
+    $ctl->onEvent(n4_queue_changed(@$entries));
+    return ($ctl, $daemon, $ws);
+}
+sub lc_tc {
+    my ($uri) = @_;
+    my $f = decode_frame(load_fixture('track_changed.json'));
+    $f->{item}{uri} = $uri;
+    return $f;
+}
+{
+    local @Slim::Player::Playlist::ENTRIES = ( undef, Test::MockTrack->new("spoton://track:3n3Ppam7vgaVa1iaRUc9Lp") );
+    local $Slim::Player::Source::INDEX = 0;
+    my ($ctl, $daemon, $ws) = lc_session('aa:bb:cc:dd:ee:c1', [ [ 'q1', 'queue', $LC_L1 ] ], [ $LC_L1 ]);
+    my $success = 0;
+    $ctl->requestTrack($TID, 0, { successCb => sub { $success++ } });
+    is_deeply($ws->sent, [ [ 'skip_next', {} ], [ 'play', { uri => $TID } ] ],
+        "LC-1: an own leftover at the head: one skip_next consumes it, then the play");
+    is_deeply($ctl->observed->{leftoverConsume}{uris}, [ $LC_L1 ], "LC-1: its echo is expected");
+    is($ctl->pending && $ctl->pending->{uri}, $TID, "LC-1: the pending slot is the play");
+
+    @IO::Socket::INET::CALLS = ();
+    $ctl->onEvent(lc_tc($LC_L1));
+    is($ctl->observed->{track}, 'spotify:track:previousXYZ', "LC-1: the leftover's track_changed is swallowed (observed.track unchanged)");
+    is($ctl->pending && $ctl->pending->{uri}, $TID, "LC-1: the play stays pending");
+    is(scalar(@IO::Socket::INET::CALLS), 0, "LC-1: no boundary, no loopback POST for it");
+    ok(!exists $ctl->observed->{leftoverConsume}, "LC-1: the expectation is consumed");
+    ok(!exists(($ctl->observed->{queuedByUs} || {})->{$LC_L1}), "LC-1: and the entry is no longer ours");
+    is_deeply($ws->sent, [ [ 'skip_next', {} ], [ 'play', { uri => $TID } ] ], "LC-1: nothing is sent for the swallowed echo");
+
+    is_deeply($ctl->observed->{queueUris}, [], "LC-1: the consumed entry left the known queue at once");
+    $ctl->onEvent(decode_frame(load_fixture('track_changed.json')));
+    is($ctl->pending, undef, "LC-1: the play's echo settles the slot");
+    is($success, 1, "LC-1: successCb once");
+    is($ctl->observed->{track}, $TID, "LC-1: observed.track = target");
+    is_deeply($ws->sent->[-1], [ 'add_to_queue', { uri => $NEXT_TID } ],
+        "LC-1: the successor is queued at the play's echo, before the daemon's queue_changed (the queue is clean)");
+}
+{
+    my ($ctl, $daemon, $ws) = lc_session('aa:bb:cc:dd:ee:c2', [ [ 'q1', 'queue', $LC_L1 ] ], []);
+    $ctl->requestTrack($TID, 0, {});
+    is_deeply($ws->sent, [ [ 'play', { uri => $TID } ] ], "LC-2: a head SpotOn did not queue (the user's own) is left alone");
+}
+{
+    local $Slim::Utils::Prefs::FAKE_VALUES{soloistConsumeLeftovers} = 0;
+    my ($ctl, $daemon, $ws) = lc_session('aa:bb:cc:dd:ee:c3', [ [ 'q1', 'queue', $LC_L1 ] ], [ $LC_L1 ]);
+    $ctl->requestTrack($TID, 0, {});
+    is_deeply($ws->sent, [ [ 'play', { uri => $TID } ] ], "LC-3: soloistConsumeLeftovers 0 -> only the play");
+}
+{
+    my ($ctl, $daemon, $ws) = lc_session('aa:bb:cc:dd:ee:c4',
+        [ [ 'q1', 'queue', $LC_L1 ], [ 'q2', 'queue', $LC_L2 ], [ 'q3', 'queue', 'spotify:track:usersOwnQueued0001' ] ],
+        [ $LC_L1, $LC_L2 ]);
+    $ctl->requestTrack($TID, 0, {});
+    is_deeply($ws->sent, [ [ 'skip_next', {} ], [ 'skip_next', {} ], [ 'play', { uri => $TID } ] ],
+        "LC-4: two own leftovers at the head: two skip_next, the user's entry behind them stays");
+    $ctl->onEvent(lc_tc($LC_L1));
+    $ctl->onEvent(lc_tc($LC_L2));
+    is($ctl->observed->{track}, 'spotify:track:previousXYZ', "LC-4: both echoes swallowed, in order");
+    ok(!exists $ctl->observed->{leftoverConsume}, "LC-4: nothing left to expect");
+}
+{
+    # an own entry at the head that IS the target keeps the F-18-N4 path (one skip_next as the play)
+    my ($ctl, $daemon, $ws) = lc_session('aa:bb:cc:dd:ee:c5', [ [ 'q1', 'queue', $TID ] ], [ $TID ]);
+    $ctl->requestTrack($TID, 0, {});
+    is_deeply($ws->sent, [ [ 'skip_next', {} ] ], "LC-5: the head is the target: the existing skip_next path, no consume");
+    ok(!exists $ctl->observed->{leftoverConsume}, "LC-5: no consume expectation");
+}
+{
+    my ($ctl, $daemon, $ws) = lc_session('aa:bb:cc:dd:ee:c6', [ [ 'q1', 'queue', $LC_L1 ] ], [ $LC_L1 ]);
+    $ctl->requestTrack($TID, 0, {});
+    $ctl->observed->{leftoverConsume}{until} = Time::HiRes::time() - 1;
+    $ctl->onEvent(lc_tc($LC_L1));
+    ok(!exists $ctl->observed->{leftoverConsume}, "LC-6: an expired expectation is dropped");
+    is($ctl->observed->{track}, $LC_L1, "LC-6: and the track_changed is processed as before");
+}
+{
+    # LC-7 (Fable WR-03): a failed wire send on the consume path answers LMS like the plain path does (errorCb), and
+    # the consume expectation is rolled back.
+    my ($ctl0, $daemon0, $ws0) = lc_session('aa:bb:cc:dd:ee:c7', [ [ 'q1', 'queue', $LC_L1 ] ], []);
+    $ws0->{send_success} = 0;
+    my ($ok0, $err0) = (0, 0);
+    $ctl0->requestTrack($TID, 0, { source => 'getNextTrack', successCb => sub { $ok0++ }, errorCb => sub { $err0++ } });
+    is($err0, 1, "LC-7 control: a failed play send (nothing consumed) fires LMS's errorCb");
+
+    my ($ctl, $daemon, $ws) = lc_session('aa:bb:cc:dd:ee:c8', [ [ 'q1', 'queue', $LC_L1 ] ], [ $LC_L1 ]);
+    $ws->{send_success} = 0;
+    my ($ok, $err) = (0, 0);
+    my $rc = $ctl->requestTrack($TID, 0, { source => 'getNextTrack', successCb => sub { $ok++ }, errorCb => sub { $err++ } });
+    is($err, 1, "LC-7: a failed skip_next send on the consume path fires LMS's errorCb too");
+    is($ok, 0, "LC-7: and no successCb");
+    ok(!$rc, "LC-7: requestTrack reports the failure");
+    ok(!exists $ctl->observed->{leftoverConsume}, "LC-7: the consume expectation is rolled back (no echo is swallowed)");
+    is($ctl->pending, undef, "LC-7: no pending slot");
+}
+
+# --- Leftover memory (LM): own entries still queued when Control loses control are remembered by uid; in Connect the
+# daemon reaching one is skipped at once (Spotify plays the queue before the app's context), a later Browse jump
+# consumes one. Only a stable uid counts (uid = uri means the daemon has none).
+{
+    my ($ctl, $daemon, $ws) = lc_session('aa:bb:cc:dd:ee:d1',
+        [ [ 'q12', 'queue', $LC_L1 ], [ $LC_L2, 'queue', $LC_L2 ], [ 'q14', 'queue', 'spotify:track:usersOwnQueued0001' ] ],
+        [ $LC_L1, $LC_L2 ]);
+    $ctl->_forgetOwnQueue('test');
+    is_deeply($ctl->observed->{ownLeftovers}, { q12 => $LC_L1 },
+        "LM-1: forgetting the own queue remembers the own entry by its uid (not the one without a stable uid, not the user's)");
+    is_deeply($ctl->observed->{queuedByUs}, {}, "LM-1: and forgets queuedByUs as before");
+    $ctl->onEvent(n4_queue_changed([ 'q14', 'queue', 'spotify:track:usersOwnQueued0001' ]));
+    is_deeply($ctl->observed->{ownLeftovers}, {}, "LM-2: an entry gone from the queue is no longer a leftover");
+}
+{
+    my ($ctl, $daemon, $ws) = lc_session('aa:bb:cc:dd:ee:d3', [ [ 'q12', 'queue', $LC_L1 ] ], [ $LC_L1 ]);
+    $ctl->_forgetOwnQueue('takeover');
+    $ctl->mode('connect');
+    $ctl->onEvent(n4_queue_changed([ 'q12', 'queue', $LC_L1 ]));
+    @IO::Socket::INET::CALLS = ();
+    $ctl->onEvent(lc_tc($LC_L1));
+    is_deeply($ws->sent, [ [ 'skip_next', {} ] ], "LM-3: Connect: the daemon reaching our leftover -> one skip_next");
+    is($ctl->observed->{track}, 'spotify:track:previousXYZ', "LM-3: the frame is swallowed (observed.track unchanged)");
+    ok(!$ctl->observed->{pendingChange}, "LM-3: no change for LMS");
+    is(scalar(@IO::Socket::INET::CALLS), 0, "LM-3: no boundary");
+    is_deeply($ctl->observed->{ownLeftovers}, {}, "LM-3: the leftover is gone");
+}
+{
+    # LM-7: the leftover's other frames are swallowed too (live: its playback_state emitted a `change` and LMS ended the
+    # app's session); the next title's track_changed ends the skip and is processed
+    my ($ctl, $daemon, $ws) = lc_session('aa:bb:cc:dd:ee:d7', [ [ 'q12', 'queue', $LC_L1 ] ], [ $LC_L1 ]);
+    $ctl->_forgetOwnQueue('takeover');
+    $ctl->mode('connect');
+    $ctl->observed->{startEmittedFor} = 'spotify:track:previousXYZ';
+    $ctl->onEvent(n4_queue_changed([ 'q12', 'queue', $LC_L1 ]));
+    $ctl->onEvent(lc_tc($LC_L1));
+    ok($ctl->observed->{leftoverSkip}, "LM-7 setup: the skip is in progress");
+    @Slim::Player::Client::EXECUTED = ();
+    my $ps = decode_frame(load_fixture('playback_state.json'));
+    $ps->{item}{uri} = $LC_L1;
+    my $anchorBefore = $ctl->observed->{anchor};
+    $ctl->onEvent($ps);
+    $ctl->onEvent(decode_frame(load_fixture('position_sync.json')));
+    is_deeply(\@Slim::Player::Client::EXECUTED, [], "LM-7: the leftover's playback_state emits no change for LMS");
+    is($ctl->observed->{track}, 'spotify:track:previousXYZ', "LM-7: observed.track stays");
+    is($ctl->observed->{anchor}, $anchorBefore, "LM-7: its position_sync moves no anchor");
+    $ctl->onEvent(lc_tc('spotify:track:appsNextTitle00000001'));
+    ok(!$ctl->observed->{leftoverSkip}, "LM-7: the next title's track_changed ends the skip");
+    is($ctl->observed->{track}, 'spotify:track:appsNextTitle00000001', "LM-7: and is processed");
+}
+{
+    # the same title queued by the user (another uid) is not ours
+    my ($ctl, $daemon, $ws) = lc_session('aa:bb:cc:dd:ee:d4', [ [ 'q12', 'queue', $LC_L1 ] ], [ $LC_L1 ]);
+    $ctl->_forgetOwnQueue('takeover');
+    $ctl->mode('connect');
+    $ctl->onEvent(n4_queue_changed([ 'q30', 'queue', $LC_L1 ], [ 'q12', 'queue', $LC_L1 ]));
+    $ctl->onEvent(lc_tc($LC_L1));
+    is_deeply($ws->sent, [], "LM-4: the head is the user's entry for the same title (another uid): not skipped");
+}
+{
+    local $Slim::Utils::Prefs::FAKE_VALUES{soloistConsumeLeftovers} = 0;
+    my ($ctl, $daemon, $ws) = lc_session('aa:bb:cc:dd:ee:d5', [ [ 'q12', 'queue', $LC_L1 ] ], [ $LC_L1 ]);
+    $ctl->_forgetOwnQueue('takeover');
+    $ctl->mode('connect');
+    $ctl->onEvent(n4_queue_changed([ 'q12', 'queue', $LC_L1 ]));
+    $ctl->onEvent(lc_tc($LC_L1));
+    is_deeply($ws->sent, [], "LM-5: soloistConsumeLeftovers 0 -> no skip in Connect either");
+}
+{
+    # Browse again later: a remembered leftover (queuedByUs empty) at the head is consumed before a jump
+    my ($ctl, $daemon, $ws) = lc_session('aa:bb:cc:dd:ee:d6', [ [ 'q12', 'queue', $LC_L1 ] ], []);
+    $ctl->observed->{ownLeftovers} = { q12 => $LC_L1 };
+    $ctl->requestTrack($TID, 0, {});
+    is_deeply($ws->sent, [ [ 'skip_next', {} ], [ 'play', { uri => $TID } ] ],
+        "LM-6: Browse: a remembered leftover at the head is consumed before the play");
+}
+{
+    # LM-8 (Fable WR-02): own is decided by uid, never the uri alone. The user's entry for the same title (uid q30) in
+    # front of the remembered leftover (uid q12) is not skipped, and the walk ends there.
+    my ($ctl, $daemon, $ws) = lc_session('aa:bb:cc:dd:ee:d8', [ [ 'q30', 'queue', $LC_L1 ], [ 'q12', 'queue', $LC_L1 ] ], []);
+    $ctl->observed->{ownLeftovers} = { q12 => $LC_L1 };
+    $ctl->requestTrack($TID, 0, {});
+    is_deeply($ws->sent, [ [ 'play', { uri => $TID } ] ],
+        "LM-8: Browse: the head is the user's entry for the same title (uid q30, not the remembered q12): not skipped");
+}
+{
+    # LM-9 (Fable WR-02): this session. The user had queued L1 (uid u1) before SpotOn queued the same title; the
+    # queue_changed after SpotOn's add_to_queue names its entry (uid q13). The user's entry at the head is not ours.
+    my ($ctl, $daemon, $ws) = lc_session('aa:bb:cc:dd:ee:d9', [ [ 'u1', 'queue', $LC_L1 ] ], []);
+    $ctl->_markOwnQueue($LC_L1);
+    $ctl->onEvent(n4_queue_changed([ 'u1', 'queue', $LC_L1 ], [ 'q13', 'queue', $LC_L1 ]));
+    $ctl->requestTrack($TID, 0, {});
+    is_deeply($ws->sent, [ [ 'play', { uri => $TID } ] ],
+        "LM-9: Browse: the user's entry u1 for a title SpotOn also queued (as q13) is not popped");
+}
+{
+    # LM-10 (Fable WR-02): the same two entries the other way round: SpotOn's own q13 at the head is consumed, the
+    # walk ends at the user's u1 for the same title behind it.
+    my ($ctl, $daemon, $ws) = lc_session('aa:bb:cc:dd:ee:da', [], []);
+    $ctl->_markOwnQueue($LC_L1);
+    $ctl->onEvent(n4_queue_changed([ 'q13', 'queue', $LC_L1 ], [ 'u1', 'queue', $LC_L1 ]));
+    $ctl->requestTrack($TID, 0, {});
+    is_deeply($ws->sent, [ [ 'skip_next', {} ], [ 'play', { uri => $TID } ] ],
+        "LM-10: Browse: SpotOn's own entry q13 is consumed, the user's u1 for the same title behind it stays");
+}
+{
+    # LM-11 (Fable WR-02): forgetting the own queue remembers SpotOn's entry by its uid, not the user's entry for
+    # the same title.
+    my ($ctl, $daemon, $ws) = lc_session('aa:bb:cc:dd:ee:db', [ [ 'u1', 'queue', $LC_L1 ] ], []);
+    $ctl->_markOwnQueue($LC_L1);
+    $ctl->onEvent(n4_queue_changed([ 'u1', 'queue', $LC_L1 ], [ 'q13', 'queue', $LC_L1 ]));
+    $ctl->_forgetOwnQueue('test');
+    is_deeply($ctl->observed->{ownLeftovers}, { q13 => $LC_L1 },
+        "LM-11: only SpotOn's own entry (q13) is remembered, not the user's u1 for the same title");
+}
+# LM-12 (Fable recheck N-01): a second _prefetchNext for the same successor (here through notePlaylistChanged, the
+# dedupe branch "already a queue entry") keeps the uid recorded for SpotOn's own entry. Before the fix it moved q1
+# into `pre` and dropped the uid: a jump to another title no longer consumed q1, and leaving Browse did not
+# remember it.
+for my $lm12 ([ 'consume', 'aa:bb:cc:dd:ee:dc' ], [ 'leftover', 'aa:bb:cc:dd:ee:dd' ]) {
+    my ($what, $mac) = @$lm12;
+    my $D = 'spotify:track:jumpTargetTitle0000001';
+    local @Slim::Player::Playlist::ENTRIES = (
+        Test::MockTrack->new("spoton://track:11dFghVXANMlKmJXsNCbNl"),
+        Test::MockTrack->new("spoton://track:3n3Ppam7vgaVa1iaRUc9Lp"),
+        Test::MockTrack->new("spoton://track:jumpTargetTitle0000001"),
+    );
+    local $Slim::Player::Source::INDEX = 0;
+    my ($ctl, $daemon, $ws) = fresh_control(
+        mac => $mac, mode => 'browse',
+        observed => { wsConnected => 1, paired => 1, is_active => 1, meta => { $TID => { duration => 200 }, $D => { duration => 200 } },
+                      track => 'spotify:track:previousXYZ', status => 'playing' },
+    );
+    $ctl->requestTrack($TID, 0, {});
+    $ctl->onEvent(decode_frame(load_fixture('track_changed.json')));
+    ok(scalar(grep { $_->[0] eq 'add_to_queue' && ($_->[1]{uri} // '') eq $NEXT_TID } @{ $ws->sent }),
+        "LM-12 $what setup: the echo's prefetch queues the successor");
+    $ctl->onEvent(n4_queue_changed([ 'q1', 'queue', $NEXT_TID ]));
+    is($ctl->_ownQueueUid($NEXT_TID), 'q1', "LM-12 $what setup: the own uid is recorded");
+    push @Slim::Player::Playlist::ENTRIES, Test::MockTrack->new("spoton://track:appendedTitle000000001");
+    $ctl->notePlaylistChanged;
+    is($ctl->_ownQueueUid($NEXT_TID), 'q1', "LM-12 $what: a second prefetch for the same successor keeps the own uid");
+    if ($what eq 'consume') {
+        my $n = scalar @{ $ws->sent };
+        $ctl->requestTrack($D, 0, { source => 'getNextTrack' });
+        my @s = @{ $ws->sent }; @s = @s[ $n .. $#s ];
+        is_deeply([ map { $_->[0] } @s ], [ 'skip_next', 'play' ],
+            "LM-12 consume: after the second prefetch SpotOn's own queued successor is still consumed before a jump");
+    } else {
+        $ctl->_forgetOwnQueue('test');
+        is_deeply($ctl->observed->{ownLeftovers}, { q1 => $NEXT_TID },
+            "LM-12 leftover: after the second prefetch the own entry is still remembered as a leftover");
+    }
+    Slim::Utils::Timers::killTimers($ctl, \&Plugins::SpotOn::Soloist::Control::_t1Fire);
+}
+{
+    # LM-13 (Fable recheck N-06, the `last unless defined $uid` guard of _ownLeftoversAtHead): an entry of an own
+    # title that carries no uid at all is never consumed (without the guard '' eq undef reads as "own").
+    my ($ctl, $daemon, $ws) = lc_session('aa:bb:cc:dd:ee:de', [ [ undef, 'queue', $LC_L1 ] ], [ $LC_L1 ]);
+    is($ctl->_ownQueueUid($LC_L1), undef, "LM-13 setup: no own uid recorded for an entry without a uid");
+    $ctl->requestTrack($TID, 0, {});
+    is_deeply($ws->sent, [ [ 'play', { uri => $TID } ] ],
+        "LM-13: Browse: an own title's entry without a uid at the head is not consumed");
+}
+{
+    # LM-14 (Fable recheck N-06, _forgetOwnQueue's queuedUid cleanup): no own-uid record outlives the forget. The
+    # record is only read through _ownQueueUid (which also asks queuedByUs, LM-15), so this pins the state itself.
+    my ($ctl, $daemon, $ws) = lc_session('aa:bb:cc:dd:ee:df', [ [ 'q12', 'queue', $LC_L1 ] ], [ $LC_L1 ]);
+    is($ctl->_ownQueueUid($LC_L1), 'q12', "LM-14 setup: the own uid is recorded");
+    $ctl->_forgetOwnQueue('test');
+    ok(!exists $ctl->observed->{queuedUid}, "LM-14: forgetting the own queue drops the own-uid records");
+}
+{
+    # LM-15 (Fable recheck N-06, the queuedByUs condition of _ownQueueUid): a uid record for a title that is no
+    # longer in queuedByUs is not an own uid.
+    my ($ctl, $daemon, $ws) = lc_session('aa:bb:cc:dd:ee:d0', [ [ 'q12', 'queue', $LC_L1 ] ], [ $LC_L1 ]);
+    is($ctl->_ownQueueUid($LC_L1), 'q12', "LM-15 setup: the own uid is recorded");
+    delete $ctl->observed->{queuedByUs}{$LC_L1};
+    is($ctl->_ownQueueUid($LC_L1), undef, "LM-15: a title no longer in queuedByUs has no own uid, whatever its record says");
+    $ctl->requestTrack($TID, 0, {});
+    is_deeply($ws->sent, [ [ 'play', { uri => $TID } ] ], "LM-15: and its entry at the head is not consumed");
+}
+{
+    # LM-16 (Fable recheck N-04): the stated choice for a daemon without stable entry uids (uid = the uri). SpotOn's
+    # own entry is not told apart from the user's for the same title, so no own uid is recorded: no consume rather
+    # than a wrong one, and no leftover memory.
+    my ($ctl, $daemon, $ws) = lc_session('aa:bb:cc:dd:ee:d9a', [ [ $LC_L1, 'queue', $LC_L1 ] ], [ $LC_L1 ]);
+    is($ctl->_ownQueueUid($LC_L1), undef, "LM-16: uid = uri: no own uid is recorded");
+    $ctl->requestTrack($TID, 0, {});
+    is_deeply($ws->sent, [ [ 'play', { uri => $TID } ] ], "LM-16: uid = uri: the own title at the head is not consumed");
+    $ctl->_forgetOwnQueue('test');
+    is_deeply($ctl->observed->{ownLeftovers} || {}, {}, "LM-16: uid = uri: and not remembered as a leftover");
+}
+
 # --- change 2: queue head == target -> skip_next consumes it (a `play X` never consumes a head equal to X,
 # same-1 10:29:57.381); the slot stays {cmd:'play', uri} so the track_changed echo is classified as OWN.
 {
@@ -3346,6 +3685,20 @@ sub n4_queue_changed {
     is(scalar(grep { m{^POST /boundary} } @IO::Socket::INET::SYSWRITE_CALLS), 1, "F-18-N4 change 3: one boundary planted with the pause");
 }
 
+# hold_flush() -- 90-05: ends every open burst hold the way its backstop
+# timer does (Control::_burstHoldFire, TAKEOVER_LATE_CONTEXT_S after the
+# foreign track_changed). A test that feeds ONE context-less foreign
+# track_changed with no frame after it sees the guard's pause only once the
+# hold ends. Only the hold timers fire: the timer list is file-wide, and a
+# blanket fire_due would also fire other tests' timers (D-50's hang replay).
+sub hold_flush {
+    my $cb = \&Plugins::SpotOn::Soloist::Control::_burstHoldFire;
+    my @due = grep { $_->[2] == $cb } @Slim::Utils::Timers::TIMERS;
+    @Slim::Utils::Timers::TIMERS = grep { $_->[2] != $cb } @Slim::Utils::Timers::TIMERS;
+    $_->[2]->($_->[0]) for @due;
+    return scalar @due;
+}
+
 # --- change 3 control: bound-1 09:44:03.654 -- the natural advance to the stale DIFFERENT head 552l also carries
 # previous=[ctx 6d0c]; track_changed arrives one frame earlier. The foreign branch pauses ONCE; the detector adds nothing.
 {
@@ -3360,6 +3713,7 @@ sub n4_queue_changed {
     $ctl->onEvent(n4_queue_changed([ 'q10', 'queue', $N4_552L ], [ 'q11', 'queue', 'spotify:track:stale2' ]));
 
     $ctl->onEvent($_) for @f;
+    hold_flush();
 
     is_deeply($ws->sent, [ [ 'pause', {} ] ],
         "F-18-N4 change 3 control: bound-1 advance -- the foreign guard pauses once, the detector sends nothing more");
@@ -3926,6 +4280,7 @@ sub d50_plant_stall {
     my $other = d50_clone($fx[0][1]);
     $other->{item}{uri} = $D50_SH;
     d50_at($t2 + 20, sub { $c2->onEvent($other); });
+    hold_flush();
     ok(!exists $c2->observed->{hangReplays}, "D50-14: a track_changed to another title drops the budget");
     d50_done($c2);
 }
@@ -3980,6 +4335,7 @@ sub d50_plant_stall {
     my $other = d50_clone($fx[0][1]);
     $other->{item}{uri} = $D50_SH;
     d50_at($onset + 1.0, sub { $ctl->onEvent($other); });
+    hold_flush();
     ok(!$ctl->observed->{hangWatch}, "D50-15: the title change ended the watch");
     my $n = scalar @{ $ws->sent };
     d50_fire($onset + 3.0);
@@ -4166,6 +4522,1240 @@ sub d50_plant_stall {
     else {
         fail("D50-22b: row $_ skipped, _hangNearEnd is missing") for 1 .. 3;
     }
+}
+
+# ============================================================
+# End-gap early EOF: the near-end `buffering` frame marks the title at the shim (POST /near-end) when
+# a different successor is queued; LMS's early request for that queue head is answered at once and
+# the daemon changes title by itself (no skip_next); the fallback runs the old path; a seek voids it.
+# The D50-19 shape: duration 12.195 s, the real 9195 ms stall frame sits 3.0 s before the end.
+# ============================================================
+my $EE_NEXT = 'spotify:track:eeNextTitle0000000000';
+sub ee_session {
+    my ($mac) = @_;
+    my @fx = d50_frames('d50-hang-midtitle.frames');
+    my ($ctl, $daemon, $ws) = d50_session($mac, $D50_HM, $fx[0][0] - 0.05,
+        observed => { meta => { $D50_HM => { duration => 12.195 } } });
+    d50_feed($ctl, \@fx, 0, 12);
+    $ctl->observed->{queueHead} = { uri => $EE_NEXT };
+    $ctl->observed->{queuedByUs} = { $EE_NEXT => 1 };
+    @IO::Socket::INET::NEAR_END_WRITES = ();
+    d50_feed($ctl, \@fx, 13, 13);
+    return ($ctl, $daemon, $ws, \@fx, $fx[13][0]);
+}
+sub ee_done {
+    my ($ctl) = @_;
+    d50_done($ctl);
+    Slim::Utils::Timers::killTimers($ctl, \&Plugins::SpotOn::Soloist::Control::_earlyEndFallback);
+    Slim::Utils::Timers::killTimers($ctl, \&Plugins::SpotOn::Soloist::Control::_outcomeWaitFire);
+}
+sub ee_skips {
+    my ($ws, $from) = @_;
+    my @s = @{ $ws->sent };
+    return grep { $_->[0] eq 'skip_next' || $_->[0] eq 'play' } @s[ $from .. $#s ];
+}
+
+# --- EE-1: the near-end frame with a queued successor posts one mark with the remaining time
+{
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session('aa:bb:cc:dd:ee:e1');
+    is(scalar(@IO::Socket::INET::NEAR_END_WRITES), 1, "EE-1: one POST /near-end at the near-end buffering frame");
+    like($IO::Socket::INET::NEAR_END_WRITES[0] // '', qr{^POST /near-end\?ms=3000 }, "EE-1: it carries the remaining 3000 ms");
+    is($ctl->observed->{nearEnd}{uri}, $D50_HM, "EE-1: the mark is recorded for the daemon's title");
+    is($ctl->observed->{nearEnd}{next}, $EE_NEXT, "EE-1: with the queued successor");
+    is($ctl->_earlyEndOutcome($D50_HM), undef, "EE-1: no outcome line for a re-announcement of the marked title");
+    d50_feed($ctl, $fx, 13, 13);
+    is(scalar(@IO::Socket::INET::NEAR_END_WRITES), 1, "EE-1: a second near-end frame of the same title posts no second mark");
+    # Fable WR-05: a lone frame is already stopped by the status_buffering guard (status is paused by then); only a
+    # second full stall burst reaches the once-per-title guard of _postNearEnd.
+    d50_feed($ctl, $fx, 7, 13);
+    is(scalar(@IO::Socket::INET::NEAR_END_WRITES), 1, "EE-1: a second full stall burst of the same title posts no second mark");
+    ee_done($ctl);
+}
+
+# --- EE-2: without a queued successor no mark is posted (context end, repeat-one: nothing changes)
+{
+    my @fx = d50_frames('d50-hang-midtitle.frames');
+    my ($ctl, $daemon, $ws) = d50_session('aa:bb:cc:dd:ee:e2', $D50_HM, $fx[0][0] - 0.05,
+        observed => { meta => { $D50_HM => { duration => 12.195 } } });
+    d50_feed($ctl, \@fx, 0, 12);
+    delete $ctl->observed->{queueHead};
+    @IO::Socket::INET::NEAR_END_WRITES = ();
+    d50_feed($ctl, \@fx, 13, 13);
+    is(scalar(@IO::Socket::INET::NEAR_END_WRITES), 0, "EE-2: no queue head -> no POST /near-end");
+    ok(!$ctl->observed->{nearEnd}, "EE-2: and no mark recorded");
+    ee_done($ctl);
+}
+
+# --- EE-2c (Fable WR-01): the queue head is the APP's own queued title (not SpotOn's successor, queuedByUs empty):
+# no mark, so LMS is not made to advance early into its own next title; the daemon reaches the app's title by
+# itself and D-34 holds: it takes over when it starts.
+{
+    my $APPQ = 'spotify:track:appQueuedTitle00000001';
+    my @fx = d50_frames('d50-hang-midtitle.frames');
+    my ($ctl, $daemon, $ws) = d50_session('aa:bb:cc:dd:ee:2c', $D50_HM, $fx[0][0] - 0.05,
+        observed => { meta => { $D50_HM => { duration => 12.195 } } });
+    d50_feed($ctl, \@fx, 0, 12);
+    $ctl->observed->{queueHead}  = { uri => $APPQ, uid => 'app1' };
+    $ctl->observed->{queueUris}  = [ $APPQ ];
+    $ctl->observed->{queuedByUs} = {};
+    $ctl->observed->{appQueued}  = { $APPQ => 1 };
+    @IO::Socket::INET::NEAR_END_WRITES = ();
+    d50_feed($ctl, \@fx, 13, 13);
+    is(scalar(@IO::Socket::INET::NEAR_END_WRITES), 0, "EE-2c: no POST /near-end for a queue head SpotOn did not queue");
+    ok(!$ctl->observed->{nearEnd}, "EE-2c: and no mark recorded");
+    # Fable recheck N-06: the consequence WR-01 prevents. A mark would make the shim end the stream early and LMS ask
+    # for its OWN next title inside the gap (modelled: the request comes only when a mark went out); nothing may
+    # reach the daemon before the app's title starts.
+    my $n = scalar @{ $ws->sent };
+    my $LMSNEXT = 'spotify:track:lmsOwnNextTitle000001';
+    $ctl->observed->{meta}{$LMSNEXT} = { duration => 200 };
+    d50_at($fx[13][0] + 0.6, sub { $ctl->requestTrack($LMSNEXT, 0, { source => 'getNextTrack' }); })
+        if @IO::Socket::INET::NEAR_END_WRITES;
+    is(scalar(ee_skips($ws, $n)), 0, "EE-2c: nothing is sent to the daemon in the gap before the app's title starts");
+    my $tc = d50_clone($fx[0][1]);
+    $tc->{item}{uri} = $APPQ;
+    d50_at($fx[13][0] + 3.0, sub { $ctl->onEvent($tc); });
+    is($ctl->mode, 'connect', "EE-2c: the app's queued title takes over when it starts (D-34)");
+    ee_done($ctl);
+}
+
+# --- EE-2b: the hidden pref soloistEarlyEnd 0 (`pref plugin.spoton:soloistEarlyEnd 0` on the LMS CLI) switches the
+# early end off at runtime: no POST /near-end, no mark, so LMS's request in the gap takes the old skip_next path and
+# earlyEndContinues stays 0. It is read at every near-end frame: set back to '1' (the CLI's string), the same
+# title's next stall burst marks it.
+{
+    my $mac = 'aa:bb:cc:dd:ee:e0';
+    local $Slim::Utils::Prefs::FAKE_VALUES{soloistEarlyEnd} = 0;
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session($mac);
+    is(scalar(@IO::Socket::INET::NEAR_END_WRITES), 0, "EE-2b: soloistEarlyEnd 0 -> no POST /near-end");
+    ok(!$ctl->observed->{nearEnd}, "EE-2b: and no mark");
+    my $n = scalar @{ $ws->sent };
+    d50_at($onset + 0.6, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack' }); });
+    my @s = ee_skips($ws, $n);
+    is(scalar(@s), 1, "EE-2b: LMS's request in the gap sends one command");
+    is($s[0][0] // '', 'skip_next', "EE-2b: the old skip_next to the queue head");
+    ok(!$ctl->observed->{earlyEnd}, "EE-2b: no wait armed");
+    is($ctl->earlyEndContinues('spoton://track:eeNextTitle0000000000'), 0, "EE-2b: earlyEndContinues is 0");
+    ee_done($ctl);
+
+    my ($ctl2, $daemon2, $ws2, $fx2) = ee_session('aa:bb:cc:dd:ee:1e');
+    is(scalar(@IO::Socket::INET::NEAR_END_WRITES), 0, "EE-2b setup: off for a second session too");
+    $Slim::Utils::Prefs::FAKE_VALUES{soloistEarlyEnd} = '1';
+    d50_feed($ctl2, $fx2, 7, 13);
+    is(scalar(@IO::Socket::INET::NEAR_END_WRITES), 1, "EE-2b: switched back on, the next near-end frame posts the mark");
+    is($ctl2->observed->{nearEnd}{next}, $EE_NEXT, "EE-2b: for the queued successor");
+    ee_done($ctl2);
+}
+
+# --- EE-TU: the lead top-up. At the near-end frame (daemon position 9195 ms, 3000 ms left) the players' lag behind
+# the daemon's sink is the daemon position minus LMS's play point of the same title; below soloistEarlyEndLeadMs
+# (default 2500) the mark asks the shim to take the difference out of its sink (POST /near-end?...&ff=<ms>), never
+# more than the remaining time, and nothing when the lead is already there, the pref is 0 or LMS plays another title.
+sub ee_session_lead {
+    my ($mac, $songTime, $playUrl, $before) = @_;
+    my @fx = d50_frames('d50-hang-midtitle.frames');
+    my ($ctl, $daemon, $ws) = d50_session($mac, $D50_HM, $fx[0][0] - 0.05,
+        observed => { meta => { $D50_HM => { duration => 12.195 } } });
+    d50_feed($ctl, \@fx, 0, 12);
+    $ctl->observed->{queueHead} = { uri => $EE_NEXT };
+    $ctl->observed->{queuedByUs} = { $EE_NEXT => 1 };
+    (my $id = $D50_HM) =~ s/^spotify:track://;
+    Slim::Player::Client::getClient($mac)->playingSong(
+        Test::MockSong->new(Test::MockTrack->new($playUrl // "spoton://track:$id")));
+    # The fixture's frame 12 (the D50 hang: the daemon's report jumps while LMS's clock ran on) reads
+    # as an app seek and marks the title's lead unknown (EE-TU8). These cases measure the lead.
+    delete $ctl->observed->{leadUnknownFor};
+    $before->($ctl) if $before;
+    @IO::Socket::INET::NEAR_END_WRITES = ();
+    local $Slim::Player::Source::SONGTIME = $songTime;
+    d50_feed($ctl, \@fx, 13, 13);
+    return ($ctl, $daemon, $ws, \@fx, $fx[13][0]);
+}
+{
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session_lead('aa:bb:cc:dd:ee:71', 8.595);
+    is(scalar(@IO::Socket::INET::NEAR_END_WRITES), 1, "EE-TU1: one POST /near-end");
+    like($IO::Socket::INET::NEAR_END_WRITES[0] // '', qr{^POST /near-end\?ms=3000&ff=1900 },
+        "EE-TU1: players 600 ms behind -> topped up to 2500 ms: ff=1900");
+    is($ctl->observed->{nearEnd}{lead_ms}, 600, "EE-TU1: the lead is recorded");
+    is($ctl->observed->{nearEnd}{ff_ms}, 1900, "EE-TU1: and the top-up");
+    my $n = scalar @{ $ws->sent };
+    d50_at($onset + 0.6, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack' }); });
+    like(d50_at($onset + 1.2, sub { $ctl->_earlyEndOutcome($EE_NEXT) }) // '',
+        qr/: early EOF used, LMS opened the next title 0\.6 s before the daemon's change; top-up asked 1900 ms, the players were 600 ms behind \(/,
+        "EE-TU1: the outcome line names the top-up");
+    is(scalar(ee_skips($ws, $n)), 0, "EE-TU1: the early answer itself is unchanged (nothing sent)");
+    ee_done($ctl);
+}
+{
+    my ($ctl) = ee_session_lead('aa:bb:cc:dd:ee:72', 6.0);
+    like($IO::Socket::INET::NEAR_END_WRITES[0] // '', qr{^POST /near-end\?ms=3000 }, "EE-TU2: players 3195 ms behind -> no ff");
+    is($ctl->observed->{nearEnd}{lead_ms}, 3195, "EE-TU2: the lead is recorded");
+    is($ctl->observed->{nearEnd}{ff_ms}, 0, "EE-TU2: top-up 0");
+    is($ctl->_earlyEndOutcome($EE_NEXT) =~ /top-up/ ? 1 : 0, 0, "EE-TU2: the outcome line names no top-up");
+    ee_done($ctl);
+}
+{
+    local $Slim::Utils::Prefs::FAKE_VALUES{soloistEarlyEndLeadMs} = 0;
+    my ($ctl) = ee_session_lead('aa:bb:cc:dd:ee:73', 9.0);
+    like($IO::Socket::INET::NEAR_END_WRITES[0] // '', qr{^POST /near-end\?ms=3000 }, "EE-TU3: soloistEarlyEndLeadMs 0 -> no ff");
+    is($ctl->observed->{nearEnd}{lead_ms}, undef, "EE-TU3: and no lead computed");
+    ee_done($ctl);
+}
+{
+    local $Slim::Utils::Prefs::FAKE_VALUES{soloistEarlyEndLeadMs} = '5000';    # the CLI sets a string
+    my ($ctl) = ee_session_lead('aa:bb:cc:dd:ee:74', 9.095);
+    like($IO::Socket::INET::NEAR_END_WRITES[0] // '', qr{^POST /near-end\?ms=3000&ff=3000 },
+        "EE-TU4: lead 100 ms, target 5000 -> capped at the remaining 3000 ms");
+    ee_done($ctl);
+}
+{
+    my ($ctl) = ee_session_lead('aa:bb:cc:dd:ee:75', 8.595, 'spoton://track:eeOtherTitle00000000');
+    like($IO::Socket::INET::NEAR_END_WRITES[0] // '', qr{^POST /near-end\?ms=3000 }, "EE-TU5: LMS plays another title -> no ff");
+    is($ctl->observed->{nearEnd}{lead_ms}, undef, "EE-TU5: no lead");
+    ee_done($ctl);
+}
+{
+    # LMS's clock ahead of the daemon (a rewritten startOffset): the lead is unknown
+    my ($ctl) = ee_session_lead('aa:bb:cc:dd:ee:77', 9.5);
+    like($IO::Socket::INET::NEAR_END_WRITES[0] // '', qr{^POST /near-end\?ms=3000 }, "EE-TU7: songTime past the daemon position -> no ff");
+    is($ctl->observed->{nearEnd}{lead_ms}, undef, "EE-TU7: lead unknown");
+    ee_done($ctl);
+}
+{
+    # an app seek in this title rewrote LMS's clock: no top-up for it; the marker does not outlive the title
+    my ($ctl) = ee_session_lead('aa:bb:cc:dd:ee:78', 8.595, undef, sub { $_[0]->_forwardBrowseSeek(5000) });
+    is($ctl->observed->{leadUnknownFor}, $D50_HM, "EE-TU8 setup: the forwarded app seek marks the title");
+    like($IO::Socket::INET::NEAR_END_WRITES[0] // '', qr{^POST /near-end\?ms=3000 }, "EE-TU8: no ff after an app seek in the title");
+    is($ctl->observed->{nearEnd}{lead_ms}, undef, "EE-TU8: lead unknown");
+    $ctl->observed->{leadUnknownFor} = 'spotify:track:eeOtherTitle00000000';
+    my @r = do {
+        local $Slim::Player::Source::SONGTIME = 8.595;
+        $ctl->_earlyEndTopUp($D50_HM, 9195, 3000);
+    };
+    is_deeply(\@r, [1900, 600], "EE-TU8: a marker of another title is stale: measured again");
+    ok(!exists $ctl->observed->{leadUnknownFor}, "EE-TU8: and dropped");
+    ee_done($ctl);
+}
+{
+    # a top-up asked, but the early EOF not used: the outcome line names no top-up
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session_lead('aa:bb:cc:dd:ee:79', 8.595);
+    is($ctl->observed->{nearEnd}{ff_ms}, 1900, "EE-TU9 setup: a top-up was asked");
+    my $line = d50_at($onset + 1.0, sub { $ctl->_earlyEndOutcome($EE_NEXT) }) // '';
+    like($line, qr/: early EOF not used/, "EE-TU9: the daemon changed before LMS asked: not used");
+    unlike($line, qr/top-up/, "EE-TU9: and no top-up is named");
+    ee_done($ctl);
+}
+{
+    my ($ctl) = ee_session_lead('aa:bb:cc:dd:ee:76', undef);
+    like($IO::Socket::INET::NEAR_END_WRITES[0] // '', qr{^POST /near-end\?ms=3000 }, "EE-TU6: no play point from LMS -> no ff");
+    ee_done($ctl);
+}
+
+# --- EE-3: LMS asks for the queue head during the end gap -> answered at once, no skip_next, wait armed
+{
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session('aa:bb:cc:dd:ee:e3');
+    ok(Slim::Player::Client::getClient('aa:bb:cc:dd:ee:e3')->controller->isPlaying(1),
+        "EE-3 setup: LMS's players are PLAYING (LMS advanced by itself after the early EOF)");
+    my $n = scalar @{ $ws->sent };
+    my $fired = 0;
+    d50_at($onset + 0.6, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack', successCb => sub { $fired++ } }); });
+    is(scalar(ee_skips($ws, $n)), 0, "EE-3: no skip_next or play is sent to the daemon");
+    is($fired, 1, "EE-3: LMS's successCb fired at once (LMS opens the next stream now)");
+    is($ctl->observed->{earlyEnd}{uri}, $EE_NEXT, "EE-3: the wait for the daemon's own change is armed");
+    is($ctl->observed->{prefetchWish}, 1, "EE-3: the prefetch wish for the title after it is raised");
+    is($ctl->wanted->{uri}, $EE_NEXT, "EE-3: wanted is the next title");
+    is($ctl->earlyEndContinues('spoton://track:eeNextTitle0000000000'), 1, "EE-3: earlyEndContinues is 1 for the awaited title (spoton:// url)");
+    is($ctl->earlyEndContinues('spoton://track:eeOtherTitle00000000'), 0, "EE-3: and 0 for any other title");
+
+    # the daemon changes by itself: the wait ends, still nothing sent
+    like(d50_at($onset + 3.0, sub { $ctl->_earlyEndOutcome($EE_NEXT) }) // '',
+        qr/^Control: end gap \Q$D50_HM\E -> \Q$EE_NEXT\E: early EOF used, LMS opened the next title 2\.4 s before the daemon's change \(/,
+        "EE-3: the outcome line at the change: used, LMS opened the next title 2.4 s before it");
+    my $tc = d50_clone($fx->[0][1]);
+    $tc->{item}{uri} = $EE_NEXT;
+    d50_at($onset + 3.0, sub { $ctl->onEvent($tc); });
+    ok(!$ctl->observed->{earlyEnd}, "EE-3: the daemon's track_changed to it ends the wait");
+    is($ctl->earlyEndContinues('spoton://track:eeNextTitle0000000000'), 0, "EE-3: earlyEndContinues is 0 once the wait ended");
+    is($ctl->observed->{track}, $EE_NEXT, "EE-3: the daemon is on the next title");
+    d50_fire($onset + 6.0);
+    is(scalar(ee_skips($ws, $n)), 0, "EE-3: and the fallback never sends anything afterwards");
+    ee_done($ctl);
+}
+
+# --- EE-4: the daemon does not change in time -> the fallback runs the old skip_next path. The production call
+# shape (Fable CR-01): LMS's successCb runs _Stream -> onStream, which asks for the same title again
+# (source onStream) from inside it; both early answers must leave the drift budget alone.
+{
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session('aa:bb:cc:dd:ee:e4');
+    my $n = scalar @{ $ws->sent };
+    d50_at($onset + 0.6, sub {
+        $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack', successCb => sub {
+            $ctl->requestTrack($EE_NEXT, 0, { source => 'onStream', seek => 0 });
+        } });
+    });
+    is(scalar(ee_skips($ws, $n)), 0, "EE-4 setup: deferred (both requests answered early)");
+    is($ctl->_driftCount->{$EE_NEXT} // 0, 0, "EE-4: the early answers used no drift attempt");
+    @Slim::Utils::Log::WARNINGS = ();
+    d50_fire($onset + 3.0 + Plugins::SpotOn::Soloist::Control::EARLY_END_WAIT_S() - 0.1);
+    is(scalar(ee_skips($ws, $n)), 0, "EE-4: nothing before the deadline");
+    d50_fire($onset + 3.0 + Plugins::SpotOn::Soloist::Control::EARLY_END_WAIT_S() + 0.1);
+    my @after = ee_skips($ws, $n);
+    is(scalar(@after), 1, "EE-4: after the deadline exactly one command for the next title");
+    is($after[0][0] // '', 'skip_next', "EE-4: it is the skip_next to the queue head (the old path)");
+    ok(!scalar(grep { /does not follow play/ } @Slim::Utils::Log::WARNINGS),
+        "EE-4: no 'daemon does not follow' drift error for a play that was never sent");
+    ok(!$ctl->observed->{earlyEnd}, "EE-4: the wait is gone");
+    ok(scalar(grep { /did not change to \Q$EE_NEXT\E within the end gap/ } @Slim::Utils::Log::WARNINGS), "EE-4: one WARN names it");
+    like($ctl->_earlyEndOutcome($EE_NEXT) // '', qr/: early EOF used, but the daemon did not change within the end gap \(fallback skip_next\)/,
+        "EE-4: the outcome line at the echo names the fallback");
+    ee_done($ctl);
+}
+
+# --- EE-4b (Fable IN-02): LMS paused inside the end gap after the early answer (wanted.playing 0): the fallback
+# sends nothing (no skip_next or play that would start the next title against the pause). Fable recheck N-02: it
+# keeps the request until LMS's resume, which then asks for the title LMS already opened (one command), because the
+# resume row alone refuses while the daemon is still on the old title.
+{
+    my $mac = 'aa:bb:cc:dd:ee:4b';
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session($mac);
+    $ctl->observed->{meta}{$EE_NEXT} = { duration => 200 };
+    d50_at($onset + 0.6, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack' }); });
+    is($ctl->observed->{earlyEnd}{uri}, $EE_NEXT, "EE-4b setup: answered early, wait armed");
+    {
+        local $Slim::Player::Source::PLAYMODE = 'pause';
+        ee_lms($mac, playing => 0, paused => 1, buffering => 0, stopped => 0);
+        d50_at($onset + 1.0, sub { $ctl->requestPause(0); });
+    }
+    is($ctl->wanted->{playing}, 0, "EE-4b setup: LMS wants the daemon paused");
+    my $n = scalar @{ $ws->sent };
+    d50_fire($onset + 3.0 + Plugins::SpotOn::Soloist::Control::EARLY_END_WAIT_S() + 0.1);
+    is(scalar(ee_skips($ws, $n)), 0, "EE-4b: a paused LMS gets no skip_next/play from the fallback");
+    ok(!$ctl->observed->{earlyEnd}, "EE-4b: the wait is gone");
+    my $rc;
+    {
+        local $Slim::Player::Source::PLAYMODE = 'play';
+        ee_lms($mac, playing => 1, paused => 0, buffering => 0, stopped => 0);
+        d50_at($onset + 20.0, sub { $rc = $ctl->requestResume; });
+    }
+    my @s = ee_skips($ws, $n);
+    is(scalar(@s), 1, "EE-4b (N-02): LMS's resume after the fallback in the pause sends one command");
+    ok(@s && ($s[0][0] eq 'skip_next' || ($s[0][1]{uri} // '') eq $EE_NEXT),
+        "EE-4b (N-02): and it requests the title LMS already opened");
+    like($ctl->_earlyEndOutcome($EE_NEXT) // '', qr/: early EOF used, but the daemon did not change within the end gap \(fallback skip_next\)/,
+        "EE-4b (N-02): the outcome line names the fallback");
+    ee_done($ctl);
+}
+# --- EE-4g (Fable recheck N-02): the same pause, but the daemon changes to the title by itself before LMS's resume:
+# the kept request is dropped, the resume sends no second skip_next/play.
+{
+    my $mac = 'aa:bb:cc:dd:ee:47';
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session($mac);
+    $ctl->observed->{meta}{$EE_NEXT} = { duration => 200 };
+    d50_at($onset + 0.6, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack' }); });
+    {
+        local $Slim::Player::Source::PLAYMODE = 'pause';
+        ee_lms($mac, playing => 0, paused => 1, buffering => 0, stopped => 0);
+        d50_at($onset + 1.0, sub { $ctl->requestPause(0); });
+    }
+    my $n = scalar @{ $ws->sent };
+    d50_fire($onset + 3.0 + Plugins::SpotOn::Soloist::Control::EARLY_END_WAIT_S() + 0.1);
+    my $tc = decode_frame(load_fixture('track_changed.json')); $tc->{item}{uri} = $EE_NEXT;
+    d50_at($onset + 12.0, sub { $ctl->onEvent($tc); });
+    is($ctl->observed->{track}, $EE_NEXT, "EE-4g setup: the daemon changed by itself");
+    # Fable recheck 2 R2-05: the sends alone do not prove the drop (on a title the daemon is already on the planner
+    # sends a bare play for the fallback's requestTrack too); the state and the path the resume takes do.
+    ok(!$ctl->observed->{earlyEndDeferred}, "EE-4g: the daemon's own change drops the kept request");
+    my @why;
+    {
+        my $orig = \&Plugins::SpotOn::Soloist::Control::_reconcile;
+        no warnings 'redefine';
+        local *Plugins::SpotOn::Soloist::Control::_reconcile = sub { push @why, [ $_[1], $_[2] ]; goto &$orig; };
+        local $Slim::Player::Source::PLAYMODE = 'play';
+        ee_lms($mac, playing => 1, paused => 0, buffering => 0, stopped => 0);
+        @Slim::Utils::Log::WARNINGS = ();
+        d50_at($onset + 20.0, sub { $ctl->requestResume; });
+    }
+    is(scalar(grep { $_->[0] eq 'skip_next' || ($_->[0] eq 'play' && ($_->[1]{uri} // '') eq $EE_NEXT) } @{ $ws->sent }[ $n .. $#{ $ws->sent } ]), 0,
+        "EE-4g: the resume after the daemon's own change sends no skip_next and no play of the title");
+    is(scalar(grep { ref($_->[1]) eq 'HASH' && $_->[1]{earlyEndFallback} } @why), 0,
+        "EE-4g: the resume does not run the fallback's requestTrack");
+    is(($why[0] || [])->[0] // '', 'requestResume', "EE-4g: it runs the resume row");
+    ok(!scalar(grep { /requesting it at LMS's resume/ } @Slim::Utils::Log::WARNINGS), "EE-4g: and logs no kept request");
+    ee_done($ctl);
+}
+
+# --- EE-4j (Fable recheck 2 R2-05, the `wanted.uri eq $u` guard of requestResume): the request kept in the pause,
+# then LMS jumps to another title C (wanted.uri = C) and resumes before C's echo. The kept request is for the title
+# LMS left: the resume sends nothing for it and does not run the fallback's requestTrack.
+{
+    my $mac = 'aa:bb:cc:dd:ee:4a';
+    my $C = 'spotify:track:otherTitleLmsWants0001';
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session($mac);
+    $ctl->observed->{meta}{$EE_NEXT} = { duration => 200 };
+    $ctl->observed->{meta}{$C} = { duration => 200 };
+    d50_at($onset + 0.6, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack' }); });
+    {
+        local $Slim::Player::Source::PLAYMODE = 'pause';
+        ee_lms($mac, playing => 0, paused => 1, buffering => 0, stopped => 0);
+        d50_at($onset + 1.0, sub { $ctl->requestPause(0); });
+    }
+    d50_fire($onset + 3.0 + Plugins::SpotOn::Soloist::Control::EARLY_END_WAIT_S() + 0.1);
+    is(($ctl->observed->{earlyEndDeferred} || {})->{uri}, $EE_NEXT, "EE-4j setup: the fallback kept the request in the pause");
+    ee_lms($mac, playing => 0, paused => 0, buffering => 0, stopped => 1);
+    d50_at($onset + 15.0, sub { $ctl->requestTrack($C, 0, { source => 'getNextTrack' }); });
+    is($ctl->wanted->{uri}, $C, "EE-4j setup: LMS jumped to another title");
+    isnt($ctl->observed->{track}, $C, "EE-4j setup: its echo has not come");
+    my $n = scalar @{ $ws->sent };
+    my @why;
+    {
+        my $orig = \&Plugins::SpotOn::Soloist::Control::_reconcile;
+        no warnings 'redefine';
+        local *Plugins::SpotOn::Soloist::Control::_reconcile = sub { push @why, [ $_[1], $_[2] ]; goto &$orig; };
+        local $Slim::Player::Source::PLAYMODE = 'play';
+        ee_lms($mac, playing => 1, paused => 0, buffering => 0, stopped => 0);
+        @Slim::Utils::Log::WARNINGS = ();
+        d50_at($onset + 15.2, sub { $ctl->requestResume; });
+    }
+    is(scalar(grep { $_->[0] eq 'skip_next' || ($_->[1]{uri} // '') eq $EE_NEXT } @{ $ws->sent }[ $n .. $#{ $ws->sent } ]), 0,
+        "EE-4j: the kept request sends nothing for the title LMS left");
+    is(scalar(grep { ref($_->[1]) eq 'HASH' && $_->[1]{earlyEndFallback} } @why), 0,
+        "EE-4j: the resume does not run the fallback's requestTrack");
+    ok(!scalar(grep { /requesting it at LMS's resume/ } @Slim::Utils::Log::WARNINGS), "EE-4j: and logs no kept request");
+    ok(!$ctl->observed->{earlyEndDeferred}, "EE-4j: the kept request is gone");
+    ee_done($ctl);
+    Slim::Utils::Timers::killTimers($ctl, \&Plugins::SpotOn::Soloist::Control::_t1Fire);
+}
+
+# --- EE-4c (Fable WR-05): LMS's request for the marked successor AFTER the deadline (remaining + EARLY_END_WAIT_S)
+# is not answered early: the old skip_next path.
+{
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session('aa:bb:cc:dd:ee:4c');
+    my $n = scalar @{ $ws->sent };
+    d50_at($onset + 3.0 + Plugins::SpotOn::Soloist::Control::EARLY_END_WAIT_S() + 0.5,
+        sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack' }); });
+    my @s = ee_skips($ws, $n);
+    is(scalar(@s), 1, "EE-4c: a request past the deadline sends one command");
+    is($s[0][0] // '', 'skip_next', "EE-4c: the old skip_next to the queue head");
+    ok(!$ctl->observed->{earlyEnd}, "EE-4c: no wait armed");
+    ee_done($ctl);
+}
+
+# --- EE-4d (Fable WR-05): a request for the marked successor WITH a start position while LMS's players play (not
+# stopped) is never answered early: the old path with its position.
+{
+    my $mac = 'aa:bb:cc:dd:ee:4d';
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session($mac);
+    $ctl->observed->{meta}{$EE_NEXT} = { duration => 200 };
+    ok(Slim::Player::Client::getClient($mac)->controller->isPlaying(1), "EE-4d setup: LMS's players are PLAYING");
+    my $n = scalar @{ $ws->sent };
+    d50_at($onset + 0.6, sub { $ctl->requestTrack($EE_NEXT, 30000, { source => 'getNextTrack' }); });
+    my @s = ee_skips($ws, $n);
+    is(scalar(@s), 1, "EE-4d: a request with a start position sends one command");
+    is($s[0][0] // '', 'skip_next', "EE-4d: the old skip_next to the queue head");
+    ok(!$ctl->observed->{earlyEnd}, "EE-4d: no wait armed");
+    ee_done($ctl);
+}
+
+# --- EE-4e (Fable WR-05): the fallback's wanted-title guard. After the early answer LMS jumps to another title (the
+# wait for the marked successor stays, EE-7e); at the deadline the fallback finds wanted on that other title and
+# requests nothing.
+{
+    my $OTHER = 'spotify:track:eeOtherTitle00000000';
+    my $mac = 'aa:bb:cc:dd:ee:4e';
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session($mac);
+    $ctl->observed->{meta}{$OTHER} = { duration => 200 };
+    d50_at($onset + 0.6, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack' }); });
+    ee_lms($mac, playing => 0, paused => 0, buffering => 0, stopped => 0);
+    my $n = scalar @{ $ws->sent };
+    d50_at($onset + 1.0, sub { $ctl->requestTrack($OTHER, 0, { source => 'getNextTrack' }); });
+    is($ctl->wanted->{uri}, $OTHER, "EE-4e setup: wanted is the other title");
+    is($ctl->observed->{earlyEnd}{uri}, $EE_NEXT, "EE-4e setup: the wait for the marked successor stays");
+    my $sentJump = scalar(ee_skips($ws, $n));
+    @Slim::Utils::Log::WARNINGS = ();
+    d50_fire($onset + 3.0 + Plugins::SpotOn::Soloist::Control::EARLY_END_WAIT_S() + 0.1);
+    is(scalar(grep { /did not change to/ } @Slim::Utils::Log::WARNINGS), 0, "EE-4e: the fallback does not request the old successor");
+    is(scalar(ee_skips($ws, $n)), $sentJump, "EE-4e: and sends nothing");
+    ok(!$ctl->observed->{earlyEnd}, "EE-4e: the wait is gone");
+    ee_done($ctl);
+}
+
+# --- EE-4f (Fable WR-05): the fallback's daemon-title guard. The daemon is on the awaited title when the deadline
+# fires (set directly: every frame path that gets it there also ends the wait, so this pins the guard as a unit):
+# nothing is requested.
+{
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session('aa:bb:cc:dd:ee:4f');
+    d50_at($onset + 0.6, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack' }); });
+    is($ctl->observed->{earlyEnd}{uri}, $EE_NEXT, "EE-4f setup: answered early, wait armed");
+    $ctl->observed->{track} = $EE_NEXT;
+    my $n = scalar @{ $ws->sent };
+    @Slim::Utils::Log::WARNINGS = ();
+    d50_fire($onset + 3.0 + Plugins::SpotOn::Soloist::Control::EARLY_END_WAIT_S() + 0.1);
+    is(scalar(grep { /did not change to/ } @Slim::Utils::Log::WARNINGS), 0, "EE-4f: the daemon on the awaited title: no fallback WARN");
+    is(scalar(@{ $ws->sent }) - $n, 0, "EE-4f: and nothing sent");
+    ee_done($ctl);
+}
+
+# --- EE-SK: a skip or jump in the old title's tail AFTER the daemon changed (early answer used): LMS threw away the
+# stream it opened early (with what the daemon wrote into it since) and asks for the same title with its players
+# stopped: the title is sought back to 0 (armed), even though the daemon position is within the hit tolerance.
+# Players playing (LMS's own continuation) or past EARLY_SERVED_S: no forced seek.
+sub ee_after_change {
+    my ($mac) = @_;
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session($mac);
+    d50_at($onset + 0.6, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack' }); });
+    my $tc = d50_clone($fx->[0][1]);
+    $tc->{item}{uri} = $EE_NEXT;
+    d50_at($onset + 1.4, sub { $ctl->onEvent($tc); });
+    return ($ctl, $daemon, $ws, $fx, $onset);
+}
+sub ee_seeks {
+    my ($ws, $from) = @_;
+    my @s = @{ $ws->sent };
+    return grep { $_->[0] eq 'seek' } @s[ $from .. $#s ];
+}
+{
+    my $mac = 'aa:bb:cc:dd:ee:5a';
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_after_change($mac);
+    is($ctl->observed->{earlyServed}{uri}, $EE_NEXT, "EE-SK1 setup: the daemon's change after the early answer records the early-served title");
+    ee_lms($mac, playing => 0, paused => 0, buffering => 0, stopped => 0);
+    my $n = scalar @{ $ws->sent };
+    {
+        no warnings 'redefine';
+        local *Plugins::SpotOn::Soloist::Control::_observedPositionMs = sub { 500 };    # within the hit tolerance
+        d50_at($onset + 2.0, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack' }); });
+    }
+    my @seek = ee_seeks($ws, $n);
+    is(scalar(@seek), 1, "EE-SK1: LMS reopens the title with its players stopped -> one seek");
+    is($seek[0][1]{position_ms} // -1, 0, "EE-SK1: back to 0");
+    ee_done($ctl);
+}
+{
+    my $mac = 'aa:bb:cc:dd:ee:5b';
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_after_change($mac);
+    ee_lms($mac, playing => 1);
+    my $n = scalar @{ $ws->sent };
+    {
+        no warnings 'redefine';
+        local *Plugins::SpotOn::Soloist::Control::_observedPositionMs = sub { 500 };
+        d50_at($onset + 2.0, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack' }); });
+    }
+    is(scalar(ee_seeks($ws, $n)), 0, "EE-SK2: players playing -> no forced seek");
+    ee_done($ctl);
+}
+{
+    my $mac = 'aa:bb:cc:dd:ee:5c';
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_after_change($mac);
+    ee_lms($mac, playing => 0, paused => 0, buffering => 0, stopped => 0);
+    my $n = scalar @{ $ws->sent };
+    {
+        no warnings 'redefine';
+        local *Plugins::SpotOn::Soloist::Control::_observedPositionMs = sub { 500 };
+        d50_at($onset + 1.4 + 2.6, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack' }); });
+    }
+    is(scalar(ee_seeks($ws, $n)), 0, "EE-SK3: past EARLY_SERVED_S (and within the hit tolerance) -> no forced seek");
+    ee_done($ctl);
+}
+{
+    my $mac = 'aa:bb:cc:dd:ee:5d';
+    my ($ctl) = ee_after_change($mac);
+    $ctl->_hangTrackChanged('spotify:track:eeOtherTitle00000000');
+    ok(!$ctl->observed->{earlyServed}, "EE-SK4: a change to another title drops the record");
+    ee_done($ctl);
+}
+
+# --- EE-5: a seek after the mark voids it -> LMS's request for the queue head takes the old path at once
+{
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session('aa:bb:cc:dd:ee:e5');
+    d50_at($onset + 0.2, sub { $ctl->noteSeekIntent($D50_HM, 1000); });
+    ok(!$ctl->observed->{nearEnd}, "EE-5: noteSeekIntent removed the mark");
+    my $n = scalar @{ $ws->sent };
+    d50_at($onset + 0.6, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack' }); });
+    my @s = ee_skips($ws, $n);
+    is(scalar(@s), 1, "EE-5: the request is not deferred");
+    is($s[0][0] // '', 'skip_next', "EE-5: skip_next to the queue head as before");
+    ee_done($ctl);
+}
+
+# --- EE-6: a request for a title that is NOT the marked successor is not deferred
+{
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session('aa:bb:cc:dd:ee:e6');
+    $ctl->observed->{queueHead} = { uri => 'spotify:track:eeOtherTitle00000000' };
+    my $n = scalar @{ $ws->sent };
+    d50_at($onset + 0.6, sub { $ctl->requestTrack('spotify:track:eeOtherTitle00000000', 0, { source => 'getNextTrack' }); });
+    is(scalar(ee_skips($ws, $n)), 1, "EE-6: another queue head than the marked successor takes the old path");
+    like($ctl->_earlyEndOutcome('spotify:track:eeOtherTitle00000000') // '',
+        qr/: early EOF not used, the daemon changed to another title than the marked \Q$EE_NEXT\E \(/,
+        "EE-6: the outcome line names the marked successor");
+    ok(!$ctl->observed->{earlyEnd}, "EE-6: no wait armed");
+    ee_done($ctl);
+}
+
+# ee_lms($mac, %state) -- set LMS's play state for this player (the stub StreamingController's knobs).
+sub ee_lms {
+    my ($mac, %state) = @_;
+    my $lc = Slim::Player::Client::getClient($mac)->controller;
+    @{$lc}{ keys %state } = values %state;
+    return $lc;
+}
+
+# --- EE-7: Next (or a jump to the queue head) inside the end gap. LMS stopped its players before it asked
+# (StreamingController _StopGetNext), so nothing proves the shim ended the old stream: the old skip_next path,
+# successCb waits for the echo, no early answer. In TRACKWAIT the real isStopped is false; the stub says so too.
+{
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session('aa:bb:cc:dd:ee:e7');
+    ee_lms('aa:bb:cc:dd:ee:e7', playing => 0, paused => 0, buffering => 0, stopped => 0);
+    $ctl->observed->{meta}{$EE_NEXT} = { duration => 200 };
+    my $n = scalar @{ $ws->sent };
+    my $fired = 0;
+    d50_at($onset + 0.6, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack', successCb => sub { $fired++ } }); });
+    my @s = ee_skips($ws, $n);
+    is(scalar(@s), 1, "EE-7: Next in the gap -> one command for the next title");
+    is($s[0][0] // '', 'skip_next', "EE-7: it is the skip_next to the queue head (the old path)");
+    is($fired, 0, "EE-7: successCb waits for the daemon's echo (no early answer)");
+    ok(!$ctl->observed->{earlyEnd}, "EE-7: no wait for the daemon's own change is armed");
+    is($ctl->earlyEndContinues('spoton://track:eeNextTitle0000000000'), 0, "EE-7: earlyEndContinues is 0 (LMS keeps its own threshold)");
+    like($ctl->_earlyEndOutcome($EE_NEXT) // '', qr/: early EOF not used, LMS stopped its players first \(a skip or jump in the gap\): skip_next \(/,
+        "EE-7: the outcome line at the echo says LMS stopped first");
+    my $tc = d50_clone($fx->[0][1]);
+    $tc->{item}{uri} = $EE_NEXT;
+    d50_at($onset + 0.9, sub { $ctl->onEvent($tc); });
+    is($fired, 1, "EE-7: the echo fires successCb once");
+    ok(!$ctl->observed->{nearEnd}, "EE-7: the echo ends the mark");
+    d50_fire($onset + 6.0);
+    is(scalar(ee_skips($ws, $n)), 1, "EE-7: nothing else is sent afterwards");
+    ee_done($ctl);
+}
+
+# --- EE-7b: LMS's own advance after the early EOF keeps the early answer while its players are not stopped:
+# PLAYING (EE-3) and PAUSED (ReadyToStream runs _NextIfMore in PAUSED too). BUFFERING is accepted too, although
+# LMS's own advance never asks in it (ReadyToStream is _NoOp/_Invalid there).
+for my $case ([ 'aa:bb:cc:dd:ee:e8', 'BUFFERING accepted', playing => 0, buffering => 1 ],
+              [ 'aa:bb:cc:dd:ee:e9', 'paused',             playing => 0, paused => 1 ]) {
+    my ($mac, $label, %state) = @$case;
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session($mac);
+    ee_lms($mac, %state);
+    my $n = scalar @{ $ws->sent };
+    my $fired = 0;
+    d50_at($onset + 0.6, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack', successCb => sub { $fired++ } }); });
+    is(scalar(ee_skips($ws, $n)), 0, "EE-7b ($label): no skip_next or play is sent");
+    is($fired, 1, "EE-7b ($label): successCb fired at once");
+    is($ctl->observed->{earlyEnd}{uri}, $EE_NEXT, "EE-7b ($label): the wait for the daemon's own change is armed");
+    ee_done($ctl);
+}
+
+# --- EE-7c: a controller read that dies fails closed: the old path.
+{
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session('aa:bb:cc:dd:ee:ea');
+    no warnings 'redefine';
+    local *Slim::Player::Client::_StubController::isPlaying = sub { die "boom\n" };
+    my $n = scalar @{ $ws->sent };
+    d50_at($onset + 0.6, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack' }); });
+    my @s = ee_skips($ws, $n);
+    is(scalar(@s), 1, "EE-7c: one command for the next title");
+    is($s[0][0] // '', 'skip_next', "EE-7c: a dying controller read reads as stopped (skip_next)");
+    ok(!$ctl->observed->{earlyEnd}, "EE-7c: no wait armed");
+    ee_done($ctl);
+}
+
+# ee_fallback_timers($ctl) -- the _earlyEndFallback timers armed for this Control.
+sub ee_fallback_timers {
+    my ($ctl) = @_;
+    return grep { $_->[0] == $ctl && $_->[2] == \&Plugins::SpotOn::Soloist::Control::_earlyEndFallback } @Slim::Utils::Timers::TIMERS;
+}
+
+# --- EE-7d: Next after the early answer, the common form of a Next in the gap: the shim ended the old stream,
+# LMS advanced by itself and was answered early, then the user presses Next while the old title's last seconds
+# play. LMS's _Stop drops the stream it opened for the next title, so it asks for it again, now stopped. That
+# request takes the old path AND ends the early answer's wait and fallback timer: exactly one skip_next, also past
+# the deadline without an echo (a second one from the fallback would pop the daemon's queue twice and skip the
+# title), and the outcome line says the early EOF was used before LMS stopped.
+{
+    my $mac = 'aa:bb:cc:dd:ee:7d';
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session($mac);
+    $ctl->observed->{meta}{$EE_NEXT} = { duration => 200 };
+    my $n = scalar @{ $ws->sent };
+    my ($early, $fired) = (0, 0);
+    d50_at($onset + 0.6, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack', successCb => sub { $early++ } }); });
+    is($early, 1, "EE-7d setup: LMS's own advance was answered early");
+    is($ctl->observed->{earlyEnd}{uri}, $EE_NEXT, "EE-7d setup: the wait is armed");
+    is(scalar(ee_fallback_timers($ctl)), 1, "EE-7d setup: with its fallback timer");
+
+    ee_lms($mac, playing => 0, paused => 0, buffering => 0, stopped => 0);
+    @Slim::Utils::Log::WARNINGS = ();
+    d50_at($onset + 1.2, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack', successCb => sub { $fired++ } }); });
+    my @s = ee_skips($ws, $n);
+    is(scalar(@s), 1, "EE-7d: the stopped request sends one command");
+    is($s[0][0] // '', 'skip_next', "EE-7d: the skip_next to the queue head (the old path)");
+    is($fired, 0, "EE-7d: its successCb waits for the daemon's echo");
+    ok(!$ctl->observed->{earlyEnd}, "EE-7d: the early answer's wait ends");
+    is(scalar(ee_fallback_timers($ctl)), 0, "EE-7d: and its fallback timer is killed");
+    is($ctl->earlyEndContinues('spoton://track:eeNextTitle0000000000'), 0, "EE-7d: earlyEndContinues is 0 (LMS keeps its own threshold)");
+
+    d50_fire($onset + 3.0 + Plugins::SpotOn::Soloist::Control::EARLY_END_WAIT_S() + 0.1);
+    is(scalar(ee_skips($ws, $n)), 1, "EE-7d: still one skip_next past the deadline without an echo");
+    is(scalar(grep { /within the end gap/ } @Slim::Utils::Log::WARNINGS), 0, "EE-7d: no fallback WARN");
+
+    my $at = $onset + 3.0 + Plugins::SpotOn::Soloist::Control::EARLY_END_WAIT_S() + 0.2;
+    like(d50_at($at, sub { $ctl->_earlyEndOutcome($EE_NEXT) }) // '',
+        qr/: early EOF used, then LMS stopped its players \(a skip or jump in the gap\): skip_next \(/,
+        "EE-7d: the outcome line at the echo: used, then LMS stopped");
+    my $tc = d50_clone($fx->[0][1]);
+    $tc->{item}{uri} = $EE_NEXT;
+    d50_at($at, sub { $ctl->onEvent($tc); });
+    ok(!$ctl->observed->{nearEnd}, "EE-7d: the echo ends the mark");
+    is($ctl->observed->{track}, $EE_NEXT, "EE-7d: the daemon is on the next title");
+    is($early, 1, "EE-7d: the early answer's successCb fired exactly once");
+    is(scalar(ee_skips($ws, $n)), 1, "EE-7d: nothing else is sent afterwards");
+    ee_done($ctl);
+}
+
+# --- EE-7f: a jump with a start position to the queued next title after the early answer (LMS stopped):
+# the old path with its seek, and the early answer's wait and fallback timer end, so no second skip_next.
+{
+    my $mac = 'aa:bb:cc:dd:ef:7f';
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session($mac);
+    $ctl->observed->{meta}{$EE_NEXT} = { duration => 200 };
+    my $n = scalar @{ $ws->sent };
+    d50_at($onset + 0.6, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack' }); });
+    is($ctl->observed->{earlyEnd}{uri}, $EE_NEXT, "EE-7f setup: the wait is armed");
+
+    ee_lms($mac, playing => 0, paused => 0, buffering => 0, stopped => 0);
+    @Slim::Utils::Log::WARNINGS = ();
+    d50_at($onset + 1.2, sub { $ctl->requestTrack($EE_NEXT, 30000, { source => 'getNextTrack' }); });
+    my @s = ee_skips($ws, $n);
+    is(scalar(@s), 1, "EE-7f: the stopped request with a position sends one command");
+    is($s[0][0] // '', 'skip_next', "EE-7f: the skip_next to the queue head (the old path)");
+    ok(!$ctl->observed->{earlyEnd}, "EE-7f: the early answer's wait ends");
+    is(scalar(ee_fallback_timers($ctl)), 0, "EE-7f: and its fallback timer is killed");
+    d50_fire($onset + 3.0 + Plugins::SpotOn::Soloist::Control::EARLY_END_WAIT_S() + 0.1);
+    is(scalar(ee_skips($ws, $n)), 1, "EE-7f: still one skip_next past the deadline without an echo");
+    is(scalar(grep { /within the end gap/ } @Slim::Utils::Log::WARNINGS), 0, "EE-7f: no fallback WARN");
+    ee_done($ctl);
+}
+
+# --- EE-7e: a jump to another title after the early answer: the outcome line says the early EOF was used.
+{
+    my $mac = 'aa:bb:cc:dd:ee:7e';
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session($mac);
+    d50_at($onset + 0.6, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack' }); });
+    is($ctl->observed->{earlyEnd}{uri}, $EE_NEXT, "EE-7e setup: answered early, the wait is armed");
+    like(d50_at($onset + 1.5, sub { $ctl->_earlyEndOutcome('spotify:track:eeOtherTitle00000000') }) // '',
+        qr/: early EOF used, but the daemon then changed to another title than the marked \Q$EE_NEXT\E \(/,
+        "EE-7e: the outcome line for the change to another title says the early EOF was used");
+    ee_done($ctl);
+}
+
+# --- EE-8: the refused early end (the shim switched off, a stream younger than its 12 s guard, no gap). The
+# mark is posted, but the shim keeps the old stream open, so the daemon changes title first and LMS asks only
+# afterwards. That must be main's path: the change drops the mark, the request is a Treffer (nothing sent,
+# successCb at once, the prefetch wish as on main), no wait is armed, LMS keeps its own threshold.
+{
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session('aa:bb:cc:dd:ee:eb');
+    ok($ctl->observed->{nearEnd}, "EE-8 setup: the mark stands");
+    my $at = $onset + 3.0;
+    my $tc = d50_clone($fx->[0][1]);
+    $tc->{item}{uri} = $EE_NEXT;
+    my $pc = d50_clone($fx->[7][1]);
+    my $ps = d50_clone($fx->[8][1]);
+    $ps->{item}{uri} = $EE_NEXT;
+    $ps->{position} = { position_ms => 0, timestamp_ms => int($at * 1000), speed => 1 };
+    my $sync = d50_clone($fx->[9][1]);
+    $sync->{position} = { position_ms => 0, timestamp_ms => int($at * 1000), speed => 1 };
+    like(d50_at($at, sub { $ctl->_earlyEndOutcome($EE_NEXT) }) // '', qr/: early EOF not used, LMS had not asked for the next title by the daemon's change /,
+        "EE-8: the outcome line at the change says LMS had not asked yet");
+    d50_at($at, sub { $ctl->onEvent($_) for ($tc, $pc, $ps, $sync); });
+    $ctl->observed->{anchor}{seen_at} = $at;    # the anchor stamps CORE::time; the fixture clock is Time::HiRes::time
+    ok(!$ctl->observed->{nearEnd}, "EE-8: the daemon's own change drops the mark");
+    is($ctl->observed->{track}, $EE_NEXT, "EE-8: the daemon is on the next title");
+    my $n = scalar @{ $ws->sent };
+    my ($fired, $prefetched) = (0, 0);
+    {
+        no warnings 'redefine';
+        local *Plugins::SpotOn::Soloist::Control::_prefetchNext = sub { $prefetched++ };
+        d50_at($at + 0.2, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack', successCb => sub { $fired++ } }); });
+    }
+    is(scalar(@{ $ws->sent }) - $n, 0, "EE-8: LMS's request after the change sends nothing to the daemon (Treffer)");
+    is($fired, 1, "EE-8: successCb fired at once");
+    is($prefetched, 1, "EE-8: the prefetch wish is raised and consumed at once, as on main");
+    ok(!$ctl->observed->{earlyEnd}, "EE-8: no wait for the daemon's own change");
+    is($ctl->earlyEndContinues('spoton://track:eeNextTitle0000000000'), 0, "EE-8: earlyEndContinues is 0 (LMS keeps its own threshold)");
+    ee_done($ctl);
+}
+
+# --- EE-9: the daemon goes away inside the end gap (crash, backend switch, LMS shutdown) after the early
+# answer: shutdown drops the mark, the wait and the fallback timer; nothing fires afterwards. The fallback
+# itself refuses on a torn-down Control too (it reconciles directly, past requestTrack's shutdown guard).
+{
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session('aa:bb:cc:dd:ee:ec');
+    d50_at($onset + 0.6, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack' }); });
+    is($ctl->observed->{earlyEnd}{uri}, $EE_NEXT, "EE-9 setup: LMS was answered early, the wait is armed");
+    is(scalar(ee_fallback_timers($ctl)), 1, "EE-9 setup: one fallback timer");
+    my $n = scalar @{ $ws->sent };
+    @Slim::Utils::Log::WARNINGS = ();
+    d50_at($onset + 1.0, sub { $ctl->shutdown; });
+    ok(!$ctl->observed->{earlyEnd}, "EE-9: shutdown drops the wait");
+    ok(!$ctl->observed->{nearEnd}, "EE-9: and the mark");
+    is(scalar(ee_fallback_timers($ctl)), 0, "EE-9: and kills the fallback timer");
+    d50_fire($onset + 3.0 + Plugins::SpotOn::Soloist::Control::EARLY_END_WAIT_S() + 0.1);
+    $ctl->observed->{earlyEnd} = { uri => $EE_NEXT, from => $D50_HM, until => $onset + 5.0 };
+    d50_at($onset + 5.1, sub { Plugins::SpotOn::Soloist::Control::_earlyEndFallback($ctl); });
+    is(scalar(@{ $ws->sent }) - $n, 0, "EE-9: nothing is sent after the shutdown, not even by a stray fallback");
+    is(scalar(grep { /within the end gap/ } @Slim::Utils::Log::WARNINGS), 0, "EE-9: no fallback WARN");
+    ee_done($ctl);
+}
+
+# --- EE-9b: LMS leaves browse inside the end gap after the early answer: the same cleanup.
+{
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session('aa:bb:cc:dd:ee:ed');
+    d50_at($onset + 0.6, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack' }); });
+    is($ctl->observed->{earlyEnd}{uri}, $EE_NEXT, "EE-9b setup: the wait is armed");
+    d50_at($onset + 1.0, sub { $ctl->leaveBrowse; });
+    ok(!$ctl->observed->{earlyEnd} && !$ctl->observed->{nearEnd}, "EE-9b: leaveBrowse drops the wait and the mark");
+    is(scalar(ee_fallback_timers($ctl)), 0, "EE-9b: and kills the fallback timer");
+    ee_done($ctl);
+}
+
+# --- EE-9d: the WS transport closes inside the end gap after the early answer (no shutdown): the mark,
+# the wait and the fallback timer go with the connection, and no fallback WARN follows.
+{
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session('aa:bb:cc:dd:ef:d9');
+    d50_at($onset + 0.6, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack' }); });
+    is($ctl->observed->{earlyEnd}{uri}, $EE_NEXT, "EE-9d setup: the wait is armed");
+    @Slim::Utils::Log::WARNINGS = ();
+    d50_at($onset + 1.0, sub { $ctl->onEvent({ type => '_transport', state => 'closed' }); });
+    ok(!$ctl->observed->{earlyEnd} && !$ctl->observed->{nearEnd}, "EE-9d: the closed transport drops the wait and the mark");
+    is(scalar(ee_fallback_timers($ctl)), 0, "EE-9d: and kills the fallback timer");
+    d50_fire($onset + 3.0 + Plugins::SpotOn::Soloist::Control::EARLY_END_WAIT_S() + 0.1);
+    is(scalar(grep { /within the end gap/ } @Slim::Utils::Log::WARNINGS), 0, "EE-9d: no fallback WARN after the deadline");
+    ee_done($ctl);
+}
+
+# --- EE-9c: the fallback timer is killed before it is armed: a stray one never doubles it.
+{
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session('aa:bb:cc:dd:ee:ef');
+    Slim::Utils::Timers::setTimer($ctl, $onset + 30, \&Plugins::SpotOn::Soloist::Control::_earlyEndFallback);
+    d50_at($onset + 0.6, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack' }); });
+    my @t = ee_fallback_timers($ctl);
+    is(scalar(@t), 1, "EE-9c: exactly one fallback timer after the early answer");
+    is($t[0][1], $ctl->observed->{earlyEnd}{until}, "EE-9c: and it is the one at the wait's deadline");
+    ee_done($ctl);
+}
+
+# --- EE-OW: the daemon changes title before LMS asked (EE-8 shape; with a large top-up its change can come before
+# LMS has read the old stream's EOF although the shim ended it early). The outcome line waits for the reply to the
+# change's /boundary: anchor=early -> "early EOF used, the daemon changed before LMS asked", else the "not used" text;
+# OUTCOME_WAIT_S covers a reply that never comes. Other outcomes are written at once (no wait).
+sub ee_outcome_timers {
+    my ($ctl) = @_;
+    return grep { $_->[0] == $ctl && $_->[2] == \&Plugins::SpotOn::Soloist::Control::_outcomeWaitFire } @Slim::Utils::Timers::TIMERS;
+}
+sub ee_change_first {
+    my ($ctl, $fx, $at) = @_;
+    my $tc = d50_clone($fx->[0][1]);
+    $tc->{item}{uri} = $EE_NEXT;
+    d50_at($at, sub { $ctl->onEvent($tc); });
+}
+{
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session('aa:bb:cc:dd:ee:0a');
+    ee_change_first($ctl, $fx, $onset + 3.0);
+    my $w = $ctl->observed->{outcomeWait};
+    ok(ref($w) eq 'HASH', "EE-OW1: the daemon's change before LMS asked holds the outcome line back");
+    like($w->{line} // '', qr/: early EOF not used, LMS had not asked for the next title by the daemon's change /,
+        "EE-OW1: the held line for a reply without anchor=early");
+    like($w->{early} // '', qr/: early EOF used, the daemon changed before LMS asked for the next title \(/,
+        "EE-OW1: and the one for anchor=early");
+    is(scalar(ee_outcome_timers($ctl)), 1, "EE-OW1: one wait timer");
+    my $earlyLine = $w->{early};
+    # Fable WR-05: the written text itself (INFOLOG is a constant 0 here; _outcomeWaitResolve returns what it writes)
+    is($ctl->_outcomeWaitResolve('early'), $earlyLine, "EE-OW1: a reply with anchor=early writes the 'used' line");
+    ok(!exists $ctl->observed->{outcomeWait}, "EE-OW1: the reply writes it once and drops it");
+    is(scalar(ee_outcome_timers($ctl)), 0, "EE-OW1: and kills the timer");
+    is($ctl->_outcomeWaitResolve('early'), undef, "EE-OW1: a second reply writes nothing");
+    ok(!exists $ctl->observed->{outcomeWait}, "EE-OW1: a second reply finds nothing to write");
+    ee_done($ctl);
+}
+{
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session('aa:bb:cc:dd:ee:0b');
+    ee_change_first($ctl, $fx, $onset + 3.0);
+    my $notUsed = $ctl->observed->{outcomeWait}{line};
+    my @written;
+    {
+        no warnings 'redefine';
+        my $orig = \&Plugins::SpotOn::Soloist::Control::_outcomeWaitResolve;
+        local *Plugins::SpotOn::Soloist::Control::_outcomeWaitResolve = sub { my $r = $orig->(@_); push @written, $r; return $r; };
+        d50_fire($onset + 3.0 + 1.1);
+    }
+    ok(!exists $ctl->observed->{outcomeWait}, "EE-OW2: without a reply the timer writes the line after OUTCOME_WAIT_S");
+    is_deeply(\@written, [ $notUsed ], "EE-OW2: and it is the 'not used' line (no anchor=early reply)");
+    ee_done($ctl);
+}
+{
+    # Fable WR-05: a reply with another anchor writes the 'not used' line too
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session('aa:bb:cc:dd:ee:0e');
+    ee_change_first($ctl, $fx, $onset + 3.0);
+    my $w = $ctl->observed->{outcomeWait};
+    is($ctl->_outcomeWaitResolve('drain'), $w->{line}, "EE-OW2b: a reply with anchor=drain writes the 'not used' line");
+    ee_done($ctl);
+}
+{
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session_lead('aa:bb:cc:dd:ee:0c', 8.595);
+    ee_change_first($ctl, $fx, $onset + 1.0);
+    like($ctl->observed->{outcomeWait}{early} // '', qr/: early EOF used, the daemon changed before LMS asked for the next title; top-up asked 1900 ms, the players were 600 ms behind \(/,
+        "EE-OW3: with a top-up the anchor=early line names it");
+    unlike($ctl->observed->{outcomeWait}{line} // '', qr/top-up/, "EE-OW3: the not-used line does not");
+    ee_done($ctl);
+}
+{
+    # LMS asked first (EE-3 shape): the outcome is known at the change, nothing waits
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session('aa:bb:cc:dd:ee:0d');
+    d50_at($onset + 0.6, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack' }); });
+    ee_change_first($ctl, $fx, $onset + 3.0);
+    ok(!exists $ctl->observed->{outcomeWait}, "EE-OW4: an early answer's change writes its line at once (no wait)");
+    is(scalar(ee_outcome_timers($ctl)), 0, "EE-OW4: no wait timer");
+    ee_done($ctl);
+}
+{
+    # the browse /boundary reply callback hands the reply's anchor to _outcomeWaitResolve (pinned in the source:
+    # the stub socket never answers)
+    open(my $fh, '<', "$project_dir/Plugins/SpotOn/Soloist/Control.pm") or die "Control.pm: $!";
+    my $src = do { local $/; <$fh> };
+    close($fh);
+    like($src, qr/BOUNDARY_PATH_PLAIN : BOUNDARY_PATH_DRAIN;\s*\$self->_postBoundaryRead\(\$path, sub \{.*?\$self->_outcomeWaitResolve\(\$reply->\{anchor\}\);/s,
+        "EE-OW5: the browse boundary reply resolves the held-back outcome line with its anchor");
+}
+
+# --- EE-OW6: the held-back outcome line and its OUTCOME_WAIT_S timer do not outlive the session, the browse mode or
+# the connection either (review WR-01 of the PR #212 takeover: _earlyEndClear killed only the fallback timer, and
+# ee_done below used to kill _outcomeWaitFire itself, which hid the gap). A stray fire after the teardown writes an
+# end-gap line for a session that is gone and keeps the dead Control alive for another second.
+for my $c (
+    [ 'aa:bb:cc:dd:ee:6a', 'shutdown',         sub { $_[0]->shutdown } ],
+    [ 'aa:bb:cc:dd:ee:6b', 'leaveBrowse',      sub { $_[0]->leaveBrowse } ],
+    [ 'aa:bb:cc:dd:ee:6c', 'transport closed', sub { $_[0]->onEvent({ type => '_transport', state => 'closed' }) } ],
+) {
+    my ($mac, $what, $do) = @$c;
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session($mac);
+    ee_change_first($ctl, $fx, $onset + 3.0);
+    is(scalar(ee_outcome_timers($ctl)), 1, "EE-OW6 setup ($what): the daemon's change before LMS asked arms the outcome wait timer");
+    d50_at($onset + 3.2, sub { $do->($ctl); });
+    ok(!exists $ctl->observed->{outcomeWait}, "EE-OW6: $what drops the held-back outcome line");
+    is(scalar(ee_outcome_timers($ctl)), 0, "EE-OW6: $what kills the outcome wait timer");
+    ee_done($ctl);
+}
+
+# --- EE-10: _hangTrackChanged writes the outcome line as INFO before it drops the mark (INFOLOG is a constant 0 in
+# this file, so the call is pinned in the source, as t/37 G11 does; EE-3/4/6/7/7d/7e/8 cover the text). Comments
+# are stripped and only the order is pinned, so a reformatting of either line keeps it green.
+{
+    open(my $fh, '<', "$project_dir/Plugins/SpotOn/Soloist/Control.pm") or die "Control.pm: $!";
+    my $src = do { local $/; <$fh> };
+    close($fh);
+    my ($body) = $src =~ /^sub _hangTrackChanged \{\n(.*?)^\}/ms;
+    my $code = join("\n", grep { !/^\s*#/ } split /\n/, $body // '');
+    like($code, qr/my \(\$line, \$branch\) = \$self->_earlyEndOutcome\(\$uri\);/,
+        "EE-10: _hangTrackChanged computes the outcome line");
+    like($code, qr/\$log->info\(\$line\)/, "EE-10: and logs it at INFO (or holds it back, EE-OW)");
+    my $info_idx = index($code, '_earlyEndOutcome');
+    my $drop_idx = index($code, 'delete $o->{nearEnd}');
+    ok($info_idx >= 0 && $drop_idx >= 0 && $info_idx < $drop_idx, "EE-10: before it drops the mark");
+}
+
+# ============================================================
+# 90-07: the continuation mark (.planning/debug/90-seek-near-end-rebuffer.md). With SpotOn's successor queued,
+# Soloist changes gaplessly and sends no end-gap `buffering` frame for the old title, so the near-end mark above
+# never runs on the rig. The daemon's own change to that successor (the prefetch hit) marks it as a gapless
+# continuation: earlyEndContinues answers 1 for it while LMS's players are not stopped, for at most
+# PREFETCH_CONTINUE_S, and LMS starts its stream at EARLY_END_BUFFER_KB instead of 255 KB.
+# The measured burst (90-gap90-seek-alone-candidate-judged-3-261121-1756 extract, G3/G4-INSTR lines 61-66):
+# track_changed of the successor, playback_changed buffering, playback_state (successor, buffering), position_sync
+# speed 0, 0.2 s later playing. No frame of the old title before it.
+# ============================================================
+# pc_session($mac) -- the EE session on the d50 title, fed only up to its playing frames (0..10: no buffering frame
+# of the old title, no near-end frame 13), SpotOn's successor $EE_NEXT queued at the head, LMS's players playing.
+sub pc_session {
+    my ($mac) = @_;
+    my @fx = d50_frames('d50-hang-midtitle.frames');
+    my ($ctl, $daemon, $ws) = d50_session($mac, $D50_HM, $fx[0][0] - 0.05,
+        observed => { meta => { $D50_HM => { duration => 12.195 } } });
+    d50_feed($ctl, \@fx, 0, 10);
+    $ctl->observed->{queueHead}  = { uri => $EE_NEXT };
+    $ctl->observed->{queuedByUs} = { $EE_NEXT => 1 };
+    @IO::Socket::INET::NEAR_END_WRITES = ();
+    ee_lms($mac, playing => 1, paused => 0, buffering => 0, stopped => 0);
+    return ($ctl, $daemon, $ws, \@fx);
+}
+# pc_end($fx) -- the clock at the old title's end (12.195 s after its start at frame 9): no app next.
+sub pc_end { return $_[0][9][0] + 12.1; }
+# pc_burst($ctl, $fx, $uri, $at) -- the gapless change burst in the measured shape, all frames of $uri.
+sub pc_burst {
+    my ($ctl, $fx, $uri, $at) = @_;
+    my $tc = d50_clone($fx->[0][1]);
+    $tc->{item}{uri} = $uri;
+    my $pb = d50_clone($fx->[1][1]);
+    my $st = d50_clone($fx->[3][1]);
+    $st->{item}{uri} = $uri;
+    my $ps = d50_clone($fx->[4][1]);
+    $ps->{position}{timestamp_ms} = int($at * 1000);
+    my $dt = 0;
+    for my $f ($tc, $pb, $st, $ps) {
+        d50_at($at + $dt, sub { $ctl->onEvent($f); });
+        $dt += 0.0004;
+    }
+    hold_flush();
+}
+# pc_lines($code) -- run $code and return the end-gap outcome lines written meanwhile (INFOLOG is a constant 0 in
+# this file, so the writers' return values are read, as EE-OW does): _hangTrackChanged's direct line,
+# _outcomeWaitResolve's held one and the continuation mark's own.
+sub pc_lines {
+    my ($code) = @_;
+    my @lines;
+    my $keep = sub { my $r = shift; push @lines, $r if defined $r && !ref($r) && $r =~ /^Control: end gap /; return $r; };
+    my $oH = \&Plugins::SpotOn::Soloist::Control::_hangTrackChanged;
+    my $oW = \&Plugins::SpotOn::Soloist::Control::_outcomeWaitResolve;
+    my $oM = Plugins::SpotOn::Soloist::Control->can('_prefetchContinueMark') || sub { return undef; };
+    no warnings 'redefine';
+    local *Plugins::SpotOn::Soloist::Control::_hangTrackChanged     = sub { return $keep->(scalar $oH->(@_)); };
+    local *Plugins::SpotOn::Soloist::Control::_outcomeWaitResolve   = sub { return $keep->(scalar $oW->(@_)); };
+    local *Plugins::SpotOn::Soloist::Control::_prefetchContinueMark = sub { return $keep->(scalar $oM->(@_)); };
+    $code->();
+    return @lines;
+}
+my $PC_NEXT_URL  = 'spoton://track:eeNextTitle0000000000';
+my $PC_OTHER_URL = 'spoton://track:eeOtherTitle00000000';
+
+# --- 90-07 PC-1 (RED before 90-07): the gapless change to SpotOn's own successor without any end-gap frame gives
+# LMS's stream of the successor the continuation threshold; the near-end path did not run; one outcome line.
+{
+    my $mac = 'aa:bb:cc:dd:ef:01';
+    my ($ctl, $daemon, $ws, $fx) = pc_session($mac);
+    my $at = pc_end($fx);
+    my @lines = pc_lines(sub { pc_burst($ctl, $fx, $EE_NEXT, $at); });
+    is($ctl->observed->{track}, $EE_NEXT, "90-07 PC-1: setup, the daemon is on the successor");
+    is(d50_at($at + 0.7, sub { $ctl->earlyEndContinues($PC_NEXT_URL) }), 1,
+        "90-07 PC-1: earlyEndContinues is 1 for the successor (LMS starts its stream at the continuation threshold)");
+    is(d50_at($at + 0.7, sub { $ctl->earlyEndContinues($PC_OTHER_URL) }), 0, "90-07 PC-1: and 0 for any other title");
+    ok(!defined $ctl->observed->{nearEnd}, "90-07 PC-1: no near-end mark (the old trigger did not run)");
+    is(scalar(@IO::Socket::INET::NEAR_END_WRITES), 0, "90-07 PC-1: no POST /near-end");
+    is(scalar(@lines), 1, "90-07 PC-1: exactly one end-gap outcome line for the change") or diag(join("\n", @lines));
+    like($lines[0] // '', qr/^Control: end gap \Q$D50_HM\E -> \Q$EE_NEXT\E: early EOF not used .*continuation threshold/,
+        "90-07 PC-1: it says early EOF not used and names the continuation threshold");
+    ee_done($ctl);
+}
+
+# --- 90-07 PC-2: LMS's players stopped (a skip or jump) when LMS opens the successor: LMS keeps its own threshold.
+{
+    my $mac = 'aa:bb:cc:dd:ef:02';
+    my ($ctl, $daemon, $ws, $fx) = pc_session($mac);
+    my $at = pc_end($fx);
+    pc_burst($ctl, $fx, $EE_NEXT, $at);
+    is(($ctl->observed->{prefetchContinue} || {})->{uri}, $EE_NEXT, "90-07 PC-2: setup, the change marked the successor");
+    ee_lms($mac, playing => 0, paused => 0, buffering => 0, stopped => 1);
+    is(d50_at($at + 0.7, sub { $ctl->earlyEndContinues($PC_NEXT_URL) }), 0,
+        "90-07 PC-2: players stopped at the query -> earlyEndContinues 0");
+    ee_lms($mac, playing => 0, paused => 0, buffering => 0, stopped => 0);
+    is(d50_at($at + 0.7, sub { $ctl->earlyEndContinues($PC_NEXT_URL) }), 0,
+        "90-07 PC-2: players neither playing, paused nor buffering (TRACKWAIT after a stop) -> 0 as well");
+    ee_done($ctl);
+}
+
+# --- 90-07 PC-3: the daemon changes to a title SpotOn did not queue: no mark, earlyEndContinues 0 for it.
+{
+    my $mac = 'aa:bb:cc:dd:ef:03';
+    my $FOREIGN = 'spotify:track:eeForeignTitle0000000';
+    my ($ctl, $daemon, $ws, $fx) = pc_session($mac);
+    my $at = pc_end($fx);
+    my @lines = pc_lines(sub { pc_burst($ctl, $fx, $FOREIGN, $at); });
+    is($ctl->observed->{track}, $FOREIGN, "90-07 PC-3: setup, the daemon is on the foreign title");
+    ok(!defined $ctl->observed->{prefetchContinue}, "90-07 PC-3: a title SpotOn did not queue is not marked");
+    is(d50_at($at + 0.7, sub { $ctl->earlyEndContinues('spoton://track:eeForeignTitle0000000') }), 0,
+        "90-07 PC-3: earlyEndContinues 0 for it");
+    is(scalar(@lines), 0, "90-07 PC-3: no end-gap outcome line");
+    ee_done($ctl);
+}
+# PC-3 (b): the same foreign change where the D-34 guard does not pause (the daemon's own play echo window, 82-12
+# expectEcho, is open for another title): still no mark, the queuedByUs match alone licenses it.
+{
+    my $mac = 'aa:bb:cc:dd:ef:13';
+    my $FOREIGN = 'spotify:track:eeForeignTitle0000000';
+    my ($ctl, $daemon, $ws, $fx) = pc_session($mac);
+    my $at = pc_end($fx);
+    $ctl->observed->{expectEcho} = { uri => 'spotify:track:eeLateEchoTitle000000', until => $at + 5 };
+    my $n = scalar @{ $ws->sent };
+    pc_burst($ctl, $fx, $FOREIGN, $at);
+    is(scalar(grep { $_->[0] eq 'pause' } @{ $ws->sent }[ $n .. $#{ $ws->sent } ]), 0,
+        "90-07 PC-3: (b) setup, the guard sends no pause inside the echo window");
+    ok(!$ctl->pending, "90-07 PC-3: (b) setup, nothing pending");
+    ok(!defined $ctl->observed->{prefetchContinue}, "90-07 PC-3: (b) no mark without the queuedByUs match");
+    is(d50_at($at + 0.7, sub { $ctl->earlyEndContinues('spoton://track:eeForeignTitle0000000') }), 0,
+        "90-07 PC-3: (b) earlyEndContinues 0 for it");
+    ee_done($ctl);
+}
+
+# --- 90-07 PC-4: an app next mid-title (far from the end, _forwardBrowseNext forwards it to LMS): no mark.
+{
+    my $mac = 'aa:bb:cc:dd:ef:04';
+    local $Slim::Player::Source::PLAYMODE = 'play';
+    @Slim::Control::Request::EXECUTED = ();
+    my ($ctl, $daemon, $ws, $fx) = pc_session($mac);
+    $ctl->observed->{meta}{$D50_HM}{duration} = 200;    # a long title: 5 s in is far from its end
+    my $at = $fx->[10][0] + 5.0;    # past OWN_ECHO_WINDOW_S after Control's own play, 195 s before the end
+    pc_burst($ctl, $fx, $EE_NEXT, $at);
+    is_deeply([ map { [ @{ $_->{cmd} } ] } @Slim::Control::Request::EXECUTED ], [ [ 'playlist', 'index', '+1' ] ],
+        "90-07 PC-4: setup, the app next is forwarded to LMS");
+    ok(!defined $ctl->observed->{prefetchContinue}, "90-07 PC-4: an app next is no gapless continuation, no mark");
+    is(d50_at($at + 0.7, sub { $ctl->earlyEndContinues($PC_NEXT_URL) }), 0, "90-07 PC-4: earlyEndContinues 0");
+    @Slim::Control::Request::EXECUTED = ();
+    ee_done($ctl);
+}
+
+# --- 90-07 PC-5: the mark ends after PREFETCH_CONTINUE_S, at the next change to another title, at an own seek, at
+# leaveBrowse, at shutdown and when the transport closes; earlyEndContinues 0 after each.
+{
+    my $mac = 'aa:bb:cc:dd:ef:05';
+    my ($ctl, $daemon, $ws, $fx) = pc_session($mac);
+    my $at = pc_end($fx);
+    pc_burst($ctl, $fx, $EE_NEXT, $at);
+    my $bound = Plugins::SpotOn::Soloist::Control::PREFETCH_CONTINUE_S();
+    is($bound, 2.5, "90-07 PC-5: PREFETCH_CONTINUE_S is 2.5 s");
+    is(d50_at($at + $bound - 0.05, sub { $ctl->earlyEndContinues($PC_NEXT_URL) }), 1,
+        "90-07 PC-5: 1 just inside PREFETCH_CONTINUE_S");
+    is(d50_at($at + $bound + 0.05, sub { $ctl->earlyEndContinues($PC_NEXT_URL) }), 0,
+        "90-07 PC-5: 0 once PREFETCH_CONTINUE_S passed");
+    ee_done($ctl);
+}
+for my $c (
+    [ 'ef:51', 'the next change to another title', sub { my ($ctl, $fx, $at) = @_; pc_burst($ctl, $fx, 'spotify:track:eeOtherTitle00000000', $at); } ],
+    [ 'ef:52', 'an own seek',      sub { my ($ctl, $fx, $at) = @_; d50_at($at, sub { $ctl->noteSeekIntent($PC_NEXT_URL, 30000); }); } ],
+    [ 'ef:53', 'leaveBrowse',      sub { my ($ctl, $fx, $at) = @_; d50_at($at, sub { $ctl->leaveBrowse; }); } ],
+    [ 'ef:54', 'shutdown',         sub { my ($ctl, $fx, $at) = @_; d50_at($at, sub { $ctl->shutdown; }); } ],
+    [ 'ef:55', 'transport closed', sub { my ($ctl, $fx, $at) = @_; d50_at($at, sub { $ctl->onEvent({ type => '_transport', state => 'closed' }); }); } ],
+) {
+    my ($suffix, $what, $do) = @$c;
+    my $mac = "aa:bb:cc:dd:$suffix";
+    my ($ctl, $daemon, $ws, $fx) = pc_session($mac);
+    my $at = pc_end($fx);
+    pc_burst($ctl, $fx, $EE_NEXT, $at);
+    is(($ctl->observed->{prefetchContinue} || {})->{uri}, $EE_NEXT, "90-07 PC-5: setup ($what), the successor is marked");
+    $do->($ctl, $fx, $at + 0.3);
+    ok(!defined $ctl->observed->{prefetchContinue}, "90-07 PC-5: $what drops the mark");
+    is(d50_at($at + 0.4, sub { $ctl->earlyEndContinues($PC_NEXT_URL) }), 0, "90-07 PC-5: earlyEndContinues 0 after $what");
+    ee_done($ctl);
+}
+
+# --- 90-07 PC-6: the near-end path where it fires (EE-3 shape: mark, early answer): the daemon's change sets no
+# continuation mark and writes exactly one outcome line (the early end's own "used" line).
+{
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session('aa:bb:cc:dd:ef:06');
+    is($ctl->observed->{nearEnd}{next}, $EE_NEXT, "90-07 PC-6: setup, the near-end mark stands");
+    d50_at($onset + 0.6, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack' }); });
+    is($ctl->observed->{earlyEnd}{uri}, $EE_NEXT, "90-07 PC-6: setup, LMS was answered early");
+    my @lines = pc_lines(sub { pc_burst($ctl, $fx, $EE_NEXT, $onset + 3.0); d50_fire($onset + 3.0 + 1.1); });
+    ok(!defined $ctl->observed->{prefetchContinue}, "90-07 PC-6: no continuation mark where the near-end path ran");
+    is(scalar(@lines), 1, "90-07 PC-6: exactly one outcome line for the change") or diag(join("\n", @lines));
+    like($lines[0] // '', qr/: early EOF used, LMS opened the next title /, "90-07 PC-6: it is the early end's own line");
+    is(d50_at($onset + 3.2, sub { $ctl->earlyEndContinues($PC_NEXT_URL) }), 0,
+        "90-07 PC-6: earlyEndContinues 0 after the change, as before 90-07 (EE-3)");
+    ee_done($ctl);
+}
+
+# --- 90-07 PC-7: the hidden pref soloistEarlyEnd '0' (as EE-2b sets it): no mark, earlyEndContinues 0.
+{
+    my $mac = 'aa:bb:cc:dd:ef:07';
+    local $Slim::Utils::Prefs::FAKE_VALUES{soloistEarlyEnd} = 0;
+    my ($ctl, $daemon, $ws, $fx) = pc_session($mac);
+    my $at = pc_end($fx);
+    my @lines = pc_lines(sub { pc_burst($ctl, $fx, $EE_NEXT, $at); });
+    ok(!defined $ctl->observed->{prefetchContinue}, "90-07 PC-7: soloistEarlyEnd 0 -> no mark");
+    is(d50_at($at + 0.7, sub { $ctl->earlyEndContinues($PC_NEXT_URL) }), 0, "90-07 PC-7: earlyEndContinues 0");
+    is(scalar(@lines), 0, "90-07 PC-7: and no outcome line");
+    ee_done($ctl);
+}
+
+# --- 90-07 PC-8: the echo of an own skip_next to the queue head (LMS's skip, pending): no mark.
+{
+    my $mac = 'aa:bb:cc:dd:ef:08';
+    my ($ctl, $daemon, $ws, $fx) = pc_session($mac);
+    $ctl->observed->{meta}{$EE_NEXT} = { duration => 200 };
+    my $at = $fx->[10][0] + 5.0;
+    ee_lms($mac, playing => 0, paused => 0, buffering => 0, stopped => 1);
+    my $n = scalar @{ $ws->sent };
+    d50_at($at, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack' }); });
+    my @s = ee_skips($ws, $n);
+    is(scalar(@s), 1, "90-07 PC-8: setup, LMS's skip sends one command");
+    is($s[0][0] // '', 'skip_next', "90-07 PC-8: setup, the skip_next to the queue head");
+    ok($ctl->pending, "90-07 PC-8: setup, it is pending");
+    pc_burst($ctl, $fx, $EE_NEXT, $at + 0.3);
+    ok(!$ctl->pending, "90-07 PC-8: setup, the echo settles it");
+    ok(!defined $ctl->observed->{prefetchContinue}, "90-07 PC-8: the echo of an own skip_next is not marked");
+    ee_lms($mac, playing => 1, paused => 0, buffering => 0, stopped => 0);
+    is(d50_at($at + 0.7, sub { $ctl->earlyEndContinues($PC_NEXT_URL) }), 0, "90-07 PC-8: earlyEndContinues 0");
+    ee_done($ctl);
+}
+
+# --- 90-07 PC-9: (a) near-end mark posted (EE-1 shape), LMS has not asked, the daemon changes to the marked successor
+# first (ee_change_first shape): no mark, exactly one outcome line (the held one), earlyEndContinues as before 90-07.
+{
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session('aa:bb:cc:dd:ef:09');
+    is($ctl->observed->{nearEnd}{next}, $EE_NEXT, "90-07 PC-9: (a) setup, the near-end mark stands");
+    my @lines = pc_lines(sub { pc_burst($ctl, $fx, $EE_NEXT, $onset + 3.0); });
+    ok(ref($ctl->observed->{outcomeWait}) eq 'HASH', "90-07 PC-9: (a) setup, the change's outcome line is held back");
+    ok(!defined $ctl->observed->{prefetchContinue}, "90-07 PC-9: (a) no prefetchContinue");
+    is(d50_at($onset + 3.5, sub { $ctl->earlyEndContinues($PC_NEXT_URL) }), 0,
+        "90-07 PC-9: (a) earlyEndContinues 0, as before 90-07 (LMS was not answered early)");
+    push @lines, pc_lines(sub { d50_fire($onset + 3.0 + 1.1); });
+    is(scalar(@lines), 1, "90-07 PC-9: (a) one outcome line") or diag(join("\n", @lines));
+    like($lines[0] // '', qr/: early EOF not used, LMS had not asked for the next title by the daemon's change /,
+        "90-07 PC-9: (a) it is the held one, written by its timer");
+    ee_done($ctl);
+}
+# PC-9 (b): the shape in which _hangTrackChanged writes its outcome line at once (no outcomeWait): two own titles
+# queued, the near-end mark names $EE_NEXT, the daemon jumps to the second own title inside the end gap.
+{
+    my $Y = 'spotify:track:eeSecondOwnTitle00000';
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session('aa:bb:cc:dd:ef:19');
+    $ctl->observed->{queuedByUs}{$Y} = 1;
+    is($ctl->observed->{nearEnd}{next}, $EE_NEXT, "90-07 PC-9: (b) setup, the near-end mark names the successor");
+    my @lines = pc_lines(sub { pc_burst($ctl, $fx, $Y, $onset + 3.0); });
+    is($ctl->observed->{track}, $Y, "90-07 PC-9: (b) setup, the daemon is on the second own title");
+    ok(!defined $ctl->observed->{outcomeWait}, "90-07 PC-9: (b) setup, nothing held back");
+    ok(!defined $ctl->observed->{prefetchContinue}, "90-07 PC-9: (b) no prefetchContinue");
+    is(scalar(grep { /^Control: end gap \Q$D50_HM\E -> \Q$Y\E:/ } @lines), 1, "90-07 PC-9: (b) one outcome line")
+        or diag(join("\n", @lines));
+    is(scalar(@lines), 1, "90-07 PC-9: (b) and no other outcome line");
+    is(d50_at($onset + 3.5, sub { $ctl->earlyEndContinues('spoton://track:eeSecondOwnTitle00000') }), 0,
+        "90-07 PC-9: (b) earlyEndContinues 0 for it");
+    ee_done($ctl);
+}
+
+# --- 90-07 PC-10: the direct-stream URL of an unsynced direct player (Backend/Soloist.pm canDirectStream:
+# http://<host>:<port>/stream?uri=spotify:track:<id>&g=<n>), which _normalizeUri rejects, is read through its uri=
+# parameter: 1 after the PC-1 change and in the EE-3 early-answer shape, 0 for another title or a malformed value.
+my $PC_DS_NEXT  = 'http://127.0.0.1:24879/stream?uri=spotify:track:eeNextTitle0000000000&g=3';
+my $PC_DS_ENC   = 'http://127.0.0.1:24879/stream?uri=spotify%3Atrack%3AeeNextTitle0000000000&g=3';
+my $PC_DS_OTHER = 'http://127.0.0.1:24879/stream?uri=spotify:track:eeOtherTitle00000000&g=3';
+my $PC_DS_BAD   = 'http://127.0.0.1:24879/stream?uri=spotify:track:eeNext/../Title000&g=3';
+{
+    my $mac = 'aa:bb:cc:dd:ef:10';
+    my ($ctl, $daemon, $ws, $fx) = pc_session($mac);
+    my $at = pc_end($fx);
+    pc_burst($ctl, $fx, $EE_NEXT, $at);
+    is(d50_at($at + 0.7, sub { $ctl->earlyEndContinues($PC_DS_NEXT) }), 1,
+        "90-07 PC-10: the direct-stream url of the marked successor -> 1");
+    is(d50_at($at + 0.7, sub { $ctl->earlyEndContinues($PC_DS_ENC) }), 1,
+        "90-07 PC-10: also with the uri= value percent-encoded (%3A)");
+    is(d50_at($at + 0.7, sub { $ctl->earlyEndContinues($PC_DS_OTHER) }), 0,
+        "90-07 PC-10: the same url form naming another title -> 0");
+    is(d50_at($at + 0.7, sub { $ctl->earlyEndContinues($PC_DS_BAD) }), 0,
+        "90-07 PC-10: a malformed uri= value -> 0 (the T-22-01 id check applies)");
+    ee_done($ctl);
+}
+{
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session('aa:bb:cc:dd:ef:20');
+    d50_at($onset + 0.6, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack' }); });
+    is($ctl->observed->{earlyEnd}{uri}, $EE_NEXT, "90-07 PC-10: setup, EE-3 shape, LMS was answered early");
+    is($ctl->earlyEndContinues($PC_DS_NEXT), 1, "90-07 PC-10: the direct-stream url in the EE-3 early-answer shape -> 1");
+    is($ctl->earlyEndContinues($PC_DS_OTHER), 0, "90-07 PC-10: and 0 for another title there");
+    ee_done($ctl);
 }
 
 # --- D50-23 (outside the edge): duration 15.25 s, threshold 9250 ms > 9195 (55 ms outside) -> the replay stays.
@@ -6412,6 +8002,7 @@ my $WR03_Z = 'spotify:track:wr03ForeignTrkBBBBBBBBB';    # a foreign, unrequeste
     );
 
     $ctl->onEvent({ type => 'track_changed', item => { uri => $WR03_Z } });
+    hold_flush();
 
     is_deeply($ws->sent, [ [ 'pause', {} ] ],
         "R2-WR03 Fall A/B (GREEN): a foreign, non-prefetch track_changed sends exactly one pause");
@@ -6482,6 +8073,7 @@ my $WR03_Z = 'spotify:track:wr03ForeignTrkBBBBBBBBB';    # a foreign, unrequeste
     is($ctl->pending, undef, "R2-WR03 Fall E setup: no pending open");
 
     $ctl->onEvent({ type => 'track_changed', item => { uri => $WR03_E_Z } });
+    hold_flush();
 
     is_deeply($ws->sent, [ [ 'pause', {} ] ],
         "R2-WR03 Fall E (B1, GREEN -- confirmed to fail against the queuedNext form): a foreign autoplay "
@@ -6543,6 +8135,7 @@ my $WR03_Z = 'spotify:track:wr03ForeignTrkBBBBBBBBB';    # a foreign, unrequeste
             observed => { wsConnected => 1, meta => {}, track => $R2_X, status => 'playing', is_active => 1 },
         );
         $ctl->onEvent({ type => 'track_changed', item => { uri => $R2_Z } });
+        hold_flush();
         return ($ctl, $daemon, $ws, $mac);
     };
 
@@ -6689,6 +8282,7 @@ my $WR03_Z = 'spotify:track:wr03ForeignTrkBBBBBBBBB';    # a foreign, unrequeste
 
     @{ $ws->sent } = ();
     $ctl->onEvent({ type => 'track_changed', item => { uri => $WR03B2_Z } });    # foreign, AFTER the window
+    hold_flush();
 
     is_deeply($ws->sent, [ [ 'pause', {} ] ],
         "83.1-07 wr03 Fall-2 (Gegenprobe): a foreign track_changed AFTER the window expired still sends exactly one pause");
@@ -10609,6 +12203,7 @@ sub _84102_a1_state {
 
     my $Z = 'spotify:track:84102A4foreignZXXXXXX';
     $ctl->onEvent({ type => 'track_changed', item => { uri => $Z } });
+    hold_flush();
 
     is_deeply($ws->sent, [ [ 'pause', {} ] ],
         "84.1-02 A4: the autoplay guard fires in idle after a stop-triggered leaveBrowse (leftBrowseUri armed)");
@@ -12546,6 +14141,7 @@ sub own_queue_empty {
             $ctl->onEvent($f[2]);    # ws.jsonl:26 track_changed 6d0c (the leftover)
             $ctl->onEvent($f[3]);    # ws.jsonl:28 playback_state buffering 6d0c
             $ctl->onEvent($f[4]);    # ws.jsonl:31 playback_state playing 6d0c
+            hold_flush();
             ok((grep { $_->[0] eq 'pause' } @{ $ws->sent }),
                 "84.2-01 D (CAUSE-3 real B7 07:48 replay): the leftover 6d0c is paused, not waved through as own");
             my @mine = grep { ($_->[3] // '') eq $daemon->mac . ':autoplay:' . $Q_6D0C } @Plugins::SpotOn::Status::RECORDED;
@@ -12609,6 +14205,7 @@ sub own_queue_empty {
         @{ $ws->sent } = ();
         $ctl->pending(undef);
         $ctl->onEvent({ type => 'track_changed', item => { uri => $Q_Q } });
+        hold_flush();
         ok((grep { $_->[0] eq 'pause' } @{ $ws->sent }),
             "84.2-01 G (D-06 pin): a pre-existing foreign queue entry is paused");
         my @mine = grep { ($_->[3] // '') eq $daemon->mac . ':autoplay:' . $Q_Q } @Plugins::SpotOn::Status::RECORDED;
@@ -13911,6 +15508,249 @@ for my $t (
     is(scalar(d34_starts()), 0, "D-34 T3: no connect start");
 }
 
+# ============================================================
+# 90-05 (.planning/debug/90-takeover-leftover-1-of-3.md): the app starts an
+# album on the player SpotOn plays in Browse. For an album the account played
+# minutes before, Soloist sends the foreign track_changed FIRST and the
+# context_changed 0.3-0.6 ms after it in the same burst (ALBUM_TRK, 79-49
+# run-261027-160017); the first start of an album sends them the other way
+# round (ALBUM_CTX, run-261027-155850). Both orders are one take-over.
+# ============================================================
+my $ALB_FIX  = 'd34-takeover-album-order.log';
+my $ALB_URI  = 'spotify:track:37BTh5g05cxBIRYMbw8g2T';
+
+# _9005_album_session($mac, $case, $from, $to) -- a d34 Browse session on $D34_T1,
+# fed with the case's frames from $from (undef: the first one) up to $to (the own title
+# playing). Returns ($ctl, $daemon, $ws, \@enter, $guard); keep $guard alive
+# for the test's scope.
+sub _9005_album_session {
+    my ($mac, $case, $from, $to) = @_;
+    d34_reset();
+    @Plugins::SpotOn::Connect::CLAIMS = ();
+    my ($ctl, $daemon, $ws) = d34_session($mac);
+    my @enter;
+    my $guard = d34_wrap_enter(\@enter);
+    d34_feed($ctl, d34_case($ALB_FIX, $case), (defined $from ? (from => $from) : ()), to => $to);
+    return ($ctl, $daemon, $ws, \@enter, $guard);
+}
+sub _9005_autoplay_entries {
+    my ($daemon, $uri) = @_;
+    return grep { ($_->[3] // '') eq $daemon->mac . ':autoplay:' . $uri } @Plugins::SpotOn::Status::RECORDED;
+}
+
+# --- 90-05 O1: track_changed first, context_changed 0.3 ms after it (RED before the fix) ---
+{
+    local $Slim::Player::Source::PLAYMODE = 'play';
+    my ($ctl, $daemon, $ws, $enter, $guard) = _9005_album_session('02:90:05:00:01:01', 'ALBUM_TRK', undef, '16:00:43.922');
+    is($ctl->mode, 'browse', "90-05 O1: precondition - the own title plays in Browse");
+    is($ctl->wanted->{uri}, $D34_T1, "90-05 O1: precondition - wanted is the own title");
+    is(scalar(@$enter), 0, "90-05 O1: precondition - no take-over yet");
+    d34_reset();
+    @{ $ws->sent } = ();
+
+    d34_feed($ctl, d34_case($ALB_FIX, 'ALBUM_TRK'), from => '16:01:16.069', to => '16:01:16.070');
+
+    is($ctl->mode, 'connect', "90-05 O1: the app's album start leaves Browse for connect");
+    is(scalar(@$enter), 1, "90-05 O1: exactly one take-over through the shared transfer-in sub");
+    is($enter->[0][0], 'takeover', "90-05 O1: ... with why 'takeover'");
+    is_deeply([ d34_starts() ], [ [ 'spottyconnect', 'start', '37BTh5g05cxBIRYMbw8g2T', '' ] ],
+        "90-05 O1: exactly one connect start for the app's first album title");
+    is(scalar(d34_daemon_pauses($ws)), 0, "90-05 O1: the autoplay guard does not pause the app's title");
+    ok(!defined $ctl->observed->{autoplayPaused}, "90-05 O1: no autoplay marker on the app's title");
+    is(scalar(d34_forwarded()), 0, "90-05 O1: nothing is forwarded to LMS (no skip_next, no index)");
+    is(scalar(_9005_autoplay_entries($daemon, $ALB_URI)), 0, "90-05 O1: no autoplay ring entry for the app's title");
+}
+
+# --- 90-05 O2: context_changed first, track_changed 97 ms after it (the order 79-D34-RULE.md measured) ---
+{
+    local $Slim::Player::Source::PLAYMODE = 'play';
+    my ($ctl, $daemon, $ws, $enter, $guard) = _9005_album_session('02:90:05:00:02:01', 'ALBUM_CTX', '15:59:11.227', '15:59:17.014');
+    is($ctl->mode, 'browse', "90-05 O2: precondition - the own title plays in Browse");
+    is($ctl->wanted->{uri}, $D34_T1, "90-05 O2: precondition - wanted is the own title");
+    is(scalar(@$enter), 0, "90-05 O2: precondition - no take-over yet");
+    d34_reset();
+    @{ $ws->sent } = ();
+
+    d34_feed($ctl, d34_case($ALB_FIX, 'ALBUM_CTX'), from => '15:59:50.712', to => '15:59:51.149');
+
+    is($ctl->mode, 'connect', "90-05 O2: the app's album start leaves Browse for connect");
+    is(scalar(@$enter), 1, "90-05 O2: exactly one take-over through the shared transfer-in sub");
+    is($enter->[0][0], 'takeover', "90-05 O2: ... with why 'takeover'");
+    is_deeply([ d34_starts() ], [ [ 'spottyconnect', 'start', '37BTh5g05cxBIRYMbw8g2T', '' ] ],
+        "90-05 O2: exactly one connect start for the app's first album title");
+    is(scalar(d34_daemon_pauses($ws)), 0, "90-05 O2: the autoplay guard does not pause the app's title");
+    ok(!defined $ctl->observed->{autoplayPaused}, "90-05 O2: no autoplay marker on the app's title");
+    is(scalar(d34_forwarded()), 0, "90-05 O2: nothing is forwarded to LMS (no skip_next, no index)");
+    is(scalar(_9005_autoplay_entries($daemon, $ALB_URI)), 0, "90-05 O2: no autoplay ring entry for the app's title");
+}
+
+# _9005_frames($case, $from, $to) -- the case's frames between two fixture ts (inclusive), decoded.
+sub _9005_frames {
+    my ($case, $from, $to) = @_;
+    return map { $_->{msg} } grep { $_->{ts} ge $from && $_->{ts} le $to } @{ d34_case($ALB_FIX, $case) };
+}
+sub _9005_hold_timers {
+    my ($ctl) = @_;
+    my $cb = \&Plugins::SpotOn::Soloist::Control::_burstHoldFire;
+    return grep { $_->[0] == $ctl && $_->[2] == $cb } @Slim::Utils::Timers::TIMERS;
+}
+
+# --- 90-05 O3: the hold's limits in Browse -- a true autoplay is still paused ---
+{
+    # (a) Case A_on (the D-34 T3 shape): the burst's own closing frame releases the hold, the guard pauses
+    d34_reset();
+    local $Slim::Player::Source::PLAYMODE = 'play';
+    my ($ctl, $daemon, $ws) = d34_session('02:90:05:00:03:01');
+    my @enter;
+    my $guard = d34_wrap_enter(\@enter);
+    d34_feed($ctl, d34_case('d34-end-on.log', 'A_on'),
+        at => [ [ '15:08:24.100', sub { $ctl->_dispatch('seek', position_ms => 175000, armed => 0) } ] ]);
+    is($ctl->observed->{autoplayPaused}, 'spotify:track:0yNttAVwMr39qyODHNIkrY', "90-05 O3: (a) the autoplay continuation is paused as before");
+    is(scalar(d34_daemon_pauses($ws)), 1, "90-05 O3: (a) exactly one daemon pause, no flush needed");
+    ok(!defined $ctl->observed->{burstHold}, "90-05 O3: (a) no hold is left open after the burst");
+    is(scalar(@enter), 0, "90-05 O3: (a) no take-over");
+}
+{
+    local $Slim::Player::Source::PLAYMODE = 'play';
+    my ($ctl, $daemon, $ws, $enter, $guard) = _9005_album_session('02:90:05:00:03:02', 'ALBUM_TRK', undef, '16:00:43.922');
+    @{ $ws->sent } = ();
+    my $Z = 'spotify:track:9005O3loneForeignZZZZZ';
+    $ctl->onEvent({ type => 'track_changed', item => { uri => $Z, entity_type => 'track' } });
+    is(scalar(d34_daemon_pauses($ws)), 0, "90-05 O3: (b) a lone context-less foreign title is not paused while the hold is open");
+    ok(defined $ctl->observed->{burstHold}, "90-05 O3: (b) ... the hold is open");
+    is(scalar(_9005_hold_timers($ctl)), 1, "90-05 O3: (b) one backstop timer is armed for it");
+    hold_flush();
+    is(scalar(d34_daemon_pauses($ws)), 1, "90-05 O3: (b) exactly one pause once the hold ends");
+    is($ctl->observed->{autoplayPaused}, $Z, "90-05 O3: (b) the autoplay marker names the paused title");
+
+    d34_age($ctl, 0.02);
+    $ctl->onEvent({ type => 'context_changed', context => { uri => 'spotify:album:9005O3lateCtxXXXXXXXX', entity_type => 'album' } });
+    is($ctl->mode, 'browse', "90-05 O3: (c) a context_changed after the hold ended takes nothing over");
+    is(scalar(d34_daemon_pauses($ws)), 1, "90-05 O3: (c) still exactly one pause");
+    is(scalar(@$enter), 0, "90-05 O3: (c) no take-over call");
+}
+
+# --- 90-05 O4: idle after a stop-triggered leaveBrowse (84.1 D-01(b)) -- the app's context start is not paused ---
+for my $sub ([ 'a', 'ALBUM_TRK', '16:01:16.069', '16:01:16.070', '16:01:16.531', '16:01:16.532', '0a' ],
+             [ 'b', 'ALBUM_CTX', '15:59:50.712', '15:59:50.811', '15:59:51.149', '15:59:51.149', '0b' ]) {
+    my ($k, $case, $b0, $b1, $p0, $p1, $tail) = @$sub;
+    d34_reset();
+    @Plugins::SpotOn::Connect::CLAIMS = ();
+    $Plugins::SpotOn::Connect::ACTIVE = undef;
+    my ($ctl, $daemon, $ws, $X) = _84102_a1_state("aa:90:05:00:04:$tail");
+    $ctl->observed->{is_active} = 1;
+    @{ $ws->sent } = ();
+    d34_reset();
+    my @enter;
+    my $guard = d34_wrap_enter(\@enter);
+    is($ctl->mode, 'idle', "90-05 O4: ($k) precondition - idle after the stop-leave");
+    d34_feed($ctl, d34_case($ALB_FIX, $case), from => $b0, to => $b1);
+    is(scalar(d34_daemon_pauses($ws)), 0, "90-05 O4: ($k) the app's context start is not paused in idle");
+    ok(!defined $ctl->observed->{autoplayPaused}, "90-05 O4: ($k) no autoplay marker");
+    is(scalar(_9005_autoplay_entries($daemon, $ALB_URI)), 0, "90-05 O4: ($k) no autoplay ring entry");
+    d34_feed($ctl, d34_case($ALB_FIX, $case), from => $p0, to => $p1);
+    is($ctl->mode, 'connect', "90-05 O4: ($k) the existing idle adoption takes the session into connect");
+    is_deeply([ map { $_->[0] } @enter ], [ 'reconnect-to-connect' ], "90-05 O4: ($k) ... through the reconnect adoption, once");
+    if ($k eq 'a') {
+        is_deeply([ map { $_->[2] } d34_starts() ], [ '37BTh5g05cxBIRYMbw8g2T' ], "90-05 O4: ($k) one connect start, for the app's title");
+    }
+    else {
+        # context first: the burst's own playing playback_state (item uri empty) adopts BEFORE the app's
+        # track_changed, so the adoption's 'restored' start names the title SpotOn left and the app's title
+        # follows as a change (pre-existing, the same before 90-05; deferred-items.md)
+        is($ctl->observed->{track}, $ALB_URI, "90-05 O4: ($k) the connect session ends on the app's title");
+    }
+}
+{
+    # (c) the Connect switch off: the idle guard pauses as before (D-31 "visible but refusing")
+    local $Slim::Utils::Prefs::FAKE_VALUES{enableSpotifyConnect} = 0;
+    d34_reset();
+    my ($ctl, $daemon, $ws, $X) = _84102_a1_state('aa:90:05:00:04:0c');
+    $ctl->observed->{is_active} = 1;
+    @{ $ws->sent } = ();
+    d34_feed($ctl, d34_case($ALB_FIX, 'ALBUM_TRK'), from => '16:01:16.069', to => '16:01:16.070');
+    is(scalar(d34_daemon_pauses($ws)), 1, "90-05 O4: (c) Connect off - the idle guard pauses the title as before");
+    is($ctl->mode, 'idle', "90-05 O4: (c) ... and the player stays idle");
+}
+
+# --- 90-05 O5: Browse with the Connect switch off -- the refused take-over still reaches the guard (D-31) ---
+{
+    local $Slim::Player::Source::PLAYMODE = 'play';
+    my ($ctl, $daemon, $ws, $enter, $guard) = _9005_album_session('02:90:05:00:05:01', 'ALBUM_TRK', undef, '16:00:43.922');
+    local $Slim::Utils::Prefs::FAKE_VALUES{enableSpotifyConnect} = 0;
+    @{ $ws->sent } = ();
+    d34_feed($ctl, d34_case($ALB_FIX, 'ALBUM_TRK'), from => '16:01:16.069', to => '16:01:16.070');
+    is(scalar(d34_daemon_pauses($ws)), 1, "90-05 O5: Connect off - exactly one daemon pause");
+    is($ctl->mode, 'browse', "90-05 O5: Connect off - the player stays in Browse");
+    is(scalar(@$enter), 0, "90-05 O5: Connect off - no take-over call");
+}
+
+# --- 90-05 O6: an inactive daemon never arms the hold (fremder-autoplay-waechter) ---
+{
+    local $Slim::Player::Source::PLAYMODE = 'play';
+    my ($ctl, $daemon, $ws, $enter, $guard) = _9005_album_session('02:90:05:00:06:01', 'ALBUM_TRK', undef, '16:00:43.922');
+    $ctl->observed->{is_active} = 0;
+    @{ $ws->sent } = ();
+    my @burst = _9005_frames('ALBUM_TRK', '16:01:16.069', '16:01:16.070');
+    is($burst[0]{type}, 'track_changed', "90-05 O6: precondition - the burst opens with the track_changed");
+    $ctl->onEvent(shift @burst);
+    ok(!defined $ctl->observed->{burstHold}, "90-05 O6: no hold on an inactive daemon");
+    is(scalar(_9005_hold_timers($ctl)), 0, "90-05 O6: no backstop timer either");
+    $ctl->onEvent($_) for @burst;
+    is(scalar(d34_daemon_pauses($ws)), 0, "90-05 O6: and no pause");
+}
+
+# --- 90-05 O7: shutdown drops an open hold without a replay ---
+{
+    local $Slim::Player::Source::PLAYMODE = 'play';
+    my ($ctl, $daemon, $ws, $enter, $guard) = _9005_album_session('02:90:05:00:07:01', 'ALBUM_TRK', undef, '16:00:43.922');
+    $ctl->onEvent({ type => 'track_changed', item => { uri => 'spotify:track:9005O7heldAtShutdownXX', entity_type => 'track' } });
+    ok(defined $ctl->observed->{burstHold}, "90-05 O7: precondition - the hold is open");
+    $ctl->shutdown;
+    ok(!defined $ctl->observed->{burstHold}, "90-05 O7: shutdown drops the hold");
+    is(scalar(_9005_hold_timers($ctl)), 0, "90-05 O7: no backstop timer outlives the Control");
+    my $n = scalar @{ $ws->sent };
+    hold_flush();
+    is(scalar @{ $ws->sent }, $n, "90-05 O7: a later flush sends nothing");
+    is(scalar(d34_daemon_pauses($ws)), 0, "90-05 O7: the held title was never paused");
+}
+
+# --- 90-05 O8: an own command releases the hold first, it never overtakes a held frame ---
+{
+    my $X = 'spotify:track:9005O8ownTitleXXXXXXXXX';
+    my $Z = 'spotify:track:9005O8foreignZZZZZZZZZ';
+    my ($ctl, $daemon, $ws) = fresh_control(
+        mac => 'aa:90:05:00:08:01', mode => 'browse',
+        wanted   => { uri => $X, playing => 1 },
+        observed => { wsConnected => 1, meta => {}, track => $X, status => 'playing', is_active => 1 },
+    );
+    $ctl->onEvent({ type => 'track_changed', item => { uri => $Z } });
+    ok(defined $ctl->observed->{burstHold}, "90-05 O8: precondition - the hold is open");
+    $ctl->_dispatch('seek', position_ms => 1000, armed => 0);
+    my @cmds = map { $_->[0] } @{ $ws->sent };
+    is($cmds[0], 'pause', "90-05 O8: the held frame is processed first - the guard's pause goes out first");
+    ok(!defined $ctl->observed->{burstHold}, "90-05 O8: the own command closed the hold");
+    is(scalar(_9005_hold_timers($ctl)), 0, "90-05 O8: and killed its timer");
+    hold_flush();
+    is(scalar(grep { $_ eq 'pause' } map { $_->[0] } @{ $ws->sent }), 1, "90-05 O8: exactly one pause in total");
+}
+
+# --- 90-05 O9: SpotOn's own queued successor is never held ---
+{
+    my $X = 'spotify:track:9005O9ownTitleXXXXXXXXX';
+    my $W = 'spotify:track:9005O9queuedByUsWWWWWWW';
+    my ($ctl, $daemon, $ws) = fresh_control(
+        mac => 'aa:90:05:00:09:01', mode => 'browse',
+        wanted   => { uri => $X, playing => 1 },
+        observed => { wsConnected => 1, meta => {}, track => $X, status => 'playing', is_active => 1, queuedByUs => { $W => 1 } },
+    );
+    $ctl->onEvent({ type => 'track_changed', item => { uri => $W } });
+    ok(!defined $ctl->observed->{burstHold}, "90-05 O9: the own queued successor is not held");
+    is($ctl->observed->{track}, $W, "90-05 O9: the prefetch-hit path ran at once (observed.track moved)");
+    ok(!exists $ctl->observed->{queuedByUs}{$W}, "90-05 O9: ... and consumed its queuedByUs entry");
+    is(scalar(grep { $_->[0] eq 'pause' } @{ $ws->sent }), 0, "90-05 O9: no pause");
+}
+
 # --- T3b: the natural end under Autoplay OFF (Case A_off) stays the context-end path ---
 {
     d34_reset();
@@ -13957,6 +15797,7 @@ for my $t (
         upcoming => [ { uid => 'ctx-1', source => 'context', item => { uri => $Q, entity_type => 'track' } } ] });
     d34_age($c2, 200);
     $c2->onEvent({ type => 'track_changed', item => { uri => $Q, entity_type => 'track' } });
+    hold_flush();
     is($c2->mode, 'browse', "D-34 T4: a context entry (autoplay shape) is no app queue and is not taken over");
     is(scalar(d34_daemon_pauses($w2)), 1, "D-34 T4: the guard pauses it as today");
 }
@@ -15021,6 +16862,163 @@ for my $row ([ 'episode', '79-68-track_changed-episode.jsonl', '6hDIr2Ngy8ijkGk3
     is(scalar(@{ $ci->{artists} || [] }), 0, "79-68 T3 item-bridge f ($label): no creators -> no artists (the 'by N/A' case)");
     is(scalar(@{ ($ci->{album} || {})->{images} || [] }), 4, "79-68 T3 item-bridge f ($label): the four covers are kept");
     ok(($ci->{duration_ms} // 0) > 0, "79-68 T3 item-bridge f ($label): duration_ms is kept");
+}
+
+
+# --- EE-NR (Fable recheck N-05): Control reads the shim's reply to POST /near-end. A mark refused as not the end gap
+# (`near_end=off reason=not_end`: a stall further from the end than the sink depth) is not recorded, so the title's
+# true end gap can still be marked, and its line does not say "marked for the end gap". Runs here, after the 84-17
+# block put the Slim::Networking::Select stub on @INC (the reply is read through it).
+{
+    my $ne_reply = sub {
+        my ($body) = @_;
+        $body .= "\n";
+        return "HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\nContent-Length: " . length($body)
+            . "\r\nConnection: close\r\n\r\n$body";
+    };
+    my $mac = 'aa:bb:cc:dd:ee:8a';
+    my @fx = d50_frames('d50-hang-midtitle.frames');
+    my ($ctl, $daemon, $ws) = d50_session($mac, $D50_HM, $fx[0][0] - 0.05,
+        observed => { meta => { $D50_HM => { duration => 12.195 } } });
+    d50_feed($ctl, \@fx, 0, 12);
+    $ctl->observed->{queueHead} = { uri => $EE_NEXT };
+    $ctl->observed->{queuedByUs} = { $EE_NEXT => 1 };
+    @IO::Socket::INET::NEAR_END_WRITES = ();
+    @Slim::Networking::Select::READS = ();
+    $IO::Socket::INET::READ_REPLY = undef;
+    d50_feed($ctl, \@fx, 13, 13);
+    is(scalar(@IO::Socket::INET::NEAR_END_WRITES), 1, "EE-NR setup: the near-end frame posts the mark (ms=3000)");
+    is(scalar(@Slim::Networking::Select::READS), 1, "EE-NR: the shim's reply to the mark is read (one Select read)");
+    $IO::Socket::INET::READ_REPLY = $ne_reply->("near_end=off reason=not_end ms=3000 sink_ms=1500");
+    Slim::Networking::Select::deliver();
+    ok(!$ctl->observed->{nearEnd}, "EE-NR: a mark the shim refused as not the end gap is not recorded");
+
+    # the same stall again (same remaining time): no second post that the shim would refuse again
+    @IO::Socket::INET::NEAR_END_WRITES = ();
+    d50_at($fx[13][0] + 0.5, sub { $ctl->_postNearEnd($D50_HM, 12195 - 3000); });
+    is(scalar(@IO::Socket::INET::NEAR_END_WRITES), 0, "EE-NR: the same refused remaining time is not posted again");
+
+    # the title's true end gap: marked
+    @IO::Socket::INET::NEAR_END_WRITES = ();
+    @Slim::Networking::Select::READS = ();
+    d50_at($fx[13][0] + 2.0, sub { $ctl->_postNearEnd($D50_HM, 12195 - 1200); });
+    is(scalar(@IO::Socket::INET::NEAR_END_WRITES), 1, "EE-NR: the true end gap of the same title posts the mark");
+    like($IO::Socket::INET::NEAR_END_WRITES[0] // '', qr{^POST /near-end\?ms=1200 }, "EE-NR: with its own remaining time");
+    $IO::Socket::INET::READ_REPLY = $ne_reply->("near_end=armed gen=1 gap_ms=400 until_ms=99 ff_ms=0");
+    Slim::Networking::Select::deliver();
+    is(($ctl->observed->{nearEnd} || {})->{uri}, $D50_HM, "EE-NR: an armed mark is recorded");
+    is(($ctl->observed->{nearEnd} || {})->{next}, $EE_NEXT, "EE-NR: with the queued successor");
+
+    # the line (INFOLOG is a constant 0 in this file, so the text is read from the sub that builds it)
+    my $line = Plugins::SpotOn::Soloist::Control->can('_nearEndLine');
+    ok($line, "EE-NR: _nearEndLine builds the near-end log line");
+    if ($line) {
+        my %a = (uri => $D50_HM, remaining => 3000, next => $EE_NEXT, leadTxt => '');
+        unlike($ctl->$line(%a, sent => 1, reply => { near_end => 'off', reason => 'not_end', ms => 3000, sink_ms => 1500 }),
+            qr/marked for the end gap/, "EE-NR: the line for a not_end reply does not say marked");
+        like($ctl->$line(%a, sent => 1, reply => { near_end => 'off', reason => 'not_end', ms => 3000, sink_ms => 1500 }),
+            qr/refused by the shim.*not_end/, "EE-NR: it names the shim's refusal");
+        like($ctl->$line(%a, sent => 1, reply => { near_end => 'armed' }), qr/marked for the end gap/,
+            "EE-NR: the line for an armed reply says marked");
+        like($ctl->$line(%a, sent => 0), qr/mark not sent/, "EE-NR: a failed send says so");
+    }
+    ee_done($ctl);
+    $IO::Socket::INET::READ_REPLY = undef;
+    @Slim::Networking::Select::READS = ();
+}
+
+# --- EE-NW (Fable recheck 2 R2-01): the wait for the shim's reply to POST /near-end ends wherever the mark goes
+# (shutdown, leaveBrowse, the daemon's title change, _earlyEndClear, a seek). No read watcher or cap timer of it
+# outlives that, and a late `near_end=off reason=not_end` reply writes no refused record (the 84-17 V-k shape).
+{
+    my $ne_reply = sub {
+        my ($body) = @_;
+        $body .= "\n";
+        return "HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\nContent-Length: " . length($body)
+            . "\r\nConnection: close\r\n\r\n$body";
+    };
+    my @cells = (
+        [ 'shutdown',      sub { $_[0]->shutdown } ],
+        [ 'leaveBrowse',   sub { $_[0]->leaveBrowse } ],
+        [ 'title change',  sub { $_[0]->onEvent({ type => 'track_changed', item => { uri => $EE_NEXT } }) } ],
+        [ '_earlyEndClear', sub { $_[0]->_earlyEndClear('test') } ],
+        [ 'seek',          sub { $_[0]->noteSeekIntent($D50_HM, 4000) } ],
+    );
+    my $i = 0;
+    for my $cell (@cells) {
+        my ($label, $drop) = @$cell;
+        my $mac = sprintf('aa:bb:cc:dd:ee:%02x', 0x90 + $i++);
+        my @fx = d50_frames('d50-hang-midtitle.frames');
+        my ($ctl, $daemon, $ws) = d50_session($mac, $D50_HM, $fx[0][0] - 0.05,
+            observed => { meta => { $D50_HM => { duration => 12.195 } } });
+        d50_feed($ctl, \@fx, 0, 12);
+        $ctl->observed->{queueHead} = { uri => $EE_NEXT };
+        $ctl->observed->{queuedByUs} = { $EE_NEXT => 1 };
+        @IO::Socket::INET::NEAR_END_WRITES = ();
+        @Slim::Networking::Select::READS = ();
+        $IO::Socket::INET::READ_REPLY = undef;
+        my %pre = map { ($_ + 0) => 1 } @Slim::Utils::Timers::TIMERS;
+        d50_at($fx[13][0], sub { $ctl->_postNearEnd($D50_HM, 12195 - 3000); });
+        my @cap = grep { !$pre{ $_ + 0 } && $_->[0] == $ctl } @Slim::Utils::Timers::TIMERS;
+        my ($wait) = @Slim::Networking::Select::READS;
+        is(scalar(@IO::Socket::INET::NEAR_END_WRITES), 1, "EE-NW ($label) setup: the mark is posted");
+        ok($wait && scalar(@cap) == 1, "EE-NW ($label) setup: its reply is waited for (one read, one cap timer)");
+        ok($ctl->observed->{nearEnd}, "EE-NW ($label) setup: the mark stands");
+
+        d50_at($fx[13][0] + 0.05, sub { $drop->($ctl) });
+        ok(!grep({ $wait && $_->[0] == $wait->[0] } @Slim::Networking::Select::READS),
+            "EE-NW ($label): the read watcher of the near-end reply is gone");
+        my %capset = map { ($_ + 0) => 1 } @cap;
+        is(scalar(grep { $capset{ $_ + 0 } } @Slim::Utils::Timers::TIMERS), 0,
+            "EE-NW ($label): the cap timer of the near-end reply is gone");
+        # the late reply (the read callback as Select would call it)
+        $IO::Socket::INET::READ_REPLY = $ne_reply->("near_end=off reason=not_end ms=3000 sink_ms=1500");
+        $wait->[1]->($wait->[0]) if $wait;
+        ok(!$ctl->observed->{nearEndRefused}, "EE-NW ($label): a late not_end reply writes no refused record");
+        $IO::Socket::INET::READ_REPLY = undef;
+        @Slim::Networking::Select::READS = ();
+        ee_done($ctl);
+        Slim::Utils::Timers::killTimers($ctl, $_->[2]) for @cap;
+    }
+}
+
+# --- EE-CS (Fable recheck 2 R2-04): Browse -> Connect (_enterConnectSession) ends the Browse session's end-gap state:
+# the mark and its reply wait, the early answer and its fallback timer, the request kept for LMS's resume and the
+# refused record. A held-back outcome line (outcomeWait) is a log line of the title change that led here and stays.
+{
+    my $mac = 'aa:bb:cc:dd:ee:9f';
+    my @fx = d50_frames('d50-hang-midtitle.frames');
+    my ($ctl, $daemon, $ws) = d50_session($mac, $D50_HM, $fx[0][0] - 0.05,
+        observed => { meta => { $D50_HM => { duration => 12.195 } } });
+    d50_feed($ctl, \@fx, 0, 12);
+    $ctl->observed->{queueHead} = { uri => $EE_NEXT };
+    $ctl->observed->{queuedByUs} = { $EE_NEXT => 1 };
+    @Slim::Networking::Select::READS = ();
+    $IO::Socket::INET::READ_REPLY = undef;
+    d50_at($fx[13][0], sub { $ctl->_postNearEnd($D50_HM, 12195 - 3000); });
+    my ($wait) = @Slim::Networking::Select::READS;
+    my $o = $ctl->observed;
+    $o->{earlyEnd} = { uri => $EE_NEXT, at => $fx[13][0] };
+    Slim::Utils::Timers::setTimer($ctl, $fx[13][0] + 5, \&Plugins::SpotOn::Soloist::Control::_earlyEndFallback);
+    $o->{earlyEndDeferred} = { uri => $EE_NEXT, from => $D50_HM };
+    $o->{nearEndRefused} = { uri => $D50_HM, remaining_ms => 5000 };
+    $o->{outcomeWait} = { line => 'held line', early => 'held line early' };
+    ok($o->{nearEnd} && $wait, "EE-CS setup: the mark stands and its reply is waited for");
+
+    d50_at($fx[13][0] + 0.1, sub { $ctl->_enterConnectSession('takeover', fresh => 1, uri => 'spotify:track:appTitle00000000000000') });
+    is($ctl->mode, 'connect', "EE-CS setup: the session is connect");
+    ok(!$o->{nearEnd}, "EE-CS: the mark does not survive into Connect");
+    ok(!$o->{nearEndWait} && !grep({ $_->[0] == $wait->[0] } @Slim::Networking::Select::READS),
+        "EE-CS: nor its reply wait");
+    ok(!$o->{earlyEnd}, "EE-CS: nor the early answer");
+    is(scalar(grep { $_->[0] == $ctl && $_->[2] == \&Plugins::SpotOn::Soloist::Control::_earlyEndFallback }
+        @Slim::Utils::Timers::TIMERS), 0, "EE-CS: nor its fallback timer");
+    ok(!$o->{earlyEndDeferred}, "EE-CS: nor the request kept for LMS's resume");
+    ok(!$o->{nearEndRefused}, "EE-CS: nor the refused record");
+    is(($o->{outcomeWait} || {})->{line}, 'held line', "EE-CS: a held-back outcome line stays (it is written once)");
+    @Slim::Networking::Select::READS = ();
+    ee_done($ctl);
+    delete $o->{outcomeWait};
 }
 
 done_testing();
