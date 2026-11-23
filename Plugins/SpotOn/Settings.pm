@@ -1106,6 +1106,10 @@ sub _collectStatus {
                 $d->{paired} // '-', $d->{wsConnected} // '-',
                 (ref $d->{syncGroup} eq 'ARRAY' && @{ $d->{syncGroup} }) ? join(',', @{ $d->{syncGroup} }) : '-',
                 $d->{controlMode} // '-', $health);
+            # 90.1-04 (D-05, D-06): the account of a Soloist daemon, the guest's id as its last 4 characters; '-' for a role without
+            $line .= ' account=' . (ref $d->{account} eq 'HASH'
+                ? ($d->{account}{role} eq 'guest' ? 'guest(...' . ($d->{account}{short} // '') . ')' : ($d->{account}{role} // 'unknown'))
+                : '-');
             $line .= ' track="' . $d->{currentTrack} . '"' if defined $d->{currentTrack} && length $d->{currentTrack};
             push @status, $line;
         }

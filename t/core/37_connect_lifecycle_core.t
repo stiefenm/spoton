@@ -405,7 +405,7 @@ if ($start_block_02) {
     my ($non_soloist_start) = $start_block_02 =~ /(else \{.*?\n        \})/s;
     ok($non_soloist_start, "83.1-02: 'start' branch has a non-Soloist else arm");
     if ($non_soloist_start) {
-        like($non_soloist_start, qr/\$_activeConnectPlayer = \$client->id/,
+        like($non_soloist_start, qr/_claimSet\(\$client/,
             "83.1-02: the claim write lives in the non-Soloist else arm");
     }
 }
@@ -673,7 +673,7 @@ $INC{'Plugins/SpotOn/Soloist/Control.pm'}       = __FILE__;
 }
 
 my %role_src;
-for my $name (qw(_onPause _onLmsStop _bufferedSetVolume _onSeek _forwardLibrespotSeek _onPlaylistJump)) {
+for my $name (qw(_onPause _onLmsStop _bufferedSetVolume _onSeek _forwardLibrespotSeek _onPlaylistJump _accountKeyOf _perAccount _claimGroupPeers)) {
     ($role_src{$name}) = $connect =~ /(sub \Q$name\E \{.*?\n\})\n/s;
 }
 my $role_compiled = !grep { !defined } values %role_src;
@@ -686,7 +686,7 @@ $role_compiled &&= eval(
     . "our \$SPOTIFY_CONNECT = 0;\n"
     . "my \$log   = Test::RoleLog->new;\n"
     . "my \$prefs = Test::RolePrefs->new;\n"
-    . "my \$_activeConnectPlayer;\n"
+    . "my %_claim;\n"
     . "sub isSpotifyConnect { return \$SPOTIFY_CONNECT; }\n"
     . "sub _holdCancel { return; }\n"
     . "sub _isDeadHistoryUrl { return 0; }\n"
@@ -1173,7 +1173,7 @@ if ($role_compiled) {
 $INC{'Plugins/SpotOn/Connect.pm'} = __FILE__;
 
 my %src3;
-for my $name (qw(_liveCaps _itemUri _itemUrl _playUrlFor bindConnectClaim _onLmsPlaylistChanged _holdCaps _holdCap _holdRecheck _holdMax _holdClose)) {
+for my $name (qw(_liveCaps _itemUri _itemUrl _playUrlFor bindConnectClaim _accountKeyOf _perAccount _claimGroupPeers _claimSet _onLmsPlaylistChanged _holdCaps _holdCap _holdRecheck _holdMax _holdClose)) {
     ($src3{$name}) = $connect =~ /(sub \Q$name\E \{.*?\n\})\n/s;
     ($src3{$name}) = $connect =~ /^(sub \Q$name\E .*?\})$/m unless $src3{$name};
 }
@@ -1185,9 +1185,10 @@ my $h3 = !@missing3 && eval(
     "package Test::RoleHarness3;\n"
     . "use strict; use warnings; use Time::HiRes; use Scalar::Util qw(weaken);\n"
     . "my \$log = Test::RoleLog3->new;\n"
-    . "my (\$_activeConnectPlayer, \$_lastBindAt, %_connectEntrySong, %_hold, %_watchdogTriggerUrl);\n"
-    . "sub setActive  { \$_activeConnectPlayer = \$_[0]; }\n"
-    . "sub getActive  { return \$_activeConnectPlayer; }\n"
+    . "my (%_claim, \$_lastBindAt, %_connectEntrySong, %_hold, %_watchdogTriggerUrl);\n"
+    . "sub setActive  { %_claim = (); \$_claim{ \$_[0] } = 1 if defined \$_[0]; }\n"
+    . "sub addActive  { \$_claim{ \$_[0] } = 1; }\n"
+    . "sub getActive  { my \@k = sort keys %_claim; return wantarray ? \@k : \$k[0]; }\n"
     . "sub setHold    { \$_hold{ \$_[0] } = \$_[1]; }\n"
     . "sub setTrigger { \$_watchdogTriggerUrl{ \$_[0] } = \$_[1]; }\n"
     . join("\n", map { $src3{$_} } sort keys %src3) . "\n1;"
@@ -1242,6 +1243,39 @@ if ($h3) {
         }
         is_deeply($newRole->{notes}, [], "84-08 bindConnectClaim $label: the NEW role is never notified");
         is(Test::RoleHarness3::getActive(), $new->id, "84-08 bindConnectClaim $label: the claim moves to the new player");
+    }
+
+    # --- 90.1-03 T1: the claim is kept per ACCOUNT under claimPerAccount 1 (D-01, D-02, D-16) ---
+    for my $case (
+        [ 'X vs Y',             'aaaaaaaa', 'bbbbbbbb', 0 ],
+        [ 'X vs unknown',       'aaaaaaaa', undef,      0 ],
+        [ 'unknown vs X',       undef,      'aaaaaaaa', 0 ],
+        [ 'unknown vs unknown', undef,      undef,      0 ],
+        [ 'X vs X',             'aaaaaaaa', 'aaaaaaaa', 1 ],
+    ) {
+        my ($label, $oldKey, $newKey, $conflict) = @$case;
+        my $acct = sub { defined $_[0] ? { key => $_[0], short => '1234' } : undef };
+        my $old = Test::Client3->new('aa:00:00:00:00:1a');
+        my $new = Test::Client3->new('aa:00:00:00:00:1b');
+        local %Slim::Player::Client::BY_ID = ($old->id => $old, $new->id => $new);
+        my $oldRole = Test::RoleMock3->new(st => { mode => 'connect', active => 1, account => $acct->($oldKey) }, caps => { claimPerAccount => 1 });
+        my $newRole = Test::RoleMock3->new(st => { mode => 'connect', active => 1, account => $acct->($newKey) }, caps => { claimPerAccount => 1 });
+        local %Plugins::SpotOn::Unified::DaemonManager::ROLES = ($old->id => $oldRole, $new->id => $newRole);
+        @Test::RoleLog3::WARN = ();
+        Test::RoleHarness3::setActive($old->id);
+        Test::RoleHarness3::bindConnectClaim('Plugins::SpotOn::Connect', $new, 'transfer');
+        my @ev = map { $_->[0] } @{ $oldRole->{notes} };
+        if ($conflict) {
+            is_deeply(\@ev, [ 'recordErrorOnce', 'claimLost' ], "90.1-03 T1 $label: the same account keeps last-message-wins (recordErrorOnce + claimLost on the old role)");
+            is(scalar(grep { /Connect claim: last message wins/ } @Test::RoleLog3::WARN), 1, "90.1-03 T1 $label: one warn");
+            is_deeply([ Test::RoleHarness3::getActive() ], [ $new->id ], "90.1-03 T1 $label: only the new player holds");
+        }
+        else {
+            is_deeply(\@ev, [], "90.1-03 T1 $label: nothing recorded on the old role (no conflict)");
+            is(scalar(@Test::RoleLog3::WARN), 0, "90.1-03 T1 $label: no warn");
+            is_deeply([ Test::RoleHarness3::getActive() ], [ sort($old->id, $new->id) ], "90.1-03 T1 $label: both players hold the claim");
+        }
+        is_deeply($newRole->{notes}, [], "90.1-03 T1 $label: the NEW role is never notified");
     }
 
     # --- _onLmsPlaylistChanged: notify only in browse ---

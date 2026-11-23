@@ -381,15 +381,31 @@ END
 # @CLAIMS holds [ 'bind'|'release', $mac, $source ] tuples in call order.
 #
 # Task 2 (D-D2): $ACTIVE mirrors the real Connect.pm's package-scalar
-# $_activeConnectPlayer -- bindConnectClaim below implements the SAME
+# $_activeConnectPlayer (90.1-03: now the %_claim set) -- bindConnectClaim below implements the SAME
 # for_client-aware conflict check the real sub carries, against the REAL
 # (non-stubbed) Plugins::SpotOn::Soloist::Control this file loads, so Fall-5
 # exercises Control's OWN _recordErrorOnce/observed contract exactly as a
 # live conflict would drive it.
+# 90.1-02: Soloist::AccountLog asks AccountMigration for the account key. The real
+# module needs the Slim cache/prefs stack; this stub is its accountIdFor body for an
+# ASCII id (md5, first 8 hex).
+write_stub($stub_dir, 'Plugins::SpotOn::API::AccountMigration', <<'END');
+package Plugins::SpotOn::API::AccountMigration;
+use Digest::MD5 qw(md5_hex);
+sub accountIdFor {
+    my ($class, $username) = @_;
+    return undef unless defined $username && length $username;
+    return substr(md5_hex($username), 0, 8);
+}
+1;
+END
+
 write_stub($stub_dir, 'Plugins::SpotOn::Connect', <<'END');
 package Plugins::SpotOn::Connect;
 our @CLAIMS;
 our $ACTIVE;
+our @BIND_ACCOUNT;
+our $PER_ACCOUNT = 0;    # 90.1-03: see the group rule in bindConnectClaim
 # 4th tuple element: a snapshot of how many spottyconnect executes had
 # already fired at call time -- lets Fall-1 assert "bind BEFORE the
 # _emitStart execute" structurally, not by inference from call order alone.
@@ -402,7 +418,17 @@ sub bindConnectClaim {
         require Plugins::SpotOn::Soloist::Control;
         my $oldClient = Slim::Player::Client::getClient($oldId);
         my $oldCtl    = $oldClient ? Plugins::SpotOn::Soloist::Control->for_client($oldClient) : undef;
-        if ($oldCtl && $oldCtl->mode eq 'connect' && $oldCtl->observed->{is_active}) {
+        # 90.1-03: the group rule of the real Connect.pm. $PER_ACCOUNT 0 (the default, the
+        # one-claim shape of Fall-5) = everybody is a peer; 1 = a peer only when both account
+        # keys (Control observed->{account}) are known and equal.
+        my $peer = 1;
+        if ($PER_ACCOUNT) {
+            my $newCtl = Plugins::SpotOn::Soloist::Control->for_client($client);
+            my $ko = $oldCtl ? ($oldCtl->observed->{account} || {})->{key} : undef;
+            my $kn = $newCtl ? ($newCtl->observed->{account} || {})->{key} : undef;
+            $peer = (defined $ko && defined $kn && $ko eq $kn) ? 1 : 0;
+        }
+        if ($peer && $oldCtl && $oldCtl->mode eq 'connect' && $oldCtl->observed->{is_active}) {
             $oldCtl->_recordErrorOnce('claim-conflict:' . $oldId, 'warn',
                 $oldId . ": Connect claim: last message wins -- " . $newId
                 . " replaces it while " . $oldId . " still reports an active session (D-D2)");
@@ -412,6 +438,11 @@ sub bindConnectClaim {
 
     $ACTIVE = $newId;
     push @CLAIMS, [ 'bind', $newId, $source, scalar(@Slim::Player::Client::EXECUTED) ];
+    # 90.1-02: what Control knew about the daemon's account AT bind time ([ source, short | undef ])
+    require Plugins::SpotOn::Soloist::Control;
+    my $c = $client ? Plugins::SpotOn::Soloist::Control->for_client($client) : undef;
+    my $acct = $c ? $c->observed->{account} : undef;
+    push @BIND_ACCOUNT, [ $source, (ref $acct eq 'HASH' ? $acct->{short} : undef) ];
 }
 sub releaseConnectClaim {
     my ($class, $client, $source) = @_;
@@ -619,6 +650,10 @@ sub mac         { return $_[0]->{mac}; }
 sub _ws         { return $_[0]->{ws}; }
 sub _streamPort { return $_[0]->{streamPort}; }
 sub uptime      { return $_[0]->{uptime} // 100; }    # 82-05: CON-11 grace source
+# 90.1-02: the real SoloistDaemon accessors Control::_refreshAccount reads (undef unless a test sets them)
+sub _stderrFile        { return $_[0]->{_stderrFile}; }
+sub _stderrStartOffset { return $_[0]->{_stderrStartOffset}; }
+sub _spawnTime         { return $_[0]->{_spawnTime}; }
 
 package Test::FakeWs;
 sub new {
@@ -3261,8 +3296,8 @@ sub n4_queue_changed {
 
     is_deeply($ws->sent, [ [ 'play', { uri => $TID } ] ],
         "F-18-N4 change 1: next uri already a source:queue entry -- no second add_to_queue (S1: no postSeek 0 at the echo)");
-    ok(exists $ctl->observed->{queuedByUs}{$NEXT_TID},
-        "F-18-N4 change 1: the origin marker still names the next uri (the natural advance stays a recognised prefetch hit)");
+    ok(exists(($ctl->observed->{queuedByLms} || {})->{$NEXT_TID}),
+        "F-18-N4 change 1: the origin marker still names the next uri (the natural advance stays a recognised prefetch hit) (90.1-08: queuedByLms)");
 }
 
 # --- change 1, real frame order (UAT 2026-10-04 11:50:22.516, same-1 10:29:57.343): `play X` starts with a
@@ -3610,6 +3645,179 @@ for my $lm12 ([ 'consume', 'aa:bb:cc:dd:ee:dc' ], [ 'leftover', 'aa:bb:cc:dd:ee:
     is_deeply($ws->sent, [ [ 'play', { uri => $TID } ] ], "LM-16: uid = uri: the own title at the head is not consumed");
     $ctl->_forgetOwnQueue('test');
     is_deeply($ctl->observed->{ownLeftovers} || {}, {}, "LM-16: uid = uri: and not remembered as a leftover");
+}
+
+# ============================================================
+# 90.1-08 (D-21, the WR-02 remainder of the phase-90 review): the claim of _prefetchNext's dedupe branch (the
+# successor is already a daemon queue entry, no add_to_queue is sent) lives in observed.queuedByLms, not in
+# queuedByUs. A later user entry of the same title is the app's (appQueued); the natural advance to the deduped
+# successor stays a recognised prefetch hit (84-19 F-18-N4).
+# ============================================================
+sub w08_dedupe_session {
+    my ($mac) = @_;
+    my ($ctl, $daemon, $ws) = fresh_control(
+        mac => $mac, mode => 'browse',
+        observed => { wsConnected => 1, meta => { $TID => { duration => 200 } }, track => 'spotify:track:previousXYZ',
+                      status => 'playing', is_active => 1 },
+    );
+    # the user's entry u1 for LMS's successor is in the daemon queue before the play
+    $ctl->onEvent(n4_queue_changed([ 'u1', 'queue', $NEXT_TID ]));
+    $ctl->requestTrack($TID, 0, {});
+    $ctl->onEvent(decode_frame(load_fixture('track_changed.json')));
+    # the queue as it stands after the title started (the D-34 baseline)
+    $ctl->onEvent(n4_queue_changed([ 'u1', 'queue', $NEXT_TID ]));
+    return ($ctl, $daemon, $ws);
+}
+{
+    # W1: the user queues the deduped title again in the app (a NEW entry u2): the app-queued detector records it
+    local @Slim::Player::Playlist::ENTRIES = ( undef, Test::MockTrack->new("spoton://track:3n3Ppam7vgaVa1iaRUc9Lp") );
+    local $Slim::Player::Source::INDEX = 0;
+    my ($ctl, $daemon, $ws) = w08_dedupe_session('aa:bb:cc:dd:ee:81');
+    is_deeply($ws->sent, [ [ 'play', { uri => $TID } ] ],
+        "90.1-08 W1 setup: the successor is already a queue entry -- the dedupe branch, no add_to_queue");
+    $ctl->onEvent(n4_queue_changed([ 'u1', 'queue', $NEXT_TID ], [ 'u2', 'queue', $NEXT_TID ]));
+    ok(($ctl->observed->{appQueued} || {})->{$NEXT_TID},
+        "90.1-08 W1: the user's later entry of the deduped title is recorded as the app's (appQueued)");
+    ok(!exists(($ctl->observed->{queuedByUs} || {})->{$NEXT_TID}),
+        "90.1-08 W1: the dedupe claim does not make the title own (queuedByUs)");
+    ok(exists(($ctl->observed->{queuedByLms} || {})->{$NEXT_TID}),
+        "90.1-08 W1: the dedupe claim is kept in queuedByLms");
+    Slim::Utils::Timers::killTimers($ctl, \&Plugins::SpotOn::Soloist::Control::_t1Fire);
+}
+{
+    # W2: no second entry; the daemon advances by itself to the deduped successor at the title end: a prefetch hit
+    local @Slim::Player::Playlist::ENTRIES = ( undef, Test::MockTrack->new("spoton://track:3n3Ppam7vgaVa1iaRUc9Lp") );
+    local $Slim::Player::Source::INDEX = 0;
+    d34_reset();
+    my ($ctl, $daemon, $ws) = w08_dedupe_session('aa:bb:cc:dd:ee:82');
+    ok(exists(($ctl->observed->{queuedByLms} || {})->{$NEXT_TID}) || exists(($ctl->observed->{queuedByUs} || {})->{$NEXT_TID}),
+        "90.1-08 W2 setup: the dedupe branch claimed the successor");
+    d34_age($ctl, 200);    # the echo's late window is long over
+    my $n = scalar @{ $ws->sent };
+    $ctl->onEvent({ type => 'track_changed', item => { uri => $NEXT_TID } });
+    hold_flush();
+    my @s = @{ $ws->sent }; @s = @s[ $n .. $#s ];
+    ok(!(grep { $_->[0] eq 'pause' } @s), "90.1-08 W2: the natural advance to the deduped successor is not paused as autoplay");
+    is($ctl->mode, 'browse', "90.1-08 W2: no take-over");
+    is(scalar(grep { $_->[0] eq 'playlist' } d34_forwarded()), 0, "90.1-08 W2: no app next forwarded to LMS");
+    ok(!exists(($ctl->observed->{queuedByLms} || {})->{$NEXT_TID}) && !exists(($ctl->observed->{queuedByUs} || {})->{$NEXT_TID}),
+        "90.1-08 W2: the hit consumed the claim");
+    Slim::Utils::Timers::killTimers($ctl, \&Plugins::SpotOn::Soloist::Control::_t1Fire);
+}
+{
+    # W3 (Fable N-01 unchanged): the successor was queued by a real add_to_queue (own, uid q1 learned); the dedupe
+    # branch fires again for it (notePlaylistChanged): it stays own with its uid record, no dedupe claim is written.
+    local @Slim::Player::Playlist::ENTRIES = (
+        Test::MockTrack->new("spoton://track:11dFghVXANMlKmJXsNCbNl"),
+        Test::MockTrack->new("spoton://track:3n3Ppam7vgaVa1iaRUc9Lp"),
+    );
+    local $Slim::Player::Source::INDEX = 0;
+    my ($ctl, $daemon, $ws) = fresh_control(
+        mac => 'aa:bb:cc:dd:ee:83', mode => 'browse',
+        observed => { wsConnected => 1, paired => 1, is_active => 1, meta => { $TID => { duration => 200 } },
+                      track => 'spotify:track:previousXYZ', status => 'playing' },
+    );
+    $ctl->requestTrack($TID, 0, {});
+    $ctl->onEvent(decode_frame(load_fixture('track_changed.json')));
+    ok(scalar(grep { $_->[0] eq 'add_to_queue' && ($_->[1]{uri} // '') eq $NEXT_TID } @{ $ws->sent }),
+        "90.1-08 W3 setup: the echo's prefetch queues the successor (a real add_to_queue)");
+    $ctl->onEvent(n4_queue_changed([ 'q1', 'queue', $NEXT_TID ]));
+    is($ctl->_ownQueueUid($NEXT_TID), 'q1', "90.1-08 W3 setup: the own uid is recorded");
+    my $n = scalar @{ $ws->sent };
+    push @Slim::Player::Playlist::ENTRIES, Test::MockTrack->new("spoton://track:appendedTitle000000001");
+    $ctl->notePlaylistChanged;
+    is(scalar(grep { $_->[0] eq 'add_to_queue' } @{ $ws->sent }[ $n .. $#{ $ws->sent } ]), 0,
+        "90.1-08 W3 setup: the second prefetch takes the dedupe branch (no add_to_queue)");
+    ok(exists(($ctl->observed->{queuedByUs} || {})->{$NEXT_TID}), "90.1-08 W3: an own title stays in queuedByUs");
+    is($ctl->_ownQueueUid($NEXT_TID), 'q1', "90.1-08 W3: and keeps its uid record");
+    ok(!exists(($ctl->observed->{queuedByLms} || {})->{$NEXT_TID}), "90.1-08 W3: no dedupe claim is written for an own title");
+    Slim::Utils::Timers::killTimers($ctl, \&Plugins::SpotOn::Soloist::Control::_t1Fire);
+}
+{
+    # W4: a dedupe-only title (queuedByLms) is not own for the own-entry readers: _ownQueueUid, _ownLeftoversAtHead
+    # and _postNearEnd's own-successor-at-head check answer as for a foreign entry. The control at the end makes the
+    # same head own: _postNearEnd then marks it, so the check is live in this setup.
+    local @Slim::Player::Playlist::ENTRIES = ( undef, Test::MockTrack->new("spoton://track:3n3Ppam7vgaVa1iaRUc9Lp") );
+    local $Slim::Player::Source::INDEX = 0;
+    my ($ctl, $daemon, $ws) = w08_dedupe_session('aa:bb:cc:dd:ee:84');
+    ok(exists(($ctl->observed->{queuedByLms} || {})->{$NEXT_TID}) || exists(($ctl->observed->{queuedByUs} || {})->{$NEXT_TID}),
+        "90.1-08 W4 setup: the dedupe branch claimed the successor");
+    is_deeply($ctl->observed->{queueHead}, { uri => $NEXT_TID, uid => 'u1' }, "90.1-08 W4 setup: the deduped entry u1 is the queue head");
+    is($ctl->_ownQueueUid($NEXT_TID), undef, "90.1-08 W4: _ownQueueUid knows no own uid for a dedupe-only title");
+    is_deeply([ $ctl->_ownLeftoversAtHead('spotify:track:jumpTargetTitle0000001') ], [],
+        "90.1-08 W4: _ownLeftoversAtHead does not take the dedupe-only head as own");
+    @IO::Socket::INET::NEAR_END_WRITES = ();
+    $ctl->_postNearEnd($TID, 197000);
+    ok(!$ctl->observed->{nearEnd}, "90.1-08 W4: _postNearEnd does not mark the end for a dedupe-only successor at the head");
+    is(scalar(@IO::Socket::INET::NEAR_END_WRITES), 0, "90.1-08 W4: and posts no /near-end");
+    $ctl->observed->{queuedByUs}{$NEXT_TID} = Time::HiRes::time();
+    $ctl->_postNearEnd($TID, 197000);
+    ok($ctl->observed->{nearEnd}, "90.1-08 W4 control: the same head as SpotOn's own successor is marked");
+    $ctl->_nearEndWaitEnd;
+    Slim::Utils::Timers::killTimers($ctl, \&Plugins::SpotOn::Soloist::Control::_earlyEndFallback);
+    Slim::Utils::Timers::killTimers($ctl, \&Plugins::SpotOn::Soloist::Control::_outcomeWaitFire);
+    Slim::Utils::Timers::killTimers($ctl, \&Plugins::SpotOn::Soloist::Control::_t1Fire);
+    @IO::Socket::INET::NEAR_END_WRITES = ();
+}
+# W5 (90.1 review WR-02): SpotOn's OWN successor that outlived a loss of control. Browse plays N, SpotOn queued N+1 (own,
+# uid q1); the user presses Stop in LMS (leaveBrowse: q1 is remembered in ownLeftovers, queuedByUs is emptied) and Play
+# again: the prefetch finds N+1 already queued and the dedupe branch claims it in queuedByLms. At the end of N the head is
+# that own leftover (its uid in ownLeftovers): the gapless early end marks it again, as before 90.1-08. W5b: the user's
+# entry of the same title (another uid) with the same dedupe claim stays unmarked (W4's rule).
+my $w5_session = sub {
+    my ($mac, $headUid) = @_;
+    my ($ctl, $daemon, $ws) = fresh_control(
+        mac => $mac, mode => 'browse',
+        observed => { wsConnected => 1, paired => 1, is_active => 1, meta => { $TID => { duration => 200 } },
+                      track => 'spotify:track:previousXYZ', status => 'playing' },
+    );
+    $ctl->requestTrack($TID, 0, {});
+    $ctl->onEvent(decode_frame(load_fixture('track_changed.json')));
+    $ctl->onEvent(n4_queue_changed([ 'q1', 'queue', $NEXT_TID ]));
+    { local $Slim::Player::Source::PLAYMODE = 'stop'; $ctl->requestPause(1); }    # Stop in LMS
+    $ctl->requestTrack($TID, 0, {});                                                 # Play in LMS
+    $ctl->onEvent(n4_queue_changed([ $headUid, 'queue', $NEXT_TID ]));             # the queue as the daemon states it
+    return ($ctl, $daemon, $ws);
+};
+my $w5_cleanup = sub {
+    my ($ctl) = @_;
+    $ctl->_nearEndWaitEnd;
+    Slim::Utils::Timers::killTimers($ctl, \&Plugins::SpotOn::Soloist::Control::_earlyEndFallback);
+    Slim::Utils::Timers::killTimers($ctl, \&Plugins::SpotOn::Soloist::Control::_outcomeWaitFire);
+    Slim::Utils::Timers::killTimers($ctl, \&Plugins::SpotOn::Soloist::Control::_t1Fire);
+    @IO::Socket::INET::NEAR_END_WRITES = ();
+};
+{
+    local @Slim::Player::Playlist::ENTRIES = (
+        Test::MockTrack->new("spoton://track:11dFghVXANMlKmJXsNCbNl"),
+        Test::MockTrack->new("spoton://track:3n3Ppam7vgaVa1iaRUc9Lp"),
+    );
+    local $Slim::Player::Source::INDEX = 0;
+    my ($ctl, $daemon, $ws) = $w5_session->('aa:bb:cc:dd:ee:85', 'q1');
+    is_deeply($ctl->observed->{ownLeftovers}, { q1 => $NEXT_TID }, "90.1 WR-02 W5 setup: the stop remembered the own entry q1 as a leftover");
+    ok(!exists(($ctl->observed->{queuedByUs} || {})->{$NEXT_TID}), "90.1 WR-02 W5 setup: N+1 is no longer in queuedByUs");
+    ok(exists(($ctl->observed->{queuedByLms} || {})->{$NEXT_TID}), "90.1 WR-02 W5 setup: the play's prefetch claimed N+1 through the dedupe branch (queuedByLms)");
+    is_deeply($ctl->observed->{queueHead}, { uri => $NEXT_TID, uid => 'q1' }, "90.1 WR-02 W5 setup: the own leftover q1 is the queue head");
+    @IO::Socket::INET::NEAR_END_WRITES = ();
+    $ctl->_postNearEnd($TID, 197000);
+    ok($ctl->observed->{nearEnd}, "90.1 WR-02 W5: the own leftover at the head is marked for the gapless early end again");
+    is($ctl->observed->{nearEnd} && $ctl->observed->{nearEnd}{next}, $NEXT_TID, "90.1 WR-02 W5: ... naming N+1 as the next title");
+    $w5_cleanup->($ctl);
+}
+{
+    local @Slim::Player::Playlist::ENTRIES = (
+        Test::MockTrack->new("spoton://track:11dFghVXANMlKmJXsNCbNl"),
+        Test::MockTrack->new("spoton://track:3n3Ppam7vgaVa1iaRUc9Lp"),
+    );
+    local $Slim::Player::Source::INDEX = 0;
+    my ($ctl, $daemon, $ws) = $w5_session->('aa:bb:cc:dd:ee:86', 'u7');
+    ok(exists(($ctl->observed->{queuedByLms} || {})->{$NEXT_TID}), "90.1 WR-02 W5b setup: the same dedupe claim");
+    is_deeply($ctl->observed->{queueHead}, { uri => $NEXT_TID, uid => 'u7' }, "90.1 WR-02 W5b setup: the head is the user's entry u7 (not a leftover uid)");
+    @IO::Socket::INET::NEAR_END_WRITES = ();
+    $ctl->_postNearEnd($TID, 197000);
+    ok(!$ctl->observed->{nearEnd}, "90.1 WR-02 W5b: the user's entry of the same title at the head is not marked");
+    is(scalar(@IO::Socket::INET::NEAR_END_WRITES), 0, "90.1 WR-02 W5b: and no /near-end is posted");
+    $w5_cleanup->($ctl);
 }
 
 # --- change 2: queue head == target -> skip_next consumes it (a `play X` never consumes a head equal to X,
@@ -5230,6 +5438,34 @@ sub ee_fallback_timers {
     d50_fire($onset + 3.0 + Plugins::SpotOn::Soloist::Control::EARLY_END_WAIT_S() + 0.1);
     is(scalar(ee_skips($ws, $n)), 1, "EE-7f: still one skip_next past the deadline without an echo");
     is(scalar(grep { /within the end gap/ } @Slim::Utils::Log::WARNINGS), 0, "EE-7f: no fallback WARN");
+    ee_done($ctl);
+}
+
+# --- 90 RV-6 (90 review IN-02): the EE-7d stopped request after the early answer, but on its target's third
+# reconcile (the drift budget is used up). The drift error still ends the early answer's wait and its fallback
+# timer. Otherwise the fallback fires later and reconciles once more: a second drift error here, and the second
+# skip_next that pops the daemon's queue twice once an LMS getNextTrack in between cleared the count.
+{
+    my $mac = 'aa:bb:cc:dd:ef:76';
+    my ($ctl, $daemon, $ws, $fx, $onset) = ee_session($mac);
+    $ctl->observed->{meta}{$EE_NEXT} = { duration => 200 };
+    my $n = scalar @{ $ws->sent };
+    d50_at($onset + 0.6, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'getNextTrack' }); });
+    is($ctl->observed->{earlyEnd}{uri}, $EE_NEXT, "90 RV-6 setup: the wait is armed");
+    is(scalar(ee_fallback_timers($ctl)), 1, "90 RV-6 setup: with its fallback timer");
+
+    ee_lms($mac, playing => 0, paused => 0, buffering => 0, stopped => 0);
+    # onStream: the second half of an LMS intent keeps the count (a getNextTrack would clear it, F-20-LATCH)
+    $ctl->_driftCount->{$EE_NEXT} = Plugins::SpotOn::Soloist::Control::DRIFT_MAX_REDISPATCH();
+    my $err;
+    @Slim::Utils::Log::WARNINGS = ();
+    d50_at($onset + 1.2, sub { $ctl->requestTrack($EE_NEXT, 0, { source => 'onStream', errorCb => sub { $err++ } }); });
+    is($err, 1, "90 RV-6 setup: the stopped request is the drift error (errorCb)");
+    ok(!$ctl->observed->{earlyEnd}, "90 RV-6: the drift error ends the early answer's wait");
+    is(scalar(ee_fallback_timers($ctl)), 0, "90 RV-6: and its fallback timer is killed");
+    d50_fire($onset + 3.0 + Plugins::SpotOn::Soloist::Control::EARLY_END_WAIT_S() + 0.1);
+    is(scalar(grep { /within the end gap/ } @Slim::Utils::Log::WARNINGS), 0, "90 RV-6: the fallback does not fire past the deadline");
+    is(scalar(ee_skips($ws, $n)), 0, "90 RV-6: no skip_next past the deadline");
     ee_done($ctl);
 }
 
@@ -15751,6 +15987,149 @@ for my $sub ([ 'a', 'ALBUM_TRK', '16:01:16.069', '16:01:16.070', '16:01:16.531',
     is(scalar(grep { $_->[0] eq 'pause' } @{ $ws->sent }), 0, "90-05 O9: no pause");
 }
 
+# ============================================================
+# 90 review WR-01 (90-REVIEW.md): the burst hold is released before any
+# decision that reads the held state, not only inside _dispatch. RV-1 is an
+# LMS request (_reconcile -> _execute, never through _dispatch), RV-2 the hang
+# replay and RV-3 the successor prefetch, which both decided on the pre-replay
+# state before their _dispatch released the hold.
+# ============================================================
+
+# --- 90 RV-1: an LMS request closes the hold before it plans; the held foreign frame is processed first ---
+{
+    my $X = 'spotify:track:90RV1ownTitleXXXXXXXXX';
+    my $Z = 'spotify:track:90RV1foreignZZZZZZZZZZ';
+    local $Slim::Player::Source::PLAYMODE = 'play';
+    my ($ctl, $daemon, $ws) = fresh_control(
+        mac => 'aa:90:0f:00:01:01', mode => 'browse',
+        wanted   => { uri => $X, playing => 1 },
+        observed => { wsConnected => 1, paired => 1, meta => { $TID => { duration => 200 } }, track => $X,
+                      status => 'playing', is_active => 1 },
+    );
+    $ctl->onEvent({ type => 'track_changed', item => { uri => $Z } });
+    ok(defined $ctl->observed->{burstHold}, "90 RV-1: precondition - the hold is open");
+    $ctl->requestTrack($TID, 0, {});
+    my @cmds = map { $_->[0] } @{ $ws->sent };
+    ok(!defined $ctl->observed->{burstHold}, "90 RV-1: the LMS request closed the hold before it planned");
+    is($cmds[0], 'pause', "90 RV-1: the held frame is processed first - the guard's pause goes out before the request's command")
+        or diag(explain($ws->sent));
+    is(scalar(_9005_hold_timers($ctl)), 0, "90 RV-1: and its timer is gone");
+    hold_flush();
+    is(scalar(grep { $_ eq 'pause' } map { $_->[0] } @{ $ws->sent }), 1, "90 RV-1: exactly one pause in total");
+    Slim::Utils::Timers::killTimers($ctl, \&Plugins::SpotOn::Soloist::Control::_t1Fire);
+}
+
+# --- 90 RV-2: the hang replay re-decides after the held frame; no play of the old title over a foreign one ---
+{
+    my $X = 'spotify:track:90RV2ownTitleXXXXXXXXX';
+    my $Z = 'spotify:track:90RV2foreignZZZZZZZZZZ';
+    my ($ctl, $daemon, $ws) = fresh_control(
+        mac => 'aa:90:0f:00:02:01', mode => 'browse',
+        wanted   => { uri => $X, playing => 1 },
+        observed => { wsConnected => 1, meta => {}, track => $X, status => 'buffering', is_active => 1 },
+    );
+    $ctl->onEvent({ type => 'track_changed', item => { uri => $Z } });
+    ok(defined $ctl->observed->{burstHold}, "90 RV-2: precondition - the hold is open");
+    $ctl->observed->{hangWatch} = { uri => $X, position_ms => 60000, onset => Time::HiRes::time() - 3 };
+    Plugins::SpotOn::Soloist::Control::_hangReplayFire($ctl);
+    my @cmds = map { $_->[0] } @{ $ws->sent };
+    ok(!defined $ctl->observed->{burstHold}, "90 RV-2: the hang replay closed the hold");
+    is($cmds[0], 'pause', "90 RV-2: the held frame is processed first - the guard pauses the foreign title")
+        or diag(explain($ws->sent));
+    is(scalar(grep { $_ eq 'play' } @cmds), 0, "90 RV-2: no hang replay of the old title once the daemon is on another one")
+        or diag(explain($ws->sent));
+    ok(!exists(($ctl->observed->{hangReplays} || {})->{$X}), "90 RV-2: the replay budget is untouched");
+    hold_flush();
+    is(scalar(grep { $_ eq 'pause' } map { $_->[0] } @{ $ws->sent }), 1, "90 RV-2: exactly one pause in total");
+}
+
+# --- 90 RV-3: the successor prefetch decides on the queue the held frames report, not the pre-burst one ---
+{
+    local @Slim::Player::Playlist::ENTRIES = ( Test::MockTrack->new("spoton://track:11dFghVXANMlKmJXsNCbNl"),
+                                               Test::MockTrack->new("spoton://track:3n3Ppam7vgaVa1iaRUc9Lp") );
+    local $Slim::Player::Source::INDEX = 0;
+    my $Z = 'spotify:track:90RV3foreignZZZZZZZZZZ';
+    my ($ctl, $daemon, $ws) = fresh_control(
+        mac => 'aa:90:0f:00:03:01', mode => 'browse',
+        wanted   => { uri => $TID, playing => 1 },
+        observed => { wsConnected => 1, meta => { $TID => { duration => 200 } }, track => $TID,
+                      status => 'playing', is_active => 1 },
+    );
+    $ctl->onEvent({ type => 'track_changed', item => { uri => $Z } });
+    $ctl->onEvent(n4_queue_changed([ 'u1', 'queue', 'spotify:track:90RV3userQueuedUUUUUU' ]));
+    ok(defined $ctl->observed->{burstHold}, "90 RV-3: precondition - the hold is open with the queue_changed in it");
+    $ctl->notePlaylistChanged;
+    ok(!defined $ctl->observed->{burstHold}, "90 RV-3: the prefetch closed the hold");
+    is(($ws->sent->[0] || [])->[0], 'pause', "90 RV-3: the held frame is processed first - the guard pauses the foreign title")
+        or diag(explain($ws->sent));
+    is(scalar(grep { $_->[0] eq 'add_to_queue' } @{ $ws->sent }), 0,
+        "90 RV-3: no add_to_queue decided on the pre-burst queue")
+        or diag(explain($ws->sent));
+    ok(!exists(($ctl->observed->{queuedByUs} || {})->{$NEXT_TID}), "90 RV-3: no origin marker for the successor");
+}
+
+# --- 90 RV-4 (90 review WR-02): the prefetch dedupe branch ("already a queue entry") sends no add_to_queue, so it
+# learns no own uid. The user had queued the successor; a second entry of the same title the user adds later is not
+# recorded as SpotOn's (no consume on the next jump, no leftover memory).
+{
+    local @Slim::Player::Playlist::ENTRIES = ( Test::MockTrack->new("spoton://track:11dFghVXANMlKmJXsNCbNl"),
+                                               Test::MockTrack->new("spoton://track:3n3Ppam7vgaVa1iaRUc9Lp") );
+    local $Slim::Player::Source::INDEX = 0;
+    my ($ctl, $daemon, $ws) = fresh_control(
+        mac => 'aa:90:0f:00:04:01', mode => 'browse',
+        wanted   => { uri => $TID, playing => 1 },
+        observed => { wsConnected => 1, meta => { $TID => { duration => 200 } }, track => $TID,
+                      status => 'playing', is_active => 1 },
+    );
+    $ctl->onEvent(n4_queue_changed([ 'u1', 'queue', $NEXT_TID ]));
+    $ctl->notePlaylistChanged;
+    is(scalar(grep { $_->[0] eq 'add_to_queue' } @{ $ws->sent }), 0, "90 RV-4: setup, the dedupe branch sends no add_to_queue");
+    ok(exists(($ctl->observed->{queuedByLms} || {})->{$NEXT_TID}), "90 RV-4: setup, the origin marker names the successor (dedupe kept) (90.1-08: queuedByLms)");
+    $ctl->onEvent(n4_queue_changed([ 'u1', 'queue', $NEXT_TID ], [ 'u2', 'queue', $NEXT_TID ]));
+    is($ctl->_ownQueueUid($NEXT_TID), undef, "90 RV-4: the user's second entry u2 is not recorded as SpotOn's own uid");
+    $ctl->_forgetOwnQueue('test');
+    is_deeply($ctl->observed->{ownLeftovers} || {}, {}, "90 RV-4: and it is not remembered as an own leftover");
+}
+
+# --- 90 RV-5 (90 review WR-03): the idle guard stands aside for a fresh foreign context only when the idle
+# adoption will take the title. Where _holdAfterForeignLeave refuses the adoption (LMS plays foreign content after
+# a leaveConnect, or the title is the one the guard paused before), the guard pauses as before 90-05, and its
+# check leaves the adoption's markers alone. (c) is the control: LMS not on foreign content, the O4 hand-off.
+for my $rv5 ([ 'a', 'leftConnectForeign', 'play', '01' ],
+             [ 'b', 'autoplayPaused',     'play', '02' ],
+             [ 'c', 'leftConnectForeign', 'stop', '03' ]) {
+    my ($k, $marker, $playmode, $tail) = @$rv5;
+    d34_reset();
+    @Plugins::SpotOn::Connect::CLAIMS = ();
+    my $Z = 'spotify:track:90RV5appTitleZZZZZZZZZ';
+    my ($ctl, $daemon, $ws, $X) = _84102_a1_state("aa:90:0f:00:05:$tail");
+    is($ctl->mode, 'idle', "90 RV-5: ($k) precondition - idle after the stop-leave");
+    $ctl->observed->{is_active}  = 1;
+    $ctl->observed->{ctxForeign} = { uri => 'spotify:album:90RV5appAlbumAAAAAAAA', entity => 'album', hr => Time::HiRes::time() };
+    $ctl->observed->{$marker}    = ($marker eq 'autoplayPaused' ? $Z : 1);
+    foreign_track("aa:90:0f:00:05:$tail");
+    local $Slim::Player::Source::PLAYMODE = $playmode;
+    @{ $ws->sent } = ();
+    my @enter;
+    my $guard = d34_wrap_enter(\@enter);
+
+    $ctl->onEvent({ type => 'track_changed', item => { uri => $Z, entity_type => 'track' } });
+    if ($k eq 'a') {
+        is($ctl->observed->{leftConnectForeign}, 1, "90 RV-5: (a) the guard's check leaves the adoption's marker alone");
+    }
+    $ctl->onEvent({ type => 'playback_state', is_active => JSON::PP::true(), status => 'playing',
+                    item => { uri => $Z, entity_type => 'track' } });
+    if ($k eq 'c') {
+        is(scalar(d34_daemon_pauses($ws)), 0, "90 RV-5: (c) LMS not on foreign content - the guard stands aside");
+        is($ctl->mode, 'connect', "90 RV-5: (c) ... and the idle adoption takes the title");
+    }
+    else {
+        is(scalar(d34_daemon_pauses($ws)), 1, "90 RV-5: ($k) adoption refused ($marker) - the idle guard pauses the app's title");
+        is($ctl->mode, 'idle', "90 RV-5: ($k) ... and the player stays idle (no adoption)");
+        is(scalar(@enter), 0, "90 RV-5: ($k) no connect session is entered");
+    }
+}
+
 # --- T3b: the natural end under Autoplay OFF (Case A_off) stays the context-end path ---
 {
     d34_reset();
@@ -17020,5 +17399,722 @@ for my $row ([ 'episode', '79-68-track_changed-episode.jsonl', '6hDIr2Ngy8ijkGk3
     ee_done($ctl);
     delete $o->{outcomeWait};
 }
+
+# ============================================================
+# 90.1-02 (D-01, D-02): the account the daemon is signed in as, from its own log.
+# Made-up ids only, built from pieces (no id-shaped literal in the file).
+# ============================================================
+require Data::Dumper;
+require Plugins::SpotOn::API::AccountMigration;    # the stub above
+my $AC_FAKE28 = 'tst' . ('a1B2c3D4e5' x 2) . 'XYZ12';
+my $AC_FAKE25 = 'tst' . ('a1B2c3D4e5' x 2) . '99';
+sub ac_put {
+    my ($file, $mode, $text) = @_;
+    open(my $fh, $mode, $file) or die "$file: $!";
+    print $fh $text;
+    close $fh;
+    return -s $file;
+}
+sub ac_login { return "2026-11-20 12:07:18.718: logged in as $_[0]\n"; }
+sub ac_auth  { my ($ctl, $in) = @_; $ctl->onEvent({ type => 'auth_state', logged_in => ($in ? JSON::PP::true() : JSON::PP::false()), is_active => JSON::PP::false(), device_name => 'x' }); }
+sub ac_key   { return Plugins::SpotOn::API::AccountMigration->accountIdFor($_[0]); }
+sub ac_acct  { my ($id) = @_; return { key => ac_key($id), short => substr($id, -4) }; }
+
+# --- 90.1-02 AC1: a login line after the daemon's start offset reaches observed->{account} ---
+{
+    my $dir  = tempdir(CLEANUP => 1);
+    my $file = "$dir/aabbccddee90-soloist.log";
+    my $off  = ac_put($file, '>', ac_login($AC_FAKE25) . "an older daemon run\n");
+    ac_put($file, '>>', ac_login($AC_FAKE28));
+    my ($ctl, $daemon, $ws) = fresh_control(mac => 'aa:bb:cc:dd:ee:90', observed => { wsConnected => 1, meta => {} });
+    $daemon->{_stderrFile}        = $file;
+    $daemon->{_stderrStartOffset} = $off;
+
+    ok(!defined $ctl->observed->{account}, '90.1-02 AC1 setup: no account before the first auth_state');
+    ac_auth($ctl, 1);
+    is_deeply($ctl->observed->{account}, ac_acct($AC_FAKE28),
+        '90.1-02 AC1: auth_state logged_in true -> observed->{account} = { key, short } of the login after the start offset');
+    unlike(Data::Dumper::Dumper($ctl->observed->{account}), qr/\Q$AC_FAKE28\E/, '90.1-02 AC1: the full id is not in the state');
+}
+
+# --- 90.1-02 AC2 (D-02): a closed transport makes the account unknown; the next logged_in
+# auth_state restores it from the remembered last login WITHOUT a new log line ---
+{
+    my $dir  = tempdir(CLEANUP => 1);
+    my $file = "$dir/aabbccddee91-soloist.log";
+    my $off  = ac_put($file, '>', "an older daemon run\n");
+    ac_put($file, '>>', ac_login($AC_FAKE28));
+    my ($ctl, $daemon, $ws) = fresh_control(mac => 'aa:bb:cc:dd:ee:91', observed => { wsConnected => 1, meta => {} });
+    $daemon->{_stderrFile} = $file; $daemon->{_stderrStartOffset} = $off;
+    ac_auth($ctl, 1);
+    is_deeply($ctl->observed->{account}, ac_acct($AC_FAKE28), '90.1-02 AC2 setup: the account is known');
+
+    $ctl->onEvent({ type => '_transport', state => 'closed' });
+    ok(!defined $ctl->observed->{account}, '90.1-02 AC2: _transportClosed makes the account unknown');
+
+    $ctl->observed->{wsConnected} = 1;    # the WS is back
+    ac_auth($ctl, 1);
+    is_deeply($ctl->observed->{account}, ac_acct($AC_FAKE28),
+        '90.1-02 AC2: the next logged_in auth_state restores it from the remembered login, no new line needed');
+}
+
+# --- 90.1-02 AC3 (D-02): a new daemon run leaves the account unknown until a login line
+# written after the new start offset is read ---
+{
+    my $dir  = tempdir(CLEANUP => 1);
+    my $file = "$dir/aabbccddee92-soloist.log";
+    my $off  = ac_put($file, '>', "an older daemon run\n");
+    ac_put($file, '>>', ac_login($AC_FAKE28));
+    my ($ctl, $daemon, $ws) = fresh_control(mac => 'aa:bb:cc:dd:ee:92', observed => { wsConnected => 1, meta => {} });
+    $daemon->{_stderrFile} = $file; $daemon->{_stderrStartOffset} = $off;
+    ac_auth($ctl, 1);
+    is_deeply($ctl->observed->{account}, ac_acct($AC_FAKE28), '90.1-02 AC3 setup: the account is known');
+
+    $ctl->onEvent({ type => '_transport', state => 'closed' });
+    $daemon->{_stderrStartOffset} = -s $file;    # the daemon was restarted: its run starts at the current end
+    $ctl->observed->{wsConnected} = 1;
+    ac_auth($ctl, 1);
+    ok(!defined $ctl->observed->{account},
+        '90.1-02 AC3: after a restart the previous run\'s login does not carry over - unknown');
+
+    ac_put($file, '>>', ac_login($AC_FAKE25));
+    ac_auth($ctl, 1);
+    is_deeply($ctl->observed->{account}, ac_acct($AC_FAKE25),
+        '90.1-02 AC3: known again from a login line after the new start offset');
+}
+
+# --- 90.1-02 AC4 (D-02): the logged_in true-to-false edge; a logged out line ---
+{
+    my $dir  = tempdir(CLEANUP => 1);
+    my $file = "$dir/aabbccddee93-soloist.log";
+    my $off  = ac_put($file, '>', "an older daemon run\n");
+    ac_put($file, '>>', ac_login($AC_FAKE28));
+    my ($ctl, $daemon, $ws) = fresh_control(mac => 'aa:bb:cc:dd:ee:93', observed => { wsConnected => 1, meta => {} });
+    $daemon->{_stderrFile} = $file; $daemon->{_stderrStartOffset} = $off;
+    ac_auth($ctl, 1);
+    is_deeply($ctl->observed->{account}, ac_acct($AC_FAKE28), '90.1-02 AC4 setup: the account is known');
+
+    ac_auth($ctl, 0);
+    ok(!defined $ctl->observed->{account}, '90.1-02 AC4: the logged_in true-to-false edge makes the account unknown');
+
+    ac_put($file, '>>', "2026-11-20 12:07:18.457: logged out\n");
+    ac_auth($ctl, 1);
+    ok(!defined $ctl->observed->{account}, '90.1-02 AC4: a logged out line followed by an auth_state leaves it unknown');
+}
+
+# --- 90.1-02 AC5 (D-02): the log is read BEFORE each of the three claim binds ---
+{
+    my $dir  = tempdir(CLEANUP => 1);
+    my $setup = sub {
+        my ($n, $id, %o) = @_;
+        my $file = "$dir/aabbccddee9$n-soloist.log";
+        my $off  = ac_put($file, '>', "an older daemon run\n");
+        ac_put($file, '>>', ac_login($id));    # written right before the frame, no auth_state seen
+        my ($ctl, $daemon, $ws) = fresh_control(mac => "aa:bb:cc:dd:ee:9$n",
+            observed => { wsConnected => 1, logged_in => 1, meta => {}, %{ $o{observed} || {} } }, %o{qw(mode wanted)});
+        $daemon->{_stderrFile} = $file; $daemon->{_stderrStartOffset} = $off;
+        return ($ctl, $daemon, $ws);
+    };
+
+    # transfer: device_changed(is_active true) in browse
+    @Plugins::SpotOn::Connect::BIND_ACCOUNT = (); @Plugins::SpotOn::Connect::CLAIMS = (); $Plugins::SpotOn::Connect::ACTIVE = undef;
+    @Slim::Player::Client::EXECUTED = ();
+    my ($c1, $d1, $w1) = $setup->(4, $AC_FAKE28, mode => 'browse', observed => { track => $TID });
+    $c1->onEvent(decode_frame(load_fixture('device_changed.json')));
+    is_deeply([ grep { $_->[0] eq 'transfer' } @Plugins::SpotOn::Connect::BIND_ACCOUNT ],
+        [ [ 'transfer', substr($AC_FAKE28, -4) ] ],
+        '90.1-02 AC5 transfer: the login line is already in observed->{account} when bindConnectClaim runs');
+
+    # reconnect: playback_state(is_active, playing) while idle
+    @Plugins::SpotOn::Connect::BIND_ACCOUNT = (); @Plugins::SpotOn::Connect::CLAIMS = (); $Plugins::SpotOn::Connect::ACTIVE = undef;
+    @Slim::Player::Client::EXECUTED = ();
+    my ($c2, $d2, $w2) = $setup->(5, $AC_FAKE25, mode => 'idle');
+    $c2->onEvent({ type => 'playback_state', item => { uri => $TID }, status => 'playing', is_active => 1 });
+    is_deeply([ grep { $_->[0] eq 'reconnect' } @Plugins::SpotOn::Connect::BIND_ACCOUNT ],
+        [ [ 'reconnect', substr($AC_FAKE25, -4) ] ],
+        '90.1-02 AC5 reconnect: the login line is already in observed->{account} when bindConnectClaim runs');
+
+    # takeover: the app replaced the queue in browse
+    @Plugins::SpotOn::Connect::BIND_ACCOUNT = (); @Plugins::SpotOn::Connect::CLAIMS = (); $Plugins::SpotOn::Connect::ACTIVE = undef;
+    @Slim::Player::Client::EXECUTED = ();
+    my $own = 'spotify:track:ownTrack000000000000000';
+    my $app = 'spotify:track:appTrack000000000000000';
+    my ($c3, $d3, $w3) = $setup->(6, $AC_FAKE28, mode => 'browse', wanted => { uri => $own, position_ms => 0, playing => 1 },
+        observed => { is_active => 1, ctxForeign => { hr => Time::HiRes::time() } });
+    my $took = $c3->_browseTakeover($app);
+    is($took, 1, '90.1-02 AC5 takeover setup: _browseTakeover took over');
+    is_deeply([ grep { $_->[0] eq 'takeover' } @Plugins::SpotOn::Connect::BIND_ACCOUNT ],
+        [ [ 'takeover', substr($AC_FAKE28, -4) ] ],
+        '90.1-02 AC5 takeover: the login line is already in observed->{account} when bindConnectClaim runs');
+}
+
+# ============================================================
+# 90.1-03 (D-01, D-16): Control's own side of the claim contract for two accounts.
+# The Connect stub carries the group rule ($PER_ACCOUNT 1, keys from observed->{account}).
+# Made-up ids only (pieces of the 90.1-02 fakes).
+# ============================================================
+{
+    my $dir = tempdir(CLEANUP => 1);
+    my @keep;    # Control holds its daemon weakly
+    my $run = sub {
+        my ($n, $idA, $idB) = @_;
+        my $mk = sub {
+            my ($suffix, $id, %o) = @_;
+            my $file = "$dir/aabbccddee$n$suffix-soloist.log";
+            my $off  = ac_put($file, '>', "an older daemon run\n");
+            ac_put($file, '>>', ac_login($id));
+            my ($ctl, $daemon, $ws) = fresh_control(mac => "aa:bb:cc:dd:90:$n$suffix",
+                observed => { wsConnected => 1, logged_in => 1, track => $TID, meta => {}, %{ $o{observed} || {} } }, mode => $o{mode});
+            $daemon->{_stderrFile} = $file; $daemon->{_stderrStartOffset} = $off;
+            push @keep, $daemon, $ws;
+            return $ctl;
+        };
+        my $ctlA = $mk->('a', $idA, mode => 'connect', observed => { is_active => 1 });
+        my $ctlB = $mk->('b', $idB, mode => 'browse');
+        $ctlA->_refreshAccount('test');
+        local $Plugins::SpotOn::Connect::PER_ACCOUNT = 1;
+        $Plugins::SpotOn::Connect::ACTIVE = $ctlA->mac;
+        @Plugins::SpotOn::Connect::CLAIMS = ();
+        @Plugins::SpotOn::Status::RECORDED = ();
+        @Slim::Player::Client::EXECUTED    = ();
+        $ctlB->onEvent(decode_frame(load_fixture('device_changed.json')));
+        return ($ctlA, $ctlB);
+    };
+
+    my ($ctlA, $ctlB) = $run->(1, $AC_FAKE28, $AC_FAKE25);
+    is(scalar(grep { $_->[3] =~ /claim-conflict:/ } @Plugins::SpotOn::Status::RECORDED), 0,
+        '90.1-03 C1: a transfer of ANOTHER account records no claim-conflict on the old Control');
+    is($ctlA->observed->{is_active}, 1, '90.1-03 C1: the old Control keeps its session (is_active stays 1)');
+    ok(!(grep { $_->[1] eq 'stop' } @Slim::Player::Client::EXECUTED), '90.1-03 C1: no spottyconnect stop was executed for the old player');
+    is(scalar(grep { $_->[0] eq 'bind' } @Plugins::SpotOn::Connect::CLAIMS), 1, '90.1-03 C1: the new Control did bind its claim');
+
+    ($ctlA, $ctlB) = $run->(2, $AC_FAKE28, $AC_FAKE28);
+    my ($entry) = grep { $_->[3] =~ /claim-conflict:/ } @Plugins::SpotOn::Status::RECORDED;
+    ok($entry, '90.1-03 C2 (D-16): the SAME account still records the claim-conflict entry');
+    like($entry->[3], qr/claim-conflict:\Q@{[$ctlA->mac]}\E/, '90.1-03 C2: keyed on the old mac') if $entry;
+    is($ctlA->observed->{is_active}, 0, '90.1-03 C2: the old Control lost its session as before');
+}
+
+
+# ==================================================================
+# 90.1-07 (GH #225, D-10): the app wake after a Browse stop-leave, rebuilt
+# from patapovich's PR #226 (his AW-* tests, adapted to the current code;
+# the mapping is in 90.1-07-RECORD.md, AW_MAP). A one-entry LMS Browse play
+# ends; the daemon advances in the app's context (browse guard pause,
+# autoplayPaused); LMS reaches its playlist end and stops (stop-leave:
+# leftBrowseUri, mode idle, the daemon stays the active device, paused). The
+# user presses play / starts an album in the Spotify app on the SAME device.
+# Before: the reconnect adoption entered connect with a 'restored' start
+# (Connect.pm suppresses it while LMS stands) or none (stale startEmittedFor);
+# the split-brain ladder's `change` then hit a stopped LMS (`pause 0` -> stale
+# entry -> browse), measured 6/6 in 90.1-RIG-RESULTS.md (LOOP_225_R2).
+# A start that is not 'restored' is modelled as LMS following (PLAYMODE 'play'
+# plus Connect's marked getNextTrack).
+# ==================================================================
+{
+    my $AW_T0  = 'spotify:track:awOneEntryBrowseT0XXXXX';    # the single LMS Browse entry
+    my $AW_X1  = 'spotify:track:awAppContextNextX1XXXXX';    # the app-context successor
+    my $AW_X2  = 'spotify:track:awAppContextNextX2XXXXX';    # the next app-context title
+    my $AW_W   = 'spotify:track:awAppPickedOtherWXXXXXX';
+    my $AW_A1  = 'spotify:track:awAlbumFirstTitleA1XXXX';
+    my $AW_OLD = 'spotify:track:awPreRestartSessionOLDX';    # startEmittedFor of an earlier restored adoption
+    my $AW_ALB = 'spotify:album:awAlbumContextXXXXXXXXX';
+    my ($T0ID, $X1ID, $X2ID, $WID, $A1ID) = map { (/:([^:]+)$/)[0] } ($AW_T0, $AW_X1, $AW_X2, $AW_W, $AW_A1);
+    my $T = JSON::PP::true();
+    my $F = JSON::PP::false();
+
+    my $reset = sub {
+        my ($ws) = @_;
+        @Plugins::SpotOn::Connect::CLAIMS  = (); $Plugins::SpotOn::Connect::ACTIVE = undef;
+        @Slim::Player::Client::EXECUTED    = ();
+        @Plugins::SpotOn::Status::RECORDED = ();
+        @Slim::Utils::Log::WARNINGS        = ();
+        @Slim::Utils::Timers::TIMERS       = ();
+        @{ $ws->sent } = () if $ws;
+    };
+    my $done = sub { $Plugins::SpotOn::Connect::ACTIVE = undef; @Plugins::SpotOn::Connect::CLAIMS = (); @Slim::Utils::Timers::TIMERS = (); };
+    my $verbs   = sub { my ($v) = @_; grep { ($_->[0] // '') eq 'spottyconnect' && ($_->[1] // '') eq $v } @Slim::Player::Client::EXECUTED };
+    my $starts  = sub { $verbs->('start') };
+    my $plain   = sub { grep { !defined $_->[4] || $_->[4] ne 'restored' } $starts->() };
+    my $pauses  = sub { my ($ws) = @_; scalar grep { ($_->[0] // '') eq 'pause' } @{ $ws->sent } };
+    my $entries = sub { my ($daemon, $kind) = @_; scalar grep { ($_->[3] // '') =~ /^\Q${\ $daemon->mac}\E:\Q$kind\E:/ } @Plugins::SpotOn::Status::RECORDED };
+    my $sources = sub { [ map { $_->[2] } grep { $_->[0] eq 'bind' } @Plugins::SpotOn::Connect::CLAIMS ] };
+    my $state_f = sub {
+        my ($uri, %o) = @_;
+        return { type => 'playback_state', status => ($o{status} // 'playing'),
+                 is_active => (exists $o{is_active} ? $o{is_active} : $T),
+                 item => { uri => $uri // '' }, (defined $o{ctx} ? (context => { uri => $o{ctx} }) : ()),
+                 position => { position_ms => ($o{pos} // 4000), timestamp_ms => 1, speed => ($o{speed} // 1) } };
+    };
+    my $sync_f = sub { { type => 'position_sync', position => { position_ms => ($_[0] // 4000), timestamp_ms => 1, speed => 1 } } };
+    my $follow = sub {    # LMS as Connect.pm's start gate leaves it: a plain start plays (marked re-open), else LMS stays stopped
+        my ($ctl, $uri) = @_;
+        my ($id) = $uri =~ /:([^:]+)$/;
+        return unless grep { ($_->[2] // '') eq $id } $plain->();
+        $Slim::Player::Source::PLAYMODE = 'play';
+        $ctl->requestTrack("spoton://track:$id", 0, { source => 'getNextTrack', origin => 'connect',
+            successCb => sub {}, errorCb => sub {} });
+        $ctl->pending(undef);
+    };
+
+    # The #225 state before the app play. %o: stale => an earlier session's
+    # marker; echo => keep the stop-leave's own pause fresh (a tap within 3 s).
+    my $aw_state = sub {
+        my ($tail, %o) = @_;
+        my $mac = "aa:a6:11:15:00:$tail";
+        my ($ctl, $daemon, $ws) = fresh_control(
+            mac      => $mac,
+            mode     => 'browse',
+            observed => { wsConnected => 1, paired => 1, is_active => 1, meta => {}, track => $AW_T0, status => 'playing',
+                          reportedStatus => 'playing', anchor => { position_ms => 170000 },
+                          ($o{stale} ? (startEmittedFor => $AW_OLD) : ()) },
+            wanted   => { uri => $AW_T0, playing => 1 },
+        );
+        own_track($mac, "spoton://track:$T0ID");
+        {
+            local $Slim::Player::Source::PLAYMODE = 'play';
+            $ctl->onEvent({ type => 'track_changed', item => { uri => $AW_X1 } });    # the browse guard
+            $ctl->onEvent({ type => 'playback_changed', status => 'paused' });        # its echo
+        }
+        { local $Slim::Player::Source::PLAYMODE = 'stop'; $ctl->requestPause(1); }    # LMS playlist end
+        delete $ctl->observed->{ownSend} unless $o{echo};                              # minutes later
+        return ($ctl, $daemon, $ws, $mac);
+    };
+
+    # --- 90.1-07 AW0 (PR AW-0 + AW-1 + AW-1p, adapted): the setup is the #225 state; the app play wakes a
+    # fresh Connect session whose start is emitted, never swallowed by a stale startEmittedFor ---
+    {
+        my ($ctl) = $aw_state->('00', stale => 1);
+        is($ctl->mode, 'idle', "90.1-07 AW0 setup: the LMS playlist end left browse (stop-leave)");
+        is($ctl->observed->{leftBrowseUri}, $AW_T0, "90.1-07 AW0 setup: leftBrowseUri = the Browse title");
+        is($ctl->observed->{autoplayPaused}, $AW_X1, "90.1-07 AW0 setup: the guard paused the app-context successor");
+        is($ctl->observed->{startEmittedFor}, $AW_OLD, "90.1-07 AW0 setup: the stale session marker survived the Browse session");
+    }
+    for my $stale (1, 0) {
+        my $tag = $stale ? 'stale marker' : 'no marker';
+        my ($ctl, $daemon, $ws, $mac) = $aw_state->($stale ? '11' : '10', stale => $stale);
+        $reset->($ws);
+        local $Slim::Player::Source::PLAYMODE = 'stop';
+        $ctl->onEvent({ type => 'playback_changed', status => 'playing' });
+        is($ctl->mode, 'idle', "90.1-07 AW0 ($tag): the playing frame alone (no is_active) decides nothing");
+        ok($ctl->observed->{wakeEdge}, "90.1-07 AW0 ($tag): ... it opens the dormant->playing edge");
+        $ctl->onEvent($state_f->($AW_X1));
+
+        is($ctl->mode, 'connect', "90.1-07 AW0 ($tag): the app play wakes a Connect session");
+        is_deeply(\@Plugins::SpotOn::Connect::CLAIMS, [ [ 'bind', $mac, 'app-wake', 0 ] ], "90.1-07 AW0 ($tag): one bind (app-wake), before any execute");
+        is_deeply([ $starts->() ], [ [ 'spottyconnect', 'start', $X1ID, '4.000' ] ],
+            "90.1-07 AW0 ($tag): exactly one plain start of the app's title at the frame's position (no 'restored')");
+        is($ctl->observed->{startEmittedFor}, $AW_X1, "90.1-07 AW0 ($tag): the session marker is the new session's");
+        ok(!defined $ctl->observed->{leftBrowseUri} && !defined $ctl->observed->{autoplayPaused} && !defined $ctl->observed->{wakeEdge},
+            "90.1-07 AW0 ($tag): stop-leave, autoplay-guard and edge markers are gone");
+        is($ctl->observed->{sessionEntry}, 'app-wake', "90.1-07 AW0 ($tag): the session entry is app-wake");
+        is(scalar($verbs->('change')), 0, "90.1-07 AW0 ($tag): no `change` to LMS");
+        is(scalar(grep { ($_->[0] // '') eq 'pause' } @Slim::Player::Client::EXECUTED), 0, "90.1-07 AW0 ($tag): no `pause 0` to LMS");
+        is($pauses->($ws), 0, "90.1-07 AW0 ($tag): nothing paused the daemon");
+
+        $follow->($ctl, $AW_X1);
+        is($ctl->mode, 'connect', "90.1-07 AW0 ($tag): Connect's marked re-open keeps connect");
+        $ctl->onEvent($sync_f->(4500)) for 1 .. 2;
+        is($entries->($daemon, 'split-brain'), 0, "90.1-07 AW0 ($tag): no split-brain ladder (LMS follows)");
+        ok(!(grep { /nachziehen|uneinig/ } @Slim::Utils::Log::WARNINGS), "90.1-07 AW0 ($tag): no nachziehen WARN");
+
+        @Slim::Player::Client::EXECUTED = (); @{ $ws->sent } = ();
+        $ctl->onEvent({ type => 'track_changed', item => { uri => $AW_X2 } });    # the next title end
+        is($pauses->($ws), 0, "90.1-07 AW0 ($tag): the next app-context title is not paused");
+        is($entries->($daemon, 'autoplay'), 0, "90.1-07 AW0 ($tag): no autoplay:<uri> entry");
+        my $pc = $ctl->observed->{pendingChange};    # 84-17: the change waits for the shim's boundary reply
+        ok(ref($pc) eq 'HASH' && $pc->{id} eq $X2ID && $pc->{prevId} eq $X1ID,
+            "90.1-07 AW0 ($tag): LMS gets 'change X2 X1' (held as the pending change, Connect follows the title end)");
+        $done->();
+    }
+    {
+        my ($ctl, $daemon, $ws, $mac) = $aw_state->('12', stale => 1);
+        $reset->($ws);
+        local $Slim::Player::Source::PLAYMODE = 'stop';
+        $ctl->onEvent($state_f->($AW_X1, pos => 61000));
+        is($ctl->mode, 'connect', "90.1-07 AW0 (PR AW-1p): a lone playing playback_state after the paused report wakes the session");
+        is_deeply([ $starts->() ], [ [ 'spottyconnect', 'start', $X1ID, '61.000' ] ], "90.1-07 AW0 (PR AW-1p): one plain start at its position");
+        $done->();
+    }
+
+    # --- 90.1-07 AW1 (PR AW-N10 + AW-N6): a plain reconnect (no leftBrowseUri, or a WS reconnect snapshot)
+    # keeps today's reconnect-to-connect path: bound 'reconnect', one 'restored' start ---
+    {
+        my $mac = 'aa:a6:11:15:00:5c';
+        my ($ctl, $daemon, $ws) = fresh_control(mac => $mac, mode => 'idle',
+            observed => { wsConnected => 1, paired => 1, is_active => 1, meta => {}, track => $AW_X1, status => 'paused',
+                          reportedStatus => 'paused' });
+        own_track($mac, "spoton://track:$T0ID");
+        $reset->($ws);
+        local $Slim::Player::Source::PLAYMODE = 'stop';
+        $ctl->onEvent({ type => 'playback_changed', status => 'playing' });
+        $ctl->onEvent($state_f->($AW_X1));
+        is_deeply($sources->(), [ 'reconnect' ], "90.1-07 AW1 (no leftBrowseUri): bound as reconnect");
+        is_deeply([ map { $_->[4] // 'none' } $starts->() ], [ 'restored' ], "90.1-07 AW1 (no leftBrowseUri): the start carries 'restored' (Phase 76)");
+        is($ctl->observed->{sessionEntry}, 'reconnect-to-connect', "90.1-07 AW1 (no leftBrowseUri): the session entry is reconnect-to-connect");
+        $done->();
+    }
+    {
+        my ($ctl, $daemon, $ws, $mac) = $aw_state->('58');
+        $ctl->_transportClosed;
+        $ctl->observed->{wsConnected} = 1;
+        ok(defined $ctl->observed->{leftBrowseUri} && !defined $ctl->observed->{reportedStatus},
+            "90.1-07 AW1 (WS reconnect) setup: leftBrowseUri survives the transport loss, the reported status does not");
+        $reset->($ws);
+        local $Slim::Player::Source::PLAYMODE = 'stop';
+        $ctl->onEvent({ type => 'playback_changed', status => 'playing' });
+        $ctl->onEvent($state_f->($AW_X1));
+        is($ctl->mode, 'connect', "90.1-07 AW1 (WS reconnect): the reconnect snapshot is adopted as before");
+        is_deeply($sources->(), [ 'reconnect' ], "90.1-07 AW1 (WS reconnect): bound as reconnect");
+        is_deeply([ map { $_->[4] // 'none' } $starts->() ], [ 'restored' ], "90.1-07 AW1 (WS reconnect): one start, still 'restored'");
+        $done->();
+    }
+
+    # --- 90.1-07 AW2 (PR AW-2): the frame names another title (the app picked W) ---
+    {
+        my ($ctl, $daemon, $ws, $mac) = $aw_state->('20', stale => 1);
+        $reset->($ws);
+        local $Slim::Player::Source::PLAYMODE = 'stop';
+        $ctl->onEvent({ type => 'playback_changed', status => 'playing' });
+        $ctl->onEvent($state_f->($AW_W, pos => 0));
+        is($ctl->mode, 'connect', "90.1-07 AW2: another app title wakes the session");
+        is_deeply([ $starts->() ], [ [ 'spottyconnect', 'start', $WID, '' ] ], "90.1-07 AW2: one plain start of W, position ''");
+        is($pauses->($ws), 0, "90.1-07 AW2: W is not paused");
+        $done->();
+    }
+
+    # --- 90.1-07 AW3 (PR AW-3): album start, 79-51 PASS1 order (playing, context, item-less state,
+    # position_sync, then the album's first title): never the old title first ---
+    {
+        my ($ctl, $daemon, $ws, $mac) = $aw_state->('30', stale => 1);
+        $reset->($ws);
+        local $Slim::Player::Source::PLAYMODE = 'stop';
+        $ctl->onEvent({ type => 'playback_changed', status => 'playing' });
+        $ctl->onEvent({ type => 'context_changed', context => { uri => $AW_ALB, entity_type => 'album' } });
+        $ctl->onEvent({ type => 'queue_changed', previous => [], upcoming => [] });
+        $ctl->onEvent($state_f->(undef, ctx => $AW_ALB, pos => 0));
+        $ctl->onEvent($sync_f->(0));
+        is($ctl->mode, 'connect', "90.1-07 AW3: the item-less playing frame wakes the session");
+        is_deeply($sources->(), [ 'app-wake' ], "90.1-07 AW3: bound as app-wake");
+        is(scalar($starts->()), 0, "90.1-07 AW3: no start yet -- the item-less frame names no title");
+        my $rd = $ctl->observed->{resumeDue};
+        ok(ref($rd) eq 'HASH' && $rd->{asStart} && $rd->{newContext}, "90.1-07 AW3: a held start, new context");
+        $ctl->onEvent($sync_f->(0));
+        is($entries->($daemon, 'split-brain'), 0, "90.1-07 AW3: no ladder rung while the start is held (_connectResync holds, _checkSplitBrain untouched)");
+        is(scalar($verbs->('change')), 0, "90.1-07 AW3: ... and no `change`");
+        $ctl->onEvent({ type => 'track_changed', item => { uri => $AW_A1 } });
+        is_deeply([ $starts->() ], [ [ 'spottyconnect', 'start', $A1ID, '' ] ], "90.1-07 AW3: one start, for the album's first title, position ''");
+        ok(!defined $ctl->observed->{resumeDue}, "90.1-07 AW3: the held start is released");
+        is($pauses->($ws), 0, "90.1-07 AW3: the album's first title is not paused");
+        $Slim::Player::Source::PLAYMODE = 'play';
+        Slim::Utils::Timers::fire_due(Time::HiRes::time() + 11);
+        is(scalar($starts->()), 1, "90.1-07 AW3: still exactly one start after every timer");
+        $done->();
+    }
+
+    # --- 90.1-07 AW3b (PR AW-3b): item-less, no context (79-51 D-33 WR-02: the same title) -- the timer starts the paused title ---
+    {
+        my ($ctl, $daemon, $ws, $mac) = $aw_state->('31', stale => 1);
+        $reset->($ws);
+        local $Slim::Player::Source::PLAYMODE = 'stop';
+        $ctl->onEvent({ type => 'playback_changed', status => 'playing' });
+        $ctl->onEvent($state_f->(undef, pos => 30000));
+        is(scalar($starts->()), 0, "90.1-07 AW3b: no start at the item-less frame");
+        Slim::Utils::Timers::fire_due(Time::HiRes::time() + 0.5);
+        is_deeply([ $starts->() ], [ [ 'spottyconnect', 'start', $X1ID, '30.000' ] ], "90.1-07 AW3b: the decide timer starts the paused title at its position");
+        is(scalar($verbs->('resume')), 0, "90.1-07 AW3b: ... as a start, never a `resume`");
+        $done->();
+    }
+
+    # --- 90.1-07 AW3c (PR AW-3c): item-less, then the same title's track_changed before the timer ---
+    {
+        my ($ctl, $daemon, $ws, $mac) = $aw_state->('32', stale => 1);
+        $reset->($ws);
+        local $Slim::Player::Source::PLAYMODE = 'stop';
+        $ctl->onEvent({ type => 'playback_changed', status => 'playing' });
+        $ctl->onEvent($state_f->(undef, pos => 30000));
+        $ctl->onEvent({ type => 'track_changed', item => { uri => $AW_X1 } });
+        is_deeply([ $starts->() ], [ [ 'spottyconnect', 'start', $X1ID, '30.000' ] ], "90.1-07 AW3c: the title frame releases the start");
+        $follow->($ctl, $AW_X1);
+        Slim::Utils::Timers::fire_due(Time::HiRes::time() + 11);
+        is(scalar($starts->()), 1, "90.1-07 AW3c: the timer adds nothing");
+        $done->();
+    }
+
+    # --- 90.1-07 AW3d (PR AW-3d): new context and no title frame within RESUME_DUE_MAX_S -- start the last named title (WARN) ---
+    {
+        my ($ctl, $daemon, $ws, $mac) = $aw_state->('33', stale => 1);
+        $reset->($ws);
+        local $Slim::Player::Source::PLAYMODE = 'stop';
+        $ctl->onEvent({ type => 'playback_changed', status => 'playing' });
+        $ctl->onEvent({ type => 'context_changed', context => { uri => $AW_ALB, entity_type => 'album' } });
+        $ctl->onEvent($state_f->(undef, ctx => $AW_ALB, pos => 0));
+        $ctl->observed->{resumeDue}{at} -= 11;
+        $ctl->onEvent($sync_f->(9000));
+        ok((grep { /no title frame within/ } @Slim::Utils::Log::WARNINGS), "90.1-07 AW3d: the stale held start is a WARN");
+        ok((grep { /no title frame within.*\Q$AW_X1\E/ } @Slim::Utils::Log::WARNINGS), "90.1-07 AW3d: ... naming the last title");
+        is_deeply([ $starts->() ], [ [ 'spottyconnect', 'start', $X1ID, '' ] ], "90.1-07 AW3d: ... and starts the last named title");
+        $done->();
+    }
+
+    # --- 90.1-07 AW4 (PR AW-4, adapted for D-11): the dormant 'restored' session the fallback leaves (a
+    # track-first app pick: the idle guard's own pause is still in flight, so no wake). Without the PR's
+    # echo stand-down (D-11) the ladder's rung comes inside the burst; it reaches the stopped LMS on the
+    # stale entry as a start of W, never a `change`; the user's next tap is a start too, never a `resume` ---
+    {
+        my ($ctl, $daemon, $ws, $mac) = $aw_state->('40', stale => 1);
+        $reset->($ws);
+        local $Slim::Player::Source::PLAYMODE = 'stop';
+        $ctl->onEvent({ type => 'track_changed', item => { uri => $AW_W } });
+        $ctl->onEvent({ type => 'playback_changed', status => 'playing' });
+        $ctl->onEvent($state_f->($AW_W, pos => 0));
+        $ctl->onEvent($sync_f->(0));
+        is($pauses->($ws), 1, "90.1-07 AW4 setup: the idle guard paused the track-first pick (unchanged)");
+        is($ctl->mode, 'connect', "90.1-07 AW4 setup: the in-flight playing frame takes the restored adoption");
+        is_deeply($sources->(), [ 'reconnect' ], "90.1-07 AW4 setup: bound as reconnect");
+        is($ctl->observed->{sessionEntry}, 'reconnect-to-connect', "90.1-07 AW4 setup: the session entry is reconnect-to-connect");
+        is(scalar($verbs->('change')), 0, "90.1-07 AW4: no `change` to the stopped LMS on the stale entry inside the burst");
+        ok(!(grep { ($_->[2] // '') ne $WID } $starts->()), "90.1-07 AW4: every start inside the burst is of W");
+        $ctl->onEvent({ type => 'playback_changed', status => 'paused' });
+        $ctl->onEvent($state_f->($AW_W, status => 'paused', pos => 0, speed => 0));
+        delete $ctl->observed->{ownSend};
+        @Slim::Player::Client::EXECUTED = ();
+        $ctl->onEvent({ type => 'playback_changed', status => 'playing' });    # the user's next tap
+        $ctl->onEvent($state_f->($AW_W, pos => 2000));
+        is(scalar($verbs->('resume')), 0, "90.1-07 AW4: no `resume` to a stopped LMS on the stale entry (Connect.pm would `pause 0` it)");
+        is(scalar($verbs->('change')), 0, "90.1-07 AW4: no `change` either");
+        is_deeply([ $starts->() ], [ [ 'spottyconnect', 'start', $WID, '0.000' ] ], "90.1-07 AW4: the resume is released as a plain start of W");
+        $follow->($ctl, $AW_W);
+        is($ctl->mode, 'connect', "90.1-07 AW4: LMS follows into connect");
+        $done->();
+    }
+
+    # --- 90.1-07 AW4n / AW4p (PR AW-4n/AW-4p): the conversion's limits -- LMS on the daemon's own title, or LMS paused: `resume` as today ---
+    for my $case ([ 'n', 'stop', 1 ], [ 'p', 'pause', 0 ]) {
+        my ($k, $pm, $sameEntry) = @$case;
+        my ($ctl, $daemon, $ws, $mac) = $aw_state->("4$k", stale => 1);
+        local $Slim::Player::Source::PLAYMODE = 'stop';
+        $ctl->onEvent({ type => 'track_changed', item => { uri => $AW_W } });
+        $ctl->onEvent({ type => 'playback_changed', status => 'playing' });
+        $ctl->onEvent($state_f->($AW_W, pos => 0));
+        Slim::Utils::Timers::fire_due(Time::HiRes::time() + 0.1);    # 90-05: the burst hold's backstop releases the pick
+        $ctl->onEvent({ type => 'playback_changed', status => 'paused' });
+        delete $ctl->observed->{ownSend};
+        own_track($mac, "spoton://track:$WID") if $sameEntry;
+        $Slim::Player::Source::PLAYMODE = $pm;
+        $reset->($ws);
+        $ctl->onEvent({ type => 'playback_changed', status => 'playing' });
+        $ctl->onEvent($state_f->($AW_W, pos => 2000));
+        is(scalar($verbs->('resume')), 1, "90.1-07 AW4$k: LMS " . ($sameEntry ? 'stopped on the same title' : 'paused') . " -- the resume stays a resume");
+        is(scalar($starts->()), 0, "90.1-07 AW4$k: ... and no start");
+        $done->();
+    }
+
+    # --- 90.1-07 AW5: a Connect session Connect.pm opened (transfer-in, sessionEntry not adopted) keeps the
+    # ladder's `change` on a stopped LMS (the conversion is limited to adopted sessions) ---
+    {
+        my ($ctl, $daemon, $ws, $mac) = $aw_state->('45', stale => 1);
+        $ctl->_enterConnectSession('transfer-in', fresh => 1);
+        $ctl->observed->{startEmittedFor} = $AW_X1;
+        $ctl->observed->{status} = 'playing';
+        $reset->($ws);
+        local $Slim::Player::Source::PLAYMODE = 'stop';
+        $ctl->onEvent($sync_f->(5000)) for 1 .. 2;
+        is(scalar($verbs->('change')), 1, "90.1-07 AW5: a transfer-in session's rung is still a `change` (today)");
+        is(scalar($starts->()), 0, "90.1-07 AW5: ... and no start");
+        $done->();
+    }
+
+    # ---------------- cases that must not wake ----------------
+
+    # 90.1-07 AWN1 (PR AW-N1): LMS Stop mid-title, then a playing frame the daemon sent before our pause
+    {
+        my $mac = 'aa:a6:11:15:00:51';
+        my ($ctl, $daemon, $ws) = fresh_control(mac => $mac, mode => 'browse',
+            observed => { wsConnected => 1, paired => 1, is_active => 1, meta => {}, track => $AW_T0, status => 'playing',
+                          reportedStatus => 'playing', anchor => { position_ms => 120000 } },
+            wanted => { uri => $AW_T0, playing => 1 });
+        own_track($mac, "spoton://track:$T0ID");
+        $reset->($ws);
+        local $Slim::Player::Source::PLAYMODE = 'stop';
+        $ctl->requestPause(1);
+        $ctl->onEvent($state_f->($AW_T0, pos => 120100));
+        is(scalar($plain->()), 0, "90.1-07 AWN1: no plain start after the user's LMS Stop (in-flight frame)");
+        is_deeply($sources->(), [ 'reconnect' ], "90.1-07 AWN1: the restored adoption as before (84.1-08 W1b)");
+        $done->();
+    }
+
+    # 90.1-07 AWN2 (PR AW-N2): the stop-leave, then the daemon's autoplay advance burst
+    {
+        my $mac = 'aa:a6:11:15:00:52';
+        my ($ctl, $daemon, $ws) = fresh_control(mac => $mac, mode => 'browse',
+            observed => { wsConnected => 1, paired => 1, is_active => 1, meta => {}, track => $AW_T0, status => 'playing',
+                          reportedStatus => 'playing', anchor => { position_ms => 120000 } },
+            wanted => { uri => $AW_T0, playing => 1 });
+        own_track($mac, "spoton://track:$T0ID");
+        $reset->($ws);
+        local $Slim::Player::Source::PLAYMODE = 'stop';
+        $ctl->requestPause(1);
+        $ctl->onEvent({ type => 'track_changed', item => { uri => $AW_X1 } });
+        $ctl->onEvent({ type => 'playback_changed', status => 'buffering' });
+        $ctl->onEvent({ type => 'playback_changed', status => 'playing' });
+        $ctl->onEvent($state_f->($AW_X1, pos => 0));
+        Slim::Utils::Timers::fire_due(Time::HiRes::time() + 0.1);    # 90-05: the burst hold's 50 ms backstop releases the advance
+        is($pauses->($ws), 2, "90.1-07 AWN2: the stop-leave pause and the guard pause");
+        is(scalar($plain->()), 0, "90.1-07 AWN2: the autoplay burst does not plain-start LMS");
+        ok(!defined $ctl->observed->{wakeEdge}, "90.1-07 AWN2: playing -> buffering -> playing is no dormant edge");
+        $done->();
+    }
+
+    # 90.1-07 AWN2b (PR AW-N2b): the edge alone blocks -- the own echo long settled, a playing frame without a dormant report before it
+    {
+        my ($ctl, $daemon, $ws, $mac) = $aw_state->('53', stale => 1);
+        $ctl->observed->{reportedStatus} = 'playing';
+        $reset->($ws);
+        local $Slim::Player::Source::PLAYMODE = 'stop';
+        $ctl->onEvent($state_f->($AW_X1));
+        is(scalar($plain->()), 0, "90.1-07 AWN2b: no dormant->playing edge -- restored adoption, no plain start");
+        is_deeply($sources->(), [ 'reconnect' ], "90.1-07 AWN2b: bound as reconnect");
+        $done->();
+    }
+
+    # 90.1-07 AWN2c (PR AW-N2c, adapted for D-11): the echo alone blocks -- a tap within OWN_ECHO_WINDOW_S of
+    # the LMS stop takes the restored adoption; the ladder's rung (no echo stand-down, D-11) asks the stopped
+    # LMS on the stale entry with a start, not a `change`
+    {
+        my ($ctl, $daemon, $ws, $mac) = $aw_state->('54', stale => 1, echo => 1);
+        $reset->($ws);
+        local $Slim::Player::Source::PLAYMODE = 'stop';
+        $ctl->onEvent({ type => 'playback_changed', status => 'playing' });
+        $ctl->onEvent($state_f->($AW_X1));
+        is(scalar($plain->()), 0, "90.1-07 AWN2c: the own pause may still echo -- no plain start at the adoption");
+        is_deeply($sources->(), [ 'reconnect' ], "90.1-07 AWN2c: the restored adoption");
+        @Slim::Player::Client::EXECUTED = ();
+        $ctl->onEvent($sync_f->(4100)) for 1 .. 2;
+        is($entries->($daemon, 'split-brain'), 1, "90.1-07 AWN2c: the ladder sees LMS standing (one entry)");
+        is(scalar($verbs->('change')), 0, "90.1-07 AWN2c: the rung sends no `change` to the stopped LMS on the stale entry");
+        is_deeply([ map { [ @$_[0 .. 2] ] } $starts->() ], [ [ 'spottyconnect', 'start', $X1ID ] ], "90.1-07 AWN2c: the rung is a plain start of the daemon's title");
+        ok(scalar($plain->()) == 1, "90.1-07 AWN2c: ... without 'restored'");
+        $follow->($ctl, $AW_X1);
+        is($ctl->mode, 'connect', "90.1-07 AWN2c: LMS follows into connect");
+        $done->();
+    }
+
+    # 90.1-07 AWN3 (PR AW-N3): genuine autoplay after the LMS stop (no user action): the idle guard pauses, nothing starts
+    {
+        my ($ctl, $daemon, $ws, $mac) = $aw_state->('55', stale => 1);
+        $reset->($ws);
+        local $Slim::Player::Source::PLAYMODE = 'stop';
+        $ctl->onEvent({ type => 'track_changed', item => { uri => $AW_X2 } });
+        Slim::Utils::Timers::fire_due(Time::HiRes::time() + 0.1);    # 90-05: the burst hold's 50 ms backstop (no context came)
+        is($pauses->($ws), 1, "90.1-07 AWN3: an unrequested advance after the stop-leave is paused (84.1 D-01(b))");
+        is($entries->($daemon, 'autoplay'), 1, "90.1-07 AWN3: one autoplay:<uri> entry");
+        is($ctl->mode, 'idle', "90.1-07 AWN3: mode stays idle");
+        is(scalar($starts->()), 0, "90.1-07 AWN3: no start");
+    }
+
+    # 90.1-07 AWN4 (PR AW-N4): mirrored frames (inactive daemon) wake nothing
+    {
+        my ($ctl, $daemon, $ws, $mac) = $aw_state->('56', stale => 1);
+        $reset->($ws);
+        local $Slim::Player::Source::PLAYMODE = 'stop';
+        $ctl->onEvent({ type => 'playback_changed', status => 'playing' });
+        $ctl->onEvent($state_f->($AW_X1, is_active => $F));
+        is($ctl->mode, 'idle', "90.1-07 AWN4: a mirrored playing frame stays idle");
+        is_deeply(\@Plugins::SpotOn::Connect::CLAIMS, [], "90.1-07 AWN4: no bind");
+        is_deeply(\@Slim::Player::Client::EXECUTED, [], "90.1-07 AWN4: no LMS command");
+    }
+
+    # 90.1-07 AWN5 (PR AW-N5): the Connect switch off still refuses
+    {
+        local $Slim::Utils::Prefs::FAKE_VALUES{enableSpotifyConnect} = 0;
+        my ($ctl, $daemon, $ws, $mac) = $aw_state->('57', stale => 1);
+        $reset->($ws);
+        local $Slim::Player::Source::PLAYMODE = 'stop';
+        $ctl->onEvent({ type => 'playback_changed', status => 'playing' });
+        $ctl->onEvent($state_f->($AW_X1));
+        is($ctl->mode, 'idle', "90.1-07 AWN5: Connect off -- stays idle");
+        is_deeply(\@Plugins::SpotOn::Connect::CLAIMS, [], "90.1-07 AWN5: no bind");
+        is(scalar(grep { ($_->[0] // '') eq 'deactivate' } @{ $ws->sent }), 1, "90.1-07 AWN5: one deactivate probe");
+        is($entries->($daemon, 'connect-off'), 1, "90.1-07 AWN5: one connect-off entry");
+        is_deeply(\@Slim::Player::Client::EXECUTED, [], "90.1-07 AWN5: no LMS command");
+    }
+
+    # 90.1-07 AWN7 (PR AW-N7): LMS stopped on a local file -- never replaced by a wake; the restored adoption as before
+    {
+        my ($ctl, $daemon, $ws, $mac) = $aw_state->('59', stale => 1);
+        foreign_track($mac);
+        $reset->($ws);
+        local $Slim::Player::Source::PLAYMODE = 'stop';
+        $ctl->onEvent({ type => 'playback_changed', status => 'playing' });
+        $ctl->onEvent($state_f->($AW_X1));
+        is(scalar($plain->()), 0, "90.1-07 AWN7: no plain start over a local file");
+        is_deeply($sources->(), [ 'reconnect' ], "90.1-07 AWN7: the restored adoption");
+        $done->();
+    }
+
+    # 90.1-07 AWN8 (PR AW-N8): LMS PLAYING a local file on the autoplay-paused title -- the 84-26 R3 hold, nothing at all
+    {
+        my ($ctl, $daemon, $ws, $mac) = $aw_state->('5a', stale => 1);
+        foreign_track($mac);
+        $reset->($ws);
+        local $Slim::Player::Source::PLAYMODE = 'play';
+        $ctl->onEvent({ type => 'playback_changed', status => 'playing' });
+        $ctl->onEvent($state_f->($AW_X1));
+        is($ctl->mode, 'idle', "90.1-07 AWN8: R3 hold -- not adopted");
+        is_deeply(\@Slim::Player::Client::EXECUTED, [], "90.1-07 AWN8: the local file is not replaced");
+    }
+
+    # 90.1-07 AWN9 (PR AW-N9): an own command after the edge retires it (the guard's pause between playing and the state frame)
+    {
+        my ($ctl, $daemon, $ws, $mac) = $aw_state->('5b', stale => 1);
+        $reset->($ws);
+        local $Slim::Player::Source::PLAYMODE = 'stop';
+        $ctl->onEvent({ type => 'playback_changed', status => 'playing' });
+        ok($ctl->observed->{wakeEdge}, "90.1-07 AWN9 setup: edge open");
+        $ctl->onEvent({ type => 'track_changed', item => { uri => $AW_X2 } });
+        Slim::Utils::Timers::fire_due(Time::HiRes::time() + 0.1);    # 90-05: the burst hold's 50 ms backstop (no context came)
+        is($pauses->($ws), 1, "90.1-07 AWN9 setup: the idle guard paused X2");
+        ok(!defined $ctl->observed->{wakeEdge}, "90.1-07 AWN9: the own pause retired the edge");
+        delete $ctl->observed->{ownSend};
+        $ctl->onEvent($state_f->($AW_X2));
+        is(scalar($plain->()), 0, "90.1-07 AWN9: no plain start");
+        is_deeply($sources->(), [ 'reconnect' ], "90.1-07 AWN9: bound as reconnect");
+        $done->();
+    }
+
+    # --- 90.1 review WR-01 (Control side of the chain): LMS was restarted and stands STOPPED on an earlier SpotOn
+    # title (OLD); the daemon restored its session and is still the active device. A fresh Control has no
+    # leftBrowseUri, so the user's album start in the app is adopted as a 'restored' session (Connect.pm suppresses
+    # that start while LMS stands). The album's first title then reaches Connect.pm as the frame's own `change` while
+    # LMS is still stopped on OLD -- no `start`, so Connect.pm's change handler is the only door. That handler must
+    # not `pause 0` the stopped player (LMS would jump to the stale OLD entry); t/core/41 WR-01 pins that side. ---
+    {
+        my $mac = 'aa:a6:11:15:00:6a';
+        my ($OLDID) = $AW_OLD =~ /:([^:]+)$/;
+        my ($ctl, $daemon, $ws) = fresh_control(mac => $mac, mode => 'idle',
+            observed => { wsConnected => 1, paired => 1, is_active => 1, meta => {}, track => $AW_OLD, status => 'paused',
+                          reportedStatus => 'paused' });
+        own_track($mac, "spoton://track:$OLDID");
+        $reset->($ws);
+        local $Slim::Player::Source::PLAYMODE = 'stop';
+        $ctl->onEvent({ type => 'playback_changed', status => 'playing' });
+        $ctl->onEvent({ type => 'context_changed', context => { uri => $AW_ALB, entity_type => 'album' } });
+        $ctl->onEvent($state_f->(undef, ctx => $AW_ALB, pos => 0));
+        is($ctl->mode, 'connect', "90.1 WR-01 (Control): the restarted LMS adopts the restored session");
+        is_deeply($sources->(), [ 'reconnect' ], "90.1 WR-01 (Control): bound as reconnect (no leftBrowseUri after the restart)");
+        is($ctl->observed->{sessionEntry}, 'reconnect-to-connect', "90.1 WR-01 (Control): the session entry is reconnect-to-connect");
+        is(scalar($plain->()), 0, "90.1 WR-01 (Control): no plain start at the adoption (only a 'restored' one, if any)");
+        $ctl->onEvent({ type => 'track_changed', item => { uri => $AW_A1 } });
+        Slim::Utils::Timers::fire_due(Time::HiRes::time() + 0.1);    # 90-05: the burst hold's backstop
+        my $pc = $ctl->observed->{pendingChange};
+        my @ch = grep { ($_->[2] // '') eq $A1ID } $verbs->('change');
+        ok((ref($pc) eq 'HASH' && ($pc->{id} // '') eq $A1ID) || @ch,
+            "90.1 WR-01 (Control): the album's first title reaches Connect.pm as a `change` (pending or executed) while LMS stands on OLD");
+        is(scalar($plain->()), 0, "90.1 WR-01 (Control): ... and not as a start (the change handler is the only door)");
+        $done->();
+    }
+}
+
 
 done_testing();

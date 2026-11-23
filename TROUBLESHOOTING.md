@@ -158,6 +158,19 @@ If the issue persists, collect a diagnostic bundle and include your Docker setup
 
 **Solution:** To compare with the old behaviour, or to switch the new handover off, enter `pref plugin.spoton:soloistEarlyEnd 0` on the LMS command line interface (CLI, port 9090 by default). `pref plugin.spoton:soloistEarlyEnd 1` switches it on again. No restart is needed. If you hear a gap outside the two cases above, collect a diagnostic bundle right after it happens and open an issue.
 
+### Several Spotify accounts on Soloist players
+
+**What the Account row means:** since 4.1.0-beta.3 the SpotOn status page shows an **Account** row for each Soloist player. `paired` means Soloist on that player is signed in to the Spotify account you set up in SpotOn. `guest ...abcd` (the last 4 characters of the account id) means someone else connected to that player from their own Spotify app, for example a family member, and Soloist stayed signed in to their account. Several accounts can play on different Soloist players of one LMS at the same time.
+
+**While a player shows `guest`:**
+- A title you start from LMS (Browse) on that player also plays on the guest's Spotify account, not on yours.
+- To get your own account back, connect to that player once from your own Spotify app. SpotOn does not switch it back by itself, also not after an LMS restart.
+- A player that you paired with another Spotify account than the one set up in SpotOn also shows `guest`. That is expected and changes nothing for playback.
+
+**Don't Stop the Music during a Spotify Connect session:** while the Spotify app controls a Soloist player, Don't Stop the Music adds no songs, and songs it added before stay in the LMS queue and are not played. LMS writes one warning per title change to its server log, `Found Plugins::SpotOn::Plugin active - I'm not going to interfere with it.`; this is expected. If the app takes the player over while Don't Stop the Music is still collecting SpotOn's suggestions, LMS can add a single Random Mix entry to the queue (only when LMS's Random Mix plugin is enabled, which is its default).
+
+**Known limitation:** starting in the Spotify app the title that LMS is already playing on that player restarts the title in LMS instead of handing the player to the app, and the app's album is then not followed. This is planned for a later release.
+
 ### Spotify-Konto koppeln (pair a Spotify account)
 
 **Symptoms:** SpotOn Settings shows no account, an account is marked "Bitte Konto einmal koppeln" / "Please pair this account once", or the Spotify app never lists the pairing device.

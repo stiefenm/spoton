@@ -255,10 +255,10 @@ is($R->("Authenticated as 'someone' !", {}), "Authenticated as '[REDACTED]' !", 
 {
     my @red = Plugins::SpotOn::Diagnostics::redactions();
     my @sec = Plugins::SpotOn::Diagnostics::sections();
-    is(scalar(@red), 8, '79-72 T2 lists: eight redactions');
+    is(scalar(@red), 9, '79-72 T2 lists: nine redactions (90.1-04: guestids joined)');
     is(scalar(@sec), 8, '79-72 T2 lists: eight sections');
-    is(join(',', map { $_->{id} } @red), 'secrets,emails,userids,displayname,lanips,macs,deviceids,homepaths',
-       '79-72 T2 lists: redaction order');
+    is(join(',', map { $_->{id} } @red), 'secrets,emails,userids,guestids,displayname,lanips,macs,deviceids,homepaths',
+       '79-72 T2 lists: redaction order (90.1-04 R3: guestids right after userids, nothing reordered)');
     ok((!grep { ref($_->{apply}) ne 'CODE' || $_->{key} !~ /^PLUGIN_SPOTON_DIAG_RED_/ } @red),
        '79-72 T2 lists: every redaction has an apply coderef and a PLUGIN_SPOTON_DIAG_RED_ key');
     ok((!grep { $_->{collector} !~ /^_collect/ || $_->{title} !~ /^PLUGIN_SPOTON_DIAG_SEC_/ || $_->{desc} !~ /^PLUGIN_SPOTON_DIAG_SEC_\w+_DESC$/ } @sec),
@@ -304,6 +304,153 @@ is($R->("Authenticated as 'someone' !", {}), "Authenticated as '[REDACTED]' !", 
     my $res = $strip->($multi);
     is($res, "one\ntwo warn\nthree\n", 'D57-3: a multi-line text keeps its newlines and its line count');
     is($strip->("a\eb"), "a\eb", 'D57-3: a lone ESC that is no CSI start stays (the gate would count it)');
+}
+
+# --- 90.1-04 (D-06): a guest account id in the copied daemon log leaves the report as ...<last4> --------------
+# Made-up 28-character id (never a real one). The Soloist daemon log prints it in `logged in as <id>` and in the
+# `[session:<id>]` tag; the guest is NOT a stored account, so only the guestids rule can shorten it.
+{
+    my $FAKE28 = 'fakeguestid012345678abcdwxyz';   # 28 chars
+    my $last4  = substr($FAKE28, -4);
+    my $log = "2026-11-20 12:07:18.718: logged in as $FAKE28\n"
+            . "2026-11-20 12:07:19.001: Session restored from store, session: [session:$FAKE28]\n";
+    my $out = $R->($log, {});
+    like($out, qr/logged in as \.\.\.\Q$last4\E\n/, '90.1-04 R1: `logged in as <id>` comes out as `logged in as ...<last4>`');
+    like($out, qr/\[session:\.\.\.\Q$last4\E\]/, '90.1-04 R1: `[session:<id>]` comes out as `[session:...<last4>]`');
+    unlike($out, qr/\Q$FAKE28\E/, '90.1-04 R1: the guest id appears nowhere in the whole report output');
+    unlike($out, qr/fakeguestid/, '90.1-04 R1: not even its first part appears in the report output');
+
+    # R2: a STORED id stays [REDACTED] as before; the guest rule leaves that marker alone
+    my $ctx = { accounts => { a => { spotifyUserId => 'fixtureuser77' } } };
+    my $o2 = $R->("logged in as fixtureuser77\n[session:fixtureuser77]\n", $ctx);
+    is($o2, "logged in as [REDACTED]\n[session:[REDACTED]]\n", '90.1-04 R2: a stored id still becomes [REDACTED]; the guest rule adds no ...TED] fragment');
+    unlike($o2, qr/\.\.\./, '90.1-04 R2: no ellipsis shortening on an already redacted marker');
+}
+
+# --- 90.1 review CR-01: the guest rule fails CLOSED, with AccountLog's length rule ---------------------------------
+# An id of 8 characters or fewer shows nothing (`...`), a longer one only its last 4 characters. Whatever follows the
+# anchor is the id, whatever characters it holds (legacy Spotify user names are user-chosen and can be short). Every
+# id below is made up.
+{
+    require Encode;
+    my $cases = [
+        # [ label, id (characters), expected shown form ]
+        [ '6-character id',                 'qz7k2m',                 '...' ],
+        [ '7-character legacy-style id',    'qzfixtr',                '...' ],
+        [ '8-character id (all digits)',    '12345678',               '...' ],
+        [ '9-character id',                 'q1w2e3r4t',              '...3r4t' ],
+        [ 'id with a +',                    'zz9fixture+guest77',     '...st77' ],
+        [ 'id with a non-ASCII letter',     "andr\x{e9}.fixture99",   '...re99' ],
+        [ '8 characters, one non-ASCII',    "j\x{f6}rgen77",          '...' ],
+        [ '6 characters, one non-ASCII',    "j\x{f6}rg77",            '...' ],
+    ];
+    for my $c (@$cases) {
+        my ($label, $id, $want) = @$c;
+        for my $form ([ 'bytes', Encode::encode('UTF-8', $id) ], [ 'characters', $id ]) {
+            my ($fname, $fid) = @$form;
+            my $wantF = $fname eq 'bytes' ? Encode::encode('UTF-8', $want) : $want;
+            my $log = "2026-11-20 12:07:18.718: logged in as $fid\n"
+                    . "2026-11-20 12:07:19.001: Session restored from store, session: [session:$fid]\n"
+                    . "11:08:38.854 I [f:415 ] logged in as $fid\e[0m\n";
+            my $out = $R->($log, {});
+            my $q = quotemeta $wantF;
+            like($out, qr/: logged in as $q\n/, "90.1 CR-01: $label ($fname) - `logged in as` shows $want");
+            like($out, qr/\[session:$q\]/,     "90.1 CR-01: $label ($fname) - `[session:]` shows $want");
+            like($out, qr/logged in as $q\e\[0m/, "90.1 CR-01: $label ($fname) - the older build's coloured line shows $want");
+            unlike($out, qr/\Q$fid\E/,          "90.1 CR-01: $label ($fname) - the id appears nowhere in the output");
+            my $head = substr($fid, 0, 3);
+            unlike($out, qr/(?:as |session:)\Q$head\E/, "90.1 CR-01: $label ($fname) - not even its first characters follow an anchor");
+        }
+    }
+
+    # an already shortened id and the stored-id marker are left as they are (the rule runs once per report, but it must
+    # not turn `...wxyz` into `...` or `[REDACTED]` into `...TED]`)
+    my $done = "logged in as ...wxyz\n[session:...wxyz]\nlogged in as ...\n[session:...]\nlogged in as [REDACTED]\n[session:[REDACTED]]\n";
+    is($R->($done, {}), $done, '90.1 CR-01: an already shortened id and the [REDACTED] marker stay untouched');
+
+    # the guest id elsewhere in the text (a context uri at INFO): every token occurrence of an id seen at an anchor goes
+    my $ID7 = 'qzfixtr';
+    my $ctxLog = "2026-11-20 12:07:18.718: logged in as $ID7\n"
+               . "[26-11-20 12:07:20.0000] Control: the app replaced the queue (context spotify:user:$ID7:collection) -- takeover\n";
+    my $o3 = $R->($ctxLog, {});
+    unlike($o3, qr/\Q$ID7\E/, '90.1 CR-01: a guest id seen in `logged in as` is also gone from a context uri elsewhere in the text');
+    like($o3, qr/spotify:user:\.\.\.:collection/, '90.1 CR-01: the context uri keeps its shape (spotify:user:...:collection)');
+    my $ID12 = 'fixtureguest12';
+    my $o4 = $R->("[session:$ID12]\nplaying spotify:user:$ID12:collection\n", {});
+    unlike($o4, qr/\Q$ID12\E/, '90.1 CR-01: an id seen only in `[session:]` is gone from the rest of the text as well');
+    like($o4, qr/spotify:user:\.\.\.st12:collection/, '90.1 CR-01: a long id elsewhere keeps its last 4 characters, like at the anchor');
+}
+
+# --- 90.1 review R2 WR-01: the user uri is its own anchor, cut in place, never a sweep source ---------------------------
+# The login line can lie outside the report's daemon-log tail while the server.log extract still carries the context uri
+# `spotify:user:<id>:collection` at INFO (Control.pm takeover line). The uri cuts its id in place with the same length rule,
+# in the plain and in the URI-escaped form (`spotify%3Auser%3A<id>%3A...`, an escaped id counted after unescaping). A stored
+# (paired) id stays [REDACTED] in both forms, as the userids rule does for its plain form. Every id below is made up.
+{
+    require Encode;
+    my $take = "[26-11-20 12:07:20.0000] Plugins::SpotOn::Soloist::Control::_onFrameContextChanged (4462) Control: the app replaced the queue (context spotify:user:%s:collection) -- takeover (02:00:00:86:00:02)\n";
+    my $o1 = $R->(sprintf($take, 'smedjanfixture'), {});
+    unlike($o1, qr/smedjanfix/, '90.1 R2 WR-01: a user uri with no anchor line in the text loses its id');
+    like($o1, qr/\(context spotify:user:\.\.\.ture:collection\) -- takeover/, '90.1 R2 WR-01: a long id in a user uri shows its last 4 characters, the uri keeps its shape');
+    my $o2 = $R->(sprintf($take, 'qzfixtr'), {});
+    like($o2, qr/\(context spotify:user:\.\.\.:collection\)/, '90.1 R2 WR-01: a short id (8 characters or fewer) in a user uri shows nothing');
+    unlike($o2, qr/qzfixtr/, '90.1 R2 WR-01: the short id appears nowhere');
+    my $o2b = $R->(sprintf($take, Encode::encode('UTF-8', "j\x{f6}rgen77")), {});
+    like($o2b, qr/spotify:user:\.\.\.:collection/, '90.1 R2 WR-01: 8 characters with one non-ASCII letter (9 bytes) in a user uri show nothing');
+
+    # the URI-escaped forms: the escaped uri anchor, and an escaped id inside a plain uri
+    my $o3 = $R->("GET https://spclient.wg.spotify.com/context-resolve/v1/spotify%3Auser%3Azz9fixture%2Bguest77%3Acollection\n", {});
+    unlike($o3, qr/fixture/, '90.1 R2 WR-01: an id in the escaped uri form loses all but its last 4 characters');
+    like($o3, qr{/v1/spotify%3Auser%3A\.\.\.st77%3Acollection\n}, '90.1 R2 WR-01: the escaped uri keeps its shape (`%3A` ends the id)');
+    my $o4 = $R->("x spotify%3auser%3aab%2Bcdefg%3acollection\nlogged in as abc+def1234\ny spotify:user:abc%2Bdef1234:collection\n", {});
+    like($o4, qr/x spotify%3auser%3a\.\.\.%3acollection/, '90.1 R2 WR-01: an escaped 8-character id (ab+cdefg) counts unescaped and shows nothing');
+    like($o4, qr/y spotify:user:\.\.\.1234:collection/, '90.1 R2 WR-01: an escaped id in a plain uri (review probe abc%2Bdef1234) is cut, not left in full');
+    unlike($o4, qr/abc%2Bdef|cdefg/, '90.1 R2 WR-01: no escaped id is left in full');
+
+    # an id seen at an anchor is also swept in its URI-escaped form (as _redactUserIds does for a stored id)
+    my $o5 = $R->("2026-11-20 12:07:18.718: logged in as zz9fixture+guest77\nGET /v1/users/zz9fixture%2bguest77/items\n", {});
+    unlike($o5, qr/zz9fixture/i, '90.1 R2 WR-01: the escaped form of an anchored id is swept too (hex digits in either case)');
+    like($o5, qr{GET /v1/users/\.\.\.st77/items}, '90.1 R2 WR-01: the swept escaped form keeps only the last 4 characters');
+
+    # the legacy playlist uri: the owner is cut in place, the word `spotify` is NOT swept from the rest of the text
+    my $o6 = $R->("2026-11-20 12:07:18.718: logged in as fixtureguest12\nplay spotify:user:spotify:playlist:37i9dQZF1DXcBWIGoYBM5M\nnext spotify:track:4JOyMhad5dD81uGYLGgKrS on the spotify device\n", {});
+    like($o6, qr/play spotify:user:\.\.\.:playlist:37i9dQZF1DXcBWIGoYBM5M\n/, '90.1 R2 WR-01: spotify:user:spotify:playlist: keeps its shape, the owner word cut in place');
+    like($o6, qr/next spotify:track:4JOyMhad5dD81uGYLGgKrS on the spotify device\n/, '90.1 R2 WR-01: the user-uri anchor feeds no sweep (the word spotify stays everywhere else)');
+
+    # the stored (paired) id keeps round 1's behaviour, [REDACTED], also in the escaped uri form the userids rule cannot see
+    my $ctx = { accounts => { a => { spotifyUserId => 'fixtureuser77' } } };
+    my $o7 = $R->("A spotify:user:fixtureuser77:collection\nB spotify%3Auser%3Afixtureuser77%3Acollection\n", $ctx);
+    is($o7, "A spotify:user:[REDACTED]:collection\nB spotify%3Auser%3A[REDACTED]%3Acollection\n", '90.1 R2 WR-01: a stored id in a user uri stays [REDACTED], plain and escaped');
+
+    # idempotent: a cut or redacted uri stays as it is
+    my $done = "spotify:user:...:collection\nspotify:user:...ture:collection\nspotify:user:[REDACTED]:collection\nspotify%3Auser%3A...st77%3Acollection\n";
+    is($R->($done, {}), $done, '90.1 R2 WR-01: an already cut or redacted user uri stays untouched');
+}
+
+# --- 90.1 review R2 WR-02: only a daemon-shaped anchor feeds the token sweep ---------------------------------------------
+# The server.log section carries Error and Warning lines of every module, whose wording SpotOn does not control. A foreign
+# `logged in as <word>` is still cut in place (fail closed), but only the daemon's own login line (a daemon timestamp right
+# before it, the id ends the line: AccountLog's shape) and the bracketed `[session:<id>]` tag teach the sweep an id.
+{
+    my $o1 = $R->("[26-11-20 12:00:01.0000] Plugins::X::y (1) WARN not logged in as premium user\n"
+                . "[26-11-20 12:00:02.0000] Plugins::X::z (2) premium tier active, max-age=3\n", {});
+    like($o1, qr/WARN not logged in as \.\.\. user\n/, '90.1 R2 WR-02: a foreign `logged in as <word>` is still cut in place');
+    like($o1, qr/\(2\) premium tier active, max-age=3\n/, '90.1 R2 WR-02: the false anchor `not logged in as premium user` sweeps no word from other lines');
+    my $o2 = $R->("[26-11-20 12:00:01.0000] Plugins::X::y (1) user not logged in as premium\n"
+                . "[26-11-20 12:00:02.0000] Plugins::X::z (2) premium tier active\n", {});
+    like($o2, qr/\(2\) premium tier active\n/, '90.1 R2 WR-02: a foreign line ending in `logged in as <word>` (no daemon timestamp) sweeps nothing either');
+    my $o3 = $R->("x session:connect y\nControl: transfer-in -> mode=connect\nreconnect-to-connect, controlMode connect\n", {});
+    is($o3, "x session:connect y\nControl: transfer-in -> mode=connect\nreconnect-to-connect, controlMode connect\n",
+       '90.1 R2 WR-02: a bracket-less `session:connect` is no anchor (mode=connect and controlMode connect stay)');
+
+    # the daemon's own shapes still teach the sweep: current build, older build (coloured and after stripAnsi), the session tag
+    for my $c ([ 'current build', "2026-11-20 12:07:18.718: logged in as fixtureguest12\n" ],
+               [ 'older build, coloured', "11:08:38.854 I [f:415 ] logged in as fixtureguest12\e[0m\n" ],
+               [ 'older build, stripped', "11:08:38.854 I [f:415 ] logged in as fixtureguest12\n" ],
+               [ 'session tag', "restoring session [session:fixtureguest12]\n" ]) {
+        my $o = $R->($c->[1] . "[26-11-20 12:07:20.0000] Plugins::SpotOn::Foo::bar (9) playing for fixtureguest12 now\n", {});
+        like($o, qr/playing for \.\.\.st12 now\n/, "90.1 R2 WR-02: the daemon's $c->[0] form still sweeps its id from other lines");
+    }
 }
 
 # --- the module needs no Slim module --------------------------------------------------------------------

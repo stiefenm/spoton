@@ -310,6 +310,29 @@ sub _collectDaemons {
         my $client = Slim::Player::Client::getClient($mac);
         $name = $client->name if $client && $client->can('name');
 
+        # 90.1-04 (D-05): which account the daemon is signed in as, only for a role with an account concept
+        # (capability claimPerAccount, the Soloist role; undef for librespot). `paired` = the daemon's account key is the
+        # player's own SpotOn account id (RESEARCH A1); `guest` = another account; `unknown` = state() carries none yet.
+        # `short` is the last 4 characters of the account's id; the 8-hex key and the full id never leave this function.
+        # capabilitiesDefault (class level, player-independent) holds claimPerAccount for both roles; the instance
+        # capabilities() would pull in Soloist::Control's constants for nothing here.
+        my $perAccount = eval {
+            Plugins::SpotOn::Unified::DaemonManager->backendFor($mac)->capabilitiesDefault->{claimPerAccount} ? 1 : 0;
+        } || 0;
+        my $account;
+        if ($perAccount) {
+            my $acc = $st->{account};
+            if (ref $acc eq 'HASH' && defined $acc->{key} && length $acc->{key}) {
+                my $own = defined &Plugins::SpotOn::Plugin::_getAccountId
+                    ? (eval { Plugins::SpotOn::Plugin::_getAccountId($client) } // '')
+                    : '';
+                $account = { role => ($acc->{key} eq $own ? 'paired' : 'guest'), short => $acc->{short} };
+            }
+            else {
+                $account = { role => 'unknown', short => undef };
+            }
+        }
+
         my $playing      = 0;
         my $currentTrack = undef;
         my $syncGroup    = undef;
@@ -377,6 +400,7 @@ sub _collectDaemons {
             sessionHealth  => $helper->_lastHealthSession,
             paired         => $paired,
             wsConnected    => $wsConnected,
+            account        => $account,
             # 84.1 plan 03 (D-04/D-05/D-06): controlMode/health exist only
             # for the backend with a player engine (undef for librespot --
             # its state has no mode, and soloistHealthFor only ever gets

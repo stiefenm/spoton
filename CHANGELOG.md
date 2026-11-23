@@ -5,6 +5,29 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.1.0-beta.3] - 2026-11-23
+
+**Installing this beta.** This is the third beta of SpotOn 4.1. It comes through the beta repository URL `https://stiefenm.github.io/spoton/beta/repo.xml`; if you do not have it yet, add it under **Settings > Plugins > Additional Repositories** and save. The Plugins page then offers SpotOn 4.1.0beta3 as an update over 4.1.0beta2, 4.1.0beta1 and 4.0.0. Restart LMS after the update. The changes below are for the Soloist backend, except the one marked Spotify Connect (librespot).
+
+### Added
+
+- Soloist: the SpotOn status page shows for each Soloist player which Spotify account it is signed in to. `paired` is the account you paired the player with; `guest ...abcd` (the last 4 characters of the account id) means someone else connected to that player from their own Spotify app, and Soloist stays signed in to that account. [TROUBLESHOOTING.md](https://github.com/stiefenm/spoton/blob/main/TROUBLESHOOTING.md) explains how to get your own account back. ([#231](https://github.com/stiefenm/spoton/issues/231))
+- Diagnostic report: the account id of a guest on a Soloist player is now hidden too: an id of 8 characters or fewer completely, a longer one except its last 4 characters. ([#231](https://github.com/stiefenm/spoton/issues/231))
+
+### Fixed
+
+- Soloist: several Spotify accounts can now play through Spotify Connect on different Soloist players of one LMS at the same time, without stopping each other. Two players of the same account still hand the session over to each other as before. ([#231](https://github.com/stiefenm/spoton/issues/231))
+- Soloist: with Don't Stop the Music enabled, an album you start from the Spotify app on a Soloist player now keeps playing. While the Spotify app controls the player, Don't Stop the Music adds no songs; songs it added before stay in the LMS queue and are not played. LMS then writes one warning per title change to its server log, `Found Plugins::SpotOn::Plugin active - I'm not going to interfere with it.`, which is expected. One case remains: if the app takes the player over while Don't Stop the Music is still collecting SpotOn's suggestions, LMS can add a single Random Mix entry to the queue instead. LMS does this only when its Random Mix plugin is enabled, which it is by default. ([#234](https://github.com/stiefenm/spoton/issues/234))
+- Soloist: pressing play or starting an album in the Spotify app after an LMS title ended on the same player no longer loops back to LMS's old title. The app's session now takes the player over as a normal Spotify Connect session. Contributed by patapovich in [PR #226](https://github.com/stiefenm/spoton/pull/226). ([#225](https://github.com/stiefenm/spoton/issues/225))
+- Soloist: a title you add to the queue in the Spotify app is now recognised as yours even when SpotOn had already queued the same title as LMS's next title.
+- Spotify Connect (librespot): pausing in the Spotify app during the first seconds after a Connect session starts now pauses LMS once audio is playing. Before, LMS kept playing until its buffer ran dry and then sat at 0:00 without sound. ([#230](https://github.com/stiefenm/spoton/issues/230))
+- Soloist: three rare cases where the Spotify app and SpotOn act on the same player at the same moment now end the right way. When you start a title in the app just as LMS starts, skips or seeks, or just as SpotOn restarts a stalled title, SpotOn now sees the app's title first: it no longer restarts the old title over it or lets it play without pausing it or handing the player to the app. A title you queued yourself in the Spotify app that is also LMS's next title is no longer treated as SpotOn's own entry, so SpotOn does not skip it out of the queue when you jump to another title. And when the app starts an album after the player left Spotify Connect for other music, SpotOn now pauses it instead of leaving it playing in Soloist with no sound on the player.
+
+### Known issues
+- Soloist: a player that is signed in as a guest plays a title you start from LMS (Browse) on the guest's Spotify account too. To get your own account back, connect to the player once from your own Spotify app; SpotOn does not switch it back by itself.
+- Soloist: starting in the Spotify app the title that LMS is already playing on that player restarts the title in LMS instead of handing the player to the app, and the app's album is then not followed. This is a known limitation and is planned for a later release.
+- Spotify Connect (librespot): transferring a session that is already paused in the Spotify app to an LMS player still behaves as before. This needs a change in SpotOn's librespot helper and is planned for a later release. ([#230](https://github.com/stiefenm/spoton/issues/230))
+
 ## [4.1.0-beta.2] - 2026-11-22
 
 **Installing this beta.** This is the second beta of SpotOn 4.1. It comes through the beta repository URL `https://stiefenm.github.io/spoton/beta/repo.xml`; if you do not have it yet, add it under **Settings > Plugins > Additional Repositories** and save. The Plugins page then offers SpotOn 4.1.0beta2 as an update over 4.1.0beta1 and over 4.0.0. Restart LMS after the update. The changes below are for the Soloist backend.

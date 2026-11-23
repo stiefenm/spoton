@@ -343,6 +343,7 @@ my @FETCH;
         return bless {
             id      => sprintf('aa:bb:cc:dd:ee:%02x', $seq),
             playing => ($a{playing} // 0),
+            strict  => $a{strict},      # GH #230: isPlaying(1); undef = follows {playing}
             paused  => ($a{paused} // 0),
             power   => ($a{power} // 1),
             elapsed => ($a{elapsed} // 0),
@@ -354,7 +355,7 @@ my @FETCH;
     }
     sub id        { return $_[0]->{id}; }
     sub master    { return $_[0]; }
-    sub isPlaying { return $_[0]->{playing}; }
+    sub isPlaying { my ($s, $really) = @_; return ($really && defined $s->{strict}) ? $s->{strict} : $s->{playing}; }
     sub isPaused  { return $_[0]->{paused}; }
     sub power     { return $_[0]->{power}; }
     sub volume    { return $_[0]->{volume}; }
@@ -657,12 +658,25 @@ sub ev {
     is($C->pluginData('connectSessionPaused'), 1, 'stop: the Spotify-side pause is remembered (GH #158)');
 }
 
+# GH #230 fix A: inside the 12 s start grace an app pause is forwarded once LMS
+# really plays (strict isPlaying(1)) and the claim is held; while LMS still
+# buffers the grace keeps ignoring it (LMS discards a pause in BUFFERING).
 {
-    fresh(playing => 1);
+    fresh(playing => 1, strict => 1, song => MockSong->new(url => 'spoton://connect-9', info => 1));
     $CONNECT->bindConnectClaim($C, 'test');
     $C->pluginData(connectStartTime => Time::HiRes::time());
     ev('stop');
-    is_deeply([ cmds() ], [], 'stop inside the 12s start grace: ignored');
+    is_deeply([ cmds() ], ['pause 1'], 'GH230: stop inside the 12s start grace, LMS really playing: source-marked [pause, 1]');
+    is($C->pluginData('connectSessionPaused'), 1, 'GH230: ... and the Spotify-side pause is remembered');
+}
+
+{
+    fresh(playing => 1, strict => 0, song => MockSong->new(url => 'spoton://connect-9', info => 1));
+    $CONNECT->bindConnectClaim($C, 'test');
+    $C->pluginData(connectStartTime => Time::HiRes::time());
+    ev('stop');
+    is_deeply([ cmds() ], [], 'GH230: stop inside the 12s start grace, LMS still buffering: ignored');
+    is($C->pluginData('connectSessionPaused'), 1, 'GH230: ... but the Spotify-side pause is remembered (D-19)');
 }
 
 {
@@ -1054,6 +1068,7 @@ ok(!$C->pluginData('connectSessionPaused'), 'GH219-C9: LMS stop does NOT mark th
 # GH219-C10: the app stop arrives 3 s after the start
 gh219_setup();
 $C->pluginData(connectStartTime => Time::HiRes::time() - 3);   # inside CONNECT_START_GRACE (12 s)
+$LMS->{ps} = 'BUFFERING';   # GH #230 fix A: the echo suppression holds only while LMS still buffers
 gh219_reset_wire();
 ev('stop');
 gh219_apply_sent();
@@ -2510,5 +2525,39 @@ ev('stop', 'inactive', '3');
 is_deeply([ cmds() ], ['pause 1'], 'IN05-C6: the following stop inactive of the SAME counter is not stale: pause as today');
 is($C->pluginData('connectSessionCounter'), '', 'IN05-C6: ... and clears the stored counter');
 $Plugins::SpotOn::Unified::DaemonManager::UPTIME = 0;
+
+# ============================================================
+# 90.1-03 L1 (D-03, T-90.1-07): the librespot role (claimPerAccount 0) keeps ONE
+# claim: a second start, resume or bind drops the first, exactly as the old
+# scalar did; a release of the player that lost it leaves the holder alone.
+# ============================================================
+{
+    fresh(playing => 0, power => 1, song => undef);
+    my $p1 = $C;
+    is($Plugins::SpotOn::Unified::DaemonManager::HELPER ? 1 : 0, 1, '90.1-03 L1: a librespot helper is in place');
+    is(Plugins::SpotOn::Backend::Librespot->new($p1->id)->capabilities->{claimPerAccount}, 0, '90.1-03 L1: the real librespot role declares claimPerAccount 0');
+    ev('start', 'TRK901');
+    ok($CONNECT->isSpotifyConnect($p1), '90.1-03 L1: start binds P1');
+
+    my $p2 = MockClient->new(playing => 0, power => 1);
+    $C = $p2;
+    ev('start', 'TRK902');
+    ok($CONNECT->isSpotifyConnect($p2), '90.1-03 L1: start on P2 binds P2');
+    ok(!$CONNECT->isSpotifyConnect($p1), '90.1-03 L1: ... and drops P1 (one claim, as the scalar did)');
+
+    $C = $p1;
+    ev('resume', 'TRK903', '12.5');
+    ok($CONNECT->isSpotifyConnect($p1), '90.1-03 L1: resume on P1 re-establishes P1');
+    ok(!$CONNECT->isSpotifyConnect($p2), '90.1-03 L1: ... and drops P2');
+
+    $CONNECT->bindConnectClaim($p2, 'transfer');
+    ok($CONNECT->isSpotifyConnect($p2), '90.1-03 L1: a bind of P2 holds P2');
+    ok(!$CONNECT->isSpotifyConnect($p1), '90.1-03 L1: ... and drops P1');
+
+    $CONNECT->releaseConnectClaim($p1, 'test');
+    ok($CONNECT->isSpotifyConnect($p2), '90.1-03 L1: the release of P1 (not a holder) leaves P2 holding');
+    $CONNECT->releaseConnectClaim($p2, 'test');
+    ok(!$CONNECT->isSpotifyConnect($p2), '90.1-03 L1: the release of P2 clears P2');
+}
 
 done_testing();

@@ -6,6 +6,7 @@
 	<description>PLUGIN_SPOTON</description>
 	<email>sti@posteo.de</email>
 	<category>musicservices</category>
+	<canConflictWithDSTM>1</canConflictWithDSTM>
 	<id>7fdb8daa-2ff3-4725-8464-753478541deb</id>
 	<module>Plugins::SpotOn::Plugin</module>
 	<optionsURL>plugins/SpotOn/settings/basic.html</optionsURL>
@@ -17,5 +18,5 @@
 		<minVersion>8.0</minVersion>
 	</targetApplication>
 	<type>2</type>
-	<version>4.1.0beta2</version>
+	<version>4.1.0beta3</version>
 </extension>

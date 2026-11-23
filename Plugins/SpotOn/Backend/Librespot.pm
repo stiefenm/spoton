@@ -54,6 +54,7 @@ my %CAPABILITIES = (
     holdMaxS          => 0,
     readyReplaysLastTrack => 0,          # `ready` re-enters through a fresh connect-<ts> stream
     connectSeekViaControl => 1,          # 79-28 D-23: an LMS seek in Connect is POSTed to /control/seek, no /stream restart
+    claimPerAccount   => 0,              # 90.1 D-03: no account concept in this role, one claim as before
 );
 
 # verb -> /control/* endpoint, and the info line that sat next to each
@@ -158,7 +159,7 @@ sub client {
 # key of the table stays static. DaemonManager::resolvePassthroughForClient
 # reads it through backendClass()->capabilitiesDefault.
 my @DEFAULT_KEYS = qw(contentType samplesize samplerate channels connectEntry formats deferTrack
-                      connectClaimGate claimOnStart holdOnChange passthrough);
+                      connectClaimGate claimOnStart holdOnChange passthrough claimPerAccount);
 
 sub _passthroughCapability {
     my $cap = eval {
@@ -205,6 +206,7 @@ sub state {
         alive         => $helper ? 1 : 0,
         observedTrack => undef,
         active        => undef,
+        account       => undef,    # 90.1-02 D-03: no account concept in this role
     };
 }
 

@@ -2246,6 +2246,22 @@ sub resolve_raw_route {
             mac => '02:00:00:5a:11:51', name => 'Kitchen', alive => 1, pid => 4242, uptime => 3600, connectEnabled => 1,
             streamPort => 41234, playing => 0, currentTrack => undef, syncGroup => ['Office'], sessionHealth => 'ok',
             paired => 1, wsConnected => 1, controlMode => 'connect', health => { last_reason => 'ok_t3' },
+            account => { role => 'guest', short => 'wxyz' },
+        }, {
+            mac => '02:00:00:5a:11:52', name => 'Hall', alive => 1, pid => 4243, uptime => 10, connectEnabled => 1,
+            streamPort => 41235, playing => 0, currentTrack => undef, syncGroup => undef, sessionHealth => 'ok',
+            paired => 1, wsConnected => 1, controlMode => 'browse', health => { last_reason => 'ok_t3' },
+            account => { role => 'paired', short => 'abcd' },
+        }, {
+            mac => '02:00:00:5a:11:53', name => 'Study', alive => 1, pid => 4244, uptime => 10, connectEnabled => 1,
+            streamPort => 41236, playing => 0, currentTrack => undef, syncGroup => undef, sessionHealth => 'ok',
+            paired => 1, wsConnected => 1, controlMode => 'browse', health => { last_reason => 'ok_t3' },
+            account => { role => 'unknown', short => undef },
+        }, {
+            mac => '02:00:00:5a:11:54', name => 'Attic', alive => 1, pid => 4245, uptime => 10, connectEnabled => 1,
+            streamPort => 41237, playing => 0, currentTrack => undef, syncGroup => undef, sessionHealth => 'ok',
+            paired => undef, wsConnected => undef, controlMode => undef, health => undef,
+            account => undef,
         } ],
         authHealth => { t3a10001 => {
             login    => { state => 'ok', hasCredentials => 1, needsPairing => 0 },
@@ -2328,6 +2344,10 @@ sub resolve_raw_route {
     unlike($st, qr/t3a10001/, '79-72 T3 status: the account id is masked to 4 characters');
     like($st, qr/Kitchen \| 02:00:00:Player-\d+ alive=1 pid=4242 uptime=3600s connectEnabled=1 .*paired=1 .*syncGroup=Office controlMode=connect/, '79-72 T3 status: the daemons summary per player, MAC redacted');
     unlike($st, qr/02:00:00:5a:11:5/, '79-72 T3 status: no raw MAC in the daemons summary');
+    like($st, qr/^    Kitchen \| \S+ .*controlMode=connect health=ok_t3 account=guest\(\.\.\.wxyz\)$/m, '90.1-04 A3: the daemon line of a guest-signed daemon ends account=guest(...wxyz)');
+    like($st, qr/^    Hall \| \S+ .* account=paired$/m, '90.1-04 A3: a paired daemon reads account=paired');
+    like($st, qr/^    Study \| \S+ .* account=unknown$/m, '90.1-04 A3: a daemon without a known account reads account=unknown');
+    like($st, qr/^    Attic \| \S+ .* account=-$/m, '90.1-04 A3: a role without an account concept (librespot) reads account=-');
 
     # Test 4: collectAll is the one payload
     {

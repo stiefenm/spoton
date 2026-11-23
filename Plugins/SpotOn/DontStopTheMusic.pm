@@ -14,7 +14,7 @@ use Slim::Utils::Log;
 use Slim::Utils::Prefs;
 use Slim::Utils::Timers;
 
-my $log   = Slim::Utils::Log->logger('plugin.spoton');
+my $log   = logger('plugin.spoton');   # 90.1-06 FINDING_FOR_06: a function, not a method (Log.pm 281-284)
 my $prefs = Slim::Utils::Prefs::preferences('plugin.spoton');
 my $cache = Slim::Utils::Cache->new('spoton', Plugins::SpotOn::Plugin::SPOTON_CACHE_VERSION());
 
@@ -33,6 +33,35 @@ sub init {
     );
 }
 
+# connectSessionActive($client) -> 1 while the Spotify app controls this
+# player through a Soloist Connect session (the role's state mode is
+# 'connect'), else 0. 90.1-06 / GH #234 / D-13: both layers rest on it,
+# SpotOn's own provider (no recommendations then) and Plugin->disableDSTM
+# (LMS's conflict hook, DSTM arms no timer then). The librespot role
+# answers mode undef and so never counts. Eval-guarded (T-90.1-14): any
+# failure answers 0, so a broken role can never switch DSTM off for good.
+# 90.1 review WR-04: the mode alone is not enough. A foreign title started
+# from LMS leaves connect in Connect.pm's _onNewSong, and DSTM's own
+# `playlist newsong` listener may run before it (LMS calls the listeners in
+# hash order). So the app does not control the player while LMS's current
+# song (the playing one, else the streaming one) is not a spoton:// url; no
+# song at all keeps the mode's answer.
+sub connectSessionActive {
+    my ($client) = @_;
+    return 0 unless $client;
+    my $active = eval {
+        require Plugins::SpotOn::Unified::DaemonManager;
+        my $be = Plugins::SpotOn::Unified::DaemonManager->backendFor($client);
+        return 0 unless $be && (($be->state || {})->{mode} // '') eq 'connect';
+        my $song = ($client->can('playingSong') && $client->playingSong)
+                || ($client->can('streamingSong') && $client->streamingSong);
+        my $track = ($song && ref($song) && $song->can('track')) ? $song->track : undef;
+        my $url   = ($track && ref($track) && $track->can('url')) ? ($track->url // '') : '';
+        (length $url && $url !~ m{^spoton://}) ? 0 : 1;
+    };
+    return $active ? 1 : 0;
+}
+
 sub _dstmTagKey {
     my ($artist, $title) = @_;
     return 'spoton_dstm_tag_' . md5_hex(encode_utf8(lc($artist // '') . '|' . lc($title // '')));
@@ -41,7 +70,25 @@ sub _dstmTagKey {
 sub dontStopTheMusic {
     my ($client, $cb) = @_;
 
-    my $seedTracks = Slim::Plugin::DontStopTheMusic::Plugin->getMixableProperties($client, 20);
+    # 90.1-06 / GH #234, D-13 layer 1: while the Spotify app controls this
+    # player through a Soloist Connect session, recommend nothing and do no
+    # work (not even read the seeds). Plugin->disableDSTM normally keeps DSTM
+    # from calling here at all, and since the 90.1 review (WR-03) the claim
+    # bind of every session entry kills a DSTM timer armed before the session
+    # (Connect.pm bindConnectClaim), so this is the last line, not the main
+    # one. Note what an empty answer means to LMS: with RandomPlay enabled
+    # (its default) and another DSTM provider than RandomPlay, LMS's DSTM
+    # appends `randomplay://track` instead (DSTM Plugin.pm, the branch after
+    # the track branch). Not calling $cb is no way out either: DSTM's
+    # pluginData('active') would stay set and DSTM would be dead for the
+    # player. D-14 accepts an appended entry; nothing is deleted.
+    if (connectSessionActive($client)) {
+        main::INFOLOG && $log->info('DSTM: no recommendations while the Spotify app controls ' . $client->id . ' (D-13)');
+        $cb->($client);
+        return;
+    }
+
+    my $seedTracks =Slim::Plugin::DontStopTheMusic::Plugin->getMixableProperties($client, 20);
 
     if (!$seedTracks || !ref $seedTracks || !scalar @$seedTracks) {
         $cb->($client);
@@ -180,6 +227,17 @@ sub _searchArtists {
 
 sub _finalizeResults {
     my ($client, $allTracks, $pool, $seedExclude, $cb) = @_;
+
+    # 90.1 review WR-03 (b): the fetch chain (getTopTracks, up to three searches
+    # 0.2 s apart) takes seconds. A Connect session that began inside that
+    # window gets no SpotOn tracks appended (an empty answer, see the note in
+    # dontStopTheMusic about what LMS makes of it).
+    if (connectSessionActive($client)) {
+        main::INFOLOG && $log->info('DSTM: recommendations dropped, the Spotify app controls ' . $client->id
+            . ' since the fetch began (D-13)');
+        $cb->($client);
+        return;
+    }
 
     my $clientId = $client->id();
     my $recentKey = 'spoton_dstm_recent_' . $clientId;

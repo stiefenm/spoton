@@ -848,7 +848,8 @@ absent();
 # ------------------------------------------------------------
 my @CAP_KEYS = qw(contentType samplesize samplerate channels connectEntry formats seekViaRestart
                   ownsQueueInBrowse deferTrack deaden connectClaimGate claimOnStart holdOnChange
-                  holdCapS holdRecheckS holdMaxS readyReplaysLastTrack passthrough autoplay connectSeekViaControl);
+                  holdCapS holdRecheckS holdMaxS readyReplaysLastTrack passthrough autoplay connectSeekViaControl
+                  claimPerAccount);
 for my $cls ($L) {
     my $caps = $cls->new($MAC)->capabilities;
     is(ref $caps, 'HASH', "$cls: capabilities() is a hashref");
@@ -858,7 +859,8 @@ for my $cls ($L) {
 my %LS_CAPS = (contentType => 'son', samplesize => 16, samplerate => 44100, channels => 2, connectEntry => 'repeating',
                deferTrack => 0, connectClaimGate => 1, claimOnStart => 1, holdOnChange => 0,
                holdCapS => 0, holdRecheckS => 0, holdMaxS => 0, readyReplaysLastTrack => 0,
-               passthrough => 1);    # 84-12 W6: from the Helper stub (getCapability passthrough = 1)
+               passthrough => 1,     # 84-12 W6: from the Helper stub (getCapability passthrough = 1)
+               claimPerAccount => 0);    # 90.1-02 D-03: no account concept, one claim as before
 for my $k (sort keys %LS_CAPS) {
     is($L->new($MAC)->capabilities->{$k}, $LS_CAPS{$k}, "librespot capabilities $k = $LS_CAPS{$k}");
 }
@@ -874,7 +876,7 @@ for my $k (sort keys %LS_CAPS) {
 # client). capabilities() on an instance = the default merged with the rest.
 # ------------------------------------------------------------
 my @DEFAULT_KEYS = qw(contentType samplesize samplerate channels connectEntry formats deferTrack
-                      connectClaimGate claimOnStart holdOnChange passthrough);
+                      connectClaimGate claimOnStart holdOnChange passthrough claimPerAccount);
 for my $cls ($L) {
     ok($cls->can('capabilitiesDefault'), "$cls: capabilitiesDefault exists");
     my $def = $cls->can('capabilitiesDefault') ? $cls->capabilitiesDefault : {};
@@ -992,6 +994,14 @@ present();
 }
 absent();
 is($L->new($MAC)->state->{alive}, 0, 'librespot state: alive 0 without a helper');
+# 90.1-02 T2 (D-03): no account concept; the key set equals the soloist role's (pinned in its file)
+{
+    present();
+    my $st = $L->new($MAC)->state;
+    ok(exists $st->{account} && !defined $st->{account}, '90.1-02 T2: librespot state()->{account} is undef (no account concept)');
+    is_deeply([ sort keys %$st ], [ sort qw(mode status paired wsConnected alive observedTrack active account) ],
+        '90.1-02 T2: librespot state() has exactly the same key set as the soloist role');
+}
 # 84-08 (Status semantics, 82-11 WR-05): the observed field wins when made,
 # else the filesystem pairing / the live WS socket; librespot: undef.
 {
@@ -1011,6 +1021,25 @@ is($L->new($MAC)->state->{alive}, 0, 'librespot state: alive 0 without a helper'
 # argument since 84-17 -- the argument count is never pinned).
 # ------------------------------------------------------------
 sub slurp { my $f = shift; open(my $fh, '<', $f) or die "$f: $!"; local $/; return <$fh>; }
+
+# ------------------------------------------------------------
+# 90.1-02 T2 (D-03): the claimPerAccount capability and the state() key set, pinned over the SOURCE
+# of the librespot role (moved from t/core/57: t/core must not read a backend file, each CI
+# amputation leg deletes one). The former cross-file check "both roles build state() with the same
+# key set" is now two halves against one contract list: this file pins Librespot.pm's source key
+# set to it, t/soloist/57_backend_role_soloist.t pins Soloist.pm's to the same list.
+# ------------------------------------------------------------
+{
+    my @STATE_CONTRACT_KEYS = sort qw(mode status paired wsConnected alive observedTrack active account);
+    my $ls_src = slurp("$project_dir/Plugins/SpotOn/Backend/Librespot.pm");
+    my ($ls_table) = $ls_src =~ /(my %CAPABILITIES = \(.*?\n\);)/s;
+    ok($ls_table && $ls_table =~ /\bclaimPerAccount\s*=>\s*0\b/, '90.1-02 T2: Librespot %CAPABILITIES carries claimPerAccount => 0');
+    my ($ls_keys) = $ls_src =~ /my \@DEFAULT_KEYS = qw\((.*?)\);/s;
+    ok(($ls_keys // '') =~ /\bclaimPerAccount\b/, '90.1-02 T2: Librespot @DEFAULT_KEYS carries claimPerAccount (class-level default)');
+    my ($body) = $ls_src =~ /\nsub state \{.*?\n    return \{(.*?)\n    \};/s;
+    my @ls_keys = sort(($body // '') =~ /^\s+(\w+)\s*=>/mg);
+    is_deeply(\@ls_keys, \@STATE_CONTRACT_KEYS, '90.1-02 T2: both roles build state() with the same key set (librespot half: Librespot.pm source == the contract list)');
+}
 
 # 79-60 (forum #333): query('playingMode', client => $client) -> the librespot Connect claim
 {

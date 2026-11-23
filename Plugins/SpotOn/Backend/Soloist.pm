@@ -67,6 +67,7 @@ my %CAPABILITIES_DEFAULT = (
     claimOnStart      => 0,                     # D-D1: bound only by Control's transfer class
     holdOnChange      => 1,                     # 84-17 change hold
     passthrough       => 0,                     # 84-12 (W6): raw PCM only, never Ogg passthrough
+    claimPerAccount   => 1,                     # 90.1 D-01 (plan 90.1-03): the Connect claim is kept per account
 );
 
 sub capabilitiesDefault { return { %CAPABILITIES_DEFAULT }; }
@@ -102,7 +103,7 @@ sub _helperAutoplay {
     return $cap ? 1 : 0;
 }
 
-# state() -> { mode status paired wsConnected alive observedTrack active }
+# state() -> { mode status paired wsConnected alive observedTrack active account }
 # 84-08: paired / wsConnected carry the Status page's truth (82-11 WR-05):
 # Control's observed field when it has made the observation, otherwise
 # the filesystem pairing (settings/Users) resp. the daemon's live WS
@@ -141,6 +142,9 @@ sub state {
         alive         => ($helper && $helper->alive) ? 1 : 0,
         observedTrack => $observed->{track},
         active        => defined $observed->{is_active} ? ($observed->{is_active} ? 1 : 0) : undef,
+        # 90.1-02 (D-01): the account the daemon is signed in as, { key, short } (8 hex and
+        # the last 4 characters, never the full id) or undef while unknown (D-02).
+        account       => (ref $observed->{account} eq 'HASH' ? { %{ $observed->{account} } } : undef),
     };
 }
 

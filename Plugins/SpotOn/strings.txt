@@ -3326,6 +3326,19 @@ PLUGIN_SPOTON_DIAG_RED_USERIDS
 	PL	Identyfikatory użytkowników Spotify są zastępowane tekstem [REDACTED].
 	SV	Spotify-användar-ID ersätts med [REDACTED].
 
+PLUGIN_SPOTON_DIAG_RED_GUESTIDS
+	CS	ID účtů Spotify dalších přihlášených účtů (hosté) se zkracují na poslední 4 znaky; ID s nejvýše 8 znaky se skryjí úplně.
+	DA	Spotify-konto-id'er for andre loggede konti (gæster) forkortes til de sidste 4 tegn; id'er på højst 8 tegn skjules helt.
+	DE	Spotify-Konto-IDs anderer angemeldeter Konten (Gäste): auf die letzten 4 Zeichen gekürzt, IDs mit höchstens 8 Zeichen ganz ausgeblendet.
+	EN	Spotify account ids of other signed-in accounts (guests): shortened to the last 4 characters; ids of 8 characters or fewer are hidden completely.
+	ES	Los ID de cuenta de Spotify de otras cuentas con sesión iniciada (invitados) se acortan a los últimos 4 caracteres; los ID de 8 caracteres o menos se ocultan por completo.
+	FR	Les identifiants de compte Spotify d'autres comptes connectés (invités) sont raccourcis aux 4 derniers caractères ; les identifiants de 8 caractères ou moins sont entièrement masqués.
+	IT	Gli ID account Spotify di altri account collegati (ospiti) vengono abbreviati agli ultimi 4 caratteri; gli ID di 8 caratteri o meno vengono nascosti completamente.
+	NL	Spotify-account-ID's van andere aangemelde accounts (gasten) worden ingekort tot de laatste 4 tekens; ID's van 8 tekens of minder worden volledig verborgen.
+	NO	Spotify-konto-ID-er for andre påloggede kontoer (gjester) forkortes til de siste 4 tegnene; ID-er på 8 tegn eller færre skjules helt.
+	PL	Identyfikatory kont Spotify innych zalogowanych kont (goście) są skracane do ostatnich 4 znaków; identyfikatory o długości do 8 znaków są całkowicie ukrywane.
+	SV	Spotify-konto-ID för andra inloggade konton (gäster) kortas till de sista 4 tecknen; ID med högst 8 tecken döljs helt.
+
 PLUGIN_SPOTON_DIAG_RED_DISPLAYNAME
 	CS	Zobrazované jméno Spotify se nahrazuje textem [REDACTED].
 	DA	Spotify-visningsnavnet erstattes af [REDACTED].

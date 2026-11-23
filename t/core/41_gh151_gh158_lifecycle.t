@@ -207,6 +207,10 @@ our @VERBS;
 # $NO_ROLE makes backendFor return undef (no role known).
 our $GATE    = 0;
 our $NO_ROLE = 0;
+# 90.1-03: claimPerAccount (default 0 = the librespot/one-claim shape every older case
+# uses) and the account key per player mac (the Soloist state()->{account} shape).
+our $PER_ACCOUNT = 0;
+our %ACCOUNT;
 sub backendFor { return undef if $NO_ROLE; return bless { mac => (ref $_[1] ? $_[1]->id : $_[1]) }, 'Test::MockRole41'; }
 package Test::MockRole41;
 # 84-08: Connect.pm no longer `require`s Control itself -- the mock loads the
@@ -219,6 +223,7 @@ sub capabilities {
     my $C = 'Plugins::SpotOn::Soloist::Control';
     return {
         connectClaimGate => $Plugins::SpotOn::Unified::DaemonManager::GATE, connectEntry => 'pertrack', claimOnStart => 0, holdOnChange => 1,
+        claimPerAccount => $Plugins::SpotOn::Unified::DaemonManager::PER_ACCOUNT,
         readyReplaysLastTrack => 1,
         holdCapS     => ($C->can('HOLD_CAP_S')     ? $C->HOLD_CAP_S     : undef),
         holdRecheckS => ($C->can('HOLD_RECHECK_S') ? $C->HOLD_RECHECK_S : undef),
@@ -228,7 +233,9 @@ sub capabilities {
 sub state {
     my $c = $_[0]->_ctl;
     my $o = ($c && $c->can('observed')) ? ($c->observed || {}) : {};
+    my $k = $Plugins::SpotOn::Unified::DaemonManager::ACCOUNT{ $_[0]->{mac} };
     return { mode => ($c ? $c->mode : undef), status => $o->{status}, observedTrack => $o->{track},
+             account => (defined $k ? { key => $k, short => '1234' } : undef),
              active => (defined $o->{is_active} ? ($o->{is_active} ? 1 : 0) : undef) };
 }
 sub control {
@@ -272,7 +279,10 @@ END
 
 write_stub($stub_dir, 'Slim::Player::Client', <<'END');
 package Slim::Player::Client;
-sub getClient { return undef; }
+# 90.1-03: %BY_ID (empty by default = getClient undef as before) lets the claim-conflict
+# cases of bindConnectClaim find the OLD player.
+our %BY_ID;
+sub getClient { return $BY_ID{ $_[0] }; }
 1;
 END
 
@@ -336,7 +346,9 @@ sub pluginData {
     return $self->{pluginData}{$key};
 }
 sub power       { return $_[0]->{power}; }
-sub isPlaying   { return $_[0]->{isPlaying}; }
+# GH #230: the strict view (LMS isPlaying(1), playingState PLAYING) is {strict} when a
+# cell sets it; otherwise it follows {isPlaying} as before.
+sub isPlaying   { my ($s, $really) = @_; return ($really && defined $s->{strict}) ? $s->{strict} : $s->{isPlaying}; }
 sub isPaused    { return 0; }
 sub playingSong { return undef; }
 sub songElapsedSeconds { return 0; }
@@ -1689,13 +1701,74 @@ sub f242_song { return Test::FakeSongC4->new(url => 'spoton://connect-1790000000
     Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
 }
 
-# Fall G2 (guard): the same change while LMS is merely stopped (not paused) -- the unpause as today
+# Fall G2 (90.1 review WR-01 changed this guard): the same change while LMS is merely STOPPED (not paused) on another
+# spoton://track: entry. `pause 0` on a stopped player is LMS's `playlist jump <playingSongIndex>` (Commands.pm), which
+# re-opens the STALE entry; its getNextTrack names another title than the daemon's and Control hands the session to
+# browse. For the per-track backend the `playlist play` below opens the new title by itself, so no unpause.
 {
     my $old    = Test::FakeSongC4->new(url => 'spoton://track:1bcCUnCiOttYRh7AfoihFH');
     my $client = f242_client(song => $old, paused => 0);
+    @Slim::Utils::Log::LINES = ();
     c4_change($client);
-    is(scalar(pause_unpause_dispatched()), 1, '84-26 F-24-2 Connect Fall G2: a stopped (not paused) client is still unpaused as today');
+    is(scalar(pause_unpause_dispatched()), 0, '90.1 WR-01 Connect Fall G2: a stopped (not paused) Soloist client is not unpaused (no jump to the stale entry)');
+    my @plays = c4_play_dispatched();
+    is(scalar(@plays), 1, '90.1 WR-01 Connect Fall G2: exactly one playlist play opens the new title');
+    is($plays[0] && $plays[0]{cmd}[2], 'spoton://track:5Awt99LSbIaTmWkoOFhP03', '90.1 WR-01 Connect Fall G2: ... the new title, not the stale entry');
+    is(scalar(grep { /change while LMS stopped -- unpause skipped/ } @Slim::Utils::Log::LINES), 1,
+        '90.1 WR-01 Connect Fall G2: one INFO line names the skip');
     Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
+}
+
+# 90.1 review WR-01: the adopted session after an LMS restart (claim bound as `reconnect`, LMS stopped on the stale
+# entry OLD, the 'restored' start suppressed): the frame's own `change A1 OLD` is the first verb LMS sees. No `pause 0`,
+# one `playlist play` of A1.
+{
+    my $old    = Test::FakeSongC4->new(url => 'spoton://track:1bcCUnCiOttYRh7AfoihFH');
+    my $client = Test::FakeClientSong->new(power => 1, isPlaying => 0, paused => 0, song => $old, elapsed => 0,
+        controller => Test::FakeController->new());
+    Plugins::SpotOn::Connect->bindConnectClaim($client, 'reconnect');
+    c4_change($client);
+    is(scalar(pause_unpause_dispatched()), 0, '90.1 WR-01 Connect (adopted, LMS restart): no `pause 0` on the player stopped on the stale entry');
+    my @plays = c4_play_dispatched();
+    is(scalar(@plays), 1, '90.1 WR-01 Connect (adopted, LMS restart): exactly one playlist play');
+    is($plays[0] && $plays[0]{cmd}[2], 'spoton://track:5Awt99LSbIaTmWkoOFhP03', '90.1 WR-01 Connect (adopted, LMS restart): ... of the new title');
+    Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
+}
+
+# 90.1 review WR-01 guard: the librespot path on a stopped (not paused) client keeps its unpause (its repeating
+# `connect-<ts>` stream needs the re-open; connectEntry is not pertrack)
+{
+    my $old    = Test::FakeSongC4->new(url => 'spoton://connect-1790000000000');
+    my $client = f242_client(song => $old, paused => 0);
+    @Slim::Control::Request::EXECUTED = ();
+    Plugins::SpotOn::Connect::_connectEvent(
+        Test::FakeRequest->new($client, _cmd => 'change', _p2 => '5Awt99LSbIaTmWkoOFhP03', _p3 => '1bcCUnCiOttYRh7AfoihFH'));
+    is(scalar(pause_unpause_dispatched()), 1, '90.1 WR-01 Connect guard: a stopped librespot client is unpaused as today');
+    Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
+}
+
+# 90.1 review WR-03 (a): a Don't Stop the Music timer armed during Browse (DSTM's onPlaylistChange, half the remaining
+# time of a one-title play) would fire into the Connect session: LMS's dontStopTheMusic does not ask the conflict hook,
+# it calls the provider, and an empty answer appends `randomplay://track`. Every session entry binds the claim, so the
+# bind kills DSTM's pending timer for the (master) client. Other timers of the client stay.
+{
+    no warnings 'once';
+    *Slim::Plugin::DontStopTheMusic::Plugin::dontStopTheMusic = sub { 1 }
+        unless defined &Slim::Plugin::DontStopTheMusic::Plugin::dontStopTheMusic;
+    my $client = Test::FakeClientSong->new(power => 1, isPlaying => 0, paused => 0,
+        song => Test::FakeSongC4->new(url => 'spoton://track:1bcCUnCiOttYRh7AfoihFH'), elapsed => 0,
+        controller => Test::FakeController->new());
+    my $other  = sub { 1 };
+    @Slim::Utils::Timers::TIMERS = ();
+    Slim::Utils::Timers::setTimer($client, time() + 90, \&Slim::Plugin::DontStopTheMusic::Plugin::dontStopTheMusic);
+    Slim::Utils::Timers::setTimer($client, time() + 90, $other);
+    Plugins::SpotOn::Connect->bindConnectClaim($client, 'app-wake');
+    is(scalar(grep { $_->[0] == $client && $_->[2] == \&Slim::Plugin::DontStopTheMusic::Plugin::dontStopTheMusic } @Slim::Utils::Timers::TIMERS), 0,
+        '90.1 WR-03 Connect: the claim bind kills the pending Don\'t Stop the Music timer of the player');
+    is(scalar(grep { $_->[0] == $client && $_->[2] == $other } @Slim::Utils::Timers::TIMERS), 1,
+        '90.1 WR-03 Connect: ... and no other timer of the player');
+    Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
+    @Slim::Utils::Timers::TIMERS = ();
 }
 
 # Fall G3 (guard): a paused client but the stream is alive -- the unpause as today
@@ -2936,7 +3009,7 @@ sub grace_case {
     my (%a) = @_;
     local $Plugins::SpotOn::Unified::DaemonManager::GATE    = $a{gate} // 0;
     local $Plugins::SpotOn::Unified::DaemonManager::NO_ROLE = $a{no_role} // 0;
-    my $client = Test::FakeClient->new(power => 1, isPlaying => 1);
+    my $client = Test::FakeClient->new(power => 1, isPlaying => 1, strict => $a{strict});
     start_session($client);
     Plugins::SpotOn::Connect->bindConnectClaim($client, 'transfer');
     if ($a{change}) {
@@ -2966,12 +3039,20 @@ sub grace_case {
     is($paused, 1, 'D-33 FULL-2 S5c: Soloist role, stop 5 s after a track change -> connectSessionPaused is 1');
     is($n, 1, 'D-33 FULL-2 S5c: Soloist role, stop 5 s after a track change -> one pause command for the player');
 }
+# GH #230 fix A: inside the grace the stop is forwarded once LMS REALLY plays
+# (strict isPlaying(1)) and the claim is held. While LMS still buffers the grace
+# keeps today's behaviour: LMS would discard a pause in BUFFERING anyway.
 {
-    my ($paused, $n) = grace_case(gate => 1, age => 5);
+    my ($paused, $n) = grace_case(gate => 1, age => 5, strict => 1);
+    is($paused, 1, 'GH230 L5p: librespot role, stop 5 s after start, LMS really playing -> connectSessionPaused is 1');
+    is($n, 1, 'GH230 L5p: librespot role, stop 5 s after start, LMS really playing -> one pause command for the player');
+}
+{
+    my ($paused, $n) = grace_case(gate => 1, age => 5, strict => 0);
     # 88-10 D-19: an app pause inside the start grace IS marked paused; only the
     # forwarding stays suppressed (the pause-command count below stays 0).
-    is($paused, 1, 'D-33 FULL-2 L5: librespot role, stop 5 s after start -> not forwarded, but connectSessionPaused is 1 (D-19)');
-    is($n, 0, 'D-33 FULL-2 L5: librespot role, stop 5 s after start -> no pause command');
+    is($paused, 1, 'GH230 L5b: librespot role, stop 5 s after start, LMS still buffering -> not forwarded, but connectSessionPaused is 1 (D-19)');
+    is($n, 0, 'GH230 L5b: librespot role, stop 5 s after start, LMS still buffering -> no pause command');
 }
 {
     my ($paused, $n) = grace_case(gate => 1, age => 13);
@@ -2979,11 +3060,23 @@ sub grace_case {
     is($n, 1, 'D-33 FULL-2 L13: librespot role, stop 13 s after start -> one pause command for the player');
 }
 {
-    my ($paused, $n) = grace_case(no_role => 1, age => 5);
+    my ($paused, $n) = grace_case(no_role => 1, age => 5, strict => 1);
+    is($paused, 1, 'GH230 U5p: no role known, stop 5 s after start, LMS really playing -> connectSessionPaused is 1');
+    is($n, 1, 'GH230 U5p: no role known, stop 5 s after start, LMS really playing -> one pause command for the player');
+}
+{
+    my ($paused, $n) = grace_case(no_role => 1, age => 5, strict => 0);
     # 88-10 D-19: an app pause inside the start grace IS marked paused; only the
     # forwarding stays suppressed (the pause-command count below stays 0).
-    is($paused, 1, 'D-33 FULL-2 U5: no role known, stop 5 s after start -> not forwarded, but connectSessionPaused is 1 (D-19)');
-    is($n, 0, 'D-33 FULL-2 U5: no role known, stop 5 s after start -> no pause command');
+    is($paused, 1, 'GH230 U5b: no role known, stop 5 s after start, LMS still buffering -> not forwarded, but connectSessionPaused is 1 (D-19)');
+    is($n, 0, 'GH230 U5b: no role known, stop 5 s after start, LMS still buffering -> no pause command');
+}
+{
+    # GH #230: Soloist has no start grace ($needsStartGrace 0); fix A changes nothing
+    # there - a stop 5 s after start pauses LMS even while it still buffers.
+    my ($paused, $n) = grace_case(gate => 0, age => 5, strict => 0);
+    is($paused, 1, 'GH230 S5b: Soloist role, stop 5 s after start, LMS still buffering -> connectSessionPaused is 1 (unchanged)');
+    is($n, 1, 'GH230 S5b: Soloist role, stop 5 s after start, LMS still buffering -> one pause command (unchanged)');
 }
 
 # ==================================================================
@@ -3835,6 +3928,121 @@ sub grace_case {
         is(scalar(h_log(qr/ignored, not the active Connect player \(claim=\Q$oid\E\)/)), 1, 'P4U-10: ignored line names the owner');
         is(scalar(h_log(qr/re-issuing Connect play/)), 0, 'P4U-10: no re-issuing line');
         Plugins::SpotOn::Connect->releaseConnectClaim($owner, 'test');
+    }
+}
+
+# ==================================================================
+# 90.1-03 (GH #231, D-01 / D-02 / D-16): the Connect claim is kept per
+# PLAYER and released only within one known ACCOUNT. The real
+# bindConnectClaim / _connectEvent run against the mock role (account key
+# per mac in %ACCOUNT, claimPerAccount in $PER_ACCOUNT) and the fake
+# Control of the 84-17 harness above.
+# ==================================================================
+{
+    package Test::FakeCtl9013;
+    our @ISA = ('Test::FakeCtlH');
+    sub _recordErrorOnce { my ($self, @a) = @_; push @{ $self->{errs} }, [ @a ]; return; }
+
+    package main;
+
+    my $DM = 'Plugins::SpotOn::Unified::DaemonManager';
+
+    # a second Soloist player with a claim of its own account; the account
+    # key is set BEFORE the bind (the group rule reads it at bind time)
+    my $g_second = sub {
+        my ($key, $ctl2) = @_;
+        my $song = Test::FakeSongH->new(url => "spoton://track:$H_OLD", so => 0, duration => 200);
+        my $p2 = Test::FakeClientSong->new(power => 1, isPlaying => 1, song => $song, elapsed => 10);
+        $Plugins::SpotOn::Unified::DaemonManager::ACCOUNT{ $p2->id } = $key if defined $key;
+        return $p2;
+    };
+    my $g_bind = sub {
+        my ($p2, $ctl1, $p1) = @_;
+        no warnings 'redefine';
+        local *Plugins::SpotOn::Soloist::Control::for_client = sub { $_[1] eq $p1->id ? $ctl1 : undef };
+        Plugins::SpotOn::Connect->bindConnectClaim($p2, 'transfer');
+    };
+
+    # --- G1: two accounts, the older player's `change` is handled (the #231 mechanism) ---
+    {
+        local $Plugins::SpotOn::Unified::DaemonManager::PER_ACCOUNT = 1;
+        local %Plugins::SpotOn::Unified::DaemonManager::ACCOUNT;
+        my ($p1, $ctl1) = h_setup();
+        bless $ctl1, 'Test::FakeCtl9013';
+        $ctl1->{observed}{is_active} = 1;
+        $Plugins::SpotOn::Unified::DaemonManager::ACCOUNT{ $p1->id } = 'aaaaaaaa';
+        my $p2 = $g_second->('bbbbbbbb');
+        local %Slim::Player::Client::BY_ID = ($p1->id => $p1, $p2->id => $p2);
+        @Plugins::SpotOn::Unified::DaemonManager::VERBS = ();
+        @Slim::Utils::Log::WARNS = ();
+        $g_bind->($p2, $ctl1, $p1);
+
+        is(Plugins::SpotOn::Connect->isSpotifyConnect($p1), 1, '90.1-03 G1: the older player of account X keeps its claim');
+        is(Plugins::SpotOn::Connect->isSpotifyConnect($p2), 1, '90.1-03 G1: the new player of account Y holds its own');
+        is(scalar(grep { /claimLost|recordErrorOnce/ } @Plugins::SpotOn::Unified::DaemonManager::VERBS), 0,
+            '90.1-03 G1: no claimLost and no claim-conflict recordErrorOnce was sent to the older player');
+        is(scalar(grep { /Connect claim: last message wins/ } @Slim::Utils::Log::WARNS), 0, '90.1-03 G1: no last-message-wins warning');
+        is(scalar(@{ $ctl1->{errs} || [] }), 0, '90.1-03 G1: no claim-conflict entry on the older player');
+        is(scalar(grep { /^Connect claim: kept \Q@{[ $p1->id ]}\E \(other account\) while \Q@{[ $p2->id ]}\E binds$/ } @Slim::Utils::Log::LINES), 1,
+            '90.1-03 G1: one INFO line says the older holder was kept (other account)');
+
+        @Slim::Control::Request::EXECUTED = ();
+        @Slim::Utils::Log::LINES = ();
+        h_change($p1, $ctl1, $H_NEW, 'live');
+        is(scalar(h_inserts()), 1, '90.1-03 G1: the older player\'s change is HANDLED, not dropped by the connect-guard (one playlist insert)');
+        is(scalar(h_log(qr/^Connect: hold opened uri=spoton:\/\/track:\Q$H_NEW\E /)), 1, '90.1-03 G1: ... and its hold opened');
+
+        # releasing the first player leaves the second one's claim (own entry only)
+        Plugins::SpotOn::Connect->releaseConnectClaim($p1, 'test');
+        is(Plugins::SpotOn::Connect->isSpotifyConnect($p1), 0, '90.1-03 G1b: release of P1 clears P1');
+        is(Plugins::SpotOn::Connect->isSpotifyConnect($p2), 1, '90.1-03 G1b: ... and leaves P2 holding');
+        Plugins::SpotOn::Connect->releaseConnectClaim($p2, 'test');
+    }
+
+    # --- G2: the seek guard (the second reader of the same store) ---
+    {
+        local $Plugins::SpotOn::Unified::DaemonManager::PER_ACCOUNT = 1;
+        local %Plugins::SpotOn::Unified::DaemonManager::ACCOUNT;
+        my ($p1, $ctl1, $song1) = h_setup(so => 5);
+        bless $ctl1, 'Test::FakeCtl9013';
+        $ctl1->{observed}{is_active} = 1;
+        $Plugins::SpotOn::Unified::DaemonManager::ACCOUNT{ $p1->id } = 'aaaaaaaa';
+        my $p2 = $g_second->('bbbbbbbb');
+        $g_bind->($p2, $ctl1, $p1);
+        @Slim::Utils::Log::LINES = ();
+        h_connect($p1, $ctl1, _cmd => 'seek', _p2 => '50.000');
+        is(scalar(h_log(qr/^Binary reported seek to: 50\.000$/)), 1,
+            '90.1-03 G2: the older player\'s seek is HANDLED while a player of another account holds a claim');
+        Plugins::SpotOn::Connect->releaseConnectClaim($p1, 'test');
+        Plugins::SpotOn::Connect->releaseConnectClaim($p2, 'test');
+    }
+
+    # --- G3 (D-16): the SAME account keeps last-message-wins ---
+    {
+        local $Plugins::SpotOn::Unified::DaemonManager::PER_ACCOUNT = 1;
+        local %Plugins::SpotOn::Unified::DaemonManager::ACCOUNT;
+        my ($p1, $ctl1) = h_setup();
+        bless $ctl1, 'Test::FakeCtl9013';
+        $ctl1->{observed}{is_active} = 1;
+        $Plugins::SpotOn::Unified::DaemonManager::ACCOUNT{ $p1->id } = 'aaaaaaaa';
+        my $p2 = $g_second->('aaaaaaaa');
+        local %Slim::Player::Client::BY_ID = ($p1->id => $p1, $p2->id => $p2);
+        @Plugins::SpotOn::Unified::DaemonManager::VERBS = ();
+        @Slim::Utils::Log::WARNS = ();
+        $g_bind->($p2, $ctl1, $p1);
+
+        is(Plugins::SpotOn::Connect->isSpotifyConnect($p1), 0, '90.1-03 G3: the older player of the SAME account is released');
+        is(Plugins::SpotOn::Connect->isSpotifyConnect($p2), 1, '90.1-03 G3: the new player holds');
+        is(scalar(grep { /^Connect claim: last message wins -- \Q@{[ $p2->id ]}\E replaces \Q@{[ $p1->id ]}\E while / } @Slim::Utils::Log::WARNS), 1,
+            '90.1-03 G3: the last-message-wins warning (D-D2)');
+        is_deeply([ grep { /^notify:/ } @Plugins::SpotOn::Unified::DaemonManager::VERBS ], [ 'notify:recordErrorOnce', 'notify:claimLost' ],
+            '90.1-03 G3: recordErrorOnce + claimLost sent to the older player\'s role');
+        is($ctl1->{errs}[0][0], 'claim-conflict:' . $p1->id, '90.1-03 G3: errors[] key claim-conflict:<old mac>');
+
+        @Slim::Control::Request::EXECUTED = ();
+        h_change($p1, $ctl1, $H_NEW, 'live');
+        is(scalar(h_inserts()), 0, '90.1-03 G3: a later change of the released player is dropped as today');
+        Plugins::SpotOn::Connect->releaseConnectClaim($p2, 'test');
     }
 }
 

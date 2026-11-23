@@ -127,7 +127,62 @@ my $END_SLACK    = 120;    # s -- die letzte Tickerzeile liegt hoechstens so wei
 
 my $MAC_RE = qr/[0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5}/;
 
-my $REDACT_RE = qr/spak_[A-Za-z0-9_-]*|auth_data[^ ]*|Bearer [A-Za-z0-9._-]+/;
+# 90.1-04 (D-06): the id of a guest account the daemon logs in full (`logged in as <id>`, the `[session:<id>]` tag) is
+# shortened in the output pass. 90.1 review CR-01: fail CLOSED, the same rule as the Diagnostic Report's guestids rule
+# (Plugins/SpotOn/Diagnostics.pm _redactGuestIds) and AccountLog: whatever follows the anchor up to whitespace, ESC or
+# `]` is the id, whatever characters it holds; 8 characters or fewer show nothing (`...`), a longer id `...` plus its last
+# 4 characters (counted in characters, a UTF-8 byte string is decoded first). An already shortened `...`/`...abcd` and a
+# `[REDACTED` marker are skipped. Every id seen at a daemon-shaped anchor also goes as a token anywhere else in the output.
+# 90.1 review R2 WR-02: the session anchor needs its bracket (`[session:`; a bare `session:` matched `x session:connect y` and
+# `librespot_core::session::connect`), and only DAEMON-shaped anchors feed the sweep: the login line with a daemon timestamp right
+# before `logged in as` (the current build's `HH:MM:SS.mmm: `, the older build's `HH:MM:SS.mmm <L> [f:N ] `) whose id ends the line
+# (AccountLog's shape), and the closed tag `[session:<id>]`. A foreign `not logged in as premium user` is still cut in place but
+# sweeps nothing. The redaction line names the count of swept tokens when the sweep fired.
+my $GUEST_ID_RE   = qr/(?!\[REDACTED|\.\.\.)[^\s\x1b\]]+/;
+my $GUEST_LOGIN_RE = qr/(logged in as )($GUEST_ID_RE)/;
+my $GUEST_SESS_RE  = qr/(\[session:)($GUEST_ID_RE)/;
+my $SWEEP_LOGIN_RE = qr/[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+(?:: | [A-Z] \[f:[^\]]*\] (?:\x1b\[[0-9;]*m)*)logged in as ($GUEST_ID_RE)(?:\x1b\[[0-9;]*m)*\s*$/;
+my $SWEEP_SESS_RE  = qr/\[session:($GUEST_ID_RE)\]/;
+# 90.1 review R2 WR-01: the user uri `spotify:user:<id>` (also URI-escaped, `spotify%3Auser%3A<id>`) is a third anchor, cut IN PLACE,
+# so a printed context uri loses its id even when no login line lies in the extracted window. The id runs to `:`, `%3A`, whitespace,
+# ESC, a quote, `<`, `>`, `)` or `]`. It never feeds the token sweep (`spotify:user:spotify:playlist:` would sweep the word `spotify`).
+my $USER_URI_RE = qr/((?i:spotify(?::|%3A)user(?::|%3A)))(?!\[REDACTED|\.\.\.)((?:(?!%3[Aa])[^:\s\x1b"'<>)\]])+)/;
+my $REDACT_RE = qr/spak_[A-Za-z0-9_-]*|auth_data[^ ]*|Bearer [A-Za-z0-9._-]+|$GUEST_LOGIN_RE|$GUEST_SESS_RE|$USER_URI_RE/;
+
+# uri_escape_bytes($bytes) -> the RFC 3986 escape of a byte string (URI::Escape's default set, by hand: core modules only)
+sub uri_escape_bytes {
+    my ($b) = @_;
+    $b =~ s/([^A-Za-z0-9._~-])/sprintf('%%%02X', ord($1))/ge;
+    return $b;
+}
+
+# guest_cut_uri($run) -> guest_cut for an id that may hold %XX escapes: counted after unescaping (an escaped 8-character id still
+# shows nothing), the shown tail escaped again
+sub guest_cut_uri {
+    my ($run) = @_;
+    return guest_cut($run) unless $run =~ /%[0-9A-Fa-f]{2}/;
+    my $bytes = $run;
+    utf8::encode($bytes) if utf8::is_utf8($bytes);
+    $bytes =~ s/%([0-9A-Fa-f]{2})/chr(hex($1))/ge;
+    my $cut = guest_cut($bytes);
+    return $cut if $cut eq '...';
+    return '...' . uri_escape_bytes(substr($cut, 3));
+}
+
+sub guest_cut {
+    my ($id) = @_;
+    my $chars = $id;
+    my $decoded;
+    if (!utf8::is_utf8($id) && $id =~ /[\x80-\xff]/) {
+        require Encode;
+        $decoded = eval { Encode::decode('UTF-8', $id, Encode::FB_CROAK() | Encode::LEAVE_SRC()) };
+        $chars = $decoded if defined $decoded;
+    }
+    return '...' unless length($chars) > 8;
+    my $tail = substr($chars, -4);
+    $tail = Encode::encode('UTF-8', $tail) if defined $decoded;
+    return '...' . $tail;
+}
 
 # Kategorien. count=1 bedeutet: Kopfzeile traegt die Anzahl im Fenster und
 # die engere Zaehlung T1 +/- PAIR_SPAN (Handtabellen zaehlen auf dieser
@@ -551,8 +606,10 @@ my @SRV_CATS = (
     # line with an extra ` planted=` token and is matched by its unchanged prefix. Without a category
     # the three 84.2-05 lines would be counted, never printed (rule 4), and 84.2-04 R7's live reading
     # would be vacuous. The name keeps its `server.log: 84-26 repairs` prefix (t/46 matches by prefix).
+    # 90.1 review R2 WR-03: the change-handler skip on a STOPPED Soloist player (Connect.pm, round 1 WR-01: `Connect: change while
+    # LMS stopped -- unpause skipped, ...`) prints here too; it is the trigger proof of the acct901 variant restartalbum.
     { name => 'server.log: 84-26 repairs (resume refusal / autoplay re-adoption hold / transfer-in re-open follows the daemon / resume position set / change unpause skipped) / 84.2-05 (dormant-session handoff / context-end re-adoption hold)',
-      pat  => qr/requestResume refused -- daemon on|plays the autoplay-paused title .* -- not re-adopting|LMS re-open after transfer-in at|resume while LMS paused with the stream gone|change while LMS paused with the stream gone|-- handing over to browse|plays the context-end title .* -- not re-adopting/, count => 1 },
+      pat  => qr/requestResume refused -- daemon on|plays the autoplay-paused title .* -- not re-adopting|LMS re-open after transfer-in at|resume while LMS paused with the stream gone|change while LMS paused with the stream gone|change while LMS stopped -- unpause skipped|-- handing over to browse|plays the context-end title .* -- not re-adopting/, count => 1 },
     # 90-02 (GAP-02, PR #212 end-gap early EOF): the server.log lines the phase-90 measurement protocol greps for. Before
     # these entries they were only counted, never printed (rule 4), so gap_eval.py (L2, the shim gate's partner checks) and
     # a reader of the extract could not see them. Each pattern is copied from the Control.pm format string it matches; the
@@ -599,6 +656,37 @@ my @SRV_CATS = (
       pat  => qr/Browse daemon 404 for /, count => 1 },
     { name => 'server.log: title announced as started (plugin watchdog DIAG line of the LMS song-start notification; Plugin.pm _onNewSongWatchdog, carries no MAC)',
       pat  => qr/Watchdog: newsong url=/, count => 1 },
+    # 90.1-04 (D-05, D-06): the server.log lines the rig gates of phase 90.1 (plans 90.1-05 and 90.1-09) read. Before these
+    # entries they were only counted, never printed (rule 4), so a gate could not quote them. Each pattern is copied from
+    # the format string it matches (Connect.pm, Soloist/Control.pm, the DSTM caller prefixes in server.log). The two
+    # `_onNewSong` D-16 release lines (Connect.pm ~1067/1075) are the ones RESEARCH Open Question 4 has the gates count. The
+    # titles carry none of the literals the patterns match (an empty block prints the title too). These four sit last; the
+    # section of the very last entry is followed by the remainder line, so readers stop at the next `--- ` header.
+    { name => 'server.log: Connect claim conflicts, kept holders and _onNewSong releases (phase 90.1)',
+      pat  => qr/Connect claim: (?:last message wins|kept )|Connect claim released by _onNewSong|D-16: new song without Connect URL/, count => 1 },
+    { name => 'server.log: SpotOn LMS pause/stop handling outcome (phase 90.1)',
+      pat  => qr/_onPause: control\(/,                                                count => 1 },
+    { name => 'server.log: Soloist daemon account changes (phase 90.1)',
+      pat  => qr/Control: daemon account /,                                           count => 1 },
+    # 90.1-07 (FINDING_FOR_RIG of 90.1-05): the DSTM append is LMS's own `playlist addtracks` request line; the provider's log
+    # line never reached server.log (wrong logger category until 90.1-06), so the section also takes that request line.
+    { name => "server.log: Don't Stop the Music (LMS plugin and SpotOn provider, phase 90.1)",
+      pat  => qr/DontStopTheMusic::|->playlist addtracks\]/,                         count => 1 },
+    # 90.1-09 (#230 fix A, rig case acct901 gh230): what Connect.pm _connectEvent did with an app stop on librespot. Three INFO
+    # lines: fix A's own line (the stop inside the start grace while LMS really plays is honoured, names the player), the old grace
+    # line (the stop is ignored as spurious, carries no MAC) and the normal pause path the honoured stop falls through to. Before
+    # this entry all three were only counted, never printed (rule 4), so the gh230 gate could not quote them. Sits before the
+    # 90.1-07 entry, which stays last (its section is followed by the remainder line). The title carries none of the literals
+    # the pattern matches (an empty block prints the title too).
+    { name => 'server.log: Connect app pause in the start window (#230 fix A honoured / spurious-stop grace / normal pause path; Connect.pm _connectEvent, phase 90.1-09)',
+      pat  => qr/GH #230: stop inside the start grace while LMS really plays|Ignoring spurious stop during Connect session setup grace period|Spotify told us to pause: /, count => 1 },
+    # 90.1-07 (#225 re-measurement): the dispatch line of every LMS next-title request on a Soloist player (Backend::Soloist,
+    # `origin=lms` or `origin=connect`; the older ProtocolHandler 896 echo has the same tail). The historical `(718...)`
+    # category above matches only the [DIAG] line, which exists only with diagnosticMode on, so on the rig it read empty
+    # although these lines were there; the `origin=lms` line is the evidence that LMS re-opened a stale entry by itself.
+    # The title carries none of the literals the pattern matches (an empty block prints the title too).
+    { name => 'server.log: SpotOn next-title dispatch to Control (Backend::Soloist _trackFromGetNextTrack, origin lms or connect; phase 90.1-07)',
+      pat  => qr/getNextTrack: soloist browse -> Control->requestTrack\(/,             count => 1 },
 );
 
 my @DMN_CATS = (
@@ -621,6 +709,12 @@ my @DMN_CATS = (
       pat  => qr/(?:[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+: |[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+\s+[A-Za-z]\s+\[f:[0-9]+\s*\]\s+)(?:playing|paused|stopped) /, count => 0 },
     { name => 'Daemon-Log: Sitzungszustand (became active device / no longer active / shutting down / restoring session / ready / login failed)',
       pat  => qr/became active device|no longer active|shutting down|restoring session|login failed|: ready/, count => 0 },
+    # 90.1-04 (D-05): which account the daemon signed in as (`logged in as <id>`) and the end of that sign-in (`logged
+    # out`). Before this entry the lines were only counted (rule 4). The output pass shortens the id (an id of 8 characters
+    # or fewer shows nothing, a longer one its last 4 characters; see $GUEST_ID_RE). The title carries none of the literals
+    # the pattern matches.
+    { name => 'Daemon-Log: account sign-in and sign-out (phase 90.1)',
+      pat  => qr/\blogged in as |\blogged out\b/,                                      count => 0 },
     # 84.2 plan 03 (CAUSE-1, D-11): one line per context end names the account's
     # Autoplay setting -- "from no request" = OFF, "from hm://context-resolve/v1/
     # autoplay" = ON (real: 84-19-spike-autoplay-261004/off-1/daemon-window.txt
@@ -753,7 +847,9 @@ my @DMN_CATS = (
     # helper's log too, answer "which device has the session" without the app's display (recipe of debug
     # 88-18-new2-gh207-gh223-fail). The stale-guard verdict line stays in its own phase-88 category (it has no colon after
     # `update`). Before this entry the lines were only counted, never printed (rule 4). The title carries none of the
-    # literals the pattern matches. The ids in these lines are NOT redacted by this tool.
+    # literals the pattern matches. The device ids in these lines are NOT redacted by this tool; since 90.1-04 only the account ids
+    # of `logged in as <id>`, `[session:<id>]` and `spotify:user:<id>` are (output pass: 8 characters or fewer show nothing, a longer
+    # id its last 4 characters; see $GUEST_ID_RE).
     { name => 'Daemon-Log: phase-89 Connect device pushes (which device Spotify names as the playing one per push, play session notices; librespot_connect)',
       pat  => qr/\] cluster update: |\] session update: </, count => 1 },
     # 90-02 (GAP-02, PR #212): the shim's timed end-gap lines, written at debug trace as `[fakepulse <ts>] near-end: <reply
@@ -2963,15 +3059,46 @@ sub main {
     );
 
     # ---------------- Redaktion (ueber den fertigen Puffer) ----------------
-    my $redacted = grep { $_ =~ $REDACT_RE } @out;
+    # 90.1 review CR-01: the guest ids seen at an anchor, swept as tokens from every line (ids of 3+ characters); R2 WR-02: only the
+    # daemon-shaped anchors are sweep sources ($SWEEP_LOGIN_RE, $SWEEP_SESS_RE), the wide anchors only cut in place
+    my %guest_seen;
+    for my $l (@out) {
+        $guest_seen{$1} = 1 while $l =~ /$SWEEP_LOGIN_RE/gm;
+        $guest_seen{$1} = 1 while $l =~ /$SWEEP_SESS_RE/g;
+    }
+    my @guest_ids = grep { length($_) >= 3 } keys %guest_seen;
+    my $guest_tok_re;
+    if (@guest_ids) {
+        # 90.1 review R2 WR-01: each id also in its URI-escaped form (case-insensitive hex); all forms longest first
+        my %pat;
+        for my $id (@guest_ids) {
+            $pat{$id} = quotemeta $id;
+            my $raw = $id;
+            utf8::encode($raw) if utf8::is_utf8($raw);
+            my $esc = uri_escape_bytes($raw);
+            $pat{$esc} //= '(?i:' . quotemeta($esc) . ')' if $esc ne $raw;
+        }
+        my $alt = join '|', map { $pat{$_} } sort { length($b) <=> length($a) || $a cmp $b } keys %pat;
+        $guest_tok_re = qr/(?<![A-Za-z0-9_%])($alt)(?![A-Za-z0-9_])/;
+    }
+    my $redacted = grep { $_ =~ $REDACT_RE || (defined $guest_tok_re && $_ =~ $guest_tok_re) } @out;
+    my $swept = 0;
     for my $l (@out) {
         $l =~ s/spak_[A-Za-z0-9_-]*/[REDACTED: spak_...]/g;
         $l =~ s/auth_data[^ ]*/[REDACTED: auth_data...]/g;
         $l =~ s/Bearer [A-Za-z0-9._-]+/[REDACTED: Bearer ...]/g;
+        $l =~ s/$GUEST_LOGIN_RE/$1 . guest_cut($2)/ge;
+        $l =~ s/$GUEST_SESS_RE/$1 . guest_cut($2)/ge;
+        $l =~ s/$USER_URI_RE/$1 . guest_cut_uri($2)/ge;
+        if (defined $guest_tok_re) {
+            my $n = ($l =~ s/$guest_tok_re/guest_cut_uri($1)/ge);
+            $swept += $n if $n;
+        }
     }
+    # R2 WR-02: a surprising sweep is visible -- the count of tokens the sweep replaced outside the anchors (only when it fired)
     push @out, $redacted == 0
         ? '=== Redaktion: 0 Zeilen redigiert ==='
-        : "=== Redaktion: $redacted Zeile(n) redigiert ===";
+        : "=== Redaktion: $redacted Zeile(n) redigiert" . ($swept ? ", $swept id token(s) swept" : '') . ' ===';
 
     my $text = join("\n", @out) . "\n";
     if ($o{out} ne '') {

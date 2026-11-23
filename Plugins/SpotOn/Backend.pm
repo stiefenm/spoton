@@ -18,7 +18,7 @@ package Plugins::SpotOn::Backend;
 #   ->notify($event, %args)  -> 'ok' | 'unsupported' | 'down'
 #   ->query($what, %args)    -> scalar | undef
 #   ->capabilities()         -> hashref (copy)
-#   ->state()                -> hashref { mode status paired wsConnected alive observedTrack active }
+#   ->state()                -> hashref { mode status paired wsConnected alive observedTrack active account }
 #   ->streamUrl($client, $song, $kind)
 #   events: both backends emit only the seven spottyconnect verbs
 #           start change stop volume seek resume ready

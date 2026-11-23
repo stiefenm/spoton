@@ -667,7 +667,7 @@ require Plugins::SpotOn::Plugin;
 # Tests
 # ============================================================
 
-plan tests => 119;   # 89 review IN-01: +1 (docs anchor against the TROUBLESHOOTING.md slug, unread AUDIOKEY_ constants); 89-02: +27 (audio-key advice rows: 11 collect and parity cells, 16 node render cells); 261111-j57: +2 (capped ok run, skipped 0 keeps the partial text); 261110-k1b: +12 (Library metadata row: 7 collectAll cells, 4 node cells, 1 render order);  79-81 D-54: +1 (Audio Keys not_used branch); 79-63 R1: +1 (Status.pm names no backend-side module); 79-60: +7 (Connect row render, English labels, librespot match); 74b WR-01: +3 hasError level cells; 84-09: 57 before the split; 21 Soloist cells moved to t/soloist/13_status_page_soloist.t
+plan tests => 123;   # 90.1-04: +4 (status.html Account row 2, librespot account undef 2); 89 review IN-01: +1 (docs anchor against the TROUBLESHOOTING.md slug, unread AUDIOKEY_ constants); 89-02: +27 (audio-key advice rows: 11 collect and parity cells, 16 node render cells); 261111-j57: +2 (capped ok run, skipped 0 keeps the partial text); 261110-k1b: +12 (Library metadata row: 7 collectAll cells, 4 node cells, 1 render order);  79-81 D-54: +1 (Audio Keys not_used branch); 79-63 R1: +1 (Status.pm names no backend-side module); 79-60: +7 (Connect row render, English labels, librespot match); 74b WR-01: +3 hasError level cells; 84-09: 57 before the split; 21 Soloist cells moved to t/soloist/13_status_page_soloist.t
 
 # Test 1: Status.pm compiles
 require_ok('Plugins::SpotOn::Status');
@@ -1023,6 +1023,10 @@ ok(defined $card && $card !~ /Konto-Login|Bitte Konto einmal koppeln/, '79-60: n
 ok(!($page_js =~ /spDc|sp_dc/), 'Test 41: status.html has no sp_dc rendering left');
 ok(!($page_js =~ /hashConfigured/), 'Test 42: status.html has no hashConfigured left');
 
+# 90.1-04 A2 (D-05, T-90.1-10): the Account row exists once, only inside `if (d.account)`, through createMetricRow (textContent)
+is(scalar(() = $page_js =~ /createMetricRow\('Account'/g), 1, "90.1-04 A2: status.html has exactly one createMetricRow('Account' ...)");
+like($page_js, qr/if \(d\.account\)\s*\{[^{}]*createMetricRow\('Account'/s, '90.1-04 A2: the Account row sits inside an `if (d.account)` block (librespot players show no such row)');
+
 require_ok('Slim::Player::Playlist');
 require_ok('Plugins::SpotOn::ProtocolHandler');
 
@@ -1056,6 +1060,19 @@ require Plugins::SpotOn::Unified::DaemonManager;    # load the stub BEFORE the f
     is($d->{paired},      undef, '_collectDaemons: librespot helper keeps playing, paired undef (paired field)');
     is($d->{wsConnected}, undef, '_collectDaemons: librespot helper keeps playing, paired undef (wsConnected field)');
     is($d->{playing},     1,     '_collectDaemons: librespot helper keeps playing, paired undef');
+}
+
+# 90.1-04 A2 (D-05): a role without an account concept (claimPerAccount 0, state()->{account} undef) shows no account
+{
+    local @Plugins::SpotOn::Unified::DaemonManager::HELPERS = (
+        Plugins::SpotOn::Unified::Daemon->new(
+            mac => 'aa:bb:cc:dd:ee:f4', alive => 1, pid => 114, uptime => 5,
+            connectEnabled => 1, streamPort => 9004, sessionHealth => undef,
+        ),
+    );
+    my $d = Plugins::SpotOn::Status::_collectDaemons()->[0];
+    ok(exists $d->{account}, '90.1-04 A2: the daemon entry of a librespot helper has an account key');
+    is($d->{account}, undef, '90.1-04 A2: ... and it is undef (no account concept in this role)');
 }
 
 

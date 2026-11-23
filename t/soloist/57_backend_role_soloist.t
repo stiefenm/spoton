@@ -885,7 +885,8 @@ is($S->new($MAC)->query('wantedPositionMs'), undef, "soloist query('wantedPositi
 # ------------------------------------------------------------
 my @CAP_KEYS = qw(contentType samplesize samplerate channels connectEntry formats seekViaRestart
                   ownsQueueInBrowse deferTrack deaden connectClaimGate claimOnStart holdOnChange
-                  holdCapS holdRecheckS holdMaxS readyReplaysLastTrack passthrough autoplay connectSeekViaControl);
+                  holdCapS holdRecheckS holdMaxS readyReplaysLastTrack passthrough autoplay connectSeekViaControl
+                  claimPerAccount);
 for my $cls ($S) {
     my $caps = $cls->new($MAC)->capabilities;
     is(ref $caps, 'HASH', "$cls: capabilities() is a hashref");
@@ -898,6 +899,7 @@ my %LS_CAPS = (contentType => 'son', samplesize => 16, samplerate => 44100, chan
                passthrough => 1);    # 84-12 W6: from the Helper stub (getCapability passthrough = 1)
 my %SO_CAPS = (passthrough => 0, readyReplaysLastTrack => 1, formats => 'resolveSoloistFormat', contentType => 'soc', samplesize => 32, samplerate => 44100, channels => 2, connectEntry => 'pertrack',
                deferTrack => 1, connectClaimGate => 0, claimOnStart => 0, holdOnChange => 1,
+               claimPerAccount => 1,    # 90.1-02 D-01: the claim is per account
                holdCapS     => Plugins::SpotOn::Soloist::Control::HOLD_CAP_S(),
                holdRecheckS => Plugins::SpotOn::Soloist::Control::HOLD_RECHECK_S(),
                holdMaxS     => Plugins::SpotOn::Soloist::Control::HOLD_MAX_S());
@@ -913,7 +915,7 @@ is($S->new($MAC)->capabilities->{connectSeekViaControl}, 0, '79-28 D-23 seek: so
 # client). capabilities() on an instance = the default merged with the rest.
 # ------------------------------------------------------------
 my @DEFAULT_KEYS = qw(contentType samplesize samplerate channels connectEntry formats deferTrack
-                      connectClaimGate claimOnStart holdOnChange passthrough);
+                      connectClaimGate claimOnStart holdOnChange passthrough claimPerAccount);
 for my $cls ($S) {
     ok($cls->can('capabilitiesDefault'), "$cls: capabilitiesDefault exists");
     my $def = $cls->can('capabilitiesDefault') ? $cls->capabilitiesDefault : {};
@@ -1034,6 +1036,23 @@ present();
 }
 absent();
 is($S->new($MAC)->state->{mode}, undef, 'soloist state without Control: mode undef');
+# 90.1-02 T2: the state key set of the role is pinned (equal to the librespot role's, pinned in its own file)
+{
+    present();
+    is_deeply([ sort keys %{ $S->new($MAC)->state } ], [ sort qw(mode status paired wsConnected alive observedTrack active account) ],
+        '90.1-02 T2: soloist state() has exactly the contract key set incl. account');
+}
+# 90.1-02 ST1 (D-01): the account of the daemon, as Control observed it ({ key, short } or undef)
+{
+    present();
+    ok(!defined $S->new($MAC)->state->{account}, '90.1-02 ST1: state()->{account} is undef while Control has none');
+    $Plugins::SpotOn::Soloist::Control::CTL->observed->{account} = { key => 'deadbeef', short => 'wxyz' };
+    my $acc = $S->new($MAC)->state->{account};
+    is_deeply($acc, { key => 'deadbeef', short => 'wxyz' }, '90.1-02 ST1: state()->{account} equals the observed account');
+    isnt($acc, $Plugins::SpotOn::Soloist::Control::CTL->observed->{account}, '90.1-02 ST1: it is a copy, not the observed hash');
+    absent();
+    ok(!defined $S->new($MAC)->state->{account}, '90.1-02 ST1: state()->{account} is undef without Control');
+}
 # 84-08 (Status semantics, 82-11 WR-05): the observed field wins when made,
 # else the filesystem pairing / the live WS socket; librespot: undef.
 {
@@ -1065,6 +1084,24 @@ cmp_ok(scalar(@emits), '>=', 7, 'events: at least 7 literal _emit call sites in 
 my %seven = map { $_ => 1 } @SEVEN;
 is_deeply([ grep { !$seven{$_} } @emits ], [], 'events: every Control _emit verb is one of the seven');
 like($control_src, qr/\('spottyconnect', \$cmd/, "events: Control's _emit dispatches through ['spottyconnect', \$cmd, ...]");
+
+# ------------------------------------------------------------
+# 90.1-02 T2 (D-01): the claimPerAccount capability and the account key of state(), pinned over the
+# SOURCE of the soloist role (moved from t/core/57: t/core must not read a backend file, each CI
+# amputation leg deletes one). The former cross-file check "both roles build state() with the same
+# key set" is now two halves against one contract list: this file pins Soloist.pm's source key set
+# to it, t/librespot/57_backend_role_librespot.t pins Librespot.pm's to the same list.
+# ------------------------------------------------------------
+{
+    my @STATE_CONTRACT_KEYS = sort qw(mode status paired wsConnected alive observedTrack active account);
+    my $so_src = slurp("$project_dir/Plugins/SpotOn/Backend/Soloist.pm");
+    my ($so_default) = $so_src =~ /(my %CAPABILITIES_DEFAULT = \(.*?\n\);)/s;
+    ok($so_default && $so_default =~ /\bclaimPerAccount\s*=>\s*1\b/, '90.1-02 T2: Soloist %CAPABILITIES_DEFAULT carries claimPerAccount => 1');
+    my ($body) = $so_src =~ /\nsub state \{.*?\n    return \{(.*?)\n    \};/s;
+    my @so_keys = sort(($body // '') =~ /^\s+(\w+)\s*=>/mg);
+    is_deeply(\@so_keys, \@STATE_CONTRACT_KEYS, '90.1-02 T2: both roles build state() with the same key set (soloist half: Soloist.pm source == the contract list)');
+    ok((grep { $_ eq 'account' } @so_keys), '90.1-02 T2: and that key set carries account');
+}
 
 # 79-60 (forum #333): query('playingMode' | 'deliveredFormat' | 'qualityLevelKey') -- the
 # Now Playing label's backend reads (Plugin.pm names no Soloist module, it asks the role).

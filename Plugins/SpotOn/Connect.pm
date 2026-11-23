@@ -101,9 +101,13 @@ my $initialized;
 # always compiled first in production (this module is runtime-require'd).
 my $cache = Slim::Utils::Cache->new('spoton', Plugins::SpotOn::Plugin::SPOTON_CACHE_VERSION());
 
-# Track the MAC of the player currently owning the active Connect session.
+# 90.1-03 (GH #231, D-01): the Connect claim is kept PER PLAYER, mac => 1.
 # Used by _onPause to suppress stale stop events from old players when switching.
-my $_activeConnectPlayer;
+# It used to be one server-wide scalar: a transfer of a second account moved the
+# single claim, and the connect-guard then dropped the first player's events. A
+# bind now releases only the holders of the SAME known account (_claimGroupPeers);
+# the librespot role (capability claimPerAccount 0) stays one group = one claim.
+my %_claim;
 
 # 83.1-02 Task 2 (D-D2): timestamp of the last bindConnectClaim write -- a
 # log DETAIL only (the near-simultaneous-bind case gets "within <ms> ms"
@@ -175,11 +179,66 @@ sub isSpotifyConnect {
     return unless $client;
     $client = $client->master if $client->can('master');
 
-    return $_activeConnectPlayer && $_activeConnectPlayer eq $client->id ? 1 : 0;
+    return $_claim{ $client->id } ? 1 : 0;
+}
+
+# _accountKeyOf($clientOrMac) -- 90.1-03 (D-02): the 8-hex account key the
+# player's daemon is signed in as, through the backend role (Connect.pm names no
+# Soloist module: state()->{account} = { key, short } or undef). undef on any
+# failure and for every role without an account (librespot).
+sub _accountKeyOf {
+    my ($c) = @_;
+    my $key;
+    eval {
+        require Plugins::SpotOn::Unified::DaemonManager;
+        my $be  = Plugins::SpotOn::Unified::DaemonManager->backendFor($c);
+        my $acc = $be ? $be->state->{account} : undef;
+        $key = $acc->{key} if ref $acc eq 'HASH' && defined $acc->{key} && length $acc->{key};
+        1;
+    };
+    return $key;
+}
+
+# _perAccount($client) -- 90.1-03 (D-03): the role's claimPerAccount capability;
+# a missing key or any failure = 0 = one claim for everybody (the old semantics).
+sub _perAccount {
+    my ($client) = @_;
+    my $per = 0;
+    eval {
+        require Plugins::SpotOn::Unified::DaemonManager;
+        my $be = Plugins::SpotOn::Unified::DaemonManager->backendFor($client);
+        $per = ($be && $be->capabilities->{claimPerAccount}) ? 1 : 0;
+        1;
+    };
+    return $per;
+}
+
+# _claimGroupPeers($client) -- 90.1-03 (D-01, D-02, D-16): the OTHER holders that
+# this player's claim replaces. claimPerAccount 0 (librespot): every other holder.
+# claimPerAccount 1 (Soloist): only holders whose account key is KNOWN and EQUAL
+# to this player's; an unknown key on either side is a different account.
+sub _claimGroupPeers {
+    my ($client) = @_;
+    my $id     = $client->id;
+    my @others = sort { $a cmp $b } grep { $_ ne $id } keys %_claim;
+    return @others unless _perAccount($client);
+    my $key = _accountKeyOf($client);
+    return () unless defined $key;
+    return grep { my $k = _accountKeyOf($_); defined $k && $k eq $key } @others;
+}
+
+# _claimSet($client, $why) -- 90.1-03: the claim write of the paths that never
+# notified a loser (start, resume): the group peers are dropped silently, the
+# own entry is set.
+sub _claimSet {
+    my ($client, $why) = @_;
+    delete $_claim{$_} for _claimGroupPeers($client);
+    $_claim{ $client->id } = 1;
+    return;
 }
 
 # bindConnectClaim($class, $client, $source) -- D-D1 (83.1-02 Task 1): the
-# ONE write path for the Soloist Connect claim ($_activeConnectPlayer).
+# ONE write path for the Soloist Connect claim (%_claim, per player, 90.1-03).
 # Called from Control's transfer-class handler (_onFrameDeviceChanged,
 # is_active:true, source 'transfer') and from the resume re-entry path
 # below (source 'resume'). The generic `spottyconnect start` dispatch no
@@ -193,7 +252,8 @@ sub bindConnectClaim {
 
     my $now = Time::HiRes::time();
 
-    if ($_activeConnectPlayer && $_activeConnectPlayer ne $client->id) {
+    my @peers = _claimGroupPeers($client);
+    for my $oldId (@peers) {
         # D-D2: last message wins -- protokolliert statt still ueberschrieben.
         # Distinguish a CLEAN handover (the old player's own Control is no
         # longer mid-session) from an UNCLEAN one (the old Control still
@@ -201,7 +261,6 @@ sub bindConnectClaim {
         # "ein sauberer Einzeltransfer"; this branch is what happens outside
         # that boundary (two fast switches, a dropped connection with a
         # fresh sign-in, or two simultaneous reports).
-        my $oldId    = $_activeConnectPlayer;
         my $unclean  = 0;
 
         # 84-08 (SEAM-6.2): the OLD player's backend role answers "still
@@ -241,7 +300,16 @@ sub bindConnectClaim {
         }
     }
 
-    $_activeConnectPlayer = $client->id;
+    # 90.1-03 (D-01): the holders that stay -- another account, or an unknown one
+    # (D-02) -- are logged once each; they keep their claim.
+    my %isPeer = map { $_ => 1 } @peers;
+    for my $keptId (sort { $a cmp $b } grep { $_ ne $client->id && !$isPeer{$_} } keys %_claim) {
+        main::INFOLOG && $log->is_info && $log->info(
+            "Connect claim: kept " . $keptId . " (other account) while " . $client->id . " binds"
+        );
+    }
+    delete $_claim{$_} for @peers;
+    $_claim{ $client->id } = 1;
     $_lastBindAt = $now;
 
     # 84.1-08 (WR-02, D-02): record the Song that was playing AT THIS
@@ -256,6 +324,15 @@ sub bindConnectClaim {
     }
     else {
         delete $_connectEntrySong{ $client->id };
+    }
+
+    # 90.1 review WR-03 (a): a Don't Stop the Music timer armed before this session (DSTM's onPlaylistChange arms it at
+    # half the remaining time of a one-title play) would fire into it. LMS's dontStopTheMusic does not ask the conflict
+    # hook (disableDSTM) when its timer fires: it calls the provider, and an empty answer makes LMS append
+    # `randomplay://track`. Every session entry binds here, so the pending timer dies with the bind. Nothing in the
+    # queue is touched (D-14). DSTM keys its timer on the master client ($client is the master here).
+    if (defined &Slim::Plugin::DontStopTheMusic::Plugin::dontStopTheMusic) {
+        Slim::Utils::Timers::killTimers($client, \&Slim::Plugin::DontStopTheMusic::Plugin::dontStopTheMusic);
     }
 
     main::INFOLOG && $log->is_info && $log->info(
@@ -301,8 +378,8 @@ sub releaseConnectClaim {
     # _emitAllowed); then nothing consumed the state and it must go like any other stale one.
     $class->discardPowerState($client, "claim released (" . ($source // '?') . ")")
         unless ($source // '') eq 'inactive' && $_powerOffArmed{ $client->id };
-    if ($_activeConnectPlayer && $_activeConnectPlayer eq $client->id) {
-        $_activeConnectPlayer = undef;
+    if ($_claim{ $client->id }) {
+        delete $_claim{ $client->id };
         $client->pluginData(pendingConnect => 0);
         main::INFOLOG && $log->is_info && $log->info(
             "Connect claim: released " . $client->id . " source=" . ($source // '?')
@@ -422,7 +499,7 @@ sub shutdown {
         Slim::Control::Request::unsubscribe(\&_onLmsPlaylistChanged);
         Slim::Control::Request::unsubscribe(\&_onPower);
 
-        $_activeConnectPlayer = undef;
+        %_claim = ();
         %_connectEntrySong = ();
         $initialized = 0;
     }
@@ -808,9 +885,7 @@ sub _stopConnectDaemon {
     require Plugins::SpotOn::Unified::DaemonManager;
     Plugins::SpotOn::Unified::DaemonManager->stopHelper($client->id);
 
-    if ($_activeConnectPlayer && $_activeConnectPlayer eq $client->id) {
-        $_activeConnectPlayer = undef;
-    }
+    delete $_claim{ $client->id };
 }
 
 # ---------------------------------------------------------------------------
@@ -995,7 +1070,7 @@ sub _onNewSong {
     # Accepted edge (inline per plan): a user manually Browse-playing the
     # exact track the daemon announces will not release the claim until
     # the next differing track.
-    if ($_activeConnectPlayer && $_activeConnectPlayer eq $client->id) {
+    if ($_claim{ $client->id }) {
         unless ($url =~ m{spoton://connect-} || ($mode->() // '') eq 'connect') {
             main::INFOLOG && $log->is_info && $log->info(
                 "D-16: new song without Connect URL - releasing stale Connect claim for " . $client->id
@@ -1007,7 +1082,7 @@ sub _onNewSong {
             # the claim is bound by the transfer class, plan 02) stays
             # traceable if it ever fires.
             $log->warn("Connect claim released by _onNewSong (D-D2)");
-            $_activeConnectPlayer = undef;
+            delete $_claim{ $client->id };
             # D-16: belt-and-braces with Task 1 — a stale claim implies a
             # stale pending flag.
             $client->pluginData(pendingConnect => 0);
@@ -1547,7 +1622,7 @@ sub _onPause {
             # 83.1-07 (D-C3 group E): D-D2 visibility for this retained release
             # path too (see the matching log in _onNewSong's D-16 block).
             $log->warn("Connect claim released by _onPause (D-D2)");
-            $_activeConnectPlayer = undef;
+            delete $_claim{ $client->id };
             $client->pluginData(pendingConnect => 0);
             return;
         }
@@ -1580,9 +1655,10 @@ sub _onPause {
         # session, suppress this player's stop event.
         # 88-06 (D-05): not for the stale-eject gesture -- Play on the player the
         # session moved away from is exactly the command that must reach its daemon.
-        if (!$staleEject && $_activeConnectPlayer && $_activeConnectPlayer ne $client->id) {
+        my @activeOthers = $staleEject ? () : _claimGroupPeers($client);
+        if (@activeOthers) {
             main::INFOLOG && $log->is_info && $log->info(
-                "Ignoring stop/pause from " . $client->id . " - active Connect player is $_activeConnectPlayer"
+                "Ignoring stop/pause from " . $client->id . " - active Connect player is " . join(',', @activeOthers)
             );
             return;
         }
@@ -1809,7 +1885,7 @@ sub _onPlaylistJump {
             my $jumpUrl  = $jumpSong ? ($jumpSong->track->url || $jumpSong->streamUrl || '') : '';
             return unless $jumpUrl =~ m{spoton://connect-}
                 && ($jumpSong->pluginData('info') || !_isDeadHistoryUrl($jumpUrl))
-                && !$_activeConnectPlayer;
+                && !_claimGroupPeers($client);
             $staleEject = 1;
         }
         else {
@@ -1998,7 +2074,7 @@ sub _connectEvent {
     # 83.1-07 (EIGENTUMSFRAGE point 3): resolved once per event for the
     # sharpened change/seek guards below -- asks the player engine's own
     # mode as a second, independent signal alongside the
-    # $_activeConnectPlayer claim. 84-08 (SEAM-6.2): through the backend
+    # %_claim claim of this player (90.1-03). 84-08 (SEAM-6.2): through the backend
     # role; $ctlMode re-reads its state on every call (librespot: undef).
     require Plugins::SpotOn::Unified::DaemonManager;
     my $evBe    = Plugins::SpotOn::Unified::DaemonManager->backendFor($client);
@@ -2025,25 +2101,25 @@ sub _connectEvent {
         # before).
         my $startCaps = _liveCaps($client);
         if (%$startCaps && !$startCaps->{claimOnStart}) {
-            if ($_activeConnectPlayer && $_activeConnectPlayer ne $client->id) {
+            if (my @startPeers = _claimGroupPeers($client)) {
                 $log->warn(
-                    "Connect claim: unclean source start (claim=" . $_activeConnectPlayer . ", player=" . $client->id . ")"
+                    "Connect claim: unclean source start (claim=" . join(',', @startPeers) . ", player=" . $client->id . ")"
                 );
             }
         }
         else {
             # If another player had Connect, clear its state
-            if ($_activeConnectPlayer && $_activeConnectPlayer ne $client->id) {
-                my $oldClient = Slim::Player::Client::getClient($_activeConnectPlayer);
+            for my $peerId (_claimGroupPeers($client)) {
+                my $oldClient = Slim::Player::Client::getClient($peerId);
                 if ($oldClient) {
                     $oldClient = $oldClient->master;
                     main::INFOLOG && $log->is_info && $log->info(
-                        "Player switch: clearing Connect on " . $_activeConnectPlayer . " for " . $client->id
+                        "Player switch: clearing Connect on " . $peerId . " for " . $client->id
                     );
                 }
             }
 
-            $_activeConnectPlayer = $client->id;
+            _claimSet($client, 'start');
         }
     }
 
@@ -2185,7 +2261,7 @@ sub _connectEvent {
         $kind ||= 'track';
         my $position = $request->getParam('_p3');
 
-        # Check actual playing URL, not just the $_activeConnectPlayer flag.
+        # Check actual playing URL, not just the %_claim flag.
         # The flag stays set after source switch because 'stop' from Spotify
         # (pause forwarding) doesn't clear it — only _onNewSong clears it.
         # Phase 44 fix: use track->url (the original spoton://connect-* URL),
@@ -2263,18 +2339,17 @@ sub _connectEvent {
             # re-entry, mirroring the 'start' branch's check above -- the
             # resume write itself stays in place (EIGENTUMSFRAGE point 3,
             # D-C1 ordering; only a log line is added here).
-            if ((_liveCaps($client)->{connectEntry} // '') eq 'pertrack'
-                && $_activeConnectPlayer && $_activeConnectPlayer ne $client->id)
-            {
+            my @resumePeers = _claimGroupPeers($client);
+            if ((_liveCaps($client)->{connectEntry} // '') eq 'pertrack' && @resumePeers) {
                 $log->warn(
-                    "Connect claim: unclean source resume (claim=" . $_activeConnectPlayer . ", player=" . $client->id . ")"
+                    "Connect claim: unclean source resume (claim=" . join(',', @resumePeers) . ", player=" . $client->id . ")"
                 );
             }
-            if ($_activeConnectPlayer && $_activeConnectPlayer ne $client->id) {
+            if (@resumePeers) {
                 main::INFOLOG && $log->is_info && $log->info(
-                    "Player switch on resume re-entry: " . $_activeConnectPlayer . " -> " . $client->id);
+                    "Player switch on resume re-entry: " . join(',', @resumePeers) . " -> " . $client->id);
             }
-            $_activeConnectPlayer = $client->id;
+            _claimSet($client, 'resume');
 
             # Suppress transitional pause/stop events (same as 'start' handler):
             # newTrack prevents _onPause from forwarding the LMS stop-before-play
@@ -2502,7 +2577,7 @@ sub _connectEvent {
         # stream branch re-enters via playlist play normally.
         #
         # D-16 (RC-2 stale-claim hygiene): the ownership claim
-        # $_activeConnectPlayer deliberately STAYS (the dormant session
+        # the player's %_claim entry deliberately STAYS (the dormant session
         # remains identifiable and manually resumable), but pendingConnect
         # must NOT — it is strictly the start-event-precedes-playlist-play
         # window flag (used by the change/seek handlers' || pendingConnect
@@ -2820,6 +2895,20 @@ sub _connectEvent {
                 );
             }
         }
+        # 90.1 review WR-01 (#225 chain, third site): on a STOPPED player `pause 0` is LMS's `playlist jump
+        # <playingSongIndex>` (Commands.pm), which re-opens the stale entry LMS stands on (after an LMS restart, an
+        # adopted session, a wake refused inside the own-echo window); its getNextTrack names another title than the
+        # daemon's and Control hands the session to browse. For the per-track backend the `playlist play` of the new
+        # title below opens it by itself. librespot is untouched (connectEntry is not pertrack).
+        elsif (!$client->isPlaying && !$client->isPaused && $newTrackId && !$wantHold
+            && (_liveCaps($client)->{connectEntry} // '') eq 'pertrack')
+        {
+            $skipChangeUnpause = 1;
+            main::INFOLOG && $log->is_info && $log->info(
+                "Connect: change while LMS stopped -- unpause skipped, the playlist play opens the new title ("
+                . $client->id . ")"
+            );
+        }
         # 88 review WR-05: nor for the change that confirms a pull-back - the pending
         # open starts the stream itself ($confirmsPullback above).
         if (!$client->isPlaying && __PACKAGE__->isSpotifyConnect($client)
@@ -2991,15 +3080,28 @@ sub _connectEvent {
             return;
         }
         # Grace period: ignore spurious stop events during Connect session setup.
-        # This is librespot's grace: its binary fires Stopped between TrackChanged
-        # and Playing, which must not pause the LMS player. Time-based check only
-        # (isPlaying is already true by the time the stop arrives because playlist
-        # play was just issued). D-33 FULL-2 CR-01: Soloist's Control classifies
-        # its own frames (stop only on a real paused/stopped), so on that role
-        # (connectClaimGate 0) a stop inside the window is a genuine app pause.
-        # No role known keeps the grace.
+        # This is librespot's grace: its old binary fired Stopped between
+        # TrackChanged and Playing, which must not pause the LMS player.
+        # D-33 FULL-2 CR-01: Soloist's Control classifies its own frames (stop
+        # only on a real paused/stopped), so on that role (connectClaimGate 0) a
+        # stop inside the window is a genuine app pause. No role known keeps the
+        # grace.
+        # GH #230 fix A: once LMS REALLY plays (strict isPlaying(1), not the
+        # non-strict view that is already true right after playlist play) and
+        # the claim is held, a stop inside the window is the user's app pause:
+        # fall through to the normal pause path. Without this LMS played out its
+        # buffer and ended at 0:00 while the app showed paused. While LMS still
+        # buffers the grace stays as before - LMS discards a pause in BUFFERING
+        # (StreamingController state table, row Pause).
         my $needsStartGrace = $evBe ? ($evBe->capabilities->{connectClaimGate} ? 1 : 0) : 1;
-        if ($needsStartGrace && (Time::HiRes::time() - ($client->pluginData('connectStartTime') || 0)) < CONNECT_START_GRACE)
+        my $inStartGrace = $needsStartGrace
+            && (Time::HiRes::time() - ($client->pluginData('connectStartTime') || 0)) < CONNECT_START_GRACE;
+        if ($inStartGrace && $client->isPlaying(1) && __PACKAGE__->isSpotifyConnect($client)) {
+            main::INFOLOG && $log->is_info && $log->info(
+                "GH #230: stop inside the start grace while LMS really plays - honouring the app pause: " . $client->id
+            );
+        }
+        elsif ($inStartGrace)
         {
             main::INFOLOG && $log->is_info && $log->info(
                 "Ignoring spurious stop during Connect session setup grace period"
@@ -3059,7 +3161,7 @@ sub _connectEvent {
     # Ready: Spirc reconnected internally (after session expiry or source switch).
     # Binary sends this after successfully completing a Spirc::new() reconnect.
     # Re-issue playlist play so LMS resumes streaming without user intervention.
-    # T-05.3-06: guard checks $_activeConnectPlayer eq $client->id before acting.
+    # T-05.3-06: guard checks the player's own %_claim entry before acting.
     # Guards in order: claim, M11 (paused), GH #216 (powered off). The
     # "re-issuing" line is logged only when play is really re-issued; a ready
     # for a player without the claim logs one "ignored" line instead.
@@ -3071,7 +3173,7 @@ sub _connectEvent {
 
         # Only re-issue if this player was previously the active Connect player.
         # If not (e.g. another player took over), ignore.
-        if ($_activeConnectPlayer && $_activeConnectPlayer eq $client->id) {
+        if ($_claim{ $client->id }) {
             # M11: do not force-start playback if the user paused — a Spirc
             # reconnect must not override the paused state.
             if ($client->isPaused()) {
@@ -3134,7 +3236,7 @@ sub _connectEvent {
         else {
             main::INFOLOG && $log->is_info && $log->info(
                 "Spirc reconnected (ready event) for " . $client->id
-                . " - ignored, not the active Connect player (claim=" . ($_activeConnectPlayer // 'none') . ")"
+                . " - ignored, not the active Connect player (claim=" . (join(',', sort { $a cmp $b } keys %_claim) || 'none') . ")"
             );
         }
         return;

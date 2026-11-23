@@ -29,7 +29,7 @@
 #   3. no write when the daemon is active, or when the copy is empty without
 #      --refresh. Write path only on an INACTIVE daemon: lavender-pa must be
 #      idle (pa-idle-gate.sh) and the desktop app must not be running.
-#   4. LMS state: gaps-76.sh record-state (provider/power/streamFormat/volume/
+#   4. LMS state: lms-state.sh record-state (provider/power/streamFormat/volume/
 #      diagnosticMode of lavender-UAT) before anything is touched.
 #   5. app: start, wait for CDP, connect lavender-UAT (no play), poll until
 #      is_active=1, pause over the WS if it is playing, read, disconnect back
@@ -37,7 +37,7 @@
 #      is_active=0. If the daemon is STILL active (live finding 2026-10-22: the
 #      app's disconnect did not release it), print QC_RELEASE_FALLBACK=deactivate
 #      and send the daemon's own WS deactivate (own-device command, no queue
-#      write). Then check the app is gone, gaps-76.sh restore-state (must print
+#      write). Then check the app is gone, lms-state.sh restore-state (must print
 #      STATE_RESTORED=PASS), read once more.
 #   6. classify and print exactly ONE final line (always the last line):
 #        QUEUE_CLEARED=PASS|FAIL|UNBESTIMMT before=<n|-> after=<n|-> action=<none|app_transfer> [reason=<r>] view_before=<live|snapshot|-> restored=<active|inactive|->
@@ -60,7 +60,7 @@
 #   QC_WS_RECORD       default "sudo -n perl <repo>/tools/soloist-ws-record.pl"
 #   QC_CDP             default "node $HOME/SynologyDrive/dev/spoton-private/tools/spotify-cdp.js"
 #   QC_APP_PIDS_CMD    default "ps -C spotify -o pid="  (prints pids while the app runs)
-#   QC_GAPS            default "bash <repo>/.planning/phases/79-soloist-e2e-uat-v4-0-release/runners/gaps-76.sh"
+#   QC_GAPS            default "bash <repo>/tools/uat/lms-state.sh" (D-20a; was the archived gaps-76.sh runner)
 #   QC_LMS_STATUS_CMD  test hook: command printing the QC_LMS line (default: curl LMS status)
 #   QC_POLL_SLEEP      seconds between polls (default 3)
 #   PA_MAC             MAC of lavender-pa (required, no default; rig-env.sh exports it)
@@ -72,7 +72,7 @@ QC_REPO="${QC_REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 QC_WS_RECORD="${QC_WS_RECORD:-sudo -n perl $QC_REPO/tools/soloist-ws-record.pl}"
 QC_CDP="${QC_CDP:-node $HOME/SynologyDrive/dev/spoton-private/tools/spotify-cdp.js}"
 QC_APP_PIDS_CMD="${QC_APP_PIDS_CMD:-ps -C spotify -o pid=}"
-QC_GAPS="${QC_GAPS:-bash $QC_REPO/.planning/phases/79-soloist-e2e-uat-v4-0-release/runners/gaps-76.sh}"
+QC_GAPS="${QC_GAPS:-bash $QC_REPO/tools/uat/lms-state.sh}"
 QC_LMS_STATUS_CMD="${QC_LMS_STATUS_CMD:-}"
 QC_POLL_SLEEP="${QC_POLL_SLEEP:-3}"
 LMS_URL="${LMS_URL:-http://127.0.0.1:9000/jsonrpc.js}"
@@ -367,7 +367,7 @@ if [ "$R_ACTIVE" = 1 ]; then
 fi
 # QC-FALLBACK-END
 
-# LMS state back to the recorded one (gaps-76.sh restore-state; never a raw LMS stop)
+# LMS state back to the recorded one (lms-state.sh restore-state; never a raw LMS stop)
 # QC-LMS-RESTORE-BEGIN
 RESTORE_OUT=$("${GAPS[@]}" restore-state "$OUT/lms-state" 2>&1); RESTORE_RC=$?
 printf '%s\n' "$RESTORE_OUT" > "$OUT/qc-lms-restore.txt"

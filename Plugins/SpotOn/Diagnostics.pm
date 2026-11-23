@@ -20,7 +20,8 @@ use warnings;
 use Encode qw(encode);
 
 # The repo's secret pattern, verbatim from tools/uat/extract-run.pl ($REDACT_RE): Soloist keys, auth_data
-# values and Bearer tokens. t/core/09_settings_core.t pins that this stays equal.
+# values and Bearer tokens. t/core/09_settings_core.t pins that this stays equal. (The guest-id rule below is the
+# one deliberate exception to "verbatim": extract-run.pl carries its own, wider id redaction, 90.1-04.)
 our $SECRET_RE = qr/spak_[A-Za-z0-9_-]*|auth_data[^ ]*|Bearer [A-Za-z0-9._-]+/;
 
 sub sections {
@@ -41,11 +42,15 @@ sub sections {
 # then IP, MAC, device ids, paths. IP runs before MAC (79-75 WR-01): an IPv6 address whose groups are all two hex
 # digits ("2001:db8:10:20:30:40:50:60") would otherwise be eaten as six-group MAC runs; a MAC is a six-group run
 # and no valid IPv6 shape ("::" once and at most 7 groups, or exactly 8), so it survives the IP rule untouched.
+# guestids (90.1-04, D-06) runs right after userids: a stored id is already the marker [REDACTED] by then (which the
+# guest rule skips), and what is left in `logged in as <id>` / `[session:<id>]` is the id of a guest account that is
+# not stored anywhere: nothing of it shown up to 8 characters, the last 4 above (90.1 review CR-01, fail closed).
 sub redactions {
     return (
         { id => 'secrets',     key => 'PLUGIN_SPOTON_DIAG_RED_SECRETS',     apply => \&_redactSecrets },
         { id => 'emails',      key => 'PLUGIN_SPOTON_DIAG_RED_EMAILS',      apply => \&_redactEmails },
         { id => 'userids',     key => 'PLUGIN_SPOTON_DIAG_RED_USERIDS',     apply => \&_redactUserIds },
+        { id => 'guestids',    key => 'PLUGIN_SPOTON_DIAG_RED_GUESTIDS',    apply => \&_redactGuestIds },
         { id => 'displayname', key => 'PLUGIN_SPOTON_DIAG_RED_DISPLAYNAME', apply => \&_redactDisplayNames },
         { id => 'lanips',      key => 'PLUGIN_SPOTON_DIAG_RED_LANIPS',      apply => \&_redactLanIps },
         { id => 'macs',        key => 'PLUGIN_SPOTON_DIAG_RED_MACS',        apply => \&_redactMacs },
@@ -145,6 +150,110 @@ sub _redactUserIds {
     my @alt = ((map { quotemeta } sort $by keys %forms), (map { '(?i:' . quotemeta($_) . ')' } sort $by keys %escForms));
     my $alt = join '|', @alt;
     $text =~ s/(?<![A-Za-z0-9_%])(?:$alt)(?![A-Za-z0-9_])/[REDACTED]/g;
+    return $text;
+}
+
+# ------------------------------------------------------------------
+# guest account ids (90.1-04, D-06)
+#
+# A Soloist daemon signed in as a guest account logs its id in full: `logged in as <id>` and the `[session:<id>]`
+# tag. The guest is not a stored account, so _redactUserIds cannot know it.
+# 90.1 review CR-01: fail CLOSED. Whatever follows the anchor up to whitespace, ESC (or `]` in the tag) is the id,
+# whatever characters it holds (AccountLog parses it as \S{1,128}; legacy user names are user-chosen and can be
+# short). Same length rule as AccountLog (90.1-02 deviation 3): an id of 8 characters or fewer shows nothing (`...`),
+# a longer one `...` plus its last 4 characters, counted in characters (a UTF-8 byte string is decoded first). An
+# already shortened id (`...`) and the marker `[REDACTED` of a stored id are left alone. Every id seen at a daemon-shaped
+# anchor (R2 WR-02, see $SWEEP_LOGIN_RE) is then also replaced as a TOKEN anywhere else in the text, plain and URI-escaped.
+# 90.1 review R2 WR-01: the user uri (`spotify:user:<id>`, plain or escaped) is a third anchor, cut in place, so a context
+# uri at INFO loses its id even when no login line is in the report; it is not a sweep source (see $USER_URI_RE).
+# ------------------------------------------------------------------
+sub _guestCut {
+    my ($id) = @_;
+    my $chars = $id;
+    my $decoded;
+    if (!utf8::is_utf8($id) && $id =~ /[\x80-\xff]/) {
+        $decoded = eval { Encode::decode('UTF-8', $id, Encode::FB_CROAK() | Encode::LEAVE_SRC()) };
+        $chars = $decoded if defined $decoded;
+    }
+    return '...' unless length($chars) > 8;
+    my $tail = substr($chars, -4);
+    $tail = encode('UTF-8', $tail) if defined $decoded;
+    return '...' . $tail;
+}
+
+# 90.1 review R2 WR-01: the user uri `spotify:user:<id>` (and its URI-escaped form `spotify%3Auser%3A<id>`) is an anchor of its own,
+# cut IN PLACE. The id runs to `:`, `%3A`, whitespace, ESC, a quote, `<`, `>`, `)` or `]` (wide on purpose: a longer run hides more).
+# It never feeds the token sweep: `spotify:user:spotify:playlist:...` is a common legacy form and would sweep the word `spotify`.
+my $USER_URI_RE = qr/((?i:spotify(?::|%3A)user(?::|%3A)))(?!\[REDACTED|\.\.\.)((?:(?!%3[Aa])[^:\s\x1b"'<>)\]])+)/;
+
+# 90.1 review R2 WR-02: the in-place cut keeps its wide anchors, but only a DAEMON-shaped anchor teaches the token sweep an id. The
+# server.log section carries Error and Warning lines of every module, so a foreign `not logged in as premium user` must not sweep the
+# word `premium` from the whole report. Sweep sources: the daemon's login line (a daemon timestamp right before `logged in as`: the
+# current build's `HH:MM:SS.mmm: `, the older build's `HH:MM:SS.mmm <L> [f:N ] ` with optional colour codes; the id ends the line,
+# AccountLog's shape) and the bracketed session tag `[session:<id>]`.
+my $SWEEP_LOGIN_RE = qr/[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+(?:: | [A-Z] \[f:[^\]\n]*\] (?:\x1b\[[0-9;]*m)*)logged in as (?!\[REDACTED|\.\.\.)([^\s\x1b]+)(?:\x1b\[[0-9;]*m)*[ \t]*\r?$/m;
+my $SWEEP_SESS_RE  = qr/\[session:(?!\[REDACTED|\.\.\.)([^\]\s\x1b]+)\]/;
+
+# _uriEscape($bytes) -> the RFC 3986 escape of a byte string (what URI::Escape::uri_escape does by default), done here by hand so the
+# guest rule needs no module beyond Encode
+sub _uriEscape {
+    my ($b) = @_;
+    $b =~ s/([^A-Za-z0-9._~-])/sprintf('%%%02X', ord($1))/ge;
+    return $b;
+}
+
+# _guestCutUri($run, \%stored) -> the cut form of an id that may hold %XX escapes. Without an escape it is _guestCut. With one, the id
+# is counted after unescaping (an escaped 8-character id still shows nothing) and the shown tail is escaped again. A stored id (keys:
+# the value and its UTF-8 bytes) becomes [REDACTED], as the userids rule makes it; that rule cannot see it behind `%3A` (no token
+# boundary after the `A`).
+sub _guestCutUri {
+    my ($run, $stored) = @_;
+    if ($run !~ /%[0-9A-Fa-f]{2}/) {
+        return '[REDACTED]' if $stored && ($stored->{$run} || (utf8::is_utf8($run) && $stored->{ encode('UTF-8', $run) }));
+        return _guestCut($run);
+    }
+    my $bytes = $run;
+    utf8::encode($bytes) if utf8::is_utf8($bytes);
+    $bytes =~ s/%([0-9A-Fa-f]{2})/chr(hex($1))/ge;
+    return '[REDACTED]' if $stored && $stored->{$bytes};
+    my $cut = _guestCut($bytes);
+    return $cut if $cut eq '...';
+    return '...' . _uriEscape(substr($cut, 3));
+}
+
+sub _redactGuestIds {
+    my ($text, $ctx) = @_;
+    return $text unless defined $text && length $text;
+    my %stored;
+    if (ref($ctx) eq 'HASH' && ref($ctx->{accounts}) eq 'HASH') {
+        for my $acct (values %{ $ctx->{accounts} }) {
+            next unless ref($acct) eq 'HASH';
+            my $uid = $acct->{spotifyUserId};
+            next unless defined $uid && !ref($uid) && length($uid);
+            $stored{$uid} = 1;
+            $stored{ encode('UTF-8', $uid) } = 1;
+        }
+    }
+    my %seen;
+    $seen{$1} = 1 while $text =~ /$SWEEP_LOGIN_RE/g;
+    $seen{$1} = 1 while $text =~ /$SWEEP_SESS_RE/g;
+    $text =~ s/(logged in as )(?!\[REDACTED|\.\.\.)([^\s\x1b]+)/$1 . _guestCut($2)/ge;
+    $text =~ s/(\[session:)(?!\[REDACTED|\.\.\.)([^\]\s\x1b]+)\]/$1 . _guestCut($2) . ']'/ge;
+    $text =~ s/$USER_URI_RE/$1 . _guestCutUri($2, \%stored)/ge;
+    my @ids = grep { length($_) >= 3 } keys %seen;    # a 1-2 character token is too common to sweep the whole text for
+    if (@ids) {
+        # each id also in its URI-escaped form (case-insensitive hex, as _redactUserIds does); all forms longest first
+        my %pat;
+        for my $id (@ids) {
+            $pat{$id} = quotemeta $id;
+            my $raw = $id;
+            utf8::encode($raw) if utf8::is_utf8($raw);
+            my $esc = _uriEscape($raw);
+            $pat{$esc} //= '(?i:' . quotemeta($esc) . ')' if $esc ne $raw;
+        }
+        my $alt = join '|', map { $pat{$_} } sort { length($b) <=> length($a) || $a cmp $b } keys %pat;
+        $text =~ s/(?<![A-Za-z0-9_%])($alt)(?![A-Za-z0-9_])/_guestCutUri($1, \%stored)/ge;
+    }
     return $text;
 }
 

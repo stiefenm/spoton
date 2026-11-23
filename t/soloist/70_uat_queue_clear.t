@@ -204,10 +204,72 @@ my $mode = ($n == 0) ? ($st->{lms_mode_first} // 'stop') : ($st->{lms_mode_last}
 print "mode=$mode playlist_tracks=1 remote=1\n";
 FAKE_LMS
 
-for my $pair (['fake-ws.pl', $fake_ws], ['fake-cdp.pl', $fake_cdp], ['fake-pids.pl', $fake_pids], ['fake-gaps.pl', $fake_gaps], ['fake-lms.pl', $fake_lms]) {
+# D-20a (90.1-01): a fake curl in front of PATH for the cases that run the DEFAULT gaps tool
+# (tools/uat/lms-state.sh). One JSON state file stands in for the LMS: JSON-RPC reads and writes of
+# playerpref / pref / power / mixer volume, and the settings-page POST. Every request is logged to
+# <state>.calls. `drift_after` = after that many `?` reads the values in `drift` change (the state
+# the tool recorded is then no longer the state the LMS holds); `ignore` = verbs/names whose writes
+# the fake silently drops; `down` = every request fails like an unreachable LMS (curl exit 7).
+my $fake_curl = <<'FAKE_CURL';
+#!/usr/bin/perl
+use strict; use warnings; use JSON::PP;
+my ($body, $url, $wfmt) = ('', '', '');
+my @a = @ARGV;
+while (@a) {
+    my $x = shift @a;
+    if ($x =~ /\A-(m|X|H|d|o|w)\z/) { my $v = shift @a; $body = $v if $x eq '-d'; $wfmt = $v if $x eq '-w' }
+    elsif ($x =~ /\A-/) { next }
+    else { $url = $x }
+}
+my $sf = $ENV{LMS_FAKE_STATE};
+my $st = do { open(my $fh, '<', $sf) or exit 7; local $/; decode_json(<$fh>) };
+exit 7 if $st->{down};
+sub save { open(my $fh, '>', $sf) or die; print $fh encode_json($st); close $fh }
+sub logc { open(my $fh, '>>', "$sf.calls") or die; print $fh "$_[0]\n"; close $fh }
+my %ign = map { $_ => 1 } @{ $st->{ignore} || [] };
+my $v = $st->{v};
+if ($url =~ m{/jsonrpc\.js\z}) {
+    my $req = decode_json($body);
+    my ($verb, @args) = @{ $req->{params}[1] };
+    logc(join(' ', $verb, @args));
+    my ($res, $key, $field, $q) = ({});
+    if ($verb eq 'playerpref') { $key = "pp:$args[0]"; $field = '_p2'; $q = $args[1] }
+    elsif ($verb eq 'pref')    { $key = "pref:$args[0]"; $field = '_p2'; $q = $args[1] }
+    elsif ($verb eq 'power')   { $key = 'power'; $field = '_power'; $q = $args[0] }
+    elsif ($verb eq 'mixer' && $args[0] eq 'volume') { $key = 'volume'; $field = '_volume'; $q = $args[1] }
+    else { $res = { mode => 'stop' } }
+    if (defined $key) {
+        if ($q eq '?') {
+            $res = { $field => $v->{$key} };
+            $st->{reads}++;
+            if (($st->{drift_after} // 0) && $st->{reads} == $st->{drift_after}) { $v->{$_} = $st->{drift}{$_} for keys %{ $st->{drift} } }
+        } else {
+            my $short = $key; $short =~ s/\A(?:pp|pref):(?:[^:]+:)?//;
+            $v->{$key} = $q unless $ign{$short} || $ign{$key};
+        }
+        save();
+    }
+    print encode_json({ id => 1, result => $res });
+    exit 0;
+}
+logc("POST $body");
+for my $kv (split /&/, $body) {
+    my ($k, $val) = split /=/, $kv, 2;
+    next unless $k =~ /\Apref_(\w+)\z/;
+    my $name = $1;
+    $v->{"pp:plugin.spoton:$name"} = $val unless $ign{$name};
+}
+save();
+print "200" if $wfmt =~ /http_code/;
+exit 0;
+FAKE_CURL
+
+for my $pair (['fake-ws.pl', $fake_ws], ['fake-cdp.pl', $fake_cdp], ['fake-pids.pl', $fake_pids], ['fake-gaps.pl', $fake_gaps], ['fake-lms.pl', $fake_lms], ['bin/curl', $fake_curl]) {
+    mkdir "$fakes/bin" unless -d "$fakes/bin";
     open(my $fh, '>', "$fakes/$pair->[0]") or die "write $pair->[0]: $!";
     print $fh $pair->[1];
     close $fh;
+    chmod 0755, "$fakes/$pair->[0]" if $pair->[0] =~ m{\Abin/};
 }
 
 # ------------------------------------------------------------
@@ -248,6 +310,26 @@ sub run_case {
     local $ENV{QC_FAKE_INVLOG}   = "$d/inv.log";
     local $ENV{QC_FAKE_GAPSLOG}  = "$d/gaps.log";
     local $ENV{QC_GAPS}          = "perl $fakes/fake-gaps.pl";
+    # default_gaps => { lms => {...} }: no QC_GAPS at all (the tool's own default, tools/uat/lms-state.sh)
+    # against the fake curl / fake LMS state
+    local $ENV{PATH}             = $ENV{PATH};
+    local $ENV{LMS_FAKE_STATE}   = "$d/lms.json";
+    if ($c{default_gaps}) {
+        delete $ENV{QC_GAPS};
+        $ENV{PATH} = "$fakes/bin:$ENV{PATH}";
+        my %lms = (
+            v => {
+                'pp:plugin.dontstopthemusic:provider' => 'PLUGIN_SPOTON_DSTM',
+                'pp:plugin.spoton:streamFormat' => 'flac',
+                'pp:plugin.spoton:enableSpotifyConnect' => 1, 'pp:plugin.spoton:disableDiscovery' => 0,
+                'pp:plugin.spoton:enableAutoplay' => 0, 'pp:plugin.spoton:discoveryDisabledByCrashLoop' => 0,
+                'pref:plugin.spoton:diagnosticMode' => 1,
+                power => 1, volume => 40,
+            },
+            %{ $c{default_gaps} },
+        );
+        open(my $lfh, '>', "$d/lms.json") or die; print $lfh encode_json(\%lms); close $lfh;
+    }
     local $ENV{QC_LMS_STATUS_CMD} = "perl $fakes/fake-lms.pl";
     local $ENV{PA_MAC}          = $FAKE_PA;
     delete $ENV{PA_MAC} if $c{no_pa_mac};
@@ -270,6 +352,7 @@ sub run_case {
         rc => $rc, out => $stdout, qc => ($qc[-1] // ''), nqc => scalar(@qc),
         tx => \@tx, cdp => \@cdp, gaps => \@gaps, inv => [ lines_of("$d/inv.log") ],
         state => $after, out_dir => $out_dir,
+        lms => (eval { decode_json(slurp("$d/lms.json")) } || {}), lms_calls => [ lines_of("$d/lms.json.calls") ],
         last_line => (split /\n/, $stdout)[-1] // '',
     };
 }
@@ -340,7 +423,7 @@ sub nothing_invoked { my ($r) = @_; return (@{ $r->{inv} } == 0) ? 1 : 0 }
 
     # release fallback is NOT used when disconnect released the daemon
     unlike($r->{out}, qr/QC_RELEASE_FALLBACK/, 'iwm C12 no release fallback when disconnect released');
-    # LMS state recorded before the handover, restored after it (gaps-76.sh record-state / restore-state)
+    # LMS state recorded before the handover, restored after it (fake of tools/uat/lms-state.sh: record-state / restore-state)
     is_deeply($r->{gaps}, [qw(record-state restore-state)], 'iwm C20 LMS state recorded once before and restored once after');
     like($r->{out}, qr/^STATE_RESTORED=PASS$/m, 'iwm C20 STATE_RESTORED=PASS printed');
 }
@@ -546,6 +629,42 @@ sub nothing_invoked { my ($r) = @_; return (@{ $r->{inv} } == 0) ? 1 : 0 }
     like($r->{qc}, qr/\AQUEUE_CLEARED=PASS /, 'iwm C23 the printed change does not turn the daemon result into something else');
     my $r2 = run_case(state => { is_active => 0, copy => [$X], live => [] });
     unlike($r2->{out}, qr/QC_LMS_MODE_CHANGED/, 'iwm C23 no change line when the mode is unchanged');
+}
+
+# ------------------------------------------------------------
+# C24 (D-20a, 90.1-01): the DEFAULT gaps tool, tools/uat/lms-state.sh, no QC_GAPS override. The archived
+# runner is no longer on the path; record-state reads the five values, restore-state writes the recorded
+# ones back (lms-cmd.sh receipts, the settings POST for streamFormat) after the LMS drifted in between.
+# ------------------------------------------------------------
+{
+    my %drift = (volume => 10, 'pp:plugin.dontstopthemusic:provider' => 'DRIFTED');
+    my $r = run_case(state => { is_active => 0, copy => [$X], live => [] },
+                     default_gaps => { drift_after => 5, drift => \%drift });
+    unlike($r->{out}, qr/lms_state_not_recorded/, 'iwm C24 default tool: the LMS state IS recorded (no UNBESTIMMT lms_state_not_recorded)');
+    like($r->{qc}, qr/\AQUEUE_CLEARED=PASS before=1 after=0 action=app_transfer\b.*restored=inactive\z/, 'iwm C24 default tool: PASS before=1 after=0 action=app_transfer');
+    is($r->{rc}, 0, 'iwm C24 exit 0');
+    like($r->{out}, qr/^QC_RECORD_STATE STATE_RECORDED /m, 'iwm C24 record-state wrote the state file');
+    like($r->{out}, qr/^STATE_RESTORED=PASS$/m, 'iwm C24 restore-state printed STATE_RESTORED=PASS');
+    is($r->{lms}{v}{volume}, 40, 'iwm C24 volume written back (drifted to 10 between record and restore)');
+    is($r->{lms}{v}{'pp:plugin.dontstopthemusic:provider'}, 'PLUGIN_SPOTON_DSTM', 'iwm C24 provider written back');
+    is($r->{lms}{v}{'pp:plugin.spoton:streamFormat'}, 'flac', 'iwm C24 streamFormat posted back');
+    ok(scalar(grep { $_ eq 'mixer volume 40' } @{ $r->{lms_calls} }), 'iwm C24 the restore wrote `mixer volume 40` through the LMS command path');
+    ok(scalar(grep { /\APOST .*pref_streamFormat=flac/ } @{ $r->{lms_calls} }), 'iwm C24 the restore POSTed the full-form settings page with pref_streamFormat=flac');
+}
+{
+    # a write the LMS drops: the read-back differs -> STATE_RESTORED=FAIL -> FAIL lms_state_not_restored
+    my $r = run_case(state => { is_active => 0, copy => [$X], live => [] },
+                     default_gaps => { drift_after => 5, drift => { volume => 10 }, ignore => ['volume'] });
+    like($r->{out}, qr/^STATE_RESTORED=FAIL diff= volume$/m, 'iwm C24b a dropped write is a FAIL line naming volume (a gate that can fail)');
+    like($r->{qc}, qr/\AQUEUE_CLEARED=FAIL .*reason=lms_state_not_restored\b/, 'iwm C24b FAIL lms_state_not_restored');
+    is($r->{rc}, 1, 'iwm C24b exit 1');
+}
+{
+    # the unreachable LMS: UNBESTIMMT lms_state_not_recorded comes from lms-state.sh itself, nothing was touched
+    my $r = run_case(state => { is_active => 0, copy => [$X], live => [] }, default_gaps => { down => 1 });
+    like($r->{qc}, qr/\AQUEUE_CLEARED=UNBESTIMMT before=1 after=1 action=none reason=lms_state_not_recorded\b/, 'iwm C24c unreachable LMS: UNBESTIMMT lms_state_not_recorded');
+    is($r->{rc}, 3, 'iwm C24c exit 3');
+    ok(only_reads($r) && !@{ $r->{cdp} }, 'iwm C24c no handover without a recorded LMS state');
 }
 
 # ------------------------------------------------------------

@@ -410,6 +410,24 @@ sub shutdownPlugin {
     Slim::Utils::Timers::killTimers($class, \&_startUnifiedDaemons);
 }
 
+# disableDSTM($class, $client) -- LMS's conflict hook for Don't Stop the
+# Music (Slim/Plugin/DontStopTheMusic/Plugin.pm 14-27, used by
+# isConflictingPluginActive 226-240; install.xml carries
+# <canConflictWithDSTM>1</canConflictWithDSTM>). 90.1-06 / GH #234, D-13
+# layer 2: true while the Spotify app controls this player through a
+# Soloist Connect session. onPlaylistChange then kills its pending timer and
+# arms no new one, so DSTM appends nothing for ANY provider (SpotOn's, a
+# local library, RandomPlay) and no DSTM entry can take the player out of
+# the app's session. Nothing in the queue is deleted or moved (D-14).
+# Cost: LMS logs one WARN per playlist change during a session
+# ("Found Plugins::SpotOn::Plugin active - I'm not going to interfere with
+# it."). LMS caches the plugin list once per start: the flag needs a restart.
+sub disableDSTM {
+    my ($class, $client) = @_;
+    require Plugins::SpotOn::DontStopTheMusic;
+    return Plugins::SpotOn::DontStopTheMusic::connectSessionActive($client);
+}
+
 # postinitPlugin($class)
 # Called by LMS after all plugins have completed initPlugin. Registers
 # SpotOn's Home Extras (scrolled "Recently Played" / "Top Tracks" rows)

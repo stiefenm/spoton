@@ -399,8 +399,8 @@ SKIP: {
             Plugins::SpotOn::Diagnostics::fixedKeys(),
             qw(PLUGIN_SPOTON_DIAG_MODE_DESC PLUGIN_SPOTON_DIAG_DOWNLOAD_DESC),
         );
-        is(scalar(@diag_keys), 34, '79-72 D-45 / 79-82 D-56: 8 titles + 8 descriptions + 8 redactions + 8 fixed + 2 reworded = 34 keys to walk');
-        is(scalar(keys %{ { map { $_ => 1 } @diag_keys } }), 34, '79-72 D-45 / 79-82 D-56: the 34 keys are distinct');
+        is(scalar(@diag_keys), 35, '79-72 D-45 / 79-82 D-56 / 90.1-04: 8 titles + 8 descriptions + 9 redactions + 8 fixed + 2 reworded = 35 keys to walk');
+        is(scalar(keys %{ { map { $_ => 1 } @diag_keys } }), 35, '79-72 D-45 / 79-82 D-56 / 90.1-04: the 35 keys are distinct');
         for my $key (@diag_keys) {
             for my $lang (qw(CS DA DE EN ES FR IT NL NO PL SV)) {
                 ok(defined $langs_of{$key}{$lang} && length $langs_of{$key}{$lang}, "79-72 D-45: $key has a $lang translation");
@@ -416,7 +416,12 @@ SKIP: {
             like($langs_of{PLUGIN_SPOTON_DIAG_NOT_REDACTED}{$lang}, qr/IPv4/, "79-72 D-44: the not-redacted text names public IPv4 ($lang)");
             unlike($langs_of{PLUGIN_SPOTON_DIAG_NOT_REDACTED}{$lang}, qr/IPv6/, "79-72 D-44: the not-redacted text no longer lists an IPv6 address as readable ($lang)");
             like($langs_of{PLUGIN_SPOTON_DIAG_RED_LANIPS}{$lang}, qr/IP6-1/, "79-72 D-44: the redaction list names the IP6-N placeholder ($lang)");
+            # 90.1 review R2 IN-03: since CR-01 an id of 8 characters or fewer shows nothing; the transparency text says so (the
+            # last-4 rule and the 8-character threshold, as digits in every language)
+            like($langs_of{PLUGIN_SPOTON_DIAG_RED_GUESTIDS}{$lang}, qr/4.*\b8\b/s, "90.1 R2 IN-03: the guest id text names the last 4 characters and the 8-character threshold ($lang)");
         }
+        like($langs_of{PLUGIN_SPOTON_DIAG_RED_GUESTIDS}{EN}, qr/8 characters or fewer are hidden completely/, '90.1 R2 IN-03: the EN guest id text says short ids are hidden completely');
+        like($langs_of{PLUGIN_SPOTON_DIAG_RED_GUESTIDS}{DE}, qr/8 Zeichen ganz ausgeblendet/, '90.1 R2 IN-03: the DE guest id text says short ids are hidden completely');
 
         # 79-82 (D-56): the explanation lives on its own page. The switch text names the switch (it no longer says "above"),
         # the download description points at the link next to the button (it no longer says "list above"), in every language.

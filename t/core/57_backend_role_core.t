@@ -506,4 +506,9 @@ ok($ce, 'events: _connectEvent body parseable');
 my %handled = map { $_ => 1 } (($ce // '') =~ /\$cmd eq '([a-z_]+)'/g);
 is_deeply([ sort keys %handled ], \@SEVEN, '_connectEvent dispatches exactly the seven spottyconnect verbs');
 
+
+# 90.1-02 T2 (D-01, D-03): the source checks of the claimPerAccount capability and of the state() key
+# set live in t/soloist/57_backend_role_soloist.t and t/librespot/57_backend_role_librespot.t. t/core
+# reads no backend file: each CI amputation leg deletes one of them and runs t/core.
+
 done_testing();

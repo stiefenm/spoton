@@ -256,7 +256,7 @@ $INC{'Plugins/SpotOn/Soloist/Control.pm'}       = __FILE__;
 }
 
 my %role_src;
-for my $name (qw(_onPause _onLmsStop _bufferedSetVolume _onSeek _onPlaylistJump)) {
+for my $name (qw(_onPause _onLmsStop _bufferedSetVolume _onSeek _onPlaylistJump _accountKeyOf _perAccount _claimGroupPeers)) {
     ($role_src{$name}) = $connect =~ /(sub \Q$name\E \{.*?\n\})\n/s;
 }
 my $role_compiled = !grep { !defined } values %role_src;
@@ -268,7 +268,7 @@ $role_compiled &&= eval(
     . "our \$SPOTIFY_CONNECT = 0;\n"
     . "my \$log   = Test::RoleLog->new;\n"
     . "my \$prefs = Test::RolePrefs->new;\n"
-    . "my \$_activeConnectPlayer;\n"
+    . "my %_claim;\n"
     . "sub isSpotifyConnect { return \$SPOTIFY_CONNECT; }\n"
     . "sub _holdCancel { return; }\n"
     . "sub _isDeadHistoryUrl { return 0; }\n"
@@ -416,7 +416,7 @@ if ($send_control_block) {
 $INC{'Plugins/SpotOn/Connect.pm'} = __FILE__;
 
 my %src3;
-for my $name (qw(_liveCaps _playUrlFor bindConnectClaim _onLmsPlaylistChanged _holdCaps _holdCap _holdRecheck _holdMax _holdClose)) {
+for my $name (qw(_liveCaps _playUrlFor bindConnectClaim _accountKeyOf _perAccount _claimGroupPeers _claimSet _onLmsPlaylistChanged _holdCaps _holdCap _holdRecheck _holdMax _holdClose)) {
     ($src3{$name}) = $connect =~ /(sub \Q$name\E \{.*?\n\})\n/s;
     ($src3{$name}) = $connect =~ /^(sub \Q$name\E .*?\})$/m unless $src3{$name};
 }
@@ -427,9 +427,10 @@ my $h3 = !@missing3 && eval(
     "package Test::RoleHarness3;\n"
     . "use strict; use warnings; use Time::HiRes; use Scalar::Util qw(weaken);\n"
     . "my \$log = Test::RoleLog3->new;\n"
-    . "my (\$_activeConnectPlayer, \$_lastBindAt, %_connectEntrySong, %_hold, %_watchdogTriggerUrl);\n"
-    . "sub setActive  { \$_activeConnectPlayer = \$_[0]; }\n"
-    . "sub getActive  { return \$_activeConnectPlayer; }\n"
+    . "my (%_claim, \$_lastBindAt, %_connectEntrySong, %_hold, %_watchdogTriggerUrl);\n"
+    . "sub setActive  { %_claim = (); \$_claim{ \$_[0] } = 1 if defined \$_[0]; }\n"
+    . "sub addActive  { \$_claim{ \$_[0] } = 1; }\n"
+    . "sub getActive  { my \@k = sort keys %_claim; return wantarray ? \@k : \$k[0]; }\n"
     . "sub setHold    { \$_hold{ \$_[0] } = \$_[1]; }\n"
     . "sub setTrigger { \$_watchdogTriggerUrl{ \$_[0] } = \$_[1]; }\n"
     . join("\n", map { $src3{$_} } sort keys %src3) . "\n1;"

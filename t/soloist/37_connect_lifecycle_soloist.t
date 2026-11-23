@@ -397,7 +397,7 @@ $INC{'Plugins/SpotOn/Soloist/Control.pm'}       = __FILE__;
 }
 
 my %role_src;
-for my $name (qw(_onPause _onLmsStop _bufferedSetVolume _onSeek _onPlaylistJump)) {
+for my $name (qw(_onPause _onLmsStop _bufferedSetVolume _onSeek _onPlaylistJump _accountKeyOf _perAccount _claimGroupPeers)) {
     ($role_src{$name}) = $connect =~ /(sub \Q$name\E \{.*?\n\})\n/s;
 }
 my $role_compiled = !grep { !defined } values %role_src;
@@ -409,7 +409,7 @@ $role_compiled &&= eval(
     . "our \$SPOTIFY_CONNECT = 0;\n"
     . "my \$log   = Test::RoleLog->new;\n"
     . "my \$prefs = Test::RolePrefs->new;\n"
-    . "my \$_activeConnectPlayer;\n"
+    . "my %_claim;\n"
     . "sub isSpotifyConnect { return \$SPOTIFY_CONNECT; }\n"
     . "sub _holdCancel { return; }\n"
     . "sub _isDeadHistoryUrl { return 0; }\n"
@@ -456,7 +456,7 @@ like($control, qr/sub _lmsSongIsOurs \{/,
 like($control, qr/sub for_client \{/,
     '83.1-06: Control.pm defines for_client (per-MAC registry lookup) -- covers the _onPause fallthrough\'s '
     . 'player-switch guard structurally: each player dispatches through its OWN Control instance/MAC, never '
-    . 'through the shared $_activeConnectPlayer package scalar the librespot-only fallthrough consults');
+    . 'through the shared %_claim package hash the librespot-only fallthrough consults');
 
 # ------------------------------------------------------------
 # 83.1-07 Task 1 (ROADMAP Task 6): the Soloist WS branch of
@@ -576,6 +576,64 @@ ok((index($control, 'sub endForeignLeave') >= 0), "84.1-07 G8: Control.pm define
         "84.1-08 G9: the line holding the logged_in assignment also holds loggedOutAt");
 }
 
+# ------------------------------------------------------------
+# 90.1-07 (GH #225, D-10): the app wake, source gates. Adapted from
+# patapovich's AW-G1..G6 (PR #226); AW-G5 is inverted for D-11 (no
+# split-brain stand-down in _checkSplitBrain).
+# ------------------------------------------------------------
+{
+    require Digest::SHA;
+    my $strip = sub { join("\n", grep { !/^\s*#/ } split /\n/, ($_[0] // '')) };
+    my @wake_enter = $control =~ /(_enterConnectSession\('app-wake', fresh => 1, newSession => 1\))/g;
+    is(scalar(@wake_enter), 1, "90.1-07 AWG1: the app wake enters connect through the shared sub once, fresh + newSession");
+    my @restored = $control =~ /(_emitStart\(\$tid, undef, 'restored'\))/g;
+    is(scalar(@restored), 1, "90.1-07 AWG1: the restored start of the reconnect adoption is still there, once");
+    like($control, qr/my \$wake = \$self->_appWakeAfterBrowse;.*?bindConnectClaim\(\$bindClient, \$wake \? 'app-wake' : 'reconnect'\)/s,
+        "90.1-07 AWG1: the wake verdict is read BEFORE the bind (leftBrowseUri is deleted by _enterConnectSession)");
+    like($control, qr/_refreshAccount\('reconnect'\);\s*\n(?:\s*#[^\n]*\n)*\s*my \$wake = \$self->_appWakeAfterBrowse;/,
+        "90.1-07 AWG1: ... and after the 90.1-02 account refresh");
+    like($control, qr/"Control: app wake after a Browse stop on "/, "90.1-07 AWG1: the INFO line names the wake");
+
+    my ($aw_block) = $control =~ /(sub _appWakeAfterBrowse \{.*?\n\})/s;
+    ok($aw_block, "90.1-07 AWG2: _appWakeAfterBrowse block parseable");
+    my $aw_code = $strip->($aw_block);
+    like($aw_code, qr/$_/, "90.1-07 AWG2: _appWakeAfterBrowse references $_") for qw(wakeEdge leftBrowseUri _ownEchoOpen playmode _lmsSongIsOurs);
+    unlike($aw_code, qr/Time::HiRes|time\(\)/, "90.1-07 AWG2: no clock read of its own (the only window is _ownEchoOpen)");
+    (my $regressed = $aw_code) =~ s/\s*return undef if \$self->_ownEchoOpen;//;
+    unlike($regressed, qr/_ownEchoOpen/, "90.1-07 AWG2: dry run -- dropping the echo exclusion makes the gate above go red");
+
+    my ($nrs_block) = $control =~ /(sub _noteReportedStatus \{.*?\n\})/s;
+    ok($nrs_block, "90.1-07 AWG3: _noteReportedStatus block parseable");
+    unlike($strip->($nrs_block), qr/buffering/, "90.1-07 AWG3: buffering is never a reported status (an autoplay advance passes through it)");
+    my ($exec_block) = $control =~ /(sub _execute \{.*?\n\})/s;
+    like($strip->($exec_block), qr/delete \$self->observed->\{wakeEdge\};/, "90.1-07 AWG3: an own command retires the wake edge (_execute)");
+    my ($tc_block) = $control =~ /(sub _transportClosed \{.*?\n\})/s;
+    like($strip->($tc_block), qr/reportedStatus wakeEdge/, "90.1-07 AWG3: a transport close drops the reported status and the edge");
+
+    my ($guard) = $control =~ /(# fremder-autoplay-waechter.*?autoplayPaused\} = \$uri;)/s;
+    ok($guard, "90.1-07 AWG4: the autoplay guard block parseable");
+    unlike($guard // '', qr/wakeEdge|reportedStatus|asStart|_appWake/, "90.1-07 AWG4: the autoplay guard is untouched by the app wake");
+
+    # D-11: _checkSplitBrain stays byte-identical to its 90.1-07 base (a9ef1772); the digest below is
+    # `git show a9ef1772:Plugins/SpotOn/Soloist/Control.pm | perl -ne 'print if /^sub _checkSplitBrain\b/../^\}/' | sha256sum`.
+    my $csb_text = join('', grep { /^sub _checkSplitBrain\b/ .. /^\}/ } map { "$_\n" } split /\n/, $control);
+    is(Digest::SHA::sha256_hex($csb_text), 'b92b2cc042d791efdcb3f457dac6f8a2c5e896c6ead808306e2640e532395c71',
+        "90.1-07 AWG5 (D-11): _checkSplitBrain is unchanged against the plan's base");
+    unlike($strip->($csb_text), qr/_ownEchoOpen|asStart/, "90.1-07 AWG5 (D-11): no echo or held-start stand-down in _checkSplitBrain");
+    my ($ccr) = $control =~ /(sub _connectResync \{.*?\n\})/s;
+    my $ccr_code = $strip->($ccr);
+    my ($i_hold, $i_sb) = map { index($ccr_code, $_) } ('{resumeDue}{asStart}', 'my $sb = ');
+    ok($i_hold >= 0 && $i_hold < $i_sb, "90.1-07 AWG5: the held app-wake start holds the rung in _connectResync, before the attempt is counted");
+
+    my ($aos) = $control =~ /(sub _adoptedOnStaleStop \{.*?\n\})/s;
+    my $aos_code = $strip->($aos);
+    like($aos_code, qr/sessionEntry/, "90.1-07 AWG6: the stale-stop start conversion is limited to adopted sessions (sessionEntry)");
+    like($aos_code, qr/reconnect-to-connect\|app-wake/, "90.1-07 AWG6: ... the reconnect adoption and the app wake only");
+    my ($rdr) = $control =~ /(sub _resumeDueRelease \{.*?\n\})/s;
+    like($strip->($rdr), qr/\$why ne 'new title' && \$self->_adoptedOnStaleStop/, "90.1-07 AWG6: a 'new title' resume release is never converted");
+    like($ccr_code, qr/_adoptedOnStaleStop/, "90.1-07 AWG6: the ladder rung uses the same predicate");
+}
+
 # G10: WR-02's discriminator placement and its no-clock/weak-reference
 # shape.
 
@@ -660,7 +718,7 @@ if ($leave_connect_g11) {
 $INC{'Plugins/SpotOn/Connect.pm'} = __FILE__;
 
 my %src3;
-for my $name (qw(_liveCaps _itemUri _itemUrl _playUrlFor bindConnectClaim _onLmsPlaylistChanged _holdCaps _holdCap _holdRecheck _holdMax _holdClose)) {
+for my $name (qw(_liveCaps _itemUri _itemUrl _playUrlFor bindConnectClaim _accountKeyOf _perAccount _claimGroupPeers _claimSet _onLmsPlaylistChanged _holdCaps _holdCap _holdRecheck _holdMax _holdClose)) {
     ($src3{$name}) = $connect =~ /(sub \Q$name\E \{.*?\n\})\n/s;
     ($src3{$name}) = $connect =~ /^(sub \Q$name\E .*?\})$/m unless $src3{$name};
 }
@@ -671,12 +729,110 @@ my $h3 = !@missing3 && eval(
     "package Test::RoleHarness3;\n"
     . "use strict; use warnings; use Time::HiRes; use Scalar::Util qw(weaken);\n"
     . "my \$log = Test::RoleLog3->new;\n"
-    . "my (\$_activeConnectPlayer, \$_lastBindAt, %_connectEntrySong, %_hold, %_watchdogTriggerUrl);\n"
-    . "sub setActive  { \$_activeConnectPlayer = \$_[0]; }\n"
-    . "sub getActive  { return \$_activeConnectPlayer; }\n"
+    . "my (%_claim, \$_lastBindAt, %_connectEntrySong, %_hold, %_watchdogTriggerUrl);\n"
+    . "sub setActive  { %_claim = (); \$_claim{ \$_[0] } = 1 if defined \$_[0]; }\n"
+    . "sub addActive  { \$_claim{ \$_[0] } = 1; }\n"
+    . "sub dropActive { delete \$_claim{ \$_[0] }; }\n"
+    . "sub getActive  { my \@k = sort keys %_claim; return wantarray ? \@k : \$k[0]; }\n"
     . "sub setHold    { \$_hold{ \$_[0] } = \$_[1]; }\n"
     . "sub setTrigger { \$_watchdogTriggerUrl{ \$_[0] } = \$_[1]; }\n"
     . join("\n", map { $src3{$_} } sort keys %src3) . "\n1;"
 );
+
+# ------------------------------------------------------------
+# 90.1-03 (D-02 / invariant): the unknown account never releases anybody, and
+# the claim set keeps its shape over any sequence of bind / start / resume /
+# release: no two holders share a known account key (claimPerAccount 1), at
+# most one holder (claimPerAccount 0).
+# ------------------------------------------------------------
+ok($h3, '90.1-03: the claim-set subs compile in the role harness') or diag($@);
+if ($h3) {
+    my $acct = sub { defined $_[0] ? { key => $_[0], short => '1234' } : undef };
+
+    # S1 (D-02): an unknown key never releases; a key that becomes known does
+    {
+        my $p1 = Test::Client3->new('aa:00:00:00:00:21');
+        my $p2 = Test::Client3->new('aa:00:00:00:00:22');
+        my $r1 = Test::RoleMock3->new(st => { mode => 'connect', active => 1, account => $acct->('aaaaaaaa') }, caps => { claimPerAccount => 1 });
+        my $r2 = Test::RoleMock3->new(st => { mode => 'connect', active => 1, account => undef },               caps => { claimPerAccount => 1 });
+        local %Slim::Player::Client::BY_ID = ($p1->id => $p1, $p2->id => $p2);
+        local %Plugins::SpotOn::Unified::DaemonManager::ROLES = ($p1->id => $r1, $p2->id => $r2);
+        @Test::RoleLog3::WARN = ();
+        Test::RoleHarness3::setActive($p1->id);
+        Test::RoleHarness3::bindConnectClaim('Plugins::SpotOn::Connect', $p2, 'transfer');
+        is_deeply([ Test::RoleHarness3::getActive() ], [ $p1->id, $p2->id ], '90.1-03 S1: P2 with an unknown account binds: both hold');
+        is(scalar(@Test::RoleLog3::WARN), 0, '90.1-03 S1: no warning');
+        is_deeply($r1->{notes}, [], '90.1-03 S1: P1\'s role was not notified');
+
+        $r2->{st}{account} = $acct->('aaaaaaaa');
+        Test::RoleHarness3::bindConnectClaim('Plugins::SpotOn::Connect', $p2, 'transfer');
+        is_deeply([ Test::RoleHarness3::getActive() ], [ $p2->id ], '90.1-03 S1: once P2\'s key is X and it binds again, P1 is released');
+        is_deeply([ map { $_->[0] } @{ $r1->{notes} } ], [ 'recordErrorOnce', 'claimLost' ], '90.1-03 S1: ... with recordErrorOnce + claimLost on P1\'s role');
+    }
+
+    # S2: the silent writers (start, resume) drop only the holders of the SAME known account
+    for my $why (qw(start resume)) {
+        for my $case ([ 'other account', 'bbbbbbbb', 1 ], [ 'unknown account', undef, 1 ], [ 'same account', 'aaaaaaaa', 0 ]) {
+            my ($label, $key2, $keeps) = @$case;
+            my $p1 = Test::Client3->new('aa:00:00:00:00:31');
+            my $p2 = Test::Client3->new('aa:00:00:00:00:32');
+            my $r1 = Test::RoleMock3->new(st => { mode => 'connect', active => 1, account => $acct->('aaaaaaaa') }, caps => { claimPerAccount => 1 });
+            my $r2 = Test::RoleMock3->new(st => { mode => 'connect', active => 1, account => $acct->($key2) },     caps => { claimPerAccount => 1 });
+            local %Slim::Player::Client::BY_ID = ($p1->id => $p1, $p2->id => $p2);
+            local %Plugins::SpotOn::Unified::DaemonManager::ROLES = ($p1->id => $r1, $p2->id => $r2);
+            Test::RoleHarness3::setActive($p1->id);
+            Test::RoleHarness3::_claimSet($p2, $why);
+            is_deeply([ Test::RoleHarness3::getActive() ], ($keeps ? [ $p1->id, $p2->id ] : [ $p2->id ]),
+                "90.1-03 S2 $why ($label): " . ($keeps ? 'both hold' : 'P1 is dropped silently'));
+            is_deeply([ @{ $r1->{notes} }, @{ $r2->{notes} } ], [], "90.1-03 S2 $why ($label): nobody is notified");
+        }
+    }
+
+    # INV: a fixed pseudo-random sequence of 200 operations, for both capability values
+    for my $perAcct (1, 0) {
+        my %key = (A => 'aaaaaaaa', B => 'aaaaaaaa', C => 'bbbbbbbb', D => undef, E => undef);
+        my (%cl, %role, %roles);
+        my $i = 40;
+        for my $n (sort keys %key) {
+            $cl{$n}    = Test::Client3->new(sprintf('aa:00:00:00:00:%02x', $i++));
+            $role{$n}  = Test::RoleMock3->new(st => { mode => 'connect', active => 1, account => $acct->($key{$n}) }, caps => { claimPerAccount => $perAcct });
+            $roles{ $cl{$n}->id } = $role{$n};
+        }
+        my %nameOf = map { $cl{$_}->id => $_ } keys %cl;
+        local %Slim::Player::Client::BY_ID = map { $cl{$_}->id => $cl{$_} } keys %cl;
+        local %Plugins::SpotOn::Unified::DaemonManager::ROLES = %roles;
+        Test::RoleHarness3::setActive(undef);
+        my $seed = 9013;
+        my $rnd  = sub { $seed = ($seed * 1103515245 + 12345) % 2147483648; return $seed >> 16; };
+        my @names = sort keys %key;
+        my ($bad, $maxHolders, %ops) = (undef, 0);
+        for my $step (1 .. 200) {
+            my $n  = $names[ $rnd->() % @names ];
+            my $op = (qw(bind start resume release))[ $rnd->() % 4 ];
+            $ops{$op}++;
+            if    ($op eq 'bind')    { Test::RoleHarness3::bindConnectClaim('Plugins::SpotOn::Connect', $cl{$n}, 'transfer'); }
+            elsif ($op eq 'start')   { Test::RoleHarness3::_claimSet($cl{$n}, 'start'); }
+            elsif ($op eq 'resume')  { Test::RoleHarness3::_claimSet($cl{$n}, 'resume'); }
+            else                     { Test::RoleHarness3::dropActive($cl{$n}->id); }
+            my @h = Test::RoleHarness3::getActive();
+            $maxHolders = @h if @h > $maxHolders;
+            if ($op ne 'release' && !grep { $_ eq $cl{$n}->id } @h) { $bad //= "step $step: $op of $n left no claim for it"; }
+            if (!$perAcct) {
+                $bad //= "step $step: " . scalar(@h) . " holders under claimPerAccount 0" if @h > 1;
+            }
+            else {
+                my %seen;
+                for my $id (@h) {
+                    my $k = $key{ $nameOf{$id} } // next;
+                    $bad //= "step $step: two holders of account $k" if $seen{$k}++;
+                }
+            }
+        }
+        is($bad, undef, "90.1-03 INV: claimPerAccount $perAcct: the invariant holds over 200 operations");
+        is($ops{bind} + $ops{start} + $ops{resume} + $ops{release}, 200, "90.1-03 INV: claimPerAccount $perAcct: 200 operations ran");
+        if ($perAcct) { cmp_ok($maxHolders, '>=', 3, '90.1-03 INV: claimPerAccount 1: the sequence really reached several holders (not vacuous)'); }
+        else          { is($maxHolders, 1, '90.1-03 INV: claimPerAccount 0: never more than one holder, and one was reached'); }
+    }
+}
 
 done_testing();

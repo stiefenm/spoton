@@ -70,7 +70,7 @@ my $signatur_c_probe_script   = "$project_dir/tools/uat/signatur-c-probe.py";
 my $repeat_probe_script       = "$project_dir/tools/uat/repeat-probe.sh";
 my $rig_prefs_check_script    = "$project_dir/tools/uat/rig-prefs-check.sh";
 my $player_settings_post_script = "$project_dir/tools/uat/player-settings-post.sh";
-my $cluster2_series_script = "$project_dir/.planning/phases/84.1-soloist-reparaturen-vor-der-abnahme/runners/cluster2-series.sh";
+my $cluster2_series_script = "$project_dir/.planning/milestones/v4.0-phases/84.1-soloist-reparaturen-vor-der-abnahme/runners/cluster2-series.sh";
 
 # Quick 260915-bpd: gemeinsame Test-MAC fuer alle drei neuen Subtests --
 # jeder players_loop-Fixture-Eintrag UND jeder run_*_tool-Aufruf, der eine MAC
@@ -1385,6 +1385,10 @@ subtest 'extract-run-84-26-repairs' => sub {
                  'Connect: change while LMS paused with the stream gone -- unpause skipped') {
         ok(index($connect_src, $lit) >= 0, "extract-run-84-26-repairs: Connect.pm still carries the literal `$lit`");
     }
+    # 90.1 review R2 WR-03: the stopped sibling of the change-handler skip (round 1 WR-01) prints into the same category, so the
+    # rig variant restartalbum can quote its proof line through this tool
+    ok(index($connect_src, 'Connect: change while LMS stopped -- unpause skipped, the playlist play opens the new title (') >= 0,
+        'extract-run-90.1-r2-wr03: Connect.pm still carries the literal of the stopped change skip');
 
     my ($fh, $file) = tempfile();
     print $fh "[26-10-07 12:00:01.0000] Plugins::SpotOn::Soloist::Control::_execute (2790) Control: requestResume refused -- daemon on spotify:track:5fdNHVZHbWB1AaXk4RBGVD not on spotify:track:2374M0fQpWi3dLnB54qaLX (marker=none) (aa:bb:cc:dd:ee:01)\n";
@@ -1395,6 +1399,7 @@ subtest 'extract-run-84-26-repairs' => sub {
     print $fh "[26-10-07 12:00:06.0000] Plugins::SpotOn::Soloist::Control::_onFrameDeviceChanged (4174) Control: transfer-in -> mode=connect (aa:bb:cc:dd:ee:01)\n";
     print $fh "[26-10-07 12:00:07.0000] Plugins::SpotOn::Soloist::Control::requestTrack (660) Control: LMS opened the daemon's current title spotify:track:5oiTnaEHK3OFDZIL8AIYwu in a dormant Connect session (status=paused, no Connect dispatch marker) -- handing over to browse (aa:bb:cc:dd:ee:01)\n";
     print $fh "[26-10-07 12:00:08.0000] Plugins::SpotOn::Soloist::Control::_holdAfterForeignLeave (6330) Control: daemon plays the context-end title spotify:track:7GVUxxxxxxxxxxxxxxxxxx LMS left while LMS plays foreign content -- not re-adopting (aa:bb:cc:dd:ee:01)\n";
+    print $fh "[26-10-07 12:00:09.0000] Plugins::SpotOn::Connect::_connectEvent (2908) Connect: change while LMS stopped -- unpause skipped, the playlist play opens the new title (aa:bb:cc:dd:ee:01)\n";
     close($fh);
 
     my ($exit, $stdout, $stderr) = run_perl_tool($extract_run_script,
@@ -1421,6 +1426,8 @@ subtest 'extract-run-84-26-repairs' => sub {
         'extract-run-84-26-repairs: Must-Match F-24-2 Connect resume jump');
     like($rep_body, qr/change while LMS paused with the stream gone -- unpause skipped/,
         'extract-run-84-26-repairs: Must-Match F-24-2 Connect change-handler skip');
+    like($rep_body, qr/change while LMS stopped -- unpause skipped, the playlist play opens the new title \(aa:bb:cc:dd:ee:01\)/,
+        'extract-run-90.1-r2-wr03: Must-Match the stopped change-handler skip (round 1 WR-01, the restartalbum proof line)');
     like($rep_body, qr/handing over to browse \(aa:bb:cc:dd:ee:01\)/,
         'extract-run-84.2-05: Must-Match dormant-session handoff');
     like($rep_body, qr/plays the context-end title spotify:track:7GVU\w+ LMS left while LMS plays foreign content -- not re-adopting/,
@@ -4769,94 +4776,6 @@ subtest 'extract-run-84-01-startoffset-verb' => sub {
     unlink($file);
 };
 
-# ============================================================
-# 84-19 (Task 3, step 1): the acceptance runners' offline selftests as TAP.
-# A runner's `selftest` prints `CASE=<name> EXPECTED=<E> GOT=<G> VERDICT=<OK|MISMATCH>`
-# per case and exits 0 only when all are OK; this helper runs it once and gives
-# every named case its own ok/not ok line, so a RED reads `not ok N - <runner>
-# <case>` under `prove -v` (the tdd-red-evidence tool parses Node, not prove; the
-# `not ok` line is the evidence). Cases whose archive input is absent on a host
-# (measurement data is not in git) are skipped by the caller, not by this helper.
-# ============================================================
-my $runners_84 = "$project_dir/.planning/phases/84-soloist-uat-und-backend-trennnaht/runners";
-
-sub runner_selftest_cases {
-    my ($script, $args, @cases) = @_;
-    my ($exit, $stdout, $stderr) = run_tool($script, $args);
-    my $name = basename($script);
-    for my $case (@cases) {
-        my ($line) = $stdout =~ /^(CASE=\Q$case\E\s[^\n]*)$/m;
-        ok(defined $line && $line =~ /VERDICT=OK$/, "84-19 $name selftest: $case")
-            or diag(defined $line ? $line : "case '$case' not printed by the selftest");
-    }
-    is($exit, 0, "84-19 $name selftest: exits 0 (SELFTEST=PASS)")
-        or diag("stdout: $stdout\nstderr: $stderr");
-    like($stdout, qr/^SELFTEST=PASS$/m, "84-19 $name selftest: prints SELFTEST=PASS");
-    return $stdout;
-}
-
-# 84-09: environment skip (CI has no .planning / measurement archive) as a
-# SKIP around the subtest -- same TAP as the former in-subtest skip-all
-# (one `ok N # skip` in the parent), no plan-level skip in a soloist file.
-SKIP: {
-    skip 'rapid-skip.sh not present in this checkout (.planning absent: CI)', 1 unless -f "$runners_84/rapid-skip.sh";
-subtest '84-19 runner selftests' => sub {
-    my $rapid = "$runners_84/rapid-skip.sh";
-    # F-04-02 (B8): errors[] counted from the storm start, real archive errors[].
-    runner_selftest_cases($rapid, ['selftest'],
-        qw(errors_entry_before_storm_ignored errors_pa_entry_before_storm_ignored
-           errors_entry_inside_run_window_counted errors_entry_at_run_start_counted
-           errors_entry_one_second_before_run_ignored errors_entry_other_mac_not_counted
-           errors_unreadable_stays_unreadable));
-
-    # F-04-06 (R4): gate_core over real archived runs; both-daemons-quiet arm gate.
-    my $gap15 = "$runners_84/gap-15-exit10-live.sh";
-    my $mdir  = "$ENV{HOME}/SynologyDrive/dev/spoton-messdaten";
-  SKIP: {
-        skip 'gap-15 archive runs (83.3-15-live-260927-1549/-1203, 84-03-gap15-261001-2025) not on this host (measurement data, not in git)', 12
-            unless -f "$mdir/83.3-15-live-260927-1549/server-log-snapshot.txt"
-                && -f "$mdir/83.3-15-live-260927-1203/server-log-snapshot.txt"
-                && -f "$mdir/84-03-gap15-261001-2025/server-log-snapshot.txt";
-        runner_selftest_cases($gap15, ['selftest'],
-            qw(real_pass_run_promoted_reads_pass real_pass_run_cdn_expired_reads_pass
-               real_r4_run_exit10_on_other_mac_reads_pass
-               doctored_no_exit10_line_reads_fail doctored_r4_no_exit10_line_reads_fail
-               doctored_two_exit10_lines_reads_fail doctored_no_renewal_attempt_reads_fail
-               quiet_real_uat_only_status_not_quiet quiet_both_listed_stable_30s
-               quiet_window_too_short quiet_pa_pid_changed_mid_window quiet_pa_dies_at_end
-               arm_recheck_same_pids_unchanged arm_recheck_pa_pid_differs
-               arm_recheck_pa_missing_real_r4_status));
-    }
-
-    # F-04-01 (B5): a run against an idle player is UNBESTIMMT, never FAIL; with the precondition met the gate still fails.
-    runner_selftest_cases("$runners_84/volume.sh", ['selftest'],
-        qw(real_recorder_frames_carry_77 real_recorder_never_shows_30
-           doctored_real_recorder_without_volume
-           synthetic_both_values_echoed synthetic_60_never_echoed synthetic_60_echo_2_5s_late
-           idle_run_real_recorder_precondition_met_still_fails
-           idle_run_real_recorder_precondition_missing_unbestimmt
-           idle_run_precondition_unknown_unbestimmt
-           echoed_frames_without_precondition_still_pass));
-
-    # F-04-05 (R2): the stops-answering stand-in answers by TIME (every sender inside the window), then goes silent.
-    # standin-ws.py is Python: run it with python3 directly (run_tool execs bash).
-    my $standin = "$runners_84/standin-ws.py";
-    my $st_out = `python3 $standin selftest 2>&1`;
-    my $st_exit = $? >> 8;
-    for my $case (qw(first_probe_answered_logged_in
-                     second_probe_same_connection_within_window_answered
-                     initial_probe_of_new_connection_within_window_answered
-                     probe_after_window_unanswered_new_connection
-                     probe_after_window_unanswered_old_connection
-                     never_login_answers_not_logged_in_after_window never_login_never_goes_silent)) {
-        my ($line) = $st_out =~ /^(CASE=\Q$case\E\s[^\n]*)$/m;
-        ok(defined $line && $line =~ /VERDICT=OK$/, "84-19 standin-ws.py selftest: $case")
-            or diag(defined $line ? $line : "case '$case' not printed by the selftest");
-    }
-    is($st_exit, 0, '84-19 standin-ws.py selftest: exits 0 (SELFTEST=PASS)') or diag($st_out);
-};
-}
-
 # ---------------------------------------------------------------------------
 # subtest 'd15-frames-literal-subset' -- 84.2 Nyquist (VALIDATION row 7, D-15).
 # t/44 cases F/F2 claim their fixtures are the inner `frame` text of real
@@ -4906,34 +4825,6 @@ subtest 'd15-frames-literal-subset' => sub {
         my @bad2 = _frames_vs_archive($tmp, $ws, $first);
         is(scalar(@bad2), 1, "$fx: doctored copy is rejected (exactly the changed frame)");
     }
-};
-}
-
-# ---------------------------------------------------------------------------
-# subtest 'remeasure-doc-gate' -- 84.2 Nyquist (VALIDATION row 12). Makes the
-# one-off 84.2-04 Task-4 gate permanent: the real 84-ACCEPTANCE.md MUST PASS,
-# a copy cut before `## Pre-seam reference (84.2)` MUST FAIL; same pair for
-# the 84-11 reader (ACCEPTANCE_RUN_DIR_84_2 -> results.tsv). Skips without
-# .planning (CI) or the measurement archive.
-# ---------------------------------------------------------------------------
-# 84-09: environment skip (CI has no .planning / measurement archive) as a
-# SKIP around the subtest -- same TAP as the former in-subtest skip-all
-# (one `ok N # skip` in the parent), no plan-level skip in a soloist file.
-SKIP: {
-    skip '.planning absent (CI)', 1 unless -f "$project_dir/.planning/phases/84-soloist-uat-und-backend-trennnaht/84-ACCEPTANCE.md" && -f "$project_dir/.planning/phases/84.2-titelfortsetzung-und-autoplay-neutralitaet/84.2-04-offround/t4-gate.sh";
-    skip 'spoton-messdaten archive absent', 1 unless -d "$ENV{HOME}/SynologyDrive/dev/spoton-messdaten";
-subtest 'remeasure-doc-gate' => sub {
-    my $acc  = "$project_dir/.planning/phases/84-soloist-uat-und-backend-trennnaht/84-ACCEPTANCE.md";
-    my $gate = "$project_dir/.planning/phases/84.2-titelfortsetzung-und-autoplay-neutralitaet/84.2-04-offround/t4-gate.sh";
-    my $dir = tempdir(CLEANUP => 1);
-    my $cut = "$dir/84-ACCEPTANCE-cut.md";
-    system('sh', '-c', q{awk '/^## Pre-seam reference \(84.2\)/{exit} {print}' "$1" > "$2"}, 'x', $acc, $cut);
-    ok(-s $cut && -s $cut < -s $acc, 'cut copy is non-empty and shorter');
-    my $reader = q{R=$(command grep -oE '^ACCEPTANCE_RUN_DIR_84_2=.*' "$1" | tail -1 | cut -d= -f2-) && test -s "$R/results.tsv"};
-    is(system('bash', $gate, $acc) >> 8, 0, 'T4 block gate: real 84-ACCEPTANCE.md PASSES');
-    isnt(system('bash', $gate, $cut) >> 8, 0, 'T4 block gate: copy without the 84.2 block FAILS');
-    is(system('bash', '-c', $reader, 'x', $acc) >> 8, 0, '84-11 reader: real file resolves a results.tsv');
-    isnt(system('bash', '-c', $reader, 'x', $cut) >> 8, 0, '84-11 reader: cut copy resolves nothing');
 };
 }
 
@@ -6387,6 +6278,237 @@ subtest 'extract-run-90-squeezelite-track-start' => sub {
     my ($e3, $o3) = $p90_run->(sq => '/nonexistent/squeezelite.log', t0 => '22:29:20', t1 => '22:29:30');
     is($e3, 0, 'an unreadable squeezelite log does not abort the extract');
     like($o3, qr/!! squeezelite-log nicht lesbar: \/nonexistent\/squeezelite\.log/, 'Must-Match: the missing evidence is announced, never silent');
+};
+
+# 90.1-04 (D-05, D-06): the evidence lines the phase's rig gates read, printed instead of counted (rule 4), and the guest
+# id of the daemon's login line shortened to its last 4 characters. SYNTHETIC fixtures, a made-up 28-character id only.
+subtest 'extract-run-90.1-account' => sub {
+    my $FAKE28 = 'fakeguestid012345678abcdwxyz';
+    my $mac  = $p90_mac;
+    my $mac2 = '02:00:00:86:00:03';
+    my $pfx  = '[26-11-20 12:00:0';
+    my %sl = (
+        wins   => "${pfx}1.0000] Plugins::SpotOn::Connect::_writeClaim (282) Connect claim: last message wins -- $mac replaces $mac2",
+        kept   => "${pfx}1.1000] Plugins::SpotOn::Connect::_writeClaim (308) Connect claim: kept $mac2 (other account) while $mac binds",
+        d16    => "${pfx}1.2000] Plugins::SpotOn::Connect::_onNewSong (1067) D-16: new song without Connect URL - releasing stale Connect claim for $mac",
+        rel    => "${pfx}1.3000] Plugins::SpotOn::Connect::_onNewSong (1075) Connect claim released by _onNewSong (D-D2)",
+        pause  => "${pfx}2.0000] Plugins::SpotOn::Connect::_onPause (1690) _onPause: control(pause) -> sent for $mac",
+        acct   => "${pfx}3.0000] Plugins::SpotOn::Soloist::Control::_setAccount (6910) Control: daemon account $mac -> guest ...wxyz (logged in)",
+        dstm   => "${pfx}4.0000] Slim::Plugin::DontStopTheMusic::Plugin::_mixer (200) mixer asked for $mac",
+        dstm2  => "${pfx}4.1000] Plugins::SpotOn::DontStopTheMusic::_handler (40) provider asked for 20 seeds",
+        other  => "${pfx}5.0000] Plugins::SpotOn::Plugin::_pollStatus (300) status poll finished",
+    );
+    my %dl = (
+        login  => "2026-11-20 12:00:03.100: logged in as $FAKE28",
+        logout => "2026-11-20 12:00:03.900: logged out",
+        sess   => "2026-11-20 12:00:04.000: restoring session [session:$FAKE28]",
+        other  => "2026-11-20 12:00:05.000: heartbeat ok",
+    );
+    my ($exit, $stdout, $stderr) = $p90_run->(
+        server => [ map { $sl{$_} } qw(wins kept d16 rel pause acct dstm dstm2 other) ],
+        daemon => [ map { $dl{$_} } qw(login logout sess other) ],
+    );
+    is($exit, 0, '90.1-04 E1: extract-run runs (exit 0)') or diag("stderr: $stderr");
+
+    my %cat = (
+        claim => 'server.log: Connect claim conflicts, kept holders and _onNewSong releases (phase 90.1)',
+        pause => 'server.log: SpotOn LMS pause/stop handling outcome (phase 90.1)',
+        acct  => 'server.log: Soloist daemon account changes (phase 90.1)',
+        dstm  => "server.log: Don't Stop the Music (LMS plugin and SpotOn provider, phase 90.1)",
+        dmn   => 'Daemon-Log: account sign-in and sign-out (phase 90.1)',
+    );
+    my %body = map { $_ => $p90_section->($stdout, $cat{$_}) } keys %cat;
+    for my $k (qw(wins kept d16 rel)) {
+        ok(index($body{claim}, $sl{$k}) >= 0, "90.1-04 E1: the '$k' line is printed in the claim category");
+    }
+    ok(index($body{pause}, $sl{pause}) >= 0, '90.1-04 E1: the _onPause control line is printed');
+    ok(index($body{acct},  $sl{acct})  >= 0, '90.1-04 E1: the Control daemon account line is printed');
+    ok(index($body{dstm},  $sl{dstm})  >= 0, '90.1-04 E1: the LMS Don\'t Stop the Music plugin line is printed');
+    ok(index($body{dstm},  $sl{dstm2}) >= 0, '90.1-04 E1: the SpotOn DSTM provider line is printed');
+    for my $c (qw(claim pause acct dstm)) {
+        ok(index($body{$c}, $sl{other}) < 0, "90.1-04 E1: an ordinary server.log line stays out of the '$c' category");
+    }
+    like($body{dmn}, qr/logged in as \.\.\.wxyz/, '90.1-04 E1: the daemon login line is printed with the id shortened to the last 4 characters');
+    like($body{dmn}, qr/: logged out$/m, '90.1-04 E1: the daemon logout line is printed');
+    unlike($body{dmn}, qr/heartbeat/, '90.1-04 E1: an ordinary daemon line stays out of the account category');
+    like($stdout, qr/\[session:\.\.\.wxyz\]/, '90.1-04 E1: the session tag of another printed line is shortened as well');
+    unlike($stdout, qr/\Q$FAKE28\E/, '90.1-04 E1: the guest id appears nowhere in the whole output');
+    unlike($stdout, qr/fakeguestid/, '90.1-04 E1: not even the first part of the guest id appears in the output');
+    like($stdout, qr/=== Redaktion: [1-9][0-9]* Zeile\(n\) redigiert ===/, '90.1-04 E1: the shortened lines are counted in the redaction count');
+
+    # empty window: not-found marker per new category, and no title carries a literal its pattern matches
+    my ($e2, $o2) = $p90_run->(server => [], daemon => []);
+    is($e2, 0, '90.1-04 E1: extract-run on empty logs runs (exit 0)');
+    like($o2, qr/\[MUSTER NICHT GEFUNDEN IM FENSTER\] \Q$cat{$_}\E/, "90.1-04 E1: an empty window carries the not-found marker for '$_'") for sort keys %cat;
+    unlike($o2, qr/last message wins|Connect claim: kept|_onPause: control\(|Control: daemon account |logged in as /,
+        '90.1-04 E1: no title carries a literal its pattern matches');
+};
+
+# 90.1 review CR-01: the guest id redaction fails CLOSED, with AccountLog's length rule (8 characters or fewer: nothing
+# shown, longer: the last 4). Short ids, an id with a `+`, ids with a non-ASCII letter (UTF-8 bytes, as a log file holds
+# them), and the id elsewhere in a printed line. Every id is made up.
+subtest 'extract-run-90.1-guest-id-fail-closed' => sub {
+    require Encode;
+    my %id = (
+        six   => 'qz7k2m',
+        seven => 'qzfixtr',
+        eight => '12345678',
+        plus  => 'zz9fixture+guest77',
+        acc   => Encode::encode('UTF-8', "andr\x{e9}.fixture99"),
+        acc8  => Encode::encode('UTF-8', "j\x{f6}rgen77"),
+    );
+    my @dl = (
+        "2026-11-20 12:00:03.100: logged in as $id{six}",
+        "2026-11-20 12:00:03.200: logged in as $id{plus}",
+        "2026-11-20 12:00:03.300: logged in as $id{acc}",
+        "2026-11-20 12:00:03.400: logged in as $id{acc8}",
+        "2026-11-20 12:00:03.500: logged in as $id{eight}",
+        "2026-11-20 12:00:03.600: logged in as $id{seven}",
+        "2026-11-20 12:00:04.000: restoring session [session:$id{six}]",
+        "2026-11-20 12:00:04.100: restoring session [session:$id{plus}]",
+        "2026-11-20 12:00:04.500: updated context tracks to <spotify:user:$id{seven}:collection>",
+        "2026-11-20 12:00:05.000: logged out",
+    );
+    my ($exit, $stdout, $stderr) = $p90_run->(server => [], daemon => \@dl);
+    is($exit, 0, '90.1 CR-01 E2: extract-run runs (exit 0)') or diag("stderr: $stderr");
+    for my $k (sort keys %id) {
+        unlike($stdout, qr/\Q$id{$k}\E/, "90.1 CR-01 E2: the '$k' guest id appears nowhere in the output");
+    }
+    like($stdout, qr/03\.100: logged in as \.\.\.$/m, '90.1 CR-01 E2: a 6-character id shows nothing (`logged in as ...`)');
+    like($stdout, qr/03\.200: logged in as \.\.\.st77$/m, '90.1 CR-01 E2: an id with a `+` shows only its last 4 characters');
+    like($stdout, qr/03\.300: logged in as \.\.\.re99$/m, '90.1 CR-01 E2: an id with a non-ASCII letter shows only its last 4 characters');
+    like($stdout, qr/03\.400: logged in as \.\.\.$/m, '90.1 CR-01 E2: 8 characters with one non-ASCII letter (9 bytes) show nothing');
+    like($stdout, qr/03\.500: logged in as \.\.\.$/m, '90.1 CR-01 E2: an 8-character id shows nothing, not half of it');
+    like($stdout, qr/\[session:\.\.\.\]/, '90.1 CR-01 E2: a short id in the session tag shows nothing');
+    like($stdout, qr/\[session:\.\.\.st77\]/, '90.1 CR-01 E2: a long odd id in the session tag shows its last 4 characters');
+    unlike($stdout, qr/fixture/, '90.1 CR-01 E2: no part of the long ids before their last 4 characters is left');
+    like($stdout, qr/<spotify:user:\.\.\.:collection>/, '90.1 CR-01 E2: an id seen at an anchor is also swept from a printed context uri');
+    like($stdout, qr/=== Redaktion: [1-9][0-9]* Zeile\(n\) redigiert ===/, '90.1 CR-01 E2: the shortened lines are counted');
+};
+
+# 90.1 review R2 WR-01: a printed user uri (`spotify:user:<id>`, also URI-escaped) is cut in place with the same length rule even when no
+# login line is in the extracted window (the normal case for a run of a few minutes). The uri anchor feeds no sweep: the legacy
+# `spotify:user:spotify:playlist:` form must not take the word `spotify` out of other lines. Every id is made up. The daemon lines use the
+# phase-89 skip-chain category forms (`updated context <w> to <`, `Requesting <url>/context-resolve/v1/`), so they are printed.
+subtest 'extract-run-90.1-r2-user-uri-anchor' => sub {
+    my @dl = (
+        "2026-11-20 12:00:03.100: updated context tracks to <spotify:user:smedjanfixture:collection>",
+        "2026-11-20 12:00:03.200: updated context tracks to <spotify:user:qzfixtr:collection>",
+        "2026-11-20 12:00:03.300: Requesting https://spclient.wg.spotify.com/context-resolve/v1/spotify%3Auser%3Azz9fixture%2Bguest77%3Acollection",
+        "2026-11-20 12:00:03.400: Requesting https://spclient.wg.spotify.com/context-resolve/v1/spotify%3Auser%3Aab%2Bcdefg%3Acollection",
+        "2026-11-20 12:00:03.500: updated context tracks to <spotify:user:spotify:playlist:37i9dQZF1DXcBWIGoYBM5M>",
+        "2026-11-20 12:00:03.600: Requesting https://spclient.wg.spotify.com/context-resolve/v1/spotify:track:4JOyMhad5dD81uGYLGgKrS",
+    );
+    my ($exit, $stdout, $stderr) = $p90_run->(server => [], daemon => \@dl);
+    is($exit, 0, '90.1 R2 WR-01 E3: extract-run runs (exit 0)') or diag("stderr: $stderr");
+    unlike($stdout, qr/smedjanfix|qzfixtr|zz9fixture|ab%2Bcdefg/, '90.1 R2 WR-01 E3: no id of a user uri is left in full (no login line in the window)');
+    like($stdout, qr/03\.100: updated context tracks to <spotify:user:\.\.\.ture:collection>$/m, '90.1 R2 WR-01 E3: a long id in a printed user uri shows its last 4 characters');
+    like($stdout, qr/03\.200: updated context tracks to <spotify:user:\.\.\.:collection>$/m, '90.1 R2 WR-01 E3: a short id in a printed user uri shows nothing');
+    like($stdout, qr/03\.300: Requesting \S+\/v1\/spotify%3Auser%3A\.\.\.st77%3Acollection$/m, '90.1 R2 WR-01 E3: the escaped uri form is cut, `%3A` ends the id');
+    like($stdout, qr/03\.400: Requesting \S+\/v1\/spotify%3Auser%3A\.\.\.%3Acollection$/m, '90.1 R2 WR-01 E3: an escaped 8-character id counts unescaped and shows nothing');
+    like($stdout, qr/03\.500: updated context tracks to <spotify:user:\.\.\.:playlist:37i9dQZF1DXcBWIGoYBM5M>$/m, '90.1 R2 WR-01 E3: the legacy playlist uri keeps its shape');
+    like($stdout, qr/03\.600: Requesting https:\/\/spclient\.wg\.spotify\.com\/context-resolve\/v1\/spotify:track:4JOyMhad5dD81uGYLGgKrS$/m, '90.1 R2 WR-01 E3: the user-uri anchor feeds no sweep (the word spotify stays in other lines)');
+    like($stdout, qr/=== Redaktion: 5 Zeile\(n\) redigiert ===/, '90.1 R2 WR-01 E3: the five cut uri lines are counted (the playlist owner too), the untouched line is not');
+
+    # an id seen at the login anchor is swept in its URI-escaped form as well (hex digits in either case)
+    my ($e2, $o2) = $p90_run->(server => [], daemon => [
+        "2026-11-20 12:00:03.000: logged in as zz9fixture+guest77",
+        "2026-11-20 12:00:03.100: found initial track <spotify:track:4JOyMhad5dD81uGYLGgKrS> for zz9fixture%2bguest77",
+    ]);
+    is($e2, 0, '90.1 R2 WR-01 E3: extract-run runs on the escaped sweep input (exit 0)');
+    unlike($o2, qr/zz9fixture/i, '90.1 R2 WR-01 E3: the escaped form of an anchored id is swept');
+    like($o2, qr/03\.100: found initial track <spotify:track:4JOyMhad5dD81uGYLGgKrS> for \.\.\.st77$/m, '90.1 R2 WR-01 E3: the swept escaped form keeps only its last 4 characters');
+};
+
+# 90.1 review R2 WR-02: a false anchor match must not become a text-wide replacement. The session anchor needs its bracket
+# (`[session:`), and only daemon-shaped anchors teach the sweep an id: the login line with a daemon timestamp right before it and the id
+# ending the line (AccountLog's shape), and the bracketed `[session:<id>]` tag. A foreign `logged in as <word>` is still cut in place. The
+# redaction line names the swept token count when the sweep fired. SYNTHETIC lines in printed category forms; every id is made up.
+subtest 'extract-run-90.1-r2-sweep-sources' => sub {
+    my $mac = $p90_mac;
+    my ($exit, $stdout, $stderr) = $p90_run->(
+        server => [ "[26-11-20 12:00:04.0000] Plugins::SpotOn::Soloist::Control::_onFrameDeviceChanged (4174) Control: transfer-in -> mode=connect ($mac)" ],
+        daemon => [
+            "2026-11-20 12:00:03.000: Connection to server closed x session:connect y",
+            "2026-11-20 12:00:03.300: WARN not logged in as premium user",
+            "2026-11-20 12:00:03.400: Connecting to AP premium-ap.spotify.com:4070",
+        ]);
+    is($exit, 0, '90.1 R2 WR-02 E4: extract-run runs (exit 0)') or diag("stderr: $stderr");
+    like($stdout, qr/Control: transfer-in -> mode=connect \(\Q$mac\E\)/, '90.1 R2 WR-02 E4: `x session:connect y` is no anchor, `mode=connect` stays');
+    like($stdout, qr/03\.000: Connection to server closed x session:connect y$/m, '90.1 R2 WR-02 E4: a bracket-less session: is not cut');
+    like($stdout, qr/03\.300: WARN not logged in as \.\.\. user$/m, '90.1 R2 WR-02 E4: a foreign `logged in as <word>` is still cut in place');
+    like($stdout, qr/03\.400: Connecting to AP premium-ap\.spotify\.com:4070$/m, '90.1 R2 WR-02 E4: the false anchor `not logged in as premium user` sweeps no word from other lines');
+    like($stdout, qr/^=== Redaktion: 1 Zeile\(n\) redigiert ===$/m, '90.1 R2 WR-02 E4: only the cut line is counted, no sweep is named');
+
+    # the daemon's own shapes still feed the sweep, and the redaction line names the swept tokens
+    my ($e2, $o2) = $p90_run->(server => [], daemon => [
+        "2026-11-20 12:00:03.000: logged in as fixtureguest12",
+        "2026-11-20 12:00:03.100: restoring session [session:otherguest345]",
+        "2026-11-20 12:00:03.200: found initial track <spotify:track:4JOyMhad5dD81uGYLGgKrS> for fixtureguest12 and otherguest345",
+    ]);
+    is($e2, 0, '90.1 R2 WR-02 E4: extract-run runs on the daemon-shaped input (exit 0)');
+    like($o2, qr/03\.200: found initial track <spotify:track:4JOyMhad5dD81uGYLGgKrS> for \.\.\.st12 and \.\.\.t345$/m,
+        '90.1 R2 WR-02 E4: the daemon login line and the bracketed session tag still sweep their ids');
+    like($o2, qr/^=== Redaktion: 3 Zeile\(n\) redigiert, 2 id token\(s\) swept ===$/m, '90.1 R2 WR-02 E4: the redaction line names the swept token count');
+};
+
+# 90.1-07 (#225 re-measurement, FINDING_FOR_RIG of 90.1-05): the DSTM section also takes LMS's own `playlist addtracks`
+# request line, and a new category prints the Soloist next-title dispatch line (`origin=lms` proves LMS re-opened an entry
+# by itself). Line forms copied from the rig's server.log of run 901-acct-appwake-play-alone-develop-judged-1-261122-2118
+# (lines 2776819 and 2829529, the dates and times changed); the neighbours are SYNTHETIC.
+subtest 'extract-run-90.1-07-dispatch-and-addtracks' => sub {
+    my $mac = $p90_mac;
+    my $pfx = '[26-11-20 12:00:0';
+    my %sl = (
+        add    => "${pfx}1.0000] Slim::Control::Request::dump (2335) Request: Command [$mac->playlist addtracks] (Dispatchable)",
+        ins    => "${pfx}1.1000] Slim::Control::Request::dump (2335) Request: Command [$mac->playlist insert] from Plugins::SpotOn::Connect  (Dispatchable)",
+        lms    => "${pfx}2.0000] Plugins::SpotOn::Backend::Soloist::_trackFromGetNextTrack (293) getNextTrack: soloist browse -> Control->requestTrack(spoton://track:4JOyMhad5dD81uGYLGgKrS, 0) (mac=$mac) origin=lms",
+        con    => "${pfx}2.1000] Plugins::SpotOn::Backend::Soloist::_trackFromGetNextTrack (293) getNextTrack: soloist browse -> Control->requestTrack(spoton://track:4JOyMhad5dD81uGYLGgKrS, 0) (mac=$mac) origin=connect",
+        diag   => "${pfx}2.2000] Plugins::SpotOn::ProtocolHandler::getNextTrack (782) [DIAG] getNextTrack: mac=$mac url=spoton://track:4JOyMhad5dD81uGYLGgKrS",
+        other  => "${pfx}3.0000] Slim::Player::StreamingController::_getNextTrack (698) Loading metadata for spoton://track:4JOyMhad5dD81uGYLGgKrS",
+    );
+    my ($exit, $stdout, $stderr) = $p90_run->(server => [ map { $sl{$_} } qw(add ins lms con diag other) ], daemon => []);
+    is($exit, 0, '90.1-07 X1: extract-run runs (exit 0)') or diag("stderr: $stderr");
+    my $dstm = $p90_section->($stdout, "server.log: Don't Stop the Music (LMS plugin and SpotOn provider, phase 90.1)");
+    my $disp = $p90_section->($stdout, 'server.log: SpotOn next-title dispatch to Control (Backend::Soloist _trackFromGetNextTrack, origin lms or connect; phase 90.1-07)');
+    my $diag = $p90_section->($stdout, 'server.log: ProtocolHandler::getNextTrack (718');
+    ok(index($dstm, $sl{add}) >= 0, '90.1-07 X1: the playlist addtracks request line is printed in the DSTM section');
+    ok(index($dstm, $sl{ins}) < 0, '90.1-07 X1: a playlist insert request stays out of the DSTM section');
+    ok(index($disp, $sl{lms}) >= 0, '90.1-07 X1: the origin=lms dispatch line is printed');
+    ok(index($disp, $sl{con}) >= 0, '90.1-07 X1: the origin=connect dispatch line is printed');
+    ok(index($disp, $sl{diag}) < 0 && index($disp, $sl{other}) < 0, '90.1-07 X1: the DIAG line and the LMS loading line stay out of the dispatch category');
+    ok(index($diag, $sl{diag}) >= 0 && index($diag, $sl{lms}) < 0, '90.1-07 X1: the historical (718) category is unchanged (DIAG line in, dispatch line out)');
+    my ($e2, $o2) = $p90_run->(server => [], daemon => []);
+    like($o2, qr/\[MUSTER NICHT GEFUNDEN IM FENSTER\] server\.log: SpotOn next-title dispatch to Control/, '90.1-07 X1: an empty window carries the not-found marker');
+    unlike($o2, qr/getNextTrack: soloist browse -> |->playlist addtracks\]/, '90.1-07 X1: no title carries a literal its pattern matches');
+};
+
+# 90.1-09 (#230 fix A, rig case acct901 gh230): the three Connect.pm lines of an app stop on librespot are printed in their own
+# category (the gh230 gate reads it). The literals are read from Connect.pm (drift guard); the line forms are SYNTHETIC.
+subtest 'extract-run-90.1-09-gh230-stop-grace' => sub {
+    my $mac = $p90_mac;
+    my $pfx = $p90_pfx;
+    my $con = _slurp("$project_dir/Plugins/SpotOn/Connect.pm");
+    ok(index($con, 'GH #230: stop inside the start grace while LMS really plays - honouring the app pause: ') >= 0,
+        '90.1-09 G1: Connect.pm still carries the literal of fix A');
+    ok(index($con, 'Ignoring spurious stop during Connect session setup grace period') >= 0, '90.1-09 G1: Connect.pm still carries the grace literal');
+    ok(index($con, 'Spotify told us to pause: ') >= 0, '90.1-09 G1: Connect.pm still carries the normal pause literal');
+    my %sl = (
+        fixa  => "${pfx}1.0000] Plugins::SpotOn::Connect::_connectEvent (3100) GH #230: stop inside the start grace while LMS really plays - honouring the app pause: $mac",
+        told  => "${pfx}1.0100] Plugins::SpotOn::Connect::_connectEvent (3135) Spotify told us to pause: $mac",
+        grace => "${pfx}2.0000] Plugins::SpotOn::Connect::_connectEvent (3106) Ignoring spurious stop during Connect session setup grace period",
+        other => "${pfx}3.0000] Plugins::SpotOn::Connect::_connectEvent (3200) Connect event start for $mac",
+    );
+    my ($exit, $stdout, $stderr) = $p90_run->(server => [ map { $sl{$_} } qw(fixa told grace other) ], daemon => []);
+    is($exit, 0, '90.1-09 G1: extract-run runs (exit 0)') or diag("stderr: $stderr");
+    my $sec = $p90_section->($stdout, 'server.log: Connect app pause in the start window (#230 fix A honoured / spurious-stop grace / normal pause path; Connect.pm _connectEvent, phase 90.1-09)');
+    ok(index($sec, $sl{fixa}) >= 0, '90.1-09 G1: the fix A line is printed');
+    ok(index($sec, $sl{told}) >= 0, '90.1-09 G1: the normal pause line is printed');
+    ok(index($sec, $sl{grace}) >= 0, '90.1-09 G1: the grace line (no MAC) is printed');
+    ok(index($sec, $sl{other}) < 0, '90.1-09 G1: an ordinary Connect line stays out of the category');
+    my ($e2, $o2) = $p90_run->(server => [], daemon => []);
+    like($o2, qr/\[MUSTER NICHT GEFUNDEN IM FENSTER\] server\.log: Connect app pause in the start window/, '90.1-09 G1: an empty window carries the not-found marker');
+    unlike($o2, qr/GH #230: stop inside|Ignoring spurious stop during|Spotify told us to pause: /, '90.1-09 G1: no title carries a literal its pattern matches');
 };
 
 done_testing();

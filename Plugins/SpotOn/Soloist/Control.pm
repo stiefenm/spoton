@@ -204,6 +204,11 @@ use constant BOUNDARY_PATH_DRAIN   => '/boundary?anchor=drain';
 # { <spotify:track:uri> => <epoch> } of the titles SpotOn itself queued.
 # OWN_QUEUE_MAX is only a leak guard -- the set is emptied on every loss of
 # control (_forgetOwnQueue); past the cap the oldest entry is dropped.
+# 90.1-08 (D-21, phase-90 review WR-02 remainder): `observed.queuedByLms` is the
+# second set of the same shape: LMS's successor that _prefetchNext's dedupe
+# branch found already in the daemon queue (no add_to_queue sent, so the entry
+# may be the user's). Read only at the prefetch-hit decision sites
+# (_queuedHit/_consumeQueuedHit); every own-entry reader stays on queuedByUs.
 use constant OWN_QUEUE_MAX => 16;
 
 # 84.2-02 (D-15): the context-end carrier. A position frame at or below
@@ -444,7 +449,7 @@ sub WS_RETRY_TTL_S () {
 # armed, keyed by refaddr(cb) (Slim::Utils::Timers itself offers no "peek
 # the deadline for this timer" query). Maintained only by _execute's
 # 'timer'/'killtimer' intent handling; not touched anywhere else.
-__PACKAGE__->mk_accessor( rw => qw( mac mode wanted observed pending _generation _driftCount _awaitMeta _authProbeCount _lastAuthProbeAt _deferredTrackRequest _shutDown _timerRegistry _restartAllowance _takeover _lastQueueRequestAt ) );
+__PACKAGE__->mk_accessor( rw => qw( mac mode wanted observed pending _generation _driftCount _awaitMeta _authProbeCount _lastAuthProbeAt _deferredTrackRequest _shutDown _timerRegistry _restartAllowance _takeover _lastQueueRequestAt _acctLog ) );
 __PACKAGE__->mk_accessor( weak => qw( daemon ) );
 
 my $prefs = preferences('plugin.spoton');
@@ -650,6 +655,7 @@ sub leaveBrowse {
 # it later, the autoplay guard pauses it as foreign (B7 07:48: 6d0c).
 sub _forgetOwnQueue {
     my ($self, $why) = @_;
+    delete $self->observed->{queuedByLms};    # 90.1-08 (D-21): the dedupe claims go with every loss of control
     my $q = $self->observed->{queuedByUs};
     return unless ref($q) eq 'HASH' && %$q;
     main::DEBUGLOG && $log->is_debug && $log->debug(
@@ -2538,6 +2544,10 @@ sub _reconcilePlan {
     $self->_driftCount->{$uri} = $count;
 
     if ($count > DRIFT_MAX_REDISPATCH) {
+        # 90 review IN-02: the declined early answer's cleanup goes out with the drift error too. In the
+        # lmsStopped + answered case it ends the wait and kills _earlyEndFallback, whose later reconcile
+        # would otherwise be one more request (a second skip_next once the count was cleared).
+        push @intents, @$earlyDeclined if $earlyDeclined;
         push @intents, { op => 'error', key => 'drift:' . $uri, level => 'warn',
             message => ($self->mac // '?') . ": daemon does not follow play $uri after " . DRIFT_MAX_REDISPATCH . " attempts" };
         push @intents, { op => 'fire', cb => { errorCb => $errorCb }, which => 'errorCb', args => [ 'PROBLEM_OPENING', 'Soloist daemon does not follow' ] } if $errorCb;
@@ -2666,6 +2676,11 @@ sub _ownLeftoversAtHead {
 sub _reconcile {
     my ($self, $trigger, $opts) = @_;
     $opts ||= {};
+
+    # 90 review WR-01: every LMS request (and _earlyEndFallback, the N-02 resume) reaches the wire here,
+    # through _execute and never through _dispatch. A held burst frame is processed first, so the plan
+    # below reads the state it leaves (observed.track, pending, the queue head), not the pre-burst one.
+    $self->_burstHoldRelease('own ' . ($trigger // '?')) if $self->observed->{burstHold};
 
     # 79-57 IN-04: the one filesystem read the planner's unpaired branch
     # needs, done here (I/O stays out of _reconcilePlan, D-01) and only when
@@ -3339,6 +3354,9 @@ sub _execute {
             if ($cmd eq 'pause' || $cmd eq 'play' || $cmd eq 'seek') {
                 $self->observed->{lastPlaybackCmdAt} = Time::HiRes::time();
                 $self->_cancelHangWatch("own $cmd");
+                # 90.1-07 (GH #225, from PR #226): a dormant->playing edge seen BEFORE an own command can be that
+                # command's echo or race -- only an edge after the last own command counts as an app action.
+                delete $self->observed->{wakeEdge};
             }
 
             if ($intent->{seekTarget}) {
@@ -3453,7 +3471,10 @@ sub _execute {
 sub _dispatch {
     my ($self, $cmd, %p) = @_;
     # 90-05: an own command never overtakes a held burst frame -- the hold is
-    # released (arrival order) before the command is planned.
+    # released (arrival order) before the command is planned. This covers the
+    # command itself only: a caller that decides on observed state first
+    # releases before that decision (90 review WR-01: _reconcile, the hang
+    # replay, _prefetchNext).
     $self->_burstHoldRelease('own ' . ($cmd // '?')) if $self->observed->{burstHold};
     return $self->_execute($self->_planCommand($cmd, %p));
 }
@@ -4338,6 +4359,10 @@ sub _onFrameContextChanged {
     my $uri = $ctx->{uri};
     return unless defined $uri && !ref($uri) && length($uri);
     return if $self->_isOwnBrowseUri($uri);
+    # 90.1-07 (from PR #226): an app context_changed of the same burst marks an open wake edge as a new
+    # context (79-51 PASS1), so the woken start never carries the paused old title's position or title first
+    $self->observed->{wakeEdge}{newContext} = 1
+        if $self->mode eq 'idle' && ref($self->observed->{wakeEdge}) eq 'HASH';
 
     $self->observed->{ctxForeign} = { uri => $uri, entity => $ctx->{entity_type}, hr => Time::HiRes::time() };
     return;
@@ -4360,9 +4385,7 @@ sub _guardWouldPause {
     my ($self, $uri, $queuedByUsMatch) = @_;
     return 0 unless defined $uri;
 
-    $queuedByUsMatch = (ref($self->observed->{queuedByUs}) eq 'HASH'
-        && exists $self->observed->{queuedByUs}{$uri}) ? 1 : 0
-        unless defined $queuedByUsMatch;
+    $queuedByUsMatch = $self->_queuedHit($uri) unless defined $queuedByUsMatch;    # 90.1-08: both sets
     my $echoOpen = $self->observed->{expectEcho}
         && ($self->observed->{expectEcho}{until} // 0) > Time::HiRes::time();
 
@@ -4376,10 +4399,14 @@ sub _guardWouldPause {
         # idle adoption (_onFramePlaybackState) takes it to Connect. Only when
         # Connect may take it (D-31: a switched-off player keeps the pause); a
         # context-less autoplay past the left title is still paused (84.1 D-01(b)).
+        # 90 review WR-03: and only when that adoption will not refuse it
+        # (_holdAfterForeignLeave, asked side-effect free for the title this
+        # frame names, the one the adoption will see as observed.track).
         my $ctx = $self->observed->{ctxForeign};
         return 0 if ref($ctx) eq 'HASH'
             && (Time::HiRes::time() - ($ctx->{hr} // 0)) <= TAKEOVER_CONTEXT_WINDOW_S
-            && $self->_emitAllowed;
+            && $self->_emitAllowed
+            && !$self->_foreignLeaveWouldHold($uri);
         return 1;
     }
     return 0;
@@ -4419,6 +4446,9 @@ sub _browseTakeover {
     delete $self->observed->{ctxForeign};
     delete $self->observed->{appQueued}{$uri} if ref($self->observed->{appQueued}) eq 'HASH';
 
+    # 90.1-02 (D-01/D-02): read the daemon log BEFORE the claim binds, so the claim sees the
+    # account this daemon is signed in as right now (a login line precedes the bind by ~1.5 s).
+    $self->_refreshAccount('takeover');
     eval {
         require Plugins::SpotOn::Connect;
         my $bindClient = Slim::Player::Client::getClient($self->mac);
@@ -4477,6 +4507,7 @@ sub _enterConnectSession {
     });
     delete $self->observed->{leftBrowseUri};
     delete $self->observed->{leftBrowsePlanted};
+    $self->observed->{sessionEntry} = $why;    # 90.1-07: how this session began (_adoptedOnStaleStop)
     if ($o{fresh}) {
         delete $self->observed->{leftConnectForeign};
         delete $self->observed->{autoplayPaused};
@@ -4946,7 +4977,7 @@ sub onEvent {
         }
     }
 
-    # 90-05: the burst hold (see _burstHoldArm). A replayed frame bypasses it.
+    # 90-05: the burst hold (see _burstHoldIntercept). A replayed frame bypasses it.
     return if !$_burstReplay{ refaddr($self) } && $self->_burstHoldIntercept($msg, $type);
 
     my $now = Time::HiRes::time();
@@ -5018,8 +5049,11 @@ sub onEvent {
 #   - any other frame type (the burst's closing position_sync, another
 #     track_changed, _transport, error, ...) releases in arrival order and is
 #     then processed itself;
-#   - _burstHoldFire (TAKEOVER_LATE_CONTEXT_S) and an own command (_dispatch)
-#     release in arrival order; shutdown drops the hold without a replay.
+#   - _burstHoldFire (TAKEOVER_LATE_CONTEXT_S) and an own command release in
+#     arrival order; shutdown drops the hold without a replay. An own command
+#     releases before its decision is made: _reconcile (every LMS request),
+#     _hangReplayFire and _prefetchNext at their top, any other _dispatch
+#     before the command is planned (90 review WR-01).
 # Returns 1 when the frame was taken (held), 0 when onEvent goes on with it.
 sub _burstHoldIntercept {
     my ($self, $msg, $type) = @_;
@@ -5172,11 +5206,36 @@ sub _onFrameOptionsChanged {
 
 # _resumeDueRelease($self, $id, $pos, $why) -- the single exit of a held resume. Only in mode connect it
 # emits (and asks the daemon for its state, the post-resume reconciliation); in any other mode it drops.
+#
+# 90.1-07 (GH #225, from PR #226): released as the session's plain `start` instead when
+#   - the record is an app wake's held start (asStart, _appWakeStart). _emitStart is a no-op when the deciding
+#     frame's own handler already started its new title;
+#   - or (not for a 'new title' release) the session was adopted from idle and LMS is STOPPED on one of our
+#     entries for ANOTHER title (_adoptedOnStaleStop): Connect.pm's `resume` on a stopped player is `pause 0`,
+#     LMS's `playlist jump <index>` -- it re-opens that stale entry, whose unmarked getNextTrack hands the
+#     session to browse (the #225 loop). A start is a marked `playlist play` of the daemon's title instead; the
+#     session marker is dropped first so the start goes out. A 'new title' release is never converted: the
+#     frame's own `change` already re-opened LMS.
 sub _resumeDueRelease {
     my ($self, $id, $pos, $why) = @_;
-    delete $self->observed->{resumeDue};
+    my $rd = delete $self->observed->{resumeDue};
     Slim::Utils::Timers::killTimers($self, \&_resumeDueFire);
     return unless $self->mode eq 'connect';
+    my $asStart = (ref($rd) eq 'HASH' && $rd->{asStart}) ? 1 : 0;
+    if (!$asStart && $why ne 'new title' && $self->_adoptedOnStaleStop($id)) {
+        delete $self->observed->{startEmittedFor};
+        $asStart = 1;
+    }
+    if ($asStart) {
+        return unless defined $id && length $id;
+        main::INFOLOG && $log->is_info && $log->info(
+            "Control: resume released as the session's start ($why) track=$id (" . ($self->mac // '?') . ")"
+        );
+        $self->_emitStart($id, $pos);
+        # the start just asked LMS to follow: a sighting counted while it was held is no evidence against it
+        if (my $sbh = $self->observed->{splitBrain}) { $sbh->{sightings} = 0; }
+        return;
+    }
     main::INFOLOG && $log->is_info && $log->info(
         "Control: resume released ($why) track=" . ($id // '-') . " (" . ($self->mac // '?') . ")"
     );
@@ -5233,6 +5292,14 @@ sub _resumeDuePre {
         return;
     }
     if (Time::HiRes::time() - ($rd->{at} // 0) > RESUME_DUE_MAX_S) {
+        if ($rd->{asStart}) {
+            # 90.1-07: a dropped app-wake start leaves LMS stopped under a playing daemon -- start the title
+            # the daemon last named instead
+            $log->warn("Control: no title frame within " . RESUME_DUE_MAX_S . " s after an app wake -- starting "
+                . ($self->observed->{track} // '-') . " (" . ($self->mac // '?') . ")");
+            $self->_resumeDueRelease(_trackIdOf($self->observed->{track}), '', 'stale');
+            return;
+        }
         # D-33 WR-02: a held resume that nothing released is a lost user action, not an INFO
         $log->warn("Control: held resume dropped (stale) - nothing released it within " . RESUME_DUE_MAX_S . " s ("
             . ($self->mac // '?') . ")");
@@ -5285,6 +5352,112 @@ sub _resumeDuePost {
     return unless defined $rd->{releaseFor};
     $self->_resumeDueRelease(_trackIdOf($rd->{releaseFor}), '', 'new title');
     return;
+}
+
+# ---------------------------------------------------------------------------
+# 90.1-07 (GH #225, D-10): the app wake after a Browse stop-leave, rebuilt on the current code from
+# patapovich's PR #226 (his analysis of the live 2026-11-15 loop). After Control's own Browse stop-leave
+# (requestPause isStop -> leftBrowseUri) the daemon stays the active device, paused. The user pressing play /
+# starting an album in the Spotify app on that SAME device was adopted as a 'restored' session: Connect.pm
+# suppressed the start while LMS stood (or a stale startEmittedFor swallowed it), the split-brain ladder then
+# `change`d a stopped LMS, whose `pause 0` re-opened LMS's stale entry and handed the session back to browse
+# (measured 6/6, 90.1-RIG-RESULTS.md LOOP_225_R2). Here an app action wakes a fresh Connect session with a
+# plain start instead.
+#
+# observed.reportedStatus: the daemon's own status reports, playback_changed / playback_state only, and only
+# playing/paused/stopped/idle -- never `buffering` (an autoplay advance passes playing -> buffering -> playing,
+# never paused -> playing). observed.wakeEdge: a playing report straight after a dormant one
+# (paused/stopped/idle); deleted by the next dormant report, by every own pause/play/seek send (_execute) and
+# by _transportClosed (a reconnect snapshot is no transition: 79-61 'restored' stays).
+# ---------------------------------------------------------------------------
+sub _noteReportedStatus {
+    my ($self, $status) = @_;
+    return unless defined $status && $status =~ /^(?:playing|paused|stopped|idle)$/;
+    my $o    = $self->observed;
+    my $prev = $o->{reportedStatus};
+    if ($status ne 'playing') {
+        delete $o->{wakeEdge};
+    }
+    elsif (defined $prev && $prev =~ /^(?:paused|stopped|idle)$/) {
+        $o->{wakeEdge} = { newContext => 0 };
+    }
+    $o->{reportedStatus} = $status;
+    return;
+}
+
+# _appWakeAfterBrowse($self) -- the wake verdict, called inside the idle reconnect adoption BEFORE the bind
+# and before _enterConnectSession (which deletes leftBrowseUri; RESEARCH Pitfall 8). Consumes the edge
+# whatever the verdict. Returns the edge when
+#   - the edge is set: the daemon went dormant -> playing after Control's last own command;
+#   - leftBrowseUri is set: Control itself left Browse on an LMS stop while the daemon stayed active;
+#   - no own echo can still be in flight (_ownEchoOpen: the stop-leave's pause, the idle guard's pause);
+#   - LMS is stopped, on our own material or on no song (never replaces a local file or radio).
+# Otherwise undef: the restored adoption runs unchanged. No clock of its own; the only window is _ownEchoOpen.
+sub _appWakeAfterBrowse {
+    my $self = shift;
+    my $edge = delete $self->observed->{wakeEdge};
+    return undef unless ref($edge) eq 'HASH';
+    return undef unless defined $self->observed->{leftBrowseUri};
+    return undef if $self->_ownEchoOpen;
+    my $client = Slim::Player::Client::getClient($self->mac) or return undef;
+    return undef unless (Slim::Player::Source::playmode($client) // '') eq 'stop';
+    return undef unless $self->_lmsSongIsOurs || !defined $self->_lmsCurrentUrl;
+    return $edge;
+}
+
+# _appWakeStart($self, $uri, $edge) -- the woken session's start. A frame naming a title starts it now at
+# this frame's position ('' after a new context). An item-less playing frame (79-51 E1: nothing in it tells
+# a resume from an album start) opens the 79-51 held decision as a start (asStart): the same-title release (a
+# title frame, or RESUME_DECIDE_MS without a context_changed) starts the paused title at its position; another
+# title, or any title after a context_changed, is started by that frame's own release (startEmittedFor is
+# undefined: newSession) -- never the old title first. A held start nothing decides within RESUME_DUE_MAX_S
+# starts the last named title with a WARN (_resumeDuePre).
+sub _appWakeStart {
+    my ($self, $uri, $edge) = @_;
+    my $mac = $self->mac // '?';
+    my $a   = $self->observed->{anchor};
+    my $newContext = (ref($edge) eq 'HASH' && $edge->{newContext}) ? 1 : 0;
+
+    if (defined $uri && $uri =~ /^spotify:(?:track|episode):[A-Za-z0-9]+$/) {
+        my $pos = (!$newContext && ref($a) eq 'HASH' && ($a->{position_ms} // 0) > 0
+                   && (!defined $a->{uri} || $a->{uri} eq $uri)) ? _anchorPosSec($a) : '';
+        main::INFOLOG && $log->is_info && $log->info(
+            "Control: app wake -- the Spotify app plays $uri after the Browse session ended (LMS stopped): start ($mac)");
+        $self->_emitStart(_trackIdOf($uri), $pos);
+        return;
+    }
+
+    my $track = $self->observed->{track};
+    my $pos = (!$newContext && defined $track && ref($a) eq 'HASH' && ($a->{position_ms} // 0) > 0
+               && (!defined $a->{uri} || $a->{uri} eq $track)) ? _anchorPosSec($a) : '';
+    Slim::Utils::Timers::killTimers($self, \&_resumeDueFire);
+    $self->observed->{resumeDue} = {
+        track   => $track,
+        id      => _trackIdOf($track),
+        pos     => $pos,
+        at      => Time::HiRes::time(),
+        noItem  => 1,
+        asStart => 1,
+        ($newContext ? (newContext => 1) : ()),
+    };
+    Slim::Utils::Timers::setTimer($self, Time::HiRes::time() + RESUME_DECIDE_MS / 1000, \&_resumeDueFire);
+    main::INFOLOG && $log->is_info && $log->info(
+        "Control: app wake -- item-less playing frame after the Browse session ended: start held for the title frame"
+        . ($newContext ? ' (new context)' : '') . " ($mac)");
+    return;
+}
+
+# _adoptedOnStaleStop($self, $id) -- the session was ADOPTED from idle (the reconnect adoption or an app wake:
+# Control entered connect itself, Connect.pm never opened LMS for it), and LMS is stopped on one of OUR entries
+# that is not title $id. Sessions Connect.pm opened (transfer-in, takeover: a plain start) never match.
+sub _adoptedOnStaleStop {
+    my ($self, $id) = @_;
+    return 0 unless defined $id && length $id;
+    return 0 unless ($self->observed->{sessionEntry} // '') =~ /^(?:reconnect-to-connect|app-wake)$/;
+    my $client = Slim::Player::Client::getClient($self->mac) or return 0;
+    return 0 unless (Slim::Player::Source::playmode($client) // '') eq 'stop';
+    my ($cur) = ($self->_lmsCurrentUrl // '') =~ m{^spoton://(?:track|episode):([A-Za-z0-9]+)$};
+    return (defined $cur && $cur ne $id) ? 1 : 0;
 }
 
 sub _onFrameTrackChanged {
@@ -5620,8 +5793,7 @@ sub _onFrameTrackChanged {
         # 84.2-01: keyed on the own-queue SET, not on `queuedNext` (any
         # queue_changed upcoming[0]) -- a leftover from an earlier session
         # is no hit and must not be logged as one (misleading 84-27 evidence).
-        if ($self->mode eq 'browse' && ref($self->observed->{queuedByUs}) eq 'HASH'
-            && exists $self->observed->{queuedByUs}{$uri})
+        if ($self->mode eq 'browse' && $self->_queuedHit($uri))    # 90.1-08: own or a dedupe claim
         {
             # D-C confirmation (S-01 A): the prefetch we sent on the
             # PREVIOUS track's echo just paid off -- _reconcile's Treffer
@@ -5729,11 +5901,9 @@ sub _onFrameTrackChanged {
         # 84.2-01 (D-07 / IN-04): `queuedByUs` is a SET of own queue
         # entries -- a prefetched title LMS skipped past is still own when
         # the daemon reaches it; a match consumes only that one key.
-        my $queuedByUsMatch = (ref($self->observed->{queuedByUs}) eq 'HASH'
-            && exists $self->observed->{queuedByUs}{$uri}) ? 1 : 0;
-        if ($queuedByUsMatch) {
-            delete $self->observed->{queuedByUs}{$uri};
-        }
+        # 90.1-08 (D-21): a dedupe claim (queuedByLms) is a hit as well; the
+        # key is consumed from the set that held it.
+        my $queuedByUsMatch = $self->_consumeQueuedHit($uri);
 
         # wr03 (83.1-07 Group D, .planning/todos/pending/wr03-...): a
         # foreign frame landing INSIDE the still-open late-echo window
@@ -5856,6 +6026,7 @@ sub _onFramePlaybackChanged {
 
         my $mode       = $self->mode;
         my $prevStatus = $self->observed->{status};
+        $self->_noteReportedStatus($status);    # 90.1-07: the daemon's own status report (app wake edge)
 
         my $g4Pending = $self->pending;
         main::DEBUGLOG && $log->is_debug && $log->debug(
@@ -6188,9 +6359,17 @@ sub _postNearEnd {
     # Fable WR-01: only SpotOn's own successor (queuedByUs). A head the app queued (or a stale entry)
     # is not what LMS opens next: marked, LMS would advance into its own next title and a play would
     # pre-empt the app's title, which must take over when it starts (D-34, _browseTakeover).
-    my $own = $o->{queuedByUs};
-    return unless ref($head) eq 'HASH' && defined $head->{uri} && $head->{uri} ne $uri
-        && ref($own) eq 'HASH' && $own->{ $head->{uri} };
+    # 90.1 review WR-02: a dedupe claim (queuedByLms, 90.1-08) is own too when the head's uid is SpotOn's own
+    # remembered leftover (ownLeftovers, _forgetOwnQueue) for this title -- the stop-then-play and jump-back flow.
+    # The user's entry of the same title has another uid and stays unmarked.
+    my $own  = $o->{queuedByUs};
+    my $lms  = $o->{queuedByLms};
+    my $left = $o->{ownLeftovers};
+    return unless ref($head) eq 'HASH' && defined $head->{uri} && $head->{uri} ne $uri;
+    my $ownHead  = ref($own) eq 'HASH' && $own->{ $head->{uri} };
+    my $leftHead = ref($lms) eq 'HASH' && $lms->{ $head->{uri} } && ref($left) eq 'HASH'
+        && defined $head->{uid} && ($left->{ $head->{uid} } // '') eq $head->{uri};
+    return unless $ownHead || $leftHead;
     my $meta = $o->{meta};
     my $dur  = (ref($meta) eq 'HASH' && ref($meta->{$uri}) eq 'HASH') ? $meta->{$uri}{duration} : undef;
     return unless defined $dur && $dur > 0;
@@ -6623,6 +6802,13 @@ sub _hangReplayFire {
     my $o = $self->observed;
     my $w = delete $o->{hangWatch};
     return unless $w;
+    # 90 review WR-01: a held burst frame is processed before the checks below read observed.track and
+    # pending (the guard's pause of a foreign title then ends the replay here). The watch is taken first,
+    # so a watch the replayed frames arm is a new one with its own timer: it decides, this one stops.
+    if ($o->{burstHold}) {
+        $self->_burstHoldRelease('own hang replay');
+        return if $o->{hangWatch};
+    }
     return unless $self->mode eq 'browse';
     return if $self->_knownInactive;
     return if $self->pending;
@@ -6736,6 +6922,7 @@ sub _onFramePlaybackState {
         }
 
         $self->_debugStatusTransition($msg->{status}, 'playback_state item.uri=' . ($uri // '-'));
+        $self->_noteReportedStatus($msg->{status});    # 90.1-07: the daemon's own status report (app wake edge)
         $self->_noteHoldRelease($msg->{status},
             (defined $uri && $uri =~ /^spotify:(?:track|episode):[A-Za-z0-9]+$/) ? $uri : undef,
             $hrPrevStatus, $hrPrevTrack);    # 79 D-31
@@ -6826,22 +7013,40 @@ sub _onFramePlaybackState {
                 return;
             }
             $self->_clearErrorOnce('connect-off:' . ($self->mac // '?'));
+            # 90.1-02 (D-01/D-02): read the daemon log BEFORE the claim binds, so the claim sees the
+            # account this daemon is signed in as right now (a login line precedes the bind by ~1.5 s).
+            $self->_refreshAccount('reconnect');
+            # 90.1-07 (GH #225, from PR #226): the wake verdict is read BEFORE the bind and before
+            # _enterConnectSession, which deletes leftBrowseUri. Undef keeps the restored adoption below unchanged.
+            my $wake = $self->_appWakeAfterBrowse;
+            main::INFOLOG && $log->is_info && $log->info(
+                "Control: app wake after a Browse stop on " . ($self->mac // '?')
+                . " -- fresh Connect session (left " . ($self->observed->{leftBrowseUri} // '-') . ")") if $wake;
             eval {
                 require Plugins::SpotOn::Connect;
                 my $bindClient = Slim::Player::Client::getClient($self->mac);
-                Plugins::SpotOn::Connect->bindConnectClaim($bindClient, 'reconnect') if $bindClient;
+                Plugins::SpotOn::Connect->bindConnectClaim($bindClient, $wake ? 'app-wake' : 'reconnect') if $bindClient;
                 1;
             };
-            # 84.2-01 (D-04, defensive): idle -> connect is a loss of Browse
-            # control too -- whatever path left an own-queue set behind in
-            # idle, none of it survives into connect.
-            # D-34 (79-48): the body shared by every way into a connect session
-            # (this reconnect adoption, the device_changed transfer-in, the
-            # app takeover out of Browse): _enterConnectSession.
-            $self->_enterConnectSession('reconnect-to-connect');
-            if (defined $self->observed->{track}) {
-                my $tid = _trackIdOf($self->observed->{track});
-                $self->_emitStart($tid, undef, 'restored') if defined $tid;    # 79-61 (FULL-2 WR-06)
+            if ($wake) {
+                # A user action in the app, not a restored session: a fresh session (the guard's
+                # autoplayPaused ends) whose stale session marker is dropped (newSession), and a
+                # plain start, never 'restored'.
+                $self->_enterConnectSession('app-wake', fresh => 1, newSession => 1);
+                $self->_appWakeStart($uri, $wake);
+            }
+            else {
+                # 84.2-01 (D-04, defensive): idle -> connect is a loss of Browse
+                # control too -- whatever path left an own-queue set behind in
+                # idle, none of it survives into connect.
+                # D-34 (79-48): the body shared by every way into a connect session
+                # (this reconnect adoption, the device_changed transfer-in, the
+                # app takeover out of Browse): _enterConnectSession.
+                $self->_enterConnectSession('reconnect-to-connect');
+                if (defined $self->observed->{track}) {
+                    my $tid = _trackIdOf($self->observed->{track});
+                    $self->_emitStart($tid, undef, 'restored') if defined $tid;    # 79-61 (FULL-2 WR-06)
+                }
             }
         }
 
@@ -6852,9 +7057,104 @@ sub _onFramePlaybackState {
         return;
 }
 
+# ---- 90.1-02 (D-01/D-02/D-04): the account the daemon is signed in as ----------
+# No frame carries the account id; the per-player daemon log does
+# (Soloist::AccountLog). observed->{account} = { key => <8 hex>, short => <last 4
+# characters> } or absent = unknown. The full id is never held here (T-90.1-03).
+# Shown only while the WS is up AND the daemon is logged in; a close or a logout
+# drops it, and it is re-derived from the last login line of THIS daemon run at the
+# next auth_state (a same-account transfer writes no new login line).
+use constant ACCOUNT_ROUNDS => 4;    # advance() calls per refresh (256 KiB each)
+
+sub _accountText {
+    my ($acct) = @_;
+    return 'unknown' unless ref $acct eq 'HASH';
+    return '...' . ($acct->{short} // '');
+}
+
+# _logAccount($self, $old, $new, $why) -- one INFO line, only on a change.
+sub _logAccount {
+    my ($self, $old, $new, $why) = @_;
+    my $o = ref $old eq 'HASH' ? $old : undef;
+    my $n = ref $new eq 'HASH' ? $new : undef;
+    return if !$o && !$n;
+    return if $o && $n && ($o->{key} // '') eq ($n->{key} // '') && ($o->{short} // '') eq ($n->{short} // '');
+    main::INFOLOG && $log->is_info && $log->info(
+        "Control: daemon account " . ($self->mac // '?') . " -> " . _accountText($n) . " (" . ($why // '?') . ")"
+    );
+    return;
+}
+
+# _setAccount($self, $new, $why) -- $new = { key, short } (copied) or undef (unknown).
+sub _setAccount {
+    my ($self, $new, $why) = @_;
+    my $old = $self->observed->{account};
+    if (ref $new eq 'HASH') {
+        $self->observed->{account} = { key => $new->{key}, short => $new->{short} };
+    }
+    else {
+        delete $self->observed->{account};
+    }
+    $self->_logAccount($old, $self->observed->{account}, $why);
+    return;
+}
+
+# _refreshAccount($self, $why) -- read the daemon log forward and settle
+# observed->{account}. A new daemon run (another log file, another spawn, or a start
+# offset that moved to a non-zero value) resets the reader: the account of the run
+# before is not the account of this one. A start offset that dropped to 0 under the
+# same spawn is the runtime log cap cutting the file (SoloistDaemon::_capLogNow) and
+# keeps what was learned.
+sub _refreshAccount {
+    my ($self, $why) = @_;
+
+    my $o      = $self->observed;
+    my $daemon = $self->daemon;
+    my $found;
+    if ($daemon) {
+        my $file  = $daemon->can('_stderrFile')        ? $daemon->_stderrFile        : undef;
+        my $start = $daemon->can('_stderrStartOffset') ? $daemon->_stderrStartOffset : undef;
+        my $spawn = $daemon->can('_spawnTime')         ? $daemon->_spawnTime         : undef;
+        $start //= 0;
+
+        my $r = $self->_acctLog;
+        my $newRun = !$r
+            || ($r->{file}  // '') ne ($file  // '')
+            || ($r->{spawn} // '') ne ($spawn // '')
+            || ($r->{start} != $start && $start != 0);
+        if ($newRun) {
+            $r = { file => $file, start => $start, pos => $start, spawn => $spawn, partial => '', last => undef };
+            $self->_acctLog($r);
+        }
+        elsif ($r->{start} != $start) {
+            $r->{start} = $start;    # the log cap cut the file: same run, keep `last`
+        }
+
+        if (defined $file && length $file) {
+            eval {
+                require Plugins::SpotOn::Soloist::AccountLog;
+                for (1 .. ACCOUNT_ROUNDS) {
+                    last unless Plugins::SpotOn::Soloist::AccountLog->advance($r);
+                }
+                1;
+            } or main::INFOLOG && $log->is_info && $log->info(
+                "Control: daemon account read failed (" . ($self->mac // '?') . "): " . ($@ // '')
+            );
+        }
+        $found = $r->{last} if $o->{wsConnected} && $o->{logged_in};
+    }
+    $self->_setAccount($found, $why);
+    return;
+}
+
 sub _onFrameAuthState {
     my ($self, $msg, $class, $detail) = @_;
         $self->observed->{loggedOutAt} = Time::HiRes::time() if !$msg->{logged_in} && $self->observed->{logged_in}; $self->observed->{logged_in} = $msg->{logged_in} ? 1 : 0;
+        # 90.1-02 (D-02): a true-to-false edge makes the account unknown at once; a
+        # logged_in frame re-derives it from the daemon log (read here, so it is known
+        # before any claim bind that follows).
+        $self->_setAccount(undef, 'logged out') unless $msg->{logged_in};
+        $self->_refreshAccount('auth_state');
         # 84.1 plan 03 (D-04): answers "did the daemon answer a
         # get_auth_state after time T" for DaemonManager's health tick --
         # onEvent's own observed->{lastEventAt} stamp cannot serve that
@@ -7110,6 +7410,9 @@ sub _onFrameDeviceChanged {
             # the single write path for a Soloist player. Eval-guarded like
             # _recordErrorOnce guards Status -- a Connect.pm load failure
             # must not abort event processing.
+            # 90.1-02 (D-01/D-02): read the daemon log BEFORE the claim binds, so the claim sees the
+            # account this daemon is signed in as right now (a login line precedes the bind by ~1.5 s).
+            $self->_refreshAccount('transfer');
             eval {
                 require Plugins::SpotOn::Connect;
                 my $bindClient = Slim::Player::Client::getClient($self->mac);
@@ -7981,6 +8284,16 @@ sub _connectResync {
     my $uri = $self->observed->{track};
     return unless defined $uri;
 
+    # 90.1-07 (from PR #226; placed here, not in _checkSplitBrain, which D-11 keeps unchanged): while an app
+    # wake's start waits for its title frame (_appWakeStart, asStart), LMS has not been asked to follow yet --
+    # a rung now would open the paused old title first. Bounded by the record (RESUME_DUE_MAX_S, then a start).
+    # Only the woken session's own held start; no other Connect session stands down.
+    if (ref($self->observed->{resumeDue}) eq 'HASH' && $self->observed->{resumeDue}{asStart}) {
+        main::DEBUGLOG && $log->is_debug && $log->debug("Control: nachziehen held -- reason=$reason, the app wake's "
+            . "start waits for its title frame (" . ($self->mac // '?') . ")");
+        return;
+    }
+
     my $sb = $self->observed->{splitBrain} ||= { uri => $uri, attempts => 0, sightings => 0 };
     if ($sb->{uri} ne $uri) {
         $sb = $self->observed->{splitBrain} = { uri => $uri, attempts => 0, sightings => 0 };
@@ -8015,7 +8328,18 @@ sub _connectResync {
 
         my $prevId = _trackIdOf($self->observed->{startEmittedFor});
         my $id     = _trackIdOf($uri);
-        $self->_emit('change', $id, $prevId, 'nachziehen');
+        # 90.1-07 (GH #225, from PR #226): in an ADOPTED session LMS may still stand on the stale entry it
+        # stopped on. Connect.pm's `change` runs `pause 0` on a stopped player -- LMS's `playlist jump <index>`
+        # re-opens that entry, whose unmarked getNextTrack hands the session to browse (the #225 loop, step 3
+        # of LOOP_225_R2). The rung then asks with a start: a marked `playlist play` of the daemon's title.
+        # Same attempt, same errors[] entry.
+        my @rung = ('change', $id, $prevId);
+        if ($self->_adoptedOnStaleStop($id)) {
+            my $posMs = $self->_anchorPositionMs($uri);
+            @rung = ('start', $id, ((defined $posMs && $posMs > 0) ? sprintf('%.3f', $posMs / 1000) : ''));
+            $self->observed->{startEmittedFor} = $uri;
+        }
+        $self->_emit(@rung, 'nachziehen');
     }
     else {
         $self->_recordErrorOnce('split-brain-halt:' . $uri, 'warn',
@@ -8203,8 +8527,12 @@ sub _transportClosed {
     $self->_pauseConnectWatchdog if $self->mode eq 'connect';
 
     $self->observed->{wsConnected} = 0;
+    # 90.1-02 (D-02): the account is unknown until the WS is back and the daemon logs in again
+    $self->_logAccount($self->observed->{account}, undef, 'transport closed');
+    delete $self->observed->{account};
     delete $self->observed->{track};
     delete $self->observed->{status};
+    delete @{ $self->observed }{qw(reportedStatus wakeEdge)};    # 90.1-07: a reconnect snapshot is no app action
     delete $self->observed->{anchor};
     delete $self->observed->{postSeekCheck};    # S1: the check belonged to the closed connection
     Slim::Utils::Timers::killTimers($self, \&_postSeekCheckFire);
@@ -8747,6 +9075,16 @@ sub _consumePrefetchWish {
 sub _prefetchNext {
     my $self = shift;
 
+    # 90 review WR-01: a held burst frame is processed before the queue and the playing title are read.
+    # The decision then waits for the settle point (_consumePrefetchWish): the replayed frames may have
+    # moved the daemon, sent a pause or changed the queue. The hold is gone, so this runs once.
+    if ($self->observed->{burstHold}) {
+        $self->_burstHoldRelease('own prefetch');
+        $self->observed->{prefetchWish} = 1 if $self->mode eq 'browse';
+        $self->_consumePrefetchWish;
+        return;
+    }
+
     my $client = Slim::Player::Client::getClient($self->mac) or return;
 
     my $idx = Slim::Player::Source::streamingSongIndex($client);
@@ -8809,11 +9147,18 @@ sub _prefetchNext {
     # set: the entry is in the queue and LMS chose it as the successor, so
     # the natural advance to it must stay a recognised prefetch hit, not a
     # foreign title.
+    # 90.1-08 (D-21, phase-90 review WR-02 remainder): two sets. The claim
+    # goes to queuedByLms (read only at the prefetch-hit sites), not to
+    # queuedByUs: the entry may be the user's, and a title in queuedByUs is
+    # skipped by the app-queued detector, so a later user entry of the same
+    # title would look like SpotOn's own and its take-over would be missed.
+    # A title that is already own (a real add_to_queue) stays in queuedByUs
+    # with its uid record (Fable N-01).
     if (grep { $_ eq $nextUri } @{ $self->observed->{queueUris} || [] }) {
         main::DEBUGLOG && $log->is_debug && $log->debug(
             "Control: prefetch skipped, $nextUri is already a queue entry (" . ($self->mac // '?') . ")"
         );
-        $self->_markOwnQueue($nextUri);
+        $self->_markOwnQueue($nextUri, noAdd => 1);    # 90 review WR-02: no add_to_queue, no uid to learn
         return;
     }
 
@@ -8856,17 +9201,63 @@ sub _prefetchNext {
     }
 }
 
-# _markOwnQueue($self, $uri) -- 84.2-01: add one own queue entry to the set
-# (`observed.queuedByUs`), dropping the oldest past OWN_QUEUE_MAX.
-sub _markOwnQueue {
+# _capOwnSet($h) -- drop the oldest entries of an own-queue set ({ uri => epoch }) past OWN_QUEUE_MAX.
+sub _capOwnSet {
+    my ($h) = @_;
+    while (keys(%$h) > OWN_QUEUE_MAX) {
+        my ($oldest) = sort { $h->{$a} <=> $h->{$b} || $a cmp $b } keys %$h;
+        delete $h->{$oldest};
+    }
+    return;
+}
+
+# _queuedHit($self, $uri) -- 90.1-08 (D-21): 1 when $uri is a successor SpotOn queued (queuedByUs) or
+# claimed in _prefetchNext's dedupe branch (queuedByLms), else 0. Read ONLY at the prefetch-hit decision
+# sites (_guardWouldPause's default, the D-C hit log and the consumed match in _onFrameTrackChanged).
+# The own-entry readers (_ownQueueUid, _ownLeftoversAtHead, _isOwnBrowseUri, _postNearEnd, the app-queued
+# detector, the own uid learning, the leftover and forget paths) read queuedByUs alone.
+sub _queuedHit {
     my ($self, $uri) = @_;
+    return 0 unless defined $uri;
+    my $o = $self->observed;
+    return 1 if ref($o->{queuedByUs}) eq 'HASH' && exists $o->{queuedByUs}{$uri};
+    return 1 if ref($o->{queuedByLms}) eq 'HASH' && exists $o->{queuedByLms}{$uri};
+    return 0;
+}
+
+# _consumeQueuedHit($self, $uri) -- 90.1-08 (D-21): a prefetch hit consumes $uri from the set that held
+# it (only that one key). 1 when it was a hit, else 0.
+sub _consumeQueuedHit {
+    my ($self, $uri) = @_;
+    return 0 unless $self->_queuedHit($uri);
+    my $o = $self->observed;
+    for my $k (qw(queuedByUs queuedByLms)) {
+        delete $o->{$k}{$uri} if ref($o->{$k}) eq 'HASH';
+    }
+    return 1;
+}
+
+# _markOwnQueue($self, $uri, %o) -- 84.2-01: add one own queue entry to the set
+# (`observed.queuedByUs`), dropping the oldest past OWN_QUEUE_MAX. noAdd => 1
+# (90 review WR-02): the claim has no add_to_queue behind it (the dedupe
+# branch), so no own uid is learned for it. 90.1-08 (D-21): such a claim of a
+# title that is not own goes to `observed.queuedByLms` (same cap), never into
+# queuedByUs; a real add moves a title out of queuedByLms into queuedByUs.
+sub _markOwnQueue {
+    my ($self, $uri, %o) = @_;
     $self->observed->{queuedByUs} = {} unless ref($self->observed->{queuedByUs}) eq 'HASH';
     my $q = $self->observed->{queuedByUs};
     my $wasOwn = exists $q->{$uri};
-    $q->{$uri} = Time::HiRes::time();
-    while (keys(%$q) > OWN_QUEUE_MAX) {
-        my ($oldest) = sort { $q->{$a} <=> $q->{$b} || $a cmp $b } keys %$q;
-        delete $q->{$oldest};
+    if ($o{noAdd} && !$wasOwn) {
+        my $l = $self->observed->{queuedByLms};
+        $l = $self->observed->{queuedByLms} = {} unless ref($l) eq 'HASH';
+        $l->{$uri} = Time::HiRes::time();
+        _capOwnSet($l);
+    }
+    else {
+        $q->{$uri} = Time::HiRes::time();
+        _capOwnSet($q);
+        delete $self->observed->{queuedByLms}{$uri} if ref($self->observed->{queuedByLms}) eq 'HASH';
     }
     # Fable WR-02: the entry this add_to_queue creates is told from the user's entry for the same
     # title by its uid. The uids already queued for $uri now are not ours; the queue_changed handler
@@ -8879,9 +9270,18 @@ sub _markOwnQueue {
     my $u = $self->observed->{queuedUid};
     $u = $self->observed->{queuedUid} = {} unless ref($u) eq 'HASH';
     delete $u->{$_} for grep { !$q->{$_} } keys %$u;
+    # 90 review WR-02: a uid is learned only for an actual add_to_queue. The dedupe branch's entry may be
+    # the user's and no add follows, so the next new uid for $uri would be the user's (or the app's)
+    # second add of the same title. A new claim without a send gets no record (_ownQueueUid stays undef:
+    # no consume, no leftover memory); an own title keeps its record (N-01). An own leftover from an
+    # earlier add is still recognized through observed.ownLeftovers.
+    if ($o{noAdd}) {
+        delete $u->{$uri} unless $wasOwn;
+        return;
+    }
     $u->{$uri} = { pre => { map { (defined $_->{uid} ? ($_->{uid} => 1) : ()) }
                             grep { ref($_) eq 'HASH' && ($_->{uri} // '') eq $uri } @{ $self->observed->{queueEntries} || [] } } }
-        unless $wasOwn && $q->{$uri} && ref($u->{$uri}) eq 'HASH';
+        unless $wasOwn && ref($u->{$uri}) eq 'HASH';    # 90 review IN-03: an evicted $uri lost its record above
     return;
 }
 
@@ -9408,6 +9808,26 @@ sub _holdAfterForeignLeave {
 
     delete $self->observed->{leftConnectForeign};
     return 0;
+}
+
+# _foreignLeaveWouldHold($self, $track) -- 90 review WR-03: the return value of
+# _holdAfterForeignLeave for a daemon on $track, without its side effects (no
+# marker is cleared, nothing is logged). The autoplay guard's idle stand-aside
+# (_guardWouldPause) asks it, because _guardWouldPause must stay side-effect
+# free for the burst hold. The same three clauses: the autoplay-paused title or
+# the context-end title LMS left is $track, or a leaveConnect episode is open,
+# each only while LMS plays foreign content. Keep it in step with
+# _holdAfterForeignLeave.
+sub _foreignLeaveWouldHold {
+    my ($self, $track) = @_;
+    my $o = $self->observed;
+    my $client = Slim::Player::Client::getClient($self->mac);
+    return 0 unless $client
+        && ((Slim::Player::Source::playmode($client) // '') eq 'play')
+        && !$self->_lmsSongIsOurs;
+    return 1 if defined $track && defined $o->{autoplayPaused} && $o->{autoplayPaused} eq $track;
+    return 1 if defined $track && defined $o->{leftBrowsePlanted} && $o->{leftBrowsePlanted} eq $track;
+    return $o->{leftConnectForeign} ? 1 : 0;
 }
 
 # endForeignLeave($self, $why) -- T-84.1-30: an explicit clear point for

@@ -616,7 +616,7 @@ require Plugins::SpotOn::Plugin;
 # Tests
 # ============================================================
 
-plan tests => 44;   # 79-81 D-54: +5 Connect card cells (D54-A1..A4), +6 Audio Keys cells (D54-B1..B5); 79-60: +11 Auth Health Connect cells (Soloist daemons per account); 84-09: soloist half of t/13_status_page.t (T-7/WR-05 over the REAL Backend::Soloist state()); the rest is t/core/13_status_page_core.t
+plan tests => 50;   # 90.1-04: +6 account cells (A1); 79-81 D-54: +5 Connect card cells (D54-A1..A4), +6 Audio Keys cells (D54-B1..B5); 79-60: +11 Auth Health Connect cells (Soloist daemons per account); 84-09: soloist half of t/13_status_page.t (T-7/WR-05 over the REAL Backend::Soloist state()); the rest is t/core/13_status_page_core.t
 
 # Test 1: Status.pm compiles
 require_ok('Plugins::SpotOn::Status');
@@ -727,6 +727,49 @@ require Plugins::SpotOn::Unified::DaemonManager;   # 84-09: load the stub BEFORE
     my $daemons = Plugins::SpotOn::Status::_collectDaemons();
     my $d = $daemons->[0];
     is($d->{paired}, 1, "WR-05: Fall A -- Control says paired, filesystem says not -- Control wins");
+}
+
+# ============================================================
+# 90.1-04 A1 (D-05): daemons[].account = { role, short } of a Soloist daemon. paired: the daemon's account key is the
+# player's SpotOn account id (RESEARCH A1, Plugin::_getAccountId); guest: another key; unknown: no account in state().
+# The 8-hex key and any full id never reach the entry (the JSON text is checked).
+# ============================================================
+{
+    my ($KEY_OWN, $KEY_GUEST) = ('3f9a1c7e', '5d2b8e01');
+    my $mk = sub {
+        my ($mac, $account) = @_;
+        return (
+            helpers => [ Plugins::SpotOn::Unified::SoloistDaemon->new(
+                mac => $mac, alive => 1, pid => 118, uptime => 5, connectEnabled => 1, streamPort => 9008,
+                sessionHealth => undef, ws => Test::FakeSoloistWS->new(1),
+            ) ],
+            controls => { $mac => Plugins::SpotOn::Soloist::Control->new(
+                observed => { paired => 1, wsConnected => 1, (defined $account ? (account => $account) : ()) },
+            ) },
+        );
+    };
+    my $entry = sub {
+        my ($mac, $account) = @_;
+        my %h = $mk->($mac, $account);
+        local @Plugins::SpotOn::Unified::DaemonManager::HELPERS = @{ $h{helpers} };
+        local %Plugins::SpotOn::Soloist::Control::CONTROLS = %{ $h{controls} };
+        local %Plugins::SpotOn::Plugin::ACCT = ($mac => $KEY_OWN);
+        return Plugins::SpotOn::Status::_collectDaemons()->[0];
+    };
+
+    my $mac = 'aa:bb:cc:dd:ee:a1';
+    my $d = $entry->($mac, { key => $KEY_OWN, short => 'wxyz' });
+    is_deeply($d->{account}, { role => 'paired', short => 'wxyz' }, '90.1-04 A1: the daemon account key equals the player\'s SpotOn account id -> paired, short copied');
+
+    $d = $entry->($mac, { key => $KEY_GUEST, short => 'wxyz' });
+    is_deeply($d->{account}, { role => 'guest', short => 'wxyz' }, '90.1-04 A1: another account key -> guest');
+    my $json = JSON::PP->new->canonical->encode($d);
+    unlike($json, qr/\Q$KEY_GUEST\E|\Q$KEY_OWN\E/, '90.1-04 A1: the JSON of the entry carries neither the daemon\'s 8-hex key nor the player\'s account id');
+    like($json, qr/"account":\{"role":"guest","short":"wxyz"\}/, '90.1-04 A1: the JSON account object is { role, short } and nothing else');
+
+    $d = $entry->($mac, undef);
+    ok(exists $d->{account} && ref $d->{account} eq 'HASH', '90.1-04 A1: a Soloist daemon without an observed account still carries an account object');
+    is_deeply($d->{account}, { role => 'unknown', short => undef }, '90.1-04 A1: no account in state() -> unknown, short null');
 }
 
 # (WR-05 Fall B) Control says NOT paired, filesystem says paired -- the

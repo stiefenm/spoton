@@ -317,6 +317,14 @@ footer {
                 body.appendChild(createMetricRow('WS', d.wsConnected ? 'Connected' : 'Down'));
             }
 
+            // 90.1-04 (D-05): the account the Soloist daemon is signed in as; librespot players carry no account.
+            // Only role and the last 4 characters of the id arrive here; createMetricRow sets textContent.
+            if (d.account) {
+                var acctText = d.account.role === 'guest' ? 'guest ...' + (d.account.short || '')
+                             : d.account.role === 'paired' ? 'paired' : 'unknown';
+                body.appendChild(createMetricRow('Account', acctText));
+            }
+
             if (d.sessionHealth) {
                 var sessionValid = d.sessionHealth.session_valid;
                 var sessionLabel = sessionValid ? 'valid' : 'invalid';
