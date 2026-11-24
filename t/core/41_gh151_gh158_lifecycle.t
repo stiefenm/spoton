@@ -1965,7 +1965,9 @@ sub c84_17_lines { return grep { /Track change:|marked deferred/ } @Slim::Utils:
 
     package Slim::Player::Source;
     our $INDEX = 0;
+    our $STREAMING;
     sub playingSongIndex { return $INDEX; }
+    sub streamingSongIndex { return defined $STREAMING ? $STREAMING : $INDEX; }
     sub songTime { return 0; }
 
     package Plugins::SpotOn::Soloist::Control;
@@ -2042,6 +2044,7 @@ sub h_setup {
     @Slim::Player::Playlist::ENTRIES  = ("spoton://track:$H_OLD");
     $Slim::Player::Playlist::REPEAT   = ($o{repeat} // 0);
     $Slim::Player::Source::INDEX      = 0;
+    $Slim::Player::Source::STREAMING  = undef;
     $Slim::Player::Source::PLAYMODE   = 'play';
     @Slim::Utils::Log::LINES          = ();
     $H_NOW = 1_790_000_000.0;
@@ -2242,6 +2245,609 @@ for my $reason (sort keys %h_cancel) {
     is(h_timers(), 1, '84-17 H-c: the cap timer is still armed after them');
     is(scalar(h_deletes()), 0, '84-17 H-c: the deferred entry is still in the playlist');
     is_deeply($ctl->{clearHoldCalls}, [], '84-17 H-c: Control\'s record is untouched');
+    Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
+}
+
+# --- 90.2-01 (GH #234, FIX-04): a foreign jump onto the deferred entry is the hold's own advance ---
+# The rig showed (debug gh234 file, line 100): another LMS plugin answers the hold's
+# `playlist insert` with an unsourced `playlist index 1`, and the old cancel then deleted
+# the entry LMS had just started. LMS has already executed that jump (Play(1)) when its
+# notification reaches _onPlaylistJump, so the handler sees LMS already on the deferred entry.
+
+# h_landed($client, %o) -> the deferred entry B as LMS plays it after the jump
+sub h_landed {
+    my ($client) = @_;
+    $Slim::Player::Source::INDEX = 1;
+    $client->{song} = Test::FakeSongH->new(url => "spoton://track:$H_NEW", so => 0, duration => 180);
+}
+sub h_jump { my ($c, $k, $idx) = @_; h_event($c, $k, \&Plugins::SpotOn::Connect::_onPlaylistJump, _index => $idx); }
+
+{
+    my ($client, $ctl, $old) = h_setup();
+    h_change($client, $ctl, $H_NEW, 'live');
+    h_lms_inserted();
+    @Slim::Control::Request::EXECUTED = ();
+    @Slim::Utils::Log::LINES = ();
+    my $marker_before = $client->pluginData('connectOwnPlayUri');
+    h_landed($client);
+    h_jump($client, $ctl, '1');
+
+    is(scalar(h_deletes()), 0, '90.2-01 J-real: a foreign `playlist index 1` onto the deferred entry sends no `playlist delete`');
+    is(scalar(h_log(qr/^Connect: hold advanced by foreign jump idx=1 \(/)), 1, '90.2-01 J-real: `Connect: hold advanced by foreign jump idx=1` is logged once');
+    is(scalar(h_log(qr/^Connect: hold closed by/)), 0, '90.2-01 J-real: the hold is NOT closed by the jump (no `cancel:lms_jump`)');
+    is_deeply($ctl->{clearHoldCalls}, [], '90.2-01 J-real: Control\'s clearHold has not run (the hold is still open)');
+    is(h_timers(), 1, '90.2-01 J-real: the cap timer stays armed (safety net)');
+    is(scalar(h_plays()), 0, '90.2-01 J-real: no `playlist play`');
+    is_deeply($ctl->{skipCalls}, [], '90.2-01 J-real: no skip is sent to the daemon');
+    is(scalar(@Slim::Control::Request::EXECUTED), 0, '90.2-01 J-real: no LMS request of any kind answers the jump (no ping-pong with a reacting plugin)');
+    is($client->pluginData('connectOwnPlayUri'), $marker_before, '90.2-01 J-real: the dispatch marker is unchanged by the jump');
+
+    # the deferred entry's newsong closes the hold the normal way and prunes only the old entry
+    h_event($client, $ctl, \&Plugins::SpotOn::Connect::_onNewSong);
+    is(scalar(h_log(qr/^Connect: hold closed by newsong \(/)), 1, '90.2-01 J-real: the newsong of the deferred entry closes the hold `newsong`');
+    is_deeply([ map { $_->{cmd}[2] } h_deletes() ], [ 0 ], '90.2-01 J-real: only the OLD entry is pruned (`playlist delete 0`, never 1)');
+    is_deeply($ctl->{clearHoldCalls}, [ [ $H_NEW ] ], '90.2-01 J-real: Control\'s clearHold ran once, for the deferred title');
+    is(h_timers(), 0, '90.2-01 J-real: the cap timer is gone');
+    is(scalar(h_plays()), 0, '90.2-01 J-real: still no `playlist play` anywhere');
+    is(scalar(h_log(qr/cancel:lms_jump/)), 0, '90.2-01 J-real: no `cancel:lms_jump` over the whole case');
+    Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
+}
+
+# h_open_hold(): a hold open on the OLD title with the deferred entry inserted; logs and requests cleared
+sub h_open_hold {
+    my ($client, $ctl) = @_;
+    h_change($client, $ctl, $H_NEW, 'live');
+    h_lms_inserted();
+    @Slim::Control::Request::EXECUTED = ();
+    @Slim::Utils::Log::LINES = ();
+}
+
+# --- 90.2-01 variants that ADVANCE the hold ---
+{
+    my ($client, $ctl) = h_setup();
+    h_open_hold($client, $ctl);
+    h_jump($client, $ctl, '1');    # LMS still on index 0: the literal absolute index decides
+    is(scalar(h_log(qr/^Connect: hold advanced by foreign jump idx=1 \(/)), 1, '90.2-01 J-literal: an absolute jump to the deferred index advances the hold (LMS still on the old entry)');
+    is(scalar(h_deletes()), 0, '90.2-01 J-literal: no delete');
+    is(h_timers(), 1, '90.2-01 J-literal: the cap timer stays armed');
+    is(scalar(h_log(qr/^Connect: hold closed by/)), 0, '90.2-01 J-literal: the hold stays open');
+    Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
+}
+{
+    my ($client, $ctl) = h_setup();
+    h_open_hold($client, $ctl);
+    h_landed($client);
+    h_jump($client, $ctl, '+1');    # relative jump after which LMS plays the deferred entry
+    is(scalar(h_log(qr/^Connect: hold advanced by foreign jump idx=1 \(/)), 1, '90.2-01 J-landed: a `+1` jump after which LMS plays the deferred entry advances the hold');
+    is(scalar(h_deletes()), 0, '90.2-01 J-landed: no delete of the entry LMS plays');
+    is(scalar(h_log(qr/^Connect: hold closed by/)), 0, '90.2-01 J-landed: the hold stays open');
+    is_deeply($ctl->{skipCalls}, [], '90.2-review J-landed: the landed `+1` sends no skip_next - the daemon is already on the deferred title (WR-01)');
+    Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
+}
+# 90.2-review J-wrap, LMS wrap, accepted (WR-01, WR-02, IN-01; review round 2 IN-01): LMS
+# Previous during an open hold. On the hold's two-entry playlist real LMS resolves `-1` from
+# index 0 as a wrap onto index 1 (Commands.pm playlistJumpCommand: (0 - 1 + 2) % 2), so LMS
+# plays the deferred entry, i.e. the NEXT title, afterwards. That is LMS's own index wrap and
+# accepted (90.2-REVIEW-FIX-R2.md IN-01, review round 2 fix run 2026-11-24): SpotOn follows LMS and
+# keeps playback going; the old behaviour was the #234 failure (delete, LMS back to the old
+# title in Browse). Only condition (b) of _holdJumpLanded can decide this case: `-1` is no
+# plain index (a), and its own target 0 - 1 = -1 is not the deferred index (c).
+{
+    my ($client, $ctl) = h_setup();
+    h_open_hold($client, $ctl);
+    h_landed($client);
+    h_jump($client, $ctl, '-1');
+    is(scalar(h_log(qr/^Connect: hold advanced by foreign jump idx=1 \(/)), 1, '90.2-review J-wrap (LMS wrap, accepted): a `-1` that wraps onto the deferred entry advances the hold (condition (b))');
+    is(scalar(h_log(qr/^Connect: hold closed by/)), 0, '90.2-review J-wrap (LMS wrap, accepted): the hold stays open (no `cancel:lms_jump`)');
+    is(scalar(h_deletes()), 0, '90.2-review J-wrap (LMS wrap, accepted): no delete of the entry LMS plays');
+    is(h_timers(), 1, '90.2-review J-wrap (LMS wrap, accepted): the cap timer stays armed');
+    is_deeply($ctl->{skipCalls}, [], '90.2-review J-wrap (LMS wrap, accepted): the wrapped `-1` sends no skip_prev - the daemon is already on the deferred title (WR-01)');
+    Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
+}
+# J-plus0 (review round 2 IN-02): `+0` is never suppressed. LMS on the deferred entry with a
+# not yet advanced hold (LMS's own start of B, its newsong not delivered yet); the user's rewind
+# sends `+0`: the jump lands and advances the hold, and the restart route is still asked (the
+# fake Control declines the restart, so the 1B fallback skip_prev follows as before).
+{
+    my ($client, $ctl) = h_setup();
+    h_open_hold($client, $ctl);
+    h_landed($client);
+    @Plugins::SpotOn::Unified::DaemonManager::VERBS = ();
+    h_jump($client, $ctl, '+0');
+    is(scalar(h_log(qr/^Connect: hold advanced by foreign jump idx=1 \(/)), 1, '90.2-review2 J-plus0: a landed `+0` advances the hold');
+    is(scalar(grep { $_ eq 'restart' } @Plugins::SpotOn::Unified::DaemonManager::VERBS), 1, '90.2-review2 J-plus0: the advancing `+0` still asks the restart route (never suppressed, IN-02)');
+    is_deeply($ctl->{skipCalls}, [ [ 'prev', 'jump+0' ] ], '90.2-review2 J-plus0: a declined restart falls back to skip_prev as before (1B)');
+    Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
+}
+{
+    my ($client, $ctl) = h_setup();
+    h_open_hold($client, $ctl);
+    $Slim::Player::Source::STREAMING = 1;    # LMS plays 0 and streams the deferred entry
+    h_jump($client, $ctl, '+1');             # target 0+1 = the deferred index
+    is(scalar(h_log(qr/^Connect: hold advanced by foreign jump idx=1 \(/)), 1, '90.2-01 J-streaming: LMS streaming the deferred entry and a jump whose target is that entry advances the hold');
+    is(scalar(h_deletes()), 0, '90.2-01 J-streaming: no delete');
+    Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
+}
+
+# --- 90.2-01 N-jump / N-streaming / N-replaced: not-landed jumps cancel exactly as before (SC3) ---
+# 90.2-01 N-streaming: LMS plays the old entry and STREAMS the deferred one (STREAMING = 1) but the
+# jump (`-1`) does not target it: condition (c) is defensive and needs a landing target, so it cancels.
+# 90.2 review IN-01: the two `-1` rows are pure classification checks on a SYNTHETIC state (LMS left
+# on index 0): real LMS wraps `-1` on the two-entry hold playlist onto the deferred entry (J-wrap).
+# Their realistic counterparts are N-wrap3 and N-replaced +1 below.
+for my $nj (
+    [ 'N-jump -1 (synthetic state)',      '-1', undef ],
+    [ 'N-jump 0',       '0',  undef ],
+    [ 'N-jump +0',      '+0', undef ],
+    [ 'N-jump 2',       '2',  undef ],
+    [ 'N-streaming -1 (synthetic state)', '-1', 1 ],
+) {
+    my ($name, $idx, $streaming) = @$nj;
+    my ($client, $ctl) = h_setup();
+    h_open_hold($client, $ctl);
+    $Slim::Player::Source::STREAMING = $streaming;
+    $client->pluginData(connectStartTime => 0);
+    h_jump($client, $ctl, $idx);
+    my $plays_after = scalar(h_plays());
+    is(scalar(h_log(qr/^Connect: hold closed by cancel:lms_jump /)), 1, "90.2-01 $name: a jump that did not land cancels the hold once");
+    is_deeply([ map { $_->{cmd}[2] } h_deletes() ], [ 1 ], "90.2-01 $name: the deferred entry is deleted (LMS plays the old one)");
+    is(scalar(h_log(qr/^Connect: hold advanced by/)), 0, "90.2-01 $name: no advance line");
+    is(h_timers(), 0, "90.2-01 $name: the cap timer is gone");
+    is_deeply($ctl->{clearHoldCalls}, [ [ $H_NEW ] ], "90.2-01 $name: Control's clearHold ran");
+    is($client->pluginData('connectOwnPlayUri'), '', "90.2-01 $name: the dispatch marker is cleared");
+    h_fire_at(1_790_000_100);
+    is(scalar(h_plays()), $plays_after, "90.2-01 $name: no late `playlist play`");
+    Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
+}
+{
+    my ($client, $ctl) = h_setup();
+    h_open_hold($client, $ctl);
+    $Slim::Player::Playlist::ENTRIES[1] = "spoton://track:$H_NEX";    # the entry was replaced by someone else
+    $Slim::Player::Source::INDEX = 1;
+    h_jump($client, $ctl, '1');
+    is(scalar(h_log(qr/^Connect: hold closed by cancel:lms_jump /)), 1, '90.2-01 N-replaced: a jump onto a REPLACED entry cancels the hold');
+    is(scalar(h_deletes()), 0, '90.2-01 N-replaced: nothing is deleted (the entry is no longer the hold\'s)');
+    is(scalar(h_log(qr/^Connect: hold advanced by/)), 0, '90.2-01 N-replaced: no advance line');
+    Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
+}
+
+# --- 90.2 review IN-01: realistic not-landed `+1` / `-1` keep the skip route (84-07) ---
+# N-replaced +1: someone replaced the deferred entry; LMS Next skips onto index 1, which is no
+# longer the hold's uri -> not landed -> cancel, and skip_next goes out as before.
+{
+    my ($client, $ctl) = h_setup();
+    h_open_hold($client, $ctl);
+    $Slim::Player::Playlist::ENTRIES[1] = "spoton://track:$H_NEX";
+    $Slim::Player::Source::INDEX = 1;
+    $client->{song} = Test::FakeSongH->new(url => "spoton://track:$H_NEX", so => 0, duration => 180);
+    h_jump($client, $ctl, '+1');
+    is(scalar(h_log(qr/^Connect: hold closed by cancel:lms_jump /)), 1, '90.2-review N-replaced +1: a `+1` onto a replaced entry cancels the hold');
+    is(scalar(h_log(qr/^Connect: hold advanced by/)), 0, '90.2-review N-replaced +1: no advance line');
+    is_deeply($ctl->{skipCalls}, [ [ 'next', 'jump+1' ] ], '90.2-review N-replaced +1: a not-landed `+1` still sends skip_next (84-07)');
+    Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
+}
+# N-wrap3 -1: a third entry behind the deferred one; LMS Previous wraps `-1` from index 0 onto
+# index 2 ((0 - 1 + 3) % 3), not onto the deferred entry -> not landed -> cancel, delete the
+# deferred entry, and skip_prev goes out as before.
+{
+    my ($client, $ctl) = h_setup();
+    h_open_hold($client, $ctl);
+    push @Slim::Player::Playlist::ENTRIES, "spoton://track:$H_NEX";
+    $Slim::Player::Source::INDEX = 2;
+    $client->{song} = Test::FakeSongH->new(url => "spoton://track:$H_NEX", so => 0, duration => 180);
+    $client->pluginData(connectStartTime => 0);
+    h_jump($client, $ctl, '-1');
+    is(scalar(h_log(qr/^Connect: hold closed by cancel:lms_jump /)), 1, '90.2-review N-wrap3 -1: a `-1` that wraps past the deferred entry cancels the hold');
+    is_deeply([ map { $_->{cmd}[2] } h_deletes() ], [ 1 ], '90.2-review N-wrap3 -1: the deferred entry is deleted (LMS plays index 2)');
+    is(scalar(h_log(qr/^Connect: hold advanced by/)), 0, '90.2-review N-wrap3 -1: no advance line');
+    is_deeply($ctl->{skipCalls}, [ [ 'prev', 'jump-1' ] ], '90.2-review N-wrap3 -1: a not-landed `-1` still sends skip_prev (84-07)');
+    Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
+}
+# --- 90.2 review round 2 (CR-01, WR-01): the handlers in the order real LMS delivers them ---
+# Every jump onto another entry runs StreamingController::_Stop, which queues LMS's own
+# `playlist stop` BEHIND the jump's notification (Request.pm notification queue, one per idle
+# loop): _onPlaylistJump first, then _onLmsStop, then the deferred entry's _onNewSong. At the
+# stop LMS already plays the deferred entry (playmode `play`: TRACKWAIT/BUFFERING is neither
+# STOPPED+IDLE nor PAUSED). h_lms_delete_model makes `playlist delete` act on the fake playlist
+# the way Playlist.pm removeTrack does: an index below the playing one is a splice plus an index
+# shift; a delete of the PLAYING entry (LMS stops and jumps back, the GH #234 failure) is counted.
+my $H_DEL_PLAYING = 0;
+sub h_lms_delete_model {
+    my ($r) = @_;
+    my $c = $r->{cmd};
+    return unless ref($c) eq 'ARRAY' && ($c->[0] // '') eq 'playlist' && ($c->[1] // '') eq 'delete';
+    my $i = $c->[2];
+    if ($i == $Slim::Player::Source::INDEX) { $H_DEL_PLAYING++; return; }
+    splice @Slim::Player::Playlist::ENTRIES, $i, 1;
+    $Slim::Player::Source::INDEX-- if $Slim::Player::Source::INDEX > $i;
+}
+sub h_stop { my ($c, $k) = @_; h_event($c, $k, \&Plugins::SpotOn::Connect::_onLmsStop); }
+
+# R2-order: a landed jump (`1` = another plugin's index, `+1` = LMS Next, `-1` = LMS Previous
+# wrapping on the two-entry playlist), then the jump's own stop, then B's newsong.
+for my $ji ('1', '+1', '-1') {
+    my $n = "90.2-review2 R2-order $ji";
+    my ($client, $ctl) = h_setup();
+    local $Slim::Control::Request::ON_EXECUTE = \&h_lms_delete_model;
+    $H_DEL_PLAYING = 0;
+    h_open_hold($client, $ctl);
+    h_landed($client);
+    h_jump($client, $ctl, $ji);            # 1. the jump's own notification
+    h_stop($client, $ctl);                 # 2. the `playlist stop` its _Stop queued (LMS plays B)
+    is(scalar(h_log(qr/^Connect: hold closed by/)), 0, "$n: the jump's own LMS stop does not close the advanced hold");
+    is(h_timers(), 1, "$n: the cap timer is still armed after that stop");
+    is(scalar(h_deletes()), 0, "$n: nothing is deleted before B's newsong");
+    h_event($client, $ctl, \&Plugins::SpotOn::Connect::_onNewSong);    # 3. B's newsong
+    is(scalar(h_log(qr/^Connect: hold closed by newsong \(/)), 1, "$n: B's newsong closes the hold `newsong`");
+    is(scalar(h_log(qr/cancel:lms_stop/)), 0, "$n: no `cancel:lms_stop` over the whole case");
+    is_deeply([ map { $_->{cmd}[2] } h_deletes() ], [ 0 ], "$n: exactly one prune, the OLD entry (`playlist delete 0`)");
+    is($H_DEL_PLAYING, 0, "$n: the entry LMS plays is never deleted");
+    is_deeply($ctl->{skipCalls}, [], "$n: no skip is sent to the daemon");
+    is_deeply([ @Slim::Player::Playlist::ENTRIES ], [ "spoton://track:$H_NEW" ], "$n: the playlist ends as ONE entry, the new title");
+    is($Slim::Player::Source::INDEX, 0, "$n: LMS is on index 0 = the new title");
+    is_deeply($ctl->{clearHoldCalls}, [ [ $H_NEW ] ], "$n: Control's clearHold ran once, for the new title");
+    is(h_timers(), 0, "$n: the cap timer is gone");
+    is(scalar(h_plays()), 0, "$n: no `playlist play`");
+    Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
+}
+
+# R2-userstop: after the advance the USER stops LMS (playmode `stop`): the hold is cancelled as
+# before (84-17 H-c), and the old entry is pruned on that close too (LMS stopped on B).
+{
+    my ($client, $ctl) = h_setup();
+    local $Slim::Control::Request::ON_EXECUTE = \&h_lms_delete_model;
+    $H_DEL_PLAYING = 0;
+    h_open_hold($client, $ctl);
+    h_landed($client);
+    h_jump($client, $ctl, '1');
+    $Slim::Player::Source::PLAYMODE = 'stop';
+    h_stop($client, $ctl);
+    is(scalar(h_log(qr/^Connect: hold closed by cancel:lms_stop \(/)), 1, '90.2-review2 R2-userstop: a user stop (playmode stop) still cancels the advanced hold');
+    is_deeply([ map { $_->{cmd}[2] } h_deletes() ], [ 0 ], '90.2-review2 R2-userstop: the old entry is pruned on that close (`playlist delete 0`), B is kept');
+    is($H_DEL_PLAYING, 0, '90.2-review2 R2-userstop: the entry LMS is on is never deleted');
+    is_deeply([ @Slim::Player::Playlist::ENTRIES ], [ "spoton://track:$H_NEW" ], '90.2-review2 R2-userstop: the playlist ends as ONE entry, the new title');
+    is(h_timers(), 0, '90.2-review2 R2-userstop: the cap timer is gone');
+    is(scalar(h_plays()), 0, '90.2-review2 R2-userstop: no `playlist play`');
+    Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
+}
+
+# R2-nonewsong: the advanced hold's newsong never arrives. The cap re-check finds LMS on B and
+# closes `newsong reason=seen_by_check`; the old entry is pruned on that close.
+{
+    my ($client, $ctl) = h_setup();
+    local $Slim::Control::Request::ON_EXECUTE = \&h_lms_delete_model;
+    $H_DEL_PLAYING = 0;
+    h_open_hold($client, $ctl);
+    h_landed($client);
+    h_jump($client, $ctl, '+1');
+    h_stop($client, $ctl);
+    is(h_fire_at(1_790_000_060), 1, '90.2-review2 R2-nonewsong: the cap re-check fires (the hold survived the jump\'s stop)');
+    is(scalar(h_log(qr/^Connect: hold closed by newsong reason=seen_by_check \(/)), 1, '90.2-review2 R2-nonewsong: the re-check closes the hold `newsong reason=seen_by_check`');
+    is_deeply([ map { $_->{cmd}[2] } h_deletes() ], [ 0 ], '90.2-review2 R2-nonewsong: the old entry is pruned on that close');
+    is($H_DEL_PLAYING, 0, '90.2-review2 R2-nonewsong: the entry LMS plays is never deleted');
+    is_deeply([ @Slim::Player::Playlist::ENTRIES ], [ "spoton://track:$H_NEW" ], '90.2-review2 R2-nonewsong: the playlist ends as ONE entry, the new title');
+    is(h_timers(), 0, '90.2-review2 R2-nonewsong: no timer left');
+    is(scalar(h_plays()), 0, '90.2-review2 R2-nonewsong: no `playlist play`');
+    is_deeply($ctl->{skipCalls}, [], '90.2-review2 R2-nonewsong: no skip');
+    Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
+}
+
+# R2-replace: a second `live` change arrives while the advanced hold waits for B's newsong. The
+# replacing hold prunes the old entry first, then records LMS's (shifted) playing index.
+{
+    my ($client, $ctl) = h_setup();
+    local $Slim::Control::Request::ON_EXECUTE = \&h_lms_delete_model;
+    $H_DEL_PLAYING = 0;
+    h_open_hold($client, $ctl);
+    h_landed($client);
+    h_jump($client, $ctl, '1');
+    h_stop($client, $ctl);
+    h_connect($client, $ctl, _cmd => 'change', _p2 => $H_NEX, _p3 => $H_NEW, _p4 => 'live');
+    is_deeply([ map { $_->{cmd}[2] } h_deletes() ], [ 0 ], '90.2-review2 R2-replace: the replacing hold prunes the old entry (`playlist delete 0`), B is kept');
+    is($H_DEL_PLAYING, 0, '90.2-review2 R2-replace: the entry LMS plays is never deleted');
+    is_deeply([ @Slim::Player::Playlist::ENTRIES ], [ "spoton://track:$H_NEW" ], '90.2-review2 R2-replace: before the new insert the playlist is B alone');
+    is(scalar(h_log(qr/^Connect: hold opened uri=spoton:\/\/track:\Q$H_NEX\E /)), 1, '90.2-review2 R2-replace: the new hold opens for the next title');
+    # LMS lands the new insert behind B and advances by itself: the new hold's newsong prunes B (index 0)
+    push @Slim::Player::Playlist::ENTRIES, "spoton://track:$H_NEX";
+    $Slim::Player::Source::INDEX = 1;
+    $client->{song} = Test::FakeSongH->new(url => "spoton://track:$H_NEX", so => 0, duration => 180);
+    h_event($client, $ctl, \&Plugins::SpotOn::Connect::_onNewSong);
+    is_deeply([ map { $_->{cmd}[2] } h_deletes() ], [ 0, 0 ], '90.2-review2 R2-replace: the new hold\'s newsong prunes B at its recorded (shifted) index 0');
+    is_deeply([ @Slim::Player::Playlist::ENTRIES ], [ "spoton://track:$H_NEX" ], '90.2-review2 R2-replace: the playlist ends as ONE entry, the newest title');
+    is($H_DEL_PLAYING, 0, '90.2-review2 R2-replace: no delete of a playing entry over the whole case');
+    Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
+}
+
+# J-advanced +1 (review round 2 WR-01, rewritten to LMS's real sequence): what the user's NEXT
+# key press meets after a hold was advanced. (a) Normally B's newsong has closed the hold and
+# pruned the old entry: the playlist is ONE entry, LMS Next on it finds no index 1 and re-opens
+# index 0 (StreamingController.pm nextsong/_getNextTrack), i.e. B itself; no hold is open, the
+# `+1` routes like any Connect Next (84-07): skip_next once.
+{
+    my ($client, $ctl) = h_setup();
+    local $Slim::Control::Request::ON_EXECUTE = \&h_lms_delete_model;
+    $H_DEL_PLAYING = 0;
+    h_open_hold($client, $ctl);
+    h_landed($client);
+    h_jump($client, $ctl, '1');
+    h_stop($client, $ctl);
+    h_event($client, $ctl, \&Plugins::SpotOn::Connect::_onNewSong);
+    is_deeply($ctl->{skipCalls}, [], '90.2-review2 J-advanced +1 (a): the advancing `playlist index 1` sends no skip');
+    @Slim::Utils::Log::LINES = ();
+    h_jump($client, $ctl, '+1');           # LMS re-opened index 0 (= B) of the one-entry playlist
+    is(scalar(h_log(qr/^Connect: hold /)), 0, '90.2-review2 J-advanced +1 (a): the Next meets no hold (closed and pruned by the newsong)');
+    is_deeply($ctl->{skipCalls}, [ [ 'next', 'jump+1' ] ], '90.2-review2 J-advanced +1 (a): the Next routes as any Connect Next: skip_next once');
+    is_deeply([ map { $_->{cmd}[2] } h_deletes() ], [ 0 ], '90.2-review2 J-advanced +1 (a): only the old entry\'s prune over the whole case');
+    is_deeply([ @Slim::Player::Playlist::ENTRIES ], [ "spoton://track:$H_NEW" ], '90.2-review2 J-advanced +1 (a): no stale old entry to wrap onto');
+    Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
+}
+# (b) The remaining window, documented (90.2-REVIEW-FIX-R2.md CR-01): a Next BEFORE B's newsong
+# (after the jump and its stop) still meets [old, B] with LMS on the last entry; LMS wraps onto
+# index 0 and re-opens the OLD title. The handler reads that as a jump that did not land: cancel,
+# B (not playing) is deleted, the old entry LMS now plays is kept. (In real LMS Control is in
+# browse by then; the fake Control stays connect, so no skip assertion here.)
+{
+    my ($client, $ctl, $old) = h_setup();
+    local $Slim::Control::Request::ON_EXECUTE = \&h_lms_delete_model;
+    $H_DEL_PLAYING = 0;
+    h_open_hold($client, $ctl);
+    h_landed($client);
+    h_jump($client, $ctl, '1');
+    h_stop($client, $ctl);
+    $Slim::Player::Source::INDEX = 0;      # LMS Next wrapped onto the old entry
+    $client->{song} = $old;
+    h_jump($client, $ctl, '+1');
+    is(scalar(h_log(qr/^Connect: hold closed by cancel:lms_jump \(/)), 1, '90.2-review2 J-advanced +1 (b, window): a Next before B\'s newsong cancels the hold');
+    is_deeply([ map { $_->{cmd}[2] } h_deletes() ], [ 1 ], '90.2-review2 J-advanced +1 (b, window): B (no longer playing) is deleted, the old entry LMS plays is kept');
+    is($H_DEL_PLAYING, 0, '90.2-review2 J-advanced +1 (b, window): the entry LMS plays is never deleted');
+    Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
+}
+
+# --- 90.2 review round 3 (WR-01): the conditions inside the hold helpers ---
+# The R2 cases only drive states in which LMS plays the deferred entry, so the checks in
+# _holdAdvancedPlaying (playing index, deferred url), in _holdPruneAdvanced (old url) and the
+# `eq 'play'` in the _onLmsStop guard held with or without them. Each case below fails with
+# exactly one of those checks loosened (90.2-REVIEW-FIX-R3.md, mutations M3, M1, M2, M5).
+
+# R3-literal-stop (M3): a hold advanced by the literal index while LMS is still on the old entry
+# (J-literal). The stop that follows is not the advanced hold's own: it cancels, and only the
+# unplayed deferred entry is deleted, never the entry LMS is on.
+{
+    my ($client, $ctl) = h_setup();
+    local $Slim::Control::Request::ON_EXECUTE = \&h_lms_delete_model;
+    $H_DEL_PLAYING = 0;
+    h_open_hold($client, $ctl);
+    h_jump($client, $ctl, '1');            # LMS still on index 0
+    h_stop($client, $ctl);                 # playmode play
+    is(scalar(h_log(qr/^Connect: hold closed by cancel:lms_stop \(/)), 1, '90.2-review3 R3-literal-stop: a stop while LMS is NOT on the deferred entry cancels the advanced hold');
+    is_deeply([ map { $_->{cmd}[2] } h_deletes() ], [ 1 ], '90.2-review3 R3-literal-stop: only the unplayed deferred entry is deleted (`playlist delete 1`)');
+    is($H_DEL_PLAYING, 0, '90.2-review3 R3-literal-stop: the entry LMS is on is never deleted');
+    Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
+}
+
+# R3-literal-cap (M3): same state, LMS then stops on the old entry. The cap re-check falls back
+# (d1) and prunes nothing: the old entry is the one LMS is on.
+{
+    my ($client, $ctl) = h_setup();
+    local $Slim::Control::Request::ON_EXECUTE = \&h_lms_delete_model;
+    $H_DEL_PLAYING = 0;
+    h_open_hold($client, $ctl);
+    h_jump($client, $ctl, '1');
+    $Slim::Player::Source::PLAYMODE = 'stop';
+    h_fire_at(1_790_000_060);
+    is(scalar(h_log(qr/^Connect: hold closed by cap reason=lms_stopped \(/)), 1, '90.2-review3 R3-literal-cap: the cap re-check closes `cap reason=lms_stopped`');
+    is($H_DEL_PLAYING, 0, '90.2-review3 R3-literal-cap: the entry LMS is on is never deleted');
+    is(scalar(h_deletes()), 0, '90.2-review3 R3-literal-cap: no delete at all (LMS never left the old entry)');
+    Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
+}
+
+# R3-leave (M1): [old, B, X], the advanced hold kept through its stop, then the user jumps to X.
+# The cancel deletes B and X shifts onto the deferred index; X is not the hold's uri, so the old
+# entry is not pruned.
+{
+    my ($client, $ctl) = h_setup();
+    local $Slim::Control::Request::ON_EXECUTE = \&h_lms_delete_model;
+    $H_DEL_PLAYING = 0;
+    h_open_hold($client, $ctl);
+    h_landed($client);
+    h_jump($client, $ctl, '1');
+    h_stop($client, $ctl);
+    push @Slim::Player::Playlist::ENTRIES, 'file:///x.flac';
+    $Slim::Player::Source::INDEX = 2;
+    $client->{song} = Test::FakeSongH->new(url => 'file:///x.flac', so => 0, duration => 180);
+    h_jump($client, $ctl, '2');
+    is(scalar(h_log(qr/^Connect: hold closed by cancel:lms_jump \(/)), 1, '90.2-review3 R3-leave: a jump past the deferred entry cancels the advanced hold');
+    is_deeply([ map { $_->{cmd}[2] } h_deletes() ], [ 1 ], '90.2-review3 R3-leave: only B is deleted; the old entry is not pruned once the entry at the deferred index is no longer B');
+    is_deeply([ @Slim::Player::Playlist::ENTRIES ], [ "spoton://track:$H_OLD", 'file:///x.flac' ], '90.2-review3 R3-leave: [old, X] remain');
+    is($H_DEL_PLAYING, 0, '90.2-review3 R3-leave: the entry LMS plays is never deleted');
+    Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
+}
+
+# R3-foreign-old (M2): the entry at the hold's playingIdx is no longer the old title (the
+# playlist was edited under the hold). B's newsong closes the hold and deletes nothing.
+{
+    my ($client, $ctl) = h_setup();
+    local $Slim::Control::Request::ON_EXECUTE = \&h_lms_delete_model;
+    $H_DEL_PLAYING = 0;
+    h_open_hold($client, $ctl);
+    h_landed($client);
+    h_jump($client, $ctl, '1');
+    h_stop($client, $ctl);
+    $Slim::Player::Playlist::ENTRIES[0] = 'file:///z.flac';
+    h_event($client, $ctl, \&Plugins::SpotOn::Connect::_onNewSong);
+    is(scalar(h_log(qr/^Connect: hold closed by newsong \(/)), 1, '90.2-review3 R3-foreign-old: B\'s newsong closes the hold');
+    is(scalar(h_deletes()), 0, '90.2-review3 R3-foreign-old: an entry that is not the old title is not pruned');
+    Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
+}
+
+# R3-pause-stop (M5): a stop notification while LMS reports playmode `pause` is not the jump's
+# own stop (that one reads `play`): the advanced hold is cancelled.
+{
+    my ($client, $ctl) = h_setup();
+    local $Slim::Control::Request::ON_EXECUTE = \&h_lms_delete_model;
+    $H_DEL_PLAYING = 0;
+    h_open_hold($client, $ctl);
+    h_landed($client);
+    h_jump($client, $ctl, '1');
+    $Slim::Player::Source::PLAYMODE = 'pause';
+    h_stop($client, $ctl);
+    is(scalar(h_log(qr/^Connect: hold closed by cancel:lms_stop \(/)), 1, '90.2-review3 R3-pause-stop: a stop with playmode `pause` cancels the advanced hold');
+    is(scalar(h_log(qr/^Connect: hold advanced by foreign jump stays open on LMS stop/)), 0, '90.2-review3 R3-pause-stop: no `stays open` line');
+    Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
+}
+
+# --- 90.2 review round 3 (WR-02): LMS stops on B without a notification ---
+# The advanced hold is kept through the jump's own stop. If B's open then fails without a
+# `playlist stop` (StreamingController _Stream gets no stream, or a late _nextTrackError:
+# _NextIfMore leaves STOPPED+IDLE with B still at the head of the song queue), only the cap
+# re-check sees it. It must not close `newsong reason=seen_by_check` (nothing plays): a
+# powered-on player that is stopped on B takes d1, the one fallback `playlist play` of B.
+{
+    my ($client, $ctl) = h_setup();
+    local $Slim::Control::Request::ON_EXECUTE = \&h_lms_delete_model;
+    $H_DEL_PLAYING = 0;
+    h_open_hold($client, $ctl);
+    h_landed($client);
+    h_jump($client, $ctl, '1');
+    h_stop($client, $ctl);                      # the jump's own stop: playmode play, hold kept
+    $Slim::Player::Source::PLAYMODE = 'stop';   # B's open failed, no notification
+    is(h_fire_at(1_790_000_060), 1, '90.2-review3 R3-silent-stop: the cap re-check fires');
+    is(scalar(h_log(qr/^Connect: hold closed by cap reason=lms_stopped \(/)), 1, '90.2-review3 R3-silent-stop: LMS stopped on B closes `cap reason=lms_stopped`');
+    is(scalar(h_log(qr/seen_by_check/)), 0, '90.2-review3 R3-silent-stop: not `newsong reason=seen_by_check` (nothing plays)');
+    my @plays = h_plays();
+    is(scalar(@plays), 1, '90.2-review3 R3-silent-stop: exactly one fallback `playlist play`');
+    is_deeply($plays[0] ? $plays[0]{cmd} : undef, [ 'playlist', 'play', "spoton://track:$H_NEW" ], '90.2-review3 R3-silent-stop: the fallback plays B');
+    is_deeply([ map { $_->{cmd}[2] } h_deletes() ], [ 0 ], '90.2-review3 R3-silent-stop: the old entry is pruned on that close');
+    is($H_DEL_PLAYING, 0, '90.2-review3 R3-silent-stop: the entry LMS is on is never deleted');
+    is_deeply($ctl->{clearHoldCalls}, [ [ $H_NEW ] ], '90.2-review3 R3-silent-stop: Control\'s clearHold ran once');
+    is(h_timers(), 0, '90.2-review3 R3-silent-stop: no timer left');
+    Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
+}
+# R3-silent-poweroff: a powered-off player also reads playmode `stop` (Source.pm _returnPlayMode).
+# There the re-check keeps `seen_by_check` and plays nothing (a `playlist play` would power it on).
+{
+    my ($client, $ctl) = h_setup();
+    local $Slim::Control::Request::ON_EXECUTE = \&h_lms_delete_model;
+    $H_DEL_PLAYING = 0;
+    h_open_hold($client, $ctl);
+    h_landed($client);
+    h_jump($client, $ctl, '1');
+    h_stop($client, $ctl);
+    $Slim::Player::Source::PLAYMODE = 'stop';
+    $client->{power} = 0;
+    h_fire_at(1_790_000_060);
+    is(scalar(h_log(qr/^Connect: hold closed by newsong reason=seen_by_check \(/)), 1, '90.2-review3 R3-silent-poweroff: a powered-off player on B closes `seen_by_check`');
+    is(scalar(h_plays()), 0, '90.2-review3 R3-silent-poweroff: no `playlist play`');
+    is_deeply([ map { $_->{cmd}[2] } h_deletes() ], [ 0 ], '90.2-review3 R3-silent-poweroff: the old entry is pruned on that close');
+    Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
+}
+
+# --- 90.2 review round 3 (IN-01): a second Next before B's stream opens ---
+# R3-trackwait: the advanced hold is kept through the jump's stop and LMS is still in
+# STOPPED/TRACKWAIT on B. There LMS ignores a Skip (StreamingController Skip is _NoOp), so a
+# second `+1` leaves LMS on index 1, no wrap. The hold is already advanced: the `+1` routes as a
+# Connect Next (skip_next once) and the hold stays open. The daemon's change for the next title
+# then cancels the hold, prunes the old entry and plays the next title once.
+{
+    my ($client, $ctl) = h_setup();
+    local $Slim::Control::Request::ON_EXECUTE = \&h_lms_delete_model;
+    $H_DEL_PLAYING = 0;
+    h_open_hold($client, $ctl);
+    h_landed($client);
+    h_jump($client, $ctl, '1');
+    h_stop($client, $ctl);
+    h_jump($client, $ctl, '+1');           # LMS: Skip in STOPPED/TRACKWAIT is a no-op, index stays 1
+    is_deeply($ctl->{skipCalls}, [ [ 'next', 'jump+1' ] ], '90.2-review3 R3-trackwait: the second Next routes as a Connect Next: skip_next once');
+    is(scalar(h_log(qr/^Connect: hold closed by/)), 0, '90.2-review3 R3-trackwait: the hold stays open');
+    is(scalar(h_log(qr/^Connect: hold advanced by foreign jump idx=/)), 1, '90.2-review3 R3-trackwait: no second advanced line');
+    is(h_timers(), 1, '90.2-review3 R3-trackwait: the cap timer is still armed');
+    is(scalar(h_deletes()), 0, '90.2-review3 R3-trackwait: nothing is deleted by the Next');
+    h_change($client, $ctl, $H_NEX, 'departed');
+    is(scalar(h_log(qr/^Connect: hold closed by cancel:change \(/)), 1, '90.2-review3 R3-trackwait: the daemon\'s change cancels the hold');
+    is_deeply([ map { $_->{cmd}[2] } h_deletes() ], [ 0 ], '90.2-review3 R3-trackwait: the old entry is pruned on that close');
+    is($H_DEL_PLAYING, 0, '90.2-review3 R3-trackwait: the entry LMS is on is never deleted');
+    is(scalar(h_plays()), 1, '90.2-review3 R3-trackwait: the next title is played once');
+    Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
+}
+
+# --- 90.2-01 idempotency ---
+{
+    my ($client, $ctl) = h_setup();
+    h_open_hold($client, $ctl);
+    h_landed($client);
+    h_jump($client, $ctl, '1');
+    h_jump($client, $ctl, '1');
+    is(scalar(h_deletes()), 0, '90.2-01 I-repeat: a repeated jump deletes nothing');
+    is(scalar(h_log(qr/^Connect: hold advanced by foreign jump/)), 1, '90.2-01 I-repeat: exactly ONE advanced line');
+    is(h_timers(), 1, '90.2-01 I-repeat: the cap timer is still armed');
+    is(scalar(h_log(qr/^Connect: hold closed by/)), 0, '90.2-01 I-repeat: no close line');
+    Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
+}
+{
+    my ($client, $ctl) = h_setup();
+    h_open_hold($client, $ctl);
+    h_landed($client);
+    h_jump($client, $ctl, '1');
+    h_event($client, $ctl, \&Plugins::SpotOn::Connect::_onNewSong);
+    @Slim::Control::Request::EXECUTED = ();
+    @Slim::Utils::Log::LINES = ();
+    h_jump($client, $ctl, '1');
+    is(scalar(h_log(qr/^Connect: hold /)), 0, '90.2-01 I-after-close: a foreign jump after the close logs no hold line');
+    is(scalar(@Slim::Control::Request::EXECUTED), 0, '90.2-01 I-after-close: ... and sends no request');
+    Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
+}
+
+# --- 90.2-01 concurrency ---
+{
+    my ($client, $ctl) = h_setup();
+    h_open_hold($client, $ctl);
+    h_landed($client);
+    h_jump($client, $ctl, '1');
+    h_fire_at(1_790_000_060);
+    is(scalar(h_log(qr/^Connect: hold closed by newsong reason=seen_by_check/)), 1, '90.2-01 C-timer: the cap re-check closes an advanced hold whose entry LMS plays (seen_by_check)');
+    is(scalar(h_plays()), 0, '90.2-01 C-timer: no play');
+    # 90.2 review R2 CR-01 (reverses round 1 IN-03): the close of an advanced hold prunes the OLD entry
+    is_deeply([ map { $_->{cmd}[2] } h_deletes() ], [ 0 ], '90.2-01 C-timer: only the old entry is pruned (`playlist delete 0`), never the entry LMS plays (90.2-review2 CR-01)');
+    Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
+}
+{
+    my ($client, $ctl) = h_setup();
+    h_open_hold($client, $ctl);
+    h_landed($client);
+    h_event($client, $ctl, \&Plugins::SpotOn::Connect::_onNewSong);    # the newsong overtakes the jump notification
+    is(scalar(h_log(qr/^Connect: hold closed by newsong \(/)), 1, '90.2-01 C-order: the newsong delivered first closes the hold');
+    is_deeply([ map { $_->{cmd}[2] } h_deletes() ], [ 0 ], '90.2-01 C-order: and prunes index 0');
+    @Slim::Control::Request::EXECUTED = ();
+    @Slim::Utils::Log::LINES = ();
+    h_jump($client, $ctl, '1');
+    is(scalar(h_log(qr/^Connect: hold /)), 0, '90.2-01 C-order: the late jump notification adds no hold line');
+    is(scalar(@Slim::Control::Request::EXECUTED), 0, '90.2-01 C-order: ... and no request');
+    Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
+}
+
+# --- 90.2-01 G: no hold path deletes the entry LMS plays ---
+{
+    my ($client, $ctl) = h_setup();
+    h_open_hold($client, $ctl);
+    h_landed($client);
+    h_jump($client, $ctl, '1');
+    h_event($client, $ctl, \&Plugins::SpotOn::Connect::_onSeek, _newvalue => 50);
+    is(scalar(grep { ($_->{cmd}[0] // '') eq 'playlist' && ($_->{cmd}[1] // '') eq 'delete' && ($_->{cmd}[2] // '') eq '1' } @Slim::Control::Request::EXECUTED), 0, '90.2-01 G-seek: a seek cancel after the advance sends no `playlist delete 1`');
+    is(scalar(h_log(qr/^Connect: hold advanced by LMS idx=1, deferred entry kept \(/)), 1, '90.2-01 G-seek: `Connect: hold advanced by LMS idx=1, deferred entry kept` is logged once');
+    is(scalar(h_log(qr/^Connect: hold closed by cancel:lms_seek /)), 1, '90.2-01 G-seek: the hold still closes cancel:lms_seek');
+    Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
+}
+{
+    my ($client, $ctl) = h_setup();
+    h_open_hold($client, $ctl);
+    h_landed($client);
+    h_jump($client, $ctl, '1');
+    @Slim::Control::Request::EXECUTED = ();
+    h_change($client, $ctl, $H_NEX, 'departed');
+    is(scalar(grep { ($_->{cmd}[0] // '') eq 'playlist' && ($_->{cmd}[1] // '') eq 'delete' && ($_->{cmd}[2] // '') eq '1' } @Slim::Control::Request::EXECUTED), 0, '90.2-01 G-departed: a departed change after the advance sends no `playlist delete 1`');
+    is(scalar(h_log(qr/^Connect: hold advanced by LMS idx=1, deferred entry kept \(/)), 1, '90.2-01 G-departed: the kept-entry line is logged once');
+    is(scalar(h_log(qr/^Connect: hold closed by cancel:change /)), 1, '90.2-01 G-departed: the hold closes cancel:change');
+    is(scalar(h_plays()), 1, '90.2-01 G-departed: the immediate `playlist play` follows');
     Plugins::SpotOn::Connect->releaseConnectClaim($client, 'test');
 }
 

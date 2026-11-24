@@ -6,9 +6,10 @@
 #
 # Aufruf:  pa-idle-gate.sh
 # Ausgabe: genau EINE Zeile
-#            PA_IDLE=PASS mode=<mode>               (mode != play)
-#            PA_IDLE=FAIL mode=play time=<s>        (lavender-pa spielt)
+#            PA_IDLE=PASS mode=<mode>[ fake=1]      (mode != play)
+#            PA_IDLE=FAIL mode=play time=<s>[ fake=1]  (lavender-pa spielt)
 #            PA_IDLE=ERROR <grund>                  (LMS nicht lesbar)
+#          fake=1 steht nur an einem Urteil, das aus dem Testhook stammt (84 WR-05).
 # Exit:    0 = PASS | 1 = FAIL (pa spielt) | 2 = ERROR (ein Fehler ist KEIN Pass)
 #
 # Vertrag fuer Aufrufer: bei FAIL und bei ERROR STOPPEN -- keine Warteschleife,
@@ -19,7 +20,11 @@
 #                      PA_IDLE=ERROR PA_MAC not set und Exit 2 (D-10, kein Default)
 #   LMS_URL            JSON-RPC-Endpunkt (Default http://127.0.0.1:9000/jsonrpc.js)
 #   PA_IDLE_FAKE_MODE  play|stop|pause -- Offline-Testhook, umgeht den Netzzugriff
-#                      (nur fuer Trockenlaeufe; liefert time=0)
+#                      (nur fuer Trockenlaeufe; liefert time=0 und fake=1)
+#   PA_IDLE_ALLOW_FAKE nur der Wert 1 erlaubt den Testhook; PA_IDLE_FAKE_MODE ohne ihn
+#                      ist PA_IDLE=ERROR PA_IDLE_FAKE_MODE set without PA_IDLE_ALLOW_FAKE=1,
+#                      Exit 2, ohne LMS-Abfrage (84 WR-05: eine verirrte Variable darf die
+#                      Wache nicht in ein PASS verwandeln)
 set -u
 PA="${PA_MAC:-}"
 LMS_URL="${LMS_URL:-http://127.0.0.1:9000/jsonrpc.js}"
@@ -29,9 +34,15 @@ if [ -z "$PA" ]; then
   exit 2
 fi
 
+FAKE_SUFFIX=""
 if [ -n "${PA_IDLE_FAKE_MODE:-}" ]; then
+  if [ "${PA_IDLE_ALLOW_FAKE:-}" != "1" ]; then
+    echo "PA_IDLE=ERROR PA_IDLE_FAKE_MODE set without PA_IDLE_ALLOW_FAKE=1"
+    exit 2
+  fi
   MODE="$PA_IDLE_FAKE_MODE"
   TIME="0"
+  FAKE_SUFFIX=" fake=1"
 else
   RESP=$(curl -s -m 8 -X POST -H 'Content-Type: application/json' \
     -d "{\"id\":1,\"method\":\"slim.request\",\"params\":[\"$PA\",[\"status\",\"-\",\"1\"]]}" \
@@ -61,8 +72,8 @@ print("%s\t%s" % (r.get("mode", ""), "" if t is None else t))
 fi
 
 if [ "$MODE" = "play" ]; then
-  echo "PA_IDLE=FAIL mode=play time=$TIME"
+  echo "PA_IDLE=FAIL mode=play time=$TIME$FAKE_SUFFIX"
   exit 1
 fi
-echo "PA_IDLE=PASS mode=$MODE"
+echo "PA_IDLE=PASS mode=$MODE$FAKE_SUFFIX"
 exit 0

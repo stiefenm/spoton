@@ -393,8 +393,9 @@ my @SRV_CATS = (
     # _watchdogRound2 `Control: connect watchdog -- LMS did not re-open`,
     # :1059). The `Track change` pattern above keeps matching the line with
     # ` via=<v>` appended (the suffix stays inside the line).
+    # 90.2-01 adds the hold-advance lines (`advanced by foreign jump|LMS`); the name is kept because fixtures pin it.
     { name => 'server.log: Connect: hold (opened / closed by / skipped; 84-17 Connect.pm change handler)',
-      pat  => qr/Connect: hold (?:opened|closed by|skipped)/,                          count => 1 },
+      pat  => qr/Connect: hold (?:opened|closed by|skipped|advanced by)/,              count => 1 },
     { name => 'server.log: Control: boundary reply (via=/anchor=; 84-17 Control.pm _postBoundaryRead)',
       pat  => qr/Control: boundary reply via=/,                                        count => 1 },
     { name => 'server.log: Control: nachziehen (split-brain / watchdog re-emit; Control.pm _connectResync)',

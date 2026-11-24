@@ -1831,6 +1831,8 @@ subtest 'extract-run-hold' => sub {
     print $fh "[26-10-01 09:00:05.0000] Plugins::SpotOn::Soloist::Control::_connectResync (4537) Control: nachziehen -- reason=watchdog attempt=1/2 playmode=play observed.status=playing uri=spotify:track:6HSXNV0b4M4cLJ7ljgVVeh ($mac)\n";
     print $fh "[26-10-01 09:00:05.1000] Plugins::SpotOn::Soloist::Control::_watchdogRound2 (1059) Control: connect watchdog -- LMS did not re-open spotify:track:6HSXNV0b4M4cLJ7ljgVVeh within 10s ($mac)\n";
     print $fh "[26-10-01 09:00:06.0000] Plugins::SpotOn::Connect::_onNewSong (870) Connect: hold closed by newsong ($mac)\n";
+    print $fh "[26-10-01 09:00:06.5000] Plugins::SpotOn::Connect::_onPlaylistJump (1880) Connect: hold advanced by foreign jump idx=1 ($mac)\n";
+    print $fh "[26-10-01 09:00:06.6000] Plugins::SpotOn::Connect::_holdRemoveDeferred (1310) Connect: hold advanced by LMS idx=1, deferred entry kept ($mac)\n";
     print $fh "[26-10-01 09:00:07.0000] Plugins::SpotOn::Connect::_connectEvent (1750) Connect: hold skipped reason=repeat_one ($mac)\n";
     print $fh "[26-10-01 09:00:08.0000] Slim::Player::StreamingController::_eventAction (321) $mac: playerTrackStarted\n";
     close($fh);
@@ -1861,6 +1863,10 @@ subtest 'extract-run-hold' => sub {
         'extract-run-hold: Test A `Connect: hold closed by` in der Hold-Kategorie');
     like($hold,  qr/Connect: hold skipped reason=repeat_one/,
         'extract-run-hold: Test A `Connect: hold skipped` in der Hold-Kategorie');
+    like($hold,  qr/Connect: hold advanced by foreign jump idx=1/,
+        'extract-run-hold: Test A 90.2-01 `Connect: hold advanced by foreign jump` in der Hold-Kategorie');
+    like($hold,  qr/Connect: hold advanced by LMS idx=1, deferred entry kept/,
+        'extract-run-hold: Test A 90.2-01 `Connect: hold advanced by LMS` in der Hold-Kategorie');
     like($reply, qr/Control: boundary reply via=live anchor=drain boundary=75169288 ring_fill=487696 drops=0/,
         'extract-run-hold: Test A `Control: boundary reply` in seiner Kategorie');
     like($nach,  qr/Control: nachziehen -- reason=watchdog attempt=1\/2/,
@@ -5906,18 +5912,55 @@ subtest q(menu-walk-utf8) => sub {
 };
 
 # 79-04 (D-10): pa-idle-gate.sh no longer carries the headphone-player MAC. It reads PA_MAC and
-# stops with exit 2 when it is unset; PA_IDLE_FAKE_MODE keeps the subtest offline.
+# stops with exit 2 when it is unset; PA_IDLE_FAKE_MODE keeps the subtest offline. The hook works
+# only with PA_IDLE_ALLOW_FAKE=1 (84 WR-05).
 subtest q(pa-idle-gate-pa-mac) => sub {
     my $pa_idle_script = "$project_dir/tools/uat/pa-idle-gate.sh";
     my ($e1, $o1, $r1) = run_tool($pa_idle_script, [], PA_MAC => '', PA_IDLE_FAKE_MODE => 'stop');
     is($e1, 2, 'pa-idle-gate: PA_MAC unset -> exit 2');
     like($o1, qr/^PA_IDLE=ERROR PA_MAC not set$/m, 'pa-idle-gate: PA_MAC unset -> output names PA_MAC');
-    my ($e2, $o2) = run_tool($pa_idle_script, [], PA_MAC => $probe_mac, PA_IDLE_FAKE_MODE => 'stop');
+    my ($e2, $o2) = run_tool($pa_idle_script, [], PA_MAC => $probe_mac, PA_IDLE_FAKE_MODE => 'stop',
+        PA_IDLE_ALLOW_FAKE => '1');
     is($e2, 0, 'pa-idle-gate: PA_MAC set, mode stop -> exit 0');
-    like($o2, qr/^PA_IDLE=PASS mode=stop$/m, 'pa-idle-gate: PASS line');
-    my ($e3, $o3) = run_tool($pa_idle_script, [], PA_MAC => $probe_mac, PA_IDLE_FAKE_MODE => 'play');
+    like($o2, qr/^PA_IDLE=PASS mode=stop fake=1$/m, 'pa-idle-gate: PASS line carries fake=1');
+    my ($e3, $o3) = run_tool($pa_idle_script, [], PA_MAC => $probe_mac, PA_IDLE_FAKE_MODE => 'play',
+        PA_IDLE_ALLOW_FAKE => '1');
     is($e3, 1, 'pa-idle-gate: PA_MAC set, mode play -> exit 1');
-    like($o3, qr/^PA_IDLE=FAIL mode=play time=0$/m, 'pa-idle-gate: FAIL line');
+    like($o3, qr/^PA_IDLE=FAIL mode=play time=0 fake=1$/m, 'pa-idle-gate: FAIL line carries fake=1');
+};
+
+# 84 WR-05: the fake hook is a test door. Without PA_IDLE_ALLOW_FAKE exactly 1 it is an ERROR (exit 2,
+# no LMS query); an answer taken from LMS never carries fake=1.
+subtest q(pa-idle-gate-fake-opt-in) => sub {
+    my $pa_idle_script = "$project_dir/tools/uat/pa-idle-gate.sh";
+    my $dead = "http://127.0.0.1:" . free_closed_port() . "/jsonrpc.js";
+    my $err_re = qr/^PA_IDLE=ERROR PA_IDLE_FAKE_MODE set without PA_IDLE_ALLOW_FAKE=1$/m;
+
+    my ($e1, $o1) = run_tool($pa_idle_script, [], PA_MAC => $probe_mac, LMS_URL => $dead,
+        PA_IDLE_FAKE_MODE => 'stop', PA_IDLE_ALLOW_FAKE => '');
+    is($e1, 2, 'fake-opt-in 1: hook stop, no allow flag -> exit 2');
+    like($o1, $err_re, 'fake-opt-in 1: exactly the ERROR line');
+    unlike($o1, qr/PA_IDLE=PASS/, 'fake-opt-in 1: no PASS line');
+
+    my ($e2, $o2) = run_tool($pa_idle_script, [], PA_MAC => $probe_mac, LMS_URL => $dead,
+        PA_IDLE_FAKE_MODE => 'play', PA_IDLE_ALLOW_FAKE => '');
+    is($e2, 2, 'fake-opt-in 2: hook play, no allow flag -> exit 2 (a fake FAIL needs the opt-in too)');
+    like($o2, $err_re, 'fake-opt-in 2: same ERROR line');
+
+    my ($e3, $o3) = run_tool($pa_idle_script, [], PA_MAC => $probe_mac, LMS_URL => $dead,
+        PA_IDLE_FAKE_MODE => 'stop', PA_IDLE_ALLOW_FAKE => 'yes');
+    is($e3, 2, 'fake-opt-in 3: allow flag "yes" -> exit 2 (only the exact value 1 opts in)');
+    like($o3, $err_re, 'fake-opt-in 3: ERROR line');
+
+    my $stub = tempdir(CLEANUP => 1);
+    open(my $fh, '>', "$stub/curl") or die "cannot write curl stub: $!";
+    print $fh "#!/usr/bin/env bash\nprintf '%s' '{\"result\":{\"mode\":\"stop\",\"time\":0}}'\n";
+    close($fh);
+    chmod 0755, "$stub/curl";
+    my ($e4, $o4) = run_tool($pa_idle_script, [], PA_MAC => $probe_mac, LMS_URL => $dead,
+        PATH => "$stub:$ENV{PATH}", PA_IDLE_FAKE_MODE => '', PA_IDLE_ALLOW_FAKE => '1');
+    is($e4, 0, 'fake-opt-in 4: no hook, LMS answer stop -> exit 0');
+    like($o4, qr/^PA_IDLE=PASS mode=stop$/m, 'fake-opt-in 4: exactly PASS mode=stop, no fake=1');
 };
 
 # 79-04 (D-10): the four tools that used a built-in headphone-player MAC now fail closed without

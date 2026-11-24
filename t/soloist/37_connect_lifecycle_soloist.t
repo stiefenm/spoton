@@ -397,7 +397,7 @@ $INC{'Plugins/SpotOn/Soloist/Control.pm'}       = __FILE__;
 }
 
 my %role_src;
-for my $name (qw(_onPause _onLmsStop _bufferedSetVolume _onSeek _onPlaylistJump _accountKeyOf _perAccount _claimGroupPeers)) {
+for my $name (qw(_onPause _onLmsStop _bufferedSetVolume _onSeek _forwardLibrespotSeek _onPlaylistJump _accountKeyOf _perAccount _claimGroupPeers)) {
     ($role_src{$name}) = $connect =~ /(sub \Q$name\E \{.*?\n\})\n/s;
 }
 my $role_compiled = !grep { !defined } values %role_src;
@@ -406,12 +406,16 @@ $role_compiled &&= eval(
     . "use strict; use warnings; use Time::HiRes;\n"
     . "use constant CONNECT_START_GRACE => 12;\n"
     . "use constant VOLUME_DEBOUNCE => 0.5;\n"
+    . "use constant SEEK_DEBOUNCE => 0.3;\n"
     . "our \$SPOTIFY_CONNECT = 0;\n"
     . "my \$log   = Test::RoleLog->new;\n"
     . "my \$prefs = Test::RolePrefs->new;\n"
     . "my %_claim;\n"
+    . "my %_hold;\n"                                # 90.2-01 (_onPlaylistJump, _onLmsStop)
     . "sub isSpotifyConnect { return \$SPOTIFY_CONNECT; }\n"
     . "sub _holdCancel { return; }\n"
+    . "sub _holdJumpLanded { return undef; }\n"
+    . "sub _holdAdvancedPlaying { return 0; }\n"    # 90.2 review R2 CR-01 (_onLmsStop)
     . "sub _isDeadHistoryUrl { return 0; }\n"
     . "sub _seekPositionFromRequest { return \$_[1]->getParam('_newvalue'); }\n"
     # a leftover direct HTTP send (the pre-84-07 route) counts as a POST
@@ -442,6 +446,21 @@ my $jump_run = sub {
     role_run($role, '_onPlaylistJump', params => { _index => $index });
     return $role->{calls};
 };
+
+# 90.2 review R3 IN-02: the harness must compile and the real handlers must run here, or this
+# block passes on nothing (it failed silently from 90.2-01 on: `%_hold` undeclared).
+ok($role_compiled, "90.2-review3: the real _onPause/_onLmsStop/_onSeek/_onPlaylistJump compile in this file's role harness")
+    or diag($@);
+if ($role_compiled) {
+    role_reset();
+    is_deeply($jump_run->(Test::RoleMock->new(), '+1'), [ [ 'skip_next', { reason => 'jump+1' } ] ],
+        "90.2-review3: _onPlaylistJump runs in this harness (connect jump +1 -> control('skip_next'))");
+    role_reset();
+    local $Slim::Player::Source::PLAYMODE = 'stop';
+    my $r = role_run(Test::RoleMock->new(mode => 'browse'), '_onLmsStop');
+    is_deeply($r->{calls}, [ [ 'pause', { isStop => 1, source => 'lms_stop' } ] ],
+        "90.2-review3: _onLmsStop runs in this harness (browse stop -> control('pause', isStop => 1))");
+}
 like($control, qr/sub requestRestart \{/, "1B: Control.pm defines requestRestart");
 like($control, qr/sub consumeRestartAllowance \{/, "1B: Control.pm defines consumeRestartAllowance");
 

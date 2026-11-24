@@ -687,8 +687,11 @@ $role_compiled &&= eval(
     . "my \$log   = Test::RoleLog->new;\n"
     . "my \$prefs = Test::RolePrefs->new;\n"
     . "my %_claim;\n"
+    . "my %_hold;\n"
     . "sub isSpotifyConnect { return \$SPOTIFY_CONNECT; }\n"
     . "sub _holdCancel { return; }\n"
+    . "sub _holdJumpLanded { return undef; }\n"
+    . "sub _holdAdvancedPlaying { return 0; }\n"    # 90.2 review R2 CR-01 (_onLmsStop)
     . "sub _isDeadHistoryUrl { return 0; }\n"
     . "sub _seekPositionFromRequest { return \$_[1]->getParam('_newvalue'); }\n"
     # a leftover direct HTTP send (the pre-84-07 route) counts as a POST
@@ -1191,6 +1194,7 @@ my $h3 = !@missing3 && eval(
     . "sub getActive  { my \@k = sort keys %_claim; return wantarray ? \@k : \$k[0]; }\n"
     . "sub setHold    { \$_hold{ \$_[0] } = \$_[1]; }\n"
     . "sub setTrigger { \$_watchdogTriggerUrl{ \$_[0] } = \$_[1]; }\n"
+    . "sub _holdPruneAdvanced { return; }\n"    # 90.2 review R2 CR-01 (_holdClose); pinned in t/core/41
     . join("\n", map { $src3{$_} } sort keys %src3) . "\n1;"
 );
 ok($h3, '84-08: the real Task 3 handlers compile in the role harness') or diag($@);

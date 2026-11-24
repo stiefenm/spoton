@@ -280,7 +280,8 @@ sub lines_of { my ($f) = @_; return grep { length } split /\n/, slurp($f) }
 
 my %SENT;          # command -> count, across every case (C17)
 
-# run_case(state => {...}, mac => ..., extra => [...], pa => 'stop', dirty => 0, no_out_dir => 0)
+# run_case(state => {...}, mac => ..., extra => [...], pa => 'stop', dirty => 0, no_out_dir => 0,
+#          no_pa_allow => 0, no_qc_accept => 0)  -- the two no_* options drop the PA_IDLE_ALLOW_FAKE / QC_ACCEPT_FAKE_PA opt-ins (84 WR-05)
 sub run_case {
     my (%c) = @_;
     my $d = tempdir(CLEANUP => 1);
@@ -334,6 +335,10 @@ sub run_case {
     local $ENV{PA_MAC}          = $FAKE_PA;
     delete $ENV{PA_MAC} if $c{no_pa_mac};
     local $ENV{PA_IDLE_FAKE_MODE} = $c{pa} // 'stop';
+    local $ENV{PA_IDLE_ALLOW_FAKE} = '1';
+    delete $ENV{PA_IDLE_ALLOW_FAKE} if $c{no_pa_allow};
+    local $ENV{QC_ACCEPT_FAKE_PA} = '1';
+    delete $ENV{QC_ACCEPT_FAKE_PA} if $c{no_qc_accept};
     local $ENV{LMS_URL}          = 'http://127.0.0.1:9/jsonrpc.js';
     local $ENV{QC_POLL_SLEEP}    = '0';
 
@@ -665,6 +670,30 @@ sub nothing_invoked { my ($r) = @_; return (@{ $r->{inv} } == 0) ? 1 : 0 }
     like($r->{qc}, qr/\AQUEUE_CLEARED=UNBESTIMMT before=1 after=1 action=none reason=lms_state_not_recorded\b/, 'iwm C24c unreachable LMS: UNBESTIMMT lms_state_not_recorded');
     is($r->{rc}, 3, 'iwm C24c exit 3');
     ok(only_reads($r) && !@{ $r->{cdp} }, 'iwm C24c no handover without a recorded LMS state');
+}
+
+# ------------------------------------------------------------
+# C25 (84 WR-05) a faked pa-idle verdict
+# ------------------------------------------------------------
+{
+    my $r = run_case(state => { is_active => 0, copy => [$X] }, no_qc_accept => 1);
+    like($r->{qc}, qr/\AQUEUE_CLEARED=UNBESTIMMT before=1 after=1 action=none reason=pa_gate_fake\b/, 'iwm C25a fake=1 PASS without QC_ACCEPT_FAKE_PA: UNBESTIMMT pa_gate_fake');
+    is($r->{rc}, 3, 'iwm C25a exit 3');
+    like($r->{out}, qr/^QC_PA_GATE PA_IDLE=PASS mode=stop fake=1$/m, 'iwm C25a the gate line carries fake=1');
+    ok(only_reads($r), 'iwm C25a no write over the WS');
+    ok(!@{ $r->{cdp} }, 'iwm C25a no connect / no app start in any log');
+}
+{
+    my $r = run_case(state => { is_active => 0, copy => [$X] }, no_pa_allow => 1);
+    like($r->{qc}, qr/\AQUEUE_CLEARED=UNBESTIMMT before=1 after=1 action=none reason=rig_not_idle:pa\b/, 'iwm C25b hook without PA_IDLE_ALLOW_FAKE: UNBESTIMMT rig_not_idle:pa');
+    is($r->{rc}, 3, 'iwm C25b exit 3');
+    like($r->{out}, qr/^QC_PA_GATE PA_IDLE=ERROR PA_IDLE_FAKE_MODE set without PA_IDLE_ALLOW_FAKE=1$/m, 'iwm C25b the gate ERROR line is printed');
+    ok(!@{ $r->{cdp} }, 'iwm C25b no connect / no app start in any log');
+}
+{
+    my $r = run_case(state => { is_active => 0, copy => [$X], live => [] });
+    like($r->{out}, qr/^QC_PA_GATE PA_IDLE=PASS mode=stop fake=1$/m, 'iwm C25c all opt-ins set: the gate line carries fake=1');
+    like($r->{qc}, qr/\AQUEUE_CLEARED=PASS before=1 after=0 action=app_transfer\b/, 'iwm C25c all opt-ins set: PASS app_transfer');
 }
 
 # ------------------------------------------------------------

@@ -5,6 +5,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.1.0-beta.4] - 2026-11-24
+
+**Installing this beta.** This is the fourth beta of SpotOn 4.1. It comes through the beta repository URL `https://stiefenm.github.io/spoton/beta/repo.xml`; if you do not have it yet, add it under **Settings > Plugins > Additional Repositories** and save. The Plugins page then offers SpotOn 4.1.0beta4 as an update over 4.1.0beta3, 4.1.0beta2, 4.1.0beta1 and 4.0.0. Restart LMS after the update. The change below is for the Soloist backend.
+
+### Fixed
+
+- Soloist: a playlist you start from the Spotify app on a Soloist player no longer repeats a title and then stops when another LMS plugin starts the next title early. The case seen was the Disable Shuffle plugin with its option "Disable Add to Playlist" set to Yes, which starts every title SpotOn queues at once; SpotOn then removed that title again, so LMS went back to the previous one. SpotOn now keeps that title and the playlist plays on. With such a plugin the next title can start up to 9 seconds before the current one ends; setting "Disable Add to Playlist" to No avoids that. ([#234](https://github.com/stiefenm/spoton/issues/234))
+
 ## [4.1.0-beta.3] - 2026-11-23
 
 **Installing this beta.** This is the third beta of SpotOn 4.1. It comes through the beta repository URL `https://stiefenm.github.io/spoton/beta/repo.xml`; if you do not have it yet, add it under **Settings > Plugins > Additional Repositories** and save. The Plugins page then offers SpotOn 4.1.0beta3 as an update over 4.1.0beta2, 4.1.0beta1 and 4.0.0. Restart LMS after the update. The changes below are for the Soloist backend, except the one marked Spotify Connect (librespot).

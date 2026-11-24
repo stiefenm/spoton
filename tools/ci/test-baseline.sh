@@ -44,7 +44,9 @@
 # Ein Eintrag ohne Grund ist ein Aufruffehler (Exit 2).
 #
 # Letzte Ausgabezeile: BASELINE_CHECK=PASS|FAIL (Exit 0 / 1). record weigert
-# sich bei weniger als MIN_FILES Testdateien (leerer oder falscher Root).
+# sich bei weniger als MIN_FILES Testdateien (leerer oder falscher Root). record
+# legt das Baseline-Verzeichnis an; scheitert das oder das Schreiben, steht
+# BASELINE_RECORD=REFUSED (<grund>) und Exit 1, nie OK ohne Datei (84 WR-04).
 #
 # Exit: 0 = ok | 1 = Befund | 2 = Aufruffehler
 set -u
@@ -80,8 +82,21 @@ done
 ROOT_ABS=$(cd "$ROOT" && pwd)
 PARENT=$(dirname "$ROOT_ABS")
 RNAME=$(basename "$ROOT_ABS")
-BASELINE_ABS=$(cd "$(dirname "$BASELINE")" 2>/dev/null && pwd)/$(basename "$BASELINE")
 [ "$MODE" = check ] && [ ! -f "$BASELINE" ] && { echo "Basis nicht gefunden: $BASELINE" >&2; exit 2; }
+# record: das Ziel vor dem ersten Testlauf klaeren (84 WR-04), damit ein schlechtes Ziel in
+# Sekunden ablehnt und nicht erst nach der ganzen Suite; kein Rueckfall auf "/".
+if [ "$MODE" = record ]; then
+    BASELINE_DIR=$(dirname "$BASELINE")
+    if ! mkdir -p "$BASELINE_DIR" 2>/dev/null; then
+        echo "BASELINE_RECORD=REFUSED (cannot create baseline dir: $BASELINE_DIR)"
+        exit 1
+    fi
+    if ! BASELINE_DIR_ABS=$(cd "$BASELINE_DIR" 2>/dev/null && pwd) || [ -z "$BASELINE_DIR_ABS" ]; then
+        echo "BASELINE_RECORD=REFUSED (cannot resolve baseline dir: $BASELINE_DIR)"
+        exit 1
+    fi
+    BASELINE_ABS=$BASELINE_DIR_ABS/$(basename "$BASELINE")
+fi
 if [ -n "$MAPFILE" ] && [ ! -f "$MAPFILE" ]; then echo "Map-Datei nicht gefunden: $MAPFILE" >&2; exit 2; fi
 
 # Flake-Liste lesen (fehlende Standardliste = leer; eine ausdruecklich
@@ -213,7 +228,10 @@ if [ "$MODE" = record ]; then
         echo "TOTAL_FILES=$TREE_FILES"
         echo "TOTAL_TESTS=$TREE_TESTS"
     } >"$OUT"
-    cp "$OUT" "$BASELINE_ABS"
+    if ! cp "$OUT" "$BASELINE_ABS" 2>/dev/null; then
+        echo "BASELINE_RECORD=REFUSED (write failed: $BASELINE_ABS)"
+        exit 1
+    fi
     echo "recorded $TREE_FILES files, $TREE_TESTS tests -> $BASELINE"
     echo "BASELINE_RECORD=OK"
     exit 0

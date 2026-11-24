@@ -922,8 +922,8 @@ sub _onNewSong {
     # any other url cancels the hold (H-c).
     if (my $hold = $_hold{ $client->id }) {
         if ($url eq $hold->{uri}) {
-            _holdClose($client, 'newsong');
-            if (_holdItemUrlAt($client, $hold->{playingIdx}) eq $hold->{oldUrl}) {
+            _holdClose($client, 'newsong');    # an advanced hold prunes in _holdClose (90.2 R2 CR-01)
+            if (!$hold->{pruned} && _holdItemUrlAt($client, $hold->{playingIdx}) eq $hold->{oldUrl}) {
                 _holdRequest($client, 'playlist', 'delete', $hold->{playingIdx});
             }
             $client->pluginData(progress => 0);
@@ -1126,7 +1126,25 @@ sub _onLmsStop {
 
     # 84-17 (H-c): an LMS-side stop/clear is a user action -- an open hold is
     # cancelled (the deferred entry removed, no late `playlist play`).
-    _holdCancel($client, 'lms_stop');
+    # 90.2 review R2 CR-01: EXCEPT the stop LMS queues for the jump that advanced the
+    # hold. Every jump onto another entry runs StreamingController::_Stop, which
+    # queues LMS's own `playlist stop` behind the jump's notification, so it reaches
+    # this handler right after _onPlaylistJump marked the hold advanced. LMS is then
+    # already on the deferred entry with playmode `play` (TRACKWAIT/BUFFERING, not
+    # STOPPED+IDLE). Cancelling there closed the hold one notification after its
+    # advance and B's newsong never pruned the old entry (playlist [old, B]; a later
+    # LMS Next wrapped onto the old title). A user stop leaves playmode `stop` and
+    # still cancels; the hold then prunes the old entry in _holdClose.
+    my $stopHold = $_hold{ $client->id };
+    if (_holdAdvancedPlaying($client, $stopHold)
+        && (Slim::Player::Source::playmode($client) // '') eq 'play') {
+        main::INFOLOG && $log->is_info && $log->info(
+            "Connect: hold advanced by foreign jump stays open on LMS stop (" . $client->id . ")"
+        );
+    }
+    else {
+        _holdCancel($client, 'lms_stop');
+    }
 
     # 84-07 (SEAM-6.2): through the backend role. Only a backend with a
     # mode (Soloist with a Control instance) acts; librespot has none.
@@ -1224,6 +1242,7 @@ sub _onLmsPlaylistChanged {
 #   playingIdx     Slim::Player::Source::playingSongIndex at insert time
 #   since/capAt/maxAt  Time::HiRes instants (HOLD_CAP_S / HOLD_MAX_S in Control)
 #   held_s, lastCheck  accumulated PLAYING time on the old url (the ceiling)
+#   advanced  1 once a foreign jump landed on the deferred entry (90.2-01, GH #234)
 # (declared at the top of the file next to %_connectEntrySong: _onNewSong,
 # _onSeek and the other handlers above this block read it)
 # ---------------------------------------------------------------------------
@@ -1296,8 +1315,86 @@ sub _holdRemoveDeferred {
     return unless defined $idx;
     my $at = $idx + 1;
     if (_holdItemUrlAt($client, $at) eq $hold->{uri}) {
+        # 90.2-01 (GH #234): never delete the entry LMS is PLAYING -- removing it
+        # makes LMS stop and jump back to the old title (Playlist.pm removeTrack).
+        # A streaming-only entry stays deletable: LMS then just flushes it (no
+        # stop, no jump), the intended 84-17 cancel in the pre-stream window.
+        my $playing = eval { Slim::Player::Source::playingSongIndex($client) } // -1;
+        if ($playing == $at) {
+            main::INFOLOG && $log->is_info && $log->info(
+                "Connect: hold advanced by LMS idx=$at, deferred entry kept (" . $client->id . ")"
+            );
+            return;
+        }
         _holdRequest($client, 'playlist', 'delete', $at);
     }
+}
+
+# _holdJumpLanded($client, $hold, $index) -- 90.2-01 (GH #234): the deferred
+# index (playingIdx + 1) when a foreign jump `$index` landed on the hold's own
+# deferred entry, else undef. LMS has already EXECUTED the jump (Play(n)) when its
+# notification reaches _onPlaylistJump, so the handler sees LMS already on that
+# entry; cancelling there deleted the entry LMS had just started (removeTrack:
+# LMS stops and jumps back to the old title). The entry at the deferred index
+# must still be the hold's uri AND one of:
+#   (a) $index is the plain absolute number of that index,
+#   (b) LMS's playingSongIndex is that index (covers `+1` with LMS on the entry),
+#   (c) DEFENSIVE: LMS's streamingSongIndex is that index AND the jump's own
+#       target resolves to it (absolute index, or playingIdx plus a signed
+#       offset). In real LMS Play(n), skip and `+0` reset the song queue, so the
+#       streaming index follows the jump target and (b) already decides; (c) never
+#       lets a streaming deferred entry turn a jump elsewhere into an advance.
+# Keys on playlist state only (deferred index, its uri, LMS's indexes), never on
+# who issued the jump. Source calls run in eval, -1 = "not landed".
+sub _holdJumpLanded {
+    my ($client, $hold, $index) = @_;
+
+    my $idx = $hold->{playingIdx};
+    return undef unless defined $idx;
+    my $at = $idx + 1;
+    return undef unless _holdItemUrlAt($client, $at) eq $hold->{uri};
+
+    my $plain = (defined $index && $index =~ /^\d+$/) ? $index + 0 : undef;
+    return $at if defined $plain && $plain == $at;
+
+    my $playing = eval { Slim::Player::Source::playingSongIndex($client) } // -1;
+    return $at if $playing == $at;
+
+    my $target;
+    if (defined $plain) { $target = $plain; }
+    elsif (defined $index && $index =~ /^([+-])(\d+)$/) { $target = $idx + ($1 eq '-' ? -$2 : $2); }
+    if (defined $target && $target == $at) {
+        my $streaming = eval { Slim::Player::Source::streamingSongIndex($client) } // -1;
+        return $at if $streaming == $at;
+    }
+    return undef;
+}
+
+# _holdAdvancedPlaying($client, $hold) -- 90.2 review R2 CR-01: 1 when $hold was
+# advanced by a foreign jump AND LMS plays its deferred entry (playing index
+# playingIdx + 1, still the hold's uri), else 0. Source calls run in eval.
+sub _holdAdvancedPlaying {
+    my ($client, $hold) = @_;
+    return 0 unless $hold && $hold->{advanced} && defined $hold->{playingIdx};
+    my $at = $hold->{playingIdx} + 1;
+    my $playing = eval { Slim::Player::Source::playingSongIndex($client) } // -1;
+    return 0 unless $playing == $at;
+    return _holdItemUrlAt($client, $at) eq $hold->{uri} ? 1 : 0;
+}
+
+# _holdPruneAdvanced($client, $hold) -- 90.2 review R2 CR-01: an advanced hold
+# prunes the OLD entry (at playingIdx, still oldUrl) whatever closes it: the
+# newsong, a user stop/seek/jump cancel, the cap re-check's seen_by_check, a
+# session end or a replacing hold. LMS plays the entry after it, so this is
+# Playlist.pm removeTrack below the playing index: a splice plus an index shift,
+# no stop, no jump (removeTrack stops only when the PLAYING entry is removed).
+# Marks the hold `pruned` so the newsong close does not prune a second time.
+sub _holdPruneAdvanced {
+    my ($client, $hold) = @_;
+    return unless _holdAdvancedPlaying($client, $hold);
+    return unless _holdItemUrlAt($client, $hold->{playingIdx}) eq $hold->{oldUrl};
+    $hold->{pruned} = 1;
+    _holdRequest($client, 'playlist', 'delete', $hold->{playingIdx});
 }
 
 # _holdClose($client, $by) -- the ONE close path: forgets the hold, kills the
@@ -1316,6 +1413,7 @@ sub _holdClose {
     # the cap fallback _dispatchChangePlay re-stamps after this close.
     $client->pluginData(connectOwnPlayUri => '') if ($client->pluginData('connectOwnPlayUri') // '') eq $hold->{uri};
     Slim::Utils::Timers::killTimers($client, \&_holdCheck);
+    _holdPruneAdvanced($client, $hold);    # 90.2 review R2 CR-01: no-op unless advanced
 
     # 84-08: the player engine drops its own hold mark (no engine -> 'down').
     require Plugins::SpotOn::Unified::DaemonManager;
@@ -1353,6 +1451,7 @@ sub _holdOpen {
     # A second `live` change replaces the still-unplayed deferred entry.
     if (my $prev = $_hold{$id}) {
         _holdRemoveDeferred($client, $prev);
+        _holdPruneAdvanced($client, $prev);    # 90.2 review R2 CR-01, before playingIdx is read below
         delete $_hold{$id};
         Slim::Utils::Timers::killTimers($client, \&_holdCheck);
     }
@@ -1456,7 +1555,11 @@ sub _holdCheck {
 
     # Defensive: LMS already plays the deferred item but its newsong did not
     # reach us -- close without playing anything.
-    if ($url eq $hold->{uri}) {
+    # 90.2 review R3 WR-02: not when a powered-on player is STOPPED on it (B's
+    # open failed without a `playlist stop`, so the hold kept through the jump's
+    # stop never heard of it): that is d1, the one fallback `playlist play`.
+    # A powered-off player also reads `stop` (Source.pm) and keeps this branch.
+    if ($url eq $hold->{uri} && !($mode eq 'stop' && $client->power)) {
         _holdClose($client, 'newsong reason=seen_by_check');
         return;
     }
@@ -1865,7 +1968,42 @@ sub _onPlaylistJump {
     return if !defined $index;
 
     # 84-17 (H-c): an LMS-side jump is a user action -- an open hold is cancelled.
-    _holdCancel($client, 'lms_jump');
+    # 90.2-01 (GH #234): EXCEPT a jump that landed on the hold's own deferred entry
+    # (another plugin answering the hold's insert with `playlist index 1`): that is
+    # the hold's advance, not a user action. The hold stays open (the entry's newsong
+    # closes it and prunes the old entry; the cap re-check stays armed as the safety
+    # net) and NO request is sent -- deleting the entry LMS plays makes it stop and
+    # jump back to the old title.
+    # 90.2 review R2 CR-01: the jump's own `playlist stop`, delivered right after this
+    # notification, keeps the advanced hold open (_onLmsStop); any close of an advanced
+    # hold prunes the old entry (_holdPruneAdvanced in _holdClose).
+    # 90.2 review WR-01: the jump that advances the hold sends no skip either. LMS has just
+    # moved onto the title the daemon is already on (a Next `+1`, or a Previous `-1` that
+    # wraps on the two-entry hold playlist -- LMS's own wrap, accepted in R2 IN-01), so
+    # skip_next/skip_prev would move the daemon one title further. Only THIS jump. The
+    # user's NEXT key press normally comes after B's newsong closed the hold and pruned
+    # the old entry: it meets no hold on a one-entry playlist and routes like any Connect
+    # key press (84-07). A key press before that newsong still meets [old, B] (90.2 review
+    # R3 IN-01): while LMS buffers B (BUFFERING/WAITING_TO_SYNC) its Next wraps onto the old
+    # title, a documented window (90.2-REVIEW-FIX-R2.md CR-01), not a routed skip. Earlier,
+    # in STOPPED/TRACKWAIT, LMS ignores the Next (Skip is _NoOp there) and stays on B; the
+    # hold is already advanced, so this handler sends skip_next and the daemon's change
+    # cancels the hold. The window ends with B's newsong, at the latest with the cap
+    # re-check (HOLD_CAP_S after the hold OPENED, then every HOLD_RECHECK_S).
+    my $holdAdvance = 0;
+    my $openHold = $_hold{ $client->id };
+    if ($openHold && defined(my $landed = _holdJumpLanded($client, $openHold, $index))) {
+        unless ($openHold->{advanced}) {
+            $openHold->{advanced} = 1;
+            $holdAdvance = 1;
+            main::INFOLOG && $log->is_info && $log->info(
+                "Connect: hold advanced by foreign jump idx=$landed (" . $client->id . ")"
+            );
+        }
+    }
+    else {
+        _holdCancel($client, 'lms_jump');
+    }
 
     require Plugins::SpotOn::Unified::DaemonManager;
     my $be   = Plugins::SpotOn::Unified::DaemonManager->backendFor($client);
@@ -1908,6 +2046,9 @@ sub _onPlaylistJump {
         # (user 2026-10-11): no fallthrough into the librespot path.
         return if ($be->state->{mode} // '') ne 'connect';
     }
+
+    # WR-01: no title key for the advancing jump (see the hold block above).
+    return if $holdAdvance && ($index eq '+1' || $index eq '-1');
 
     if ($index eq '+1') {
         main::INFOLOG && !$gate && $log->is_info && $log->info(

@@ -162,6 +162,48 @@ EOT
         is($rc, 0, 'WR-09: an all-green first run passes (exit 0)');
         like($out, qr/^BASELINE_CHECK=PASS$/m, 'WR-09: all-green reads BASELINE_CHECK=PASS');
     }
+
+    # 84 WR-04: record must not report OK when it wrote nothing
+    my $record = sub {
+        my ($parent, $baseline) = @_;
+        my $out = qx{cd '$parent' && bash '$gate' record '$baseline' t 2>/dev/null};
+        return ($out, $? >> 8);
+    };
+
+    # R1: a missing baseline directory is created
+    {
+        my ($p) = $build_suite->(0);
+        my $b = "$p/rec/new/baseline.tsv";
+        my ($out, $rc) = $record->($p, $b);
+        is($rc, 0, 'WR-04 R1: record into a missing directory exits 0');
+        like($out, qr/^BASELINE_RECORD=OK$/m, 'WR-04 R1: BASELINE_RECORD=OK');
+        ok(-f $b, 'WR-04 R1: the baseline file exists');
+        my $content = '';
+        if (open my $fh, '<', $b) { local $/; $content = <$fh>; close $fh }
+        like($content, qr/^TOTAL_FILES=50$/m, 'WR-04 R1: the baseline holds TOTAL_FILES=50');
+    }
+
+    # R2: the directory path runs through a regular file
+    {
+        my ($p) = $build_suite->(0);
+        open my $bh, '>', "$p/blocker" or die "write blocker: $!";
+        close $bh;
+        my ($out, $rc) = $record->($p, "$p/blocker/sub/baseline.tsv");
+        is($rc, 1, 'WR-04 R2: record through a regular file exits 1');
+        like($out, qr/^BASELINE_RECORD=REFUSED \(cannot create baseline dir: /m, 'WR-04 R2: REFUSED names the baseline dir');
+        unlike($out, qr/^BASELINE_RECORD=OK/m, 'WR-04 R2: no OK line');
+    }
+
+    # R3: the destination is a dangling symlink (GNU cp refuses to write through it, even as root)
+    {
+        my ($p) = $build_suite->(0);
+        symlink("$p/nodir/x", "$p/dangling.tsv") or die "symlink: $!";
+        my ($out, $rc) = $record->($p, "$p/dangling.tsv");
+        is($rc, 1, 'WR-04 R3: record onto a dangling symlink exits 1');
+        like($out, qr/^BASELINE_RECORD=REFUSED \(write failed: /m, 'WR-04 R3: REFUSED names the failed write');
+        unlike($out, qr/^BASELINE_RECORD=OK/m, 'WR-04 R3: no OK line');
+        ok(!-e "$p/nodir/x", 'WR-04 R3: nothing was written behind the symlink');
+    }
 }
 
 # 79-64 FULL-5 WR-05: the literal gate looked at file CONTENT only and

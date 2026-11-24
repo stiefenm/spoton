@@ -65,7 +65,7 @@
 #   QC_POLL_SLEEP      seconds between polls (default 3)
 #   PA_MAC             MAC of lavender-pa (required, no default; rig-env.sh exports it)
 #   LMS_URL            default http://127.0.0.1:9000/jsonrpc.js
-#   PA_IDLE_FAKE_MODE  passed through to pa-idle-gate.sh (offline hook)
+#   PA_IDLE_FAKE_MODE  offline hook of pa-idle-gate.sh, faked only with PA_IDLE_ALLOW_FAKE=1; a fake=1 PASS counts only with QC_ACCEPT_FAKE_PA=1
 set -u
 
 QC_REPO="${QC_REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
@@ -274,6 +274,8 @@ fi
 PA_OUT=$(PA_MAC="$PA_MAC_FIXED" bash "$QC_REPO/tools/uat/pa-idle-gate.sh" 2>&1)
 echo "QC_PA_GATE $PA_OUT"
 case "$PA_OUT" in
+  # a PASS taken from the test hook (fake=1) opens the write path only with QC_ACCEPT_FAKE_PA=1 (84 WR-05)
+  *PA_IDLE=PASS*fake=1*) if [ "${QC_ACCEPT_FAKE_PA:-}" != "1" ]; then A_N=$B_N; final UNBESTIMMT "pa_gate_fake" 3; fi ;;
   *PA_IDLE=PASS*) : ;;
   *) A_N=$B_N; final UNBESTIMMT "rig_not_idle:pa" 3 ;;
 esac
