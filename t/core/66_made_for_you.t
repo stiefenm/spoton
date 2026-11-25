@@ -1399,7 +1399,10 @@ t_block('PF top and search end to end', sub {
 # 79-59 (GH #180): the daylist and the account's other personal lists from
 # the whole home (op home), by the user's rule (MIX59_CHOSEN=rule:personal-non-radio):
 # id prefix 37i9dQZF1E or 37i9dQZEVX, madeFor.username present, format not
-# inspiredby-mix. Layout: daylist, Daily Mixes, Discover Weekly, Release Radar
+# inspiredby-mix. The rule holds for the mixes list (`items`, `layout`); the
+# inspiredby-mix radios go to their own `radios` list (phase 91, RAD-04) and
+# the feed shows them as the last folder, Radios. Layout: daylist, Daily Mixes,
+# Discover Weekly, Release Radar
 # on top, the rest in one folder per Spotify row (Spotify's title, Spotify's
 # order), untitled rows' lists below the top entries. Fixture: the trimmed real
 # replies t/fixtures/pathfinder/79-59-made-for-you.json.
@@ -1435,6 +1438,15 @@ sub fx59_playlists {
         }
     }
     return @out;
+}
+
+# RAD-04: the radios of the fixture's home, in the order its rows list them: the personal
+# inspiredby-mix lists (id prefix 37i9dQZF1E / 37i9dQZEVX, madeFor), each uri once
+sub rad04_expected_radios {
+    my %seen;
+    return grep { !$seen{$_}++ } map { $_->[0] }
+        grep { $_->[1] eq 'inspiredby-mix' && $_->[2] && $_->[0] =~ /\Aspotify:playlist:37i9dQZ(?:F1E|EVX)/ }
+        fx59_playlists($FX59->{home});
 }
 
 sub pf59_responder {
@@ -1535,6 +1547,8 @@ t_block('79-59 MFY generic rule', sub {
     ok(!$in{'spotify:playlist:37i9dQZF1E99NOMADExxx02'}, '79-59 rule: a 37i9dQZF1E list without madeFor.username is not listed');
     ok(!$in{'spotify:playlist:37i9dQZF1DX99EDITORxx03'}, '79-59 rule: madeFor alone is not enough (editorial id prefix)');
     ok(!$in{'spotify:playlist:37i9dQZEVX99RADIOxxxx04'}, '79-59 rule: format inspiredby-mix stays out under any prefix');
+    ok(scalar(grep { $_->{uri} eq 'spotify:playlist:37i9dQZEVX99RADIOxxxx04' } @{ $res->{radios} || [] }) == 1,
+        'RAD-04: and the same radio is listed in `radios` instead (any prefix that passes the personal rule)');
 });
 
 t_block('79-59 MFY source failures', sub {
@@ -1581,10 +1595,196 @@ t_block('79-59 MFY feed folders', sub {
     is_deeply([ map { $_->{passthrough}[0]{playlistId} } @items[0 .. 9] ],
         [ map { (split /:/)[2] } @TOP59, $FUNWO59 ], '79-59 feed: the top entries and the untitled-row list come first, as playlists');
     my @folders = grep { !$_->{passthrough} } @items;
-    is_deeply([ map { $_->{name} } @folders ], [ 'Your top mixes', 'Made for you' ], '79-59 feed: then one folder per row, named by Spotify');
+    is_deeply([ map { $_->{name} } @folders ], [ 'Your top mixes', 'Made for you', 'PLUGIN_SPOTON_MFY_RADIOS' ],
+        '79-59 feed: then one folder per row, named by Spotify, and last the Radios folder (RAD-04)');
     ok(!(grep { ref $_->{items} ne 'ARRAY' || !@{ $_->{items} } } @folders), '79-59 feed: every folder holds its lists');
     ok(!(grep { ($_->{type} // '') ne 'playlist' } map { @{ $_->{items} } } @folders), '79-59 feed: folder entries are playlist items');
     is(scalar(@items), 10 + scalar(@folders), '79-59 feed: nothing else on the top level');
+    is($items[-1]{name}, 'PLUGIN_SPOTON_MFY_RADIOS', 'RAD-04: the Radios folder is the last top-level entry');
+    is_deeply([ map { $_->{passthrough}[0]{playlistId} } @{ $items[-1]{items} } ], [ map { (split /:/)[2] } rad04_expected_radios() ],
+        'RAD-04: the Radios folder holds the radios as playlist items, in the order the home lists them');
+    ok(!(grep { ($_->{type} // '') ne 'playlist' } @{ $items[-1]{items} }), 'RAD-04: the Radios folder entries are playlist items');
+});
+
+# ============================================================
+# Phase 91 (RAD-04): the radios Spotify suggests on the home page (format
+# inspiredby-mix) are partitioned out of the mixes list into `radios`, cached
+# with the list, and shown by the feed as the last folder, Radios. No new
+# request, no radio in `items` or `layout`.
+# ============================================================
+sub rad04_feed {
+    Slim::Utils::Prefs::preferences('plugin.spoton')->set('activeAccount', 'acct1');
+    my $client = MockClient->new('player-rad04');
+    my $out;
+    Plugins::SpotOn::Plugin::_madeForYouFeed($client, sub { $out = shift }, {});
+    return $out;
+}
+sub rad04_home_without_radios {
+    my (%keep) = @_;   # uris of radios that stay
+    my $home = clone($FX59->{home});
+    for my $sec (@{ $home->{data}{home}{sectionContainer}{sections}{items} }) {
+        @{ $sec->{sectionItems}{items} } = grep {
+            my $d = (($_->{content} || {})->{data}) || {};
+            !(($d->{format} // '') eq 'inspiredby-mix') || $keep{ $d->{uri} // '' };
+        } @{ $sec->{sectionItems}{items} };
+    }
+    return $home;
+}
+
+t_block('RAD-04 radios list', sub {
+    reset_all();
+    seed59();
+    http_rule(qr{pathfinder/v2/query}, pf59_responder());
+    my ($res, $err) = run_mfy();
+    my $cold = scalar(pf_requests());
+
+    my @want = rad04_expected_radios();
+    is(scalar(@want), 4, 'RAD-04: the fixture\'s home holds four personal radios');
+    is(scalar(grep { ($_->{content}{data}{format} // '') eq 'inspiredby-mix' }
+        map { @{ $_->{data}{homeSections}{sections}[0]{sectionItems}{items} } } ($FX59->{homeSection_mfy}, $FX59->{homeSection_topmix})), 0,
+        'RAD-04: and the two homeSection answers hold none');
+    ok($res && !$err && ref $res->{radios} eq 'ARRAY', 'RAD-04: the result carries a `radios` list');
+    is_deeply([ map { $_->{uri} } @{ $res->{radios} || [] } ], \@want,
+        'RAD-04: radios lists every inspiredby-mix playlist of the answers, each once, in the order the home lists them');
+    my %in = map { $_ => 1 } @{ uris_of($res) };
+    is(scalar(grep { $in{$_} } @want), 0, 'RAD-04: items stays radio-free (a uri is never in both lists)');
+    is_deeply([ map { $_->[0] } @{ (layout_uris($res->{layout}))[2] } ], [ 'Your top mixes', 'Made for you' ],
+        'RAD-04: layout.folders stay exactly the two Spotify rows');
+    my $lay = $res->{layout} || {};
+    my %laid = map { $_->{uri} => 1 } @{ $lay->{top} || [] }, @{ $lay->{loose} || [] }, map { @{ $_->{items} } } @{ $lay->{folders} || [] };
+    is(scalar(grep { $laid{$_} } @want), 0, 'RAD-04: no radio sits in the layout (top, loose or a folder)');
+    is($SP->madeForYouStatus()->{mixCount}, scalar(@{ $res->{items} }), 'RAD-04: mixCount counts the mixes only');
+    ok(!(grep { exists $_->{format} } @{ $res->{radios} || [] }), 'RAD-04: no entry of `radios` carries a format key');
+    is($cold, 3, 'RAD-04: the cold build sends the same three Pathfinder requests as before (no request for the Radios folder)');
+
+    # cached with the list: same entry, same TTL constants; no request on the next build
+    http_rule(qr{pathfinder/v2/query}, sub { return (500, '') });
+    my ($res2) = run_mfy();
+    is_deeply([ map { $_->{uri} } @{ $res2->{radios} || [] } ], \@want, 'RAD-04: a second run returns the same radios from the cache');
+    is(scalar(pf_requests()), $cold, 'RAD-04: and sends no further request');
+    my $kept = $CK->get('spoton_mfy_list_acct1');
+    ok(ref $kept eq 'HASH' && ref $kept->{radios} eq 'ARRAY' && @{ $kept->{radios} } == @want, 'RAD-04: the radios sit in the same cache entry as the list (no new TTL)');
+});
+
+t_block('RAD-04 radios without home', sub {
+    # the fixture's homeSection answers hold no radio: add one (copied from a home radio) and let the home fail
+    reset_all();
+    seed59();
+    my ($homeRadio) = map { clone($_) } grep { (($_->{content}{data}{format}) // '') eq 'inspiredby-mix' }
+        map { @{ $_->{sectionItems}{items} } } @{ $FX59->{home}{data}{home}{sectionContainer}{sections}{items} };
+    ok($homeRadio, 'RAD-04 no-home: a radio item to copy exists in the fixture\'s home');
+    my $radioUri = $homeRadio->{content}{data}{uri};
+    my $mfy = clone($FX59->{homeSection_mfy});
+    push @{ $mfy->{data}{homeSections}{sections}[0]{sectionItems}{items} }, $homeRadio;
+    http_rule(qr{pathfinder/v2/query}, pf59_responder(mfy => $mfy, home_fail => 1));
+    my ($res) = run_mfy();
+    ok($res && !$res->{layout} && $res->{source} eq 'pathfinder', 'RAD-04 no-home: the home failed, the list is flat');
+    is_deeply([ map { $_->{uri} } @{ $res->{radios} || [] } ], [ $radioUri ], 'RAD-04 no-home: the radio of the homeSection answer lands in `radios`');
+    is(scalar(grep { $_ eq $radioUri } @{ uris_of($res) }), 0, 'RAD-04 no-home: and not in `items`');
+    ok(@{ $res->{items} } > 0, 'RAD-04 no-home: the mixes of the sections stay');
+    my $out = rad04_feed();
+    my @items = @{ $out->{items} || [] };
+    is($items[-1]{name}, 'PLUGIN_SPOTON_MFY_RADIOS', 'RAD-04 no-home: the flat feed appends the Radios folder last');
+    is_deeply([ map { $_->{passthrough}[0]{playlistId} } @{ $items[-1]{items} || [] } ], [ (split /:/, $radioUri)[2] ],
+        'RAD-04 no-home: it holds that radio');
+    is(scalar(grep { ref $_->{items} eq 'ARRAY' } @items), 1, 'RAD-04 no-home: the Radios folder is the only folder of the flat feed');
+});
+
+t_block('RAD-04 radios nameless', sub {
+    # a radio without a name is neither booked as a nameless mix nor looked up
+    my $RN = '37i9dQZF1E99RADNAMELSxx01';
+    is9_setup();
+    is9_pf(topmix => is9_topmix(is9_mix($RN, format => 'inspiredby-mix', name => '')));
+    my ($res) = run_mfy();
+    my ($r) = grep { $_->{uri} eq "spotify:playlist:$RN" } @{ $res->{radios} || [] };
+    ok($r && $r->{name} eq '', 'RAD-04 nameless: the nameless radio is in `radios` with an empty name');
+    is(scalar(grep { $_->[0] eq 'warn' && $_->[1] =~ /without a usable name/ } @Slim::Utils::Log::LOG), 0,
+        'RAD-04 nameless: it is not booked as a nameless mix (no nameless warning)');
+    is(scalar(is9_pv2_ids()) + scalar(is9_fetch_reqs()), 0, 'RAD-04 nameless: and no name lookup is started for it');
+    my $out = rad04_feed();
+    my ($folder) = grep { ($_->{name} // '') eq 'PLUGIN_SPOTON_MFY_RADIOS' } @{ $out->{items} || [] };
+    ok($folder && scalar(grep { $_->{name} eq 'PLUGIN_SPOTON_MFY_UNNAMED' } @{ $folder->{items} }) == 1,
+        'RAD-04 nameless: the feed shows it with the generic label, never its id');
+});
+
+t_block('RAD-04 radios edges', sub {
+    my @all = rad04_expected_radios();
+
+    # no radios -> no Radios folder
+    reset_all(); seed59();
+    http_rule(qr{pathfinder/v2/query}, pf59_responder(home => rad04_home_without_radios()));
+    my ($res) = run_mfy();
+    ok($res && !@{ $res->{radios} || [] } && @{ $res->{items} }, 'RAD-04 edge: no radios in the answers -> `radios` is empty, the mixes stay');
+    my $out = rad04_feed();
+    ok(!(grep { ($_->{name} // '') eq 'PLUGIN_SPOTON_MFY_RADIOS' } @{ $out->{items} || [] }), 'RAD-04 edge: no radios -> no Radios folder');
+
+    # one radio -> a folder with one entry
+    reset_all(); seed59();
+    http_rule(qr{pathfinder/v2/query}, pf59_responder(home => rad04_home_without_radios($all[1] => 1)));
+    $out = rad04_feed();
+    my @folders = grep { ($_->{name} // '') eq 'PLUGIN_SPOTON_MFY_RADIOS' } @{ $out->{items} || [] };
+    ok(@folders == 1 && $out->{items}[-1] == $folders[0] && @{ $folders[0]{items} } == 1
+        && $folders[0]{items}[0]{passthrough}[0]{playlistId} eq (split /:/, $all[1])[2],
+        'RAD-04 edge: one radio -> a last Radios folder with exactly that entry');
+
+    # a radio met in two rows is listed once, at its first place
+    reset_all(); seed59();
+    my $home = clone($FX59->{home});
+    my $mfy  = clone($FX59->{homeSection_mfy});
+    my ($dup) = map { clone($_) } grep { (($_->{content}{data}{uri}) // '') eq $all[0] }
+        map { @{ $_->{sectionItems}{items} } } @{ $home->{data}{home}{sectionContainer}{sections}{items} };
+    push @{ $mfy->{data}{homeSections}{sections}[0]{sectionItems}{items} }, $dup;
+    http_rule(qr{pathfinder/v2/query}, pf59_responder(home => $home, mfy => $mfy));
+    ($res) = run_mfy();
+    is_deeply([ map { $_->{uri} } @{ $res->{radios} || [] } ], \@all, 'RAD-04 edge: a radio met in two rows is listed once, the order is the first place');
+    my %in = map { $_ => 1 } @{ uris_of($res) };
+    is(scalar(grep { $in{$_} } @all), 0, 'RAD-04 edge: and never also in items');
+
+    # no mixes at all: the existing no-results line, no Radios folder (the radio alone does not make a list)
+    reset_all(); seed59();
+    my $only = clone($FX59->{homeSection_mfy});
+    @{ $only->{data}{homeSections}{sections}[0]{sectionItems}{items} } = ($dup);
+    http_rule(qr{pathfinder/v2/query}, pf59_responder(home_fail => 1, mfy => $only, topmix => { data => {} }));
+    http_rule(qr{/playlist/v2/user/.+/rootlist}, rootlist_bytes());
+    $out = rad04_feed();
+    ok(@{ $out->{items} } == 1 && $out->{items}[0]{type} eq 'textarea' && !(grep { ($_->{name} // '') eq 'PLUGIN_SPOTON_MFY_RADIOS' } @{ $out->{items} }),
+        'RAD-04 edge: no mixes -> the existing no-results line and no Radios folder');
+
+    # rootlist fallback: no radios, no folder
+    reset_all(); seed59();
+    http_rule(qr{pathfinder/v2/query}, sub { return (500, '') });
+    rootlist_rule();
+    ($res) = run_mfy();
+    is($res->{source}, 'rootlist-fallback', 'RAD-04 edge: every Pathfinder source failed -> the rootlist fallback');
+    ok(!@{ $res->{radios} || [] }, 'RAD-04 edge: the rootlist-fallback source carries no radios');
+    $out = rad04_feed();
+    ok(!(grep { ($_->{name} // '') eq 'PLUGIN_SPOTON_MFY_RADIOS' } @{ $out->{items} || [] }), 'RAD-04 edge: and its feed has no Radios folder');
+
+    # the feed's own guard (review of phase 91): a rootlist-fallback result that did carry radios would
+    # still make no folder. SpClient never builds one, so the clause is pinned with a synthetic result.
+    {
+        ok(@{ $res->{items} || [] } >= 1, 'RAD-04 edge: the fallback result of this fixture has playlists to list');
+        my $radioIt = clone($res->{items}[0]);
+        @$radioIt{qw(id uri name)} = ('Z' x 22, 'spotify:playlist:' . ('Z' x 22), 'Synthetic Radio');
+        my $synthetic = { %$res, source => 'rootlist-fallback', radios => [ $radioIt ] };
+        my $fed;
+        {
+            no warnings 'redefine';
+            local *Plugins::SpotOn::API::SpClient::getMadeForYou = sub { my ($class, $acct, $cb) = @_; $cb->($synthetic); return };
+            Slim::Utils::Prefs::preferences('plugin.spoton')->set('activeAccount', 'acct1');
+            Plugins::SpotOn::Plugin::_madeForYouFeed(MockClient->new('player-rad04'), sub { $fed = shift }, {});
+        }
+        ok($fed && @{ $fed->{items} || [] } >= 1, 'RAD-04 edge: a rootlist-fallback result with radios still lists its playlists');
+        ok(!(grep { ($_->{name} // '') eq 'PLUGIN_SPOTON_MFY_RADIOS' } @{ $fed->{items} || [] }), 'RAD-04 edge: and makes no Radios folder, whatever radios it carries');
+        # the same result without the fallback marker does get the folder: the test stands on the clause alone
+        $synthetic->{source} = 'pathfinder';
+        {
+            no warnings 'redefine';
+            local *Plugins::SpotOn::API::SpClient::getMadeForYou = sub { my ($class, $acct, $cb) = @_; $cb->($synthetic); return };
+            Plugins::SpotOn::Plugin::_madeForYouFeed(MockClient->new('player-rad04'), sub { $fed = shift }, {});
+        }
+        ok((grep { ($_->{name} // '') eq 'PLUGIN_SPOTON_MFY_RADIOS' } @{ $fed->{items} || [] }), 'RAD-04 edge: the same radios under another source do make the folder');
+    }
 });
 
 # ============================================================
@@ -1769,6 +1969,7 @@ sub is9_feed {
     Plugins::SpotOn::Plugin::_madeForYouFeed($client, sub { $out = shift }, {});
     my @pl;
     for my $it (@{ ($out || {})->{items} || [] }) {
+        next if ($it->{name} // '') eq 'PLUGIN_SPOTON_MFY_RADIOS';   # RAD-04: these helpers read the mixes, not the Radios folder
         if (ref $it->{items} eq 'ARRAY') { push @pl, @{ $it->{items} } }
         else                             { push @pl, $it }
     }

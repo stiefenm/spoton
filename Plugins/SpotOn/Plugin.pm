@@ -356,6 +356,17 @@ sub initPlugin {
     Slim::Control::Request::addDispatch(['spotoninfo', 'playlist', '_method'],
                                                                 [1, 1, 1, \&_trackInfoItemsCLI]
     );
+
+    # GH #82: a radio, opened (items) or played (playlist play|add|insert),
+    # from the radio entry's own itemActions; with moreMenu, the More menu of
+    # album and playlist items. The pair mirrors LMS's own menu commands
+    # (Slim::Menu::TrackInfo: trackinfo items + playlist).
+    Slim::Control::Request::addDispatch(['spotonradio', 'items', '_index', '_quantity'],
+                                                                [0, 1, 1, \&_radioCLI]
+    );
+    Slim::Control::Request::addDispatch(['spotonradio', 'playlist', '_method'],
+                                                                [1, 1, 1, \&_radioCLI]
+    );
 }
 
 sub shutdownPlugin {
@@ -1053,6 +1064,7 @@ sub trackInfoMenu {
                 type        => 'link',
             };
         }
+        push @items, _radioItems($client, $id, $meta->{artistId});
         push @items, {
             name        => cstring($client, 'PLUGIN_SPOTON_MANAGE_LIKE'),
             url         => \&SpotOnManageLike,
@@ -1433,6 +1445,8 @@ sub _trackItem {
             type        => 'link',
         };
     }
+    # bare: no actions in the Default-skin drill-down (see _radioItem)
+    push @contextItems, _radioItems($client, _radioTrackId($track), ($track->{artists} && @{ $track->{artists} }) ? $track->{artists}[0]{id} : undef, 1);
 
     if ($track->{uri} && $track->{uri} =~ /^spotify:track:[A-Za-z0-9]+$/) {
         my $accountId = _getAccountId($client);
@@ -1508,16 +1522,28 @@ sub _trackItem {
         # GH #94: More menu routed through the TrackInfo framework -- one
         # menu source for browse and Now Playing. @contextItems stays as the
         # Default-skin drill-down (`items`); jive/Material clients use this.
-        itemActions   => {
-            info => {
-                command     => ['spotoninfo', 'items'],
-                fixedParams => { url => $spoton_url },
-            },
-        },
+        itemActions   => _trackInfoAction($spoton_url),
     );
     $item{items} = \@contextItems if @contextItems;
 
     return \%item;
+}
+
+# _trackInfoAction($spotonUrl) -> the itemActions of a track or episode item:
+# `info` opens the More menu through ['spotoninfo','items'] (GH #94). The url
+# travels as the link-safe token u64 (see _linkSafeEncode), not raw: LMS's web
+# skins paste fixedParams values unescaped into a link that is read back by
+# cutting at the first /, so spoton://track:<id> lost everything after
+# "spoton:". _trackInfoItemsCLI decodes it. The hash is new per call, as
+# XMLBrowser writes into it.
+sub _trackInfoAction {
+    my ($spotonUrl) = @_;
+    return {
+        info => {
+            command     => ['spotoninfo', 'items'],
+            fixedParams => { u64 => _linkSafeEncode($spotonUrl) },
+        },
+    };
 }
 
 # _authRequiredItem($client, $accountId, $err)
@@ -1574,15 +1600,17 @@ sub _albumItem {
 
     # spoton:// URL for LMS Favorites playback (explodePlaylist resolves to tracks)
     my $album_spoton = 'spoton://album:' . ($album->{id} // '');
+    my $album_image  = _largestImage($album->{images});
 
     return {
         name          => $album->{name} // '',
         url           => \&_albumFeed,
         passthrough   => [{ albumId => $album->{id}, albumImages => $album->{images}, albumArtist => $firstArtist, albumName => $album->{name}, albumReleaseDate => $releaseDate }],
-        image         => _largestImage($album->{images}) || 'html/images/albums.png',
+        image         => $album_image || 'html/images/albums.png',
         line2         => $line2,
         favorites_url => $album_spoton,
         type          => 'playlist',
+        _radioMenuAction("spotify:album:" . ($album->{id} // ''), $album->{name}, $album_image),
     };
 }
 
@@ -1609,15 +1637,17 @@ sub _playlistItem {
     my ($client, $playlist, $opts) = @_;
     # spoton:// URL for LMS Favorites playback (explodePlaylist resolves to tracks)
     my $pl_spoton = 'spoton://playlist:' . ($playlist->{id} // '');
+    my $pl_image  = _largestImage($playlist->{images});
 
     return {
         name          => $playlist->{name} // '',
         url           => \&_playlistFeed,
         passthrough   => [{ playlistId => $playlist->{id} }],
-        image         => _largestImage($playlist->{images}) || 'html/images/playlists.png',
+        image         => $pl_image || 'html/images/playlists.png',
         line2         => $playlist->{owner}{display_name} // '',
         favorites_url => $pl_spoton,
         type          => 'playlist',
+        _radioMenuAction("spotify:playlist:" . ($playlist->{id} // ''), $playlist->{name}, $pl_image),
     };
 }
 
@@ -1780,7 +1810,8 @@ sub _madeForYouPriority {
 # folder per Spotify row, or flat in Pathfinder's order without home; when
 # Pathfinder fails, the Spotify-made mixes of the rootlist, sorted by
 # @MFY_PRIORITY. The feed never consults the playback backend (D-20) and
-# sends no browse/categories request (D-08).
+# sends no browse/categories request (D-08). The radios of the result
+# (`radios`, phase 91) follow as one last folder, Radios.
 sub _madeForYouFeed {
     my ($client, $callback, $args) = @_;
     my $accountId = _getAccountId($client);
@@ -1843,6 +1874,18 @@ sub _madeForYouFeed {
         }
         else {
             push @items, map { $mfyItem->($_) } @sorted;
+        }
+
+        # phase 91 (RAD-04): the radios Spotify suggests on the home page (not mixes, so
+        # never in the list above) sit in one last folder; the rootlist fallback has none.
+        my $radios = $result->{radios};
+        if (ref $radios eq 'ARRAY' && @$radios && ($result->{source} // '') ne 'rootlist-fallback') {
+            push @items, {
+                name  => cstring($client, 'PLUGIN_SPOTON_MFY_RADIOS'),
+                type  => 'link',
+                image => 'html/images/playlists.png',
+                items => [ map { $mfyItem->($_) } @$radios ],
+            };
         }
 
         $callback->({ items => \@items });
@@ -2657,12 +2700,7 @@ sub _episodeItem {
         favorites_url => $spoton_url,
         # GH #94: More menu routed through the TrackInfo framework (episode
         # parity -- shows/episodes discrepancy called out in the issue).
-        itemActions   => {
-            info => {
-                command     => ['spotoninfo', 'items'],
-                fixedParams => { url => $spoton_url },
-            },
-        },
+        itemActions   => _trackInfoAction($spoton_url),
     );
     $item{items} = \@contextItems;
 
@@ -3055,10 +3093,14 @@ sub _searchPageFeed {
             url         => \&_searchFromHistoryFeed,
             passthrough => [{ query => $list->[$i] }],
             cachetime   => 0,
+            # the typed text travels as the link-safe token delete64, not raw:
+            # LMS's web skins paste fixedParams values unescaped into a link
+            # that is read back by cutting at the first / and splitting on &
+            # and = (see _radioMenuAction). _recentSearchesCLI decodes it.
             itemActions => {
                 info => {
                     command     => ['spoton', 'recentsearches'],
-                    fixedParams => { delete => $list->[$i] },
+                    fixedParams => { delete64 => _linkSafeEncode($list->[$i]) },
                 },
             },
         };
@@ -3091,7 +3133,19 @@ sub _recentSearchesCLI {
 
     my $list = _recentSearches();
 
-    if (defined(my $q = $request->getParam('delete'))) {
+    # `delete` as the text itself (older menus) or as the token delete64 (see
+    # _searchPageFeed); a token that does not decode is bad params, whatever
+    # `delete` says.
+    my $delete = $request->getParam('delete');
+    if (defined(my $token = $request->getParam('delete64'))) {
+        $delete = _linkSafeDecode($token);
+        unless (defined $delete) {
+            $request->setStatusBadParams();
+            return;
+        }
+    }
+
+    if (defined(my $q = $delete)) {
         unless (grep { $_ eq $q } @$list) {
             $request->setStatusBadParams();
             return;
@@ -3140,9 +3194,310 @@ sub _recentSearchesCLI {
     $request->setStatusDone;
 }
 
+# ============================================================
+# Radio (GH #82)
+# ============================================================
+# Spotify's own radios (SpClient getRadio / getRadioStationTracks): a song
+# radio and an artist radio in a track's More menu, an artist radio on the
+# artist page, and in the More menu of album items (Spotify answers an album
+# seed with its artist's radio) and playlist items (a station). Every entry
+# is lazy -- building a menu sends no request; opening or playing a radio
+# costs the seed request (cached 6 h) plus what the playlist or station feed
+# needs.
+
+# Label per seed type, for the entries in the More menus. An album seed
+# yields the artist radio, so it is named so.
+my %RADIO_LABEL = (
+    track    => 'PLUGIN_SPOTON_SONG_RADIO',
+    artist   => 'PLUGIN_SPOTON_ARTIST_RADIO',
+    album    => 'PLUGIN_SPOTON_ARTIST_RADIO',
+    playlist => 'PLUGIN_SPOTON_PLAYLIST_RADIO',
+);
+
+# _radioSeedType($seedUri) -> 'track' | 'artist' | 'album' | 'playlist' or
+# undef: the shape check of the menu side (pure, no SpClient needed to build
+# a menu). SpClient->radioSeedType repeats it before any request.
+sub _radioSeedType {
+    my ($seed) = @_;
+    return undef unless defined $seed && !ref $seed;
+    return $seed =~ /\Aspotify:(track|artist|album|playlist):[0-9A-Za-z]{22}\z/ ? $1 : undef;
+}
+
+# _radioItem($client, $seedUri, $labelKey, $bare) -> the radio entry for a
+# seed, or () when the seed is not a valid
+# spotify:<track|artist|album|playlist>:<base62 id>.
+# $labelKey replaces the seed type's label. type 'playlist' makes it playable
+# (GH #161 convention); the list is read only when the entry is opened or
+# played.
+#
+# The entry carries its own actions, all on the spotonradio command with the
+# seed. Without them XMLBrowser builds Open / Play / Add / Play next from the
+# command of the menu around the entry; in the Browse More menu (spotoninfo)
+# that is `spotoninfo playlist <method>` (registered since 4.0.0-beta.11,
+# before that nothing did), and a jive context menu sends only item_id, which
+# loses the seed. The actions name the radio itself, not an
+# item_id inside a menu: the classic web UI runs an `items` action in
+# feedMode, and XMLBrowser then answers with the top level of the feed. The
+# hashes are built per entry because XMLBrowser writes into them
+# (menu => 1).
+#
+# $bare leaves the actions out, for the Default-skin drill-down (`items`) of
+# _trackItem and _albumTrackItem. Jive and Material open a track through its
+# `info` itemAction and never show that drill-down, and a client that walks
+# it opens and plays an entry without actions through its CODE url. Every
+# track of every list carries the pair, and play-all keeps the items for
+# 120 s; with the actions a track item grew by about 6.6 KB (10,000 tracks:
+# +64 MB).
+sub _radioItem {
+    my ($client, $seed, $label, $bare) = @_;
+    my $type = _radioSeedType($seed) or return ();
+    my %item = (
+        name        => cstring($client, $label || $RADIO_LABEL{$type}),
+        url         => \&_radioFeed,
+        passthrough => [{ seed => $seed }],
+        type        => 'playlist',
+        image       => 'plugins/SpotOn/html/images/playlist.png',
+    );
+    return \%item if $bare;
+
+    my $action = sub { return { command => ['spotonradio', @_], fixedParams => { seed => $seed } } };
+    $item{itemActions} = {
+        items  => $action->('items'),
+        play   => $action->('playlist', 'play'),
+        add    => $action->('playlist', 'add'),
+        insert => $action->('playlist', 'insert'),
+    };
+    return \%item;
+}
+
+# _radioTrackId($track) -> the id for a song radio seed: from a spotify:track:
+# uri, else the id of an item without a uri; undef for an episode. Up Next
+# items carry a uri and no id.
+sub _radioTrackId {
+    my ($track) = @_;
+    my $uri = $track->{uri} // '';
+    return $1 if $uri =~ /\Aspotify:track:([0-9A-Za-z]+)\z/;
+    return length($uri) ? undef : $track->{id};
+}
+
+# _radioItems($client, $trackId, $artistId, $bare) -> song radio, then artist
+# radio (each only for a valid id): the pair of a track's More menu. $bare as
+# for _radioItem.
+sub _radioItems {
+    my ($client, $trackId, $artistId, $bare) = @_;
+    return (
+        (defined $trackId  ? _radioItem($client, "spotify:track:$trackId",   undef, $bare) : ()),
+        (defined $artistId ? _radioItem($client, "spotify:artist:$artistId", undef, $bare) : ()),
+    );
+}
+
+# _radioMenuAction($seedUri, $title, $icon) -> (itemActions => ...) for album
+# and playlist items: their More menu opens ['spotonradio','items'] with the
+# seed and moreMenu, a menu with the radio entry after the usual play entries
+# (see _radioCLI). Album and playlist feeds are paged track lists, so a radio
+# row inside them would break the offset/total contract and play-all. () for
+# an invalid seed, so the item keeps LMS's default More menu.
+# $title and $icon (the item's name and image, each only when a non-empty
+# string) travel in the action as the link-safe tokens t64 and i64 (see
+# _linkSafeEncode). _radioCLI makes the title the feed's name (every LMS reads
+# the favourite's title from title || name; only 8.5 and later also read
+# favorites_title) and passes the icon as the request's icon param, so "Save to
+# favourites" in the More menu saves the album or playlist under its own name
+# and image. They are tokens, not the raw strings, because LMS's web skins
+# paste fixedParams values unescaped into a link: a name with a quote, & or /
+# would break it or inject into the page.
+sub _radioMenuAction {
+    my ($seed, $title, $icon) = @_;
+    return () unless _radioSeedType($seed);
+    return (itemActions => {
+        info => {
+            command     => ['spotonradio', 'items'],
+            fixedParams => {
+                seed => $seed,
+                moreMenu => 1,
+                (defined $title && !ref $title && length $title ? (t64 => _linkSafeEncode($title)) : ()),
+                (defined $icon  && !ref $icon  && length $icon  ? (i64 => _linkSafeEncode($icon))  : ()),
+            },
+        },
+    });
+}
+
+# _linkSafeEncode($string) -> the UTF-8 bytes of the string as base64url
+# ([A-Za-z0-9_-] only, no padding): safe inside a URL, an href and LMS's
+# k=v&k=v web link. _linkSafeDecode reverses it.
+sub _linkSafeEncode {
+    my $string = shift;
+    utf8::encode($string);
+    require MIME::Base64;
+    my $token = MIME::Base64::encode_base64($string, '');
+    $token =~ tr{+/}{-_};
+    $token =~ s/=+\z//;
+    return $token;
+}
+
+# _linkSafeDecode($token) -> the string, or undef for anything that is not a
+# token of _linkSafeEncode (wrong characters or length, not UTF-8, empty).
+sub _linkSafeDecode {
+    my $token = shift;
+    return undef unless defined $token && !ref $token && $token =~ /\A[A-Za-z0-9_-]+\z/ && length($token) % 4 != 1;
+    $token =~ tr{-_}{+/};
+    $token .= '=' x ((4 - length($token) % 4) % 4);
+    require MIME::Base64;
+    my $string = MIME::Base64::decode_base64($token);
+    return undef unless utf8::decode($string) && length $string;
+    return $string;
+}
+
+# _radioCLI($request) -- ['spotonradio', 'items' | 'playlist'] with a seed
+# param: the radio itself, served through XMLBrowser. `query` puts the seed
+# into the base actions of the opened list, so Play / Add / Play next on one
+# of its tracks come back here with the seed. With moreMenu (the `info`
+# itemAction of album and playlist items): the More menu. For an album or
+# playlist seed its feed carries the play attributes of that album or
+# playlist (type playlist, playlist url, play/add/insert as core playlist
+# commands, and with a title the favourites url and title, the title also as
+# the feed's name, so the menu's header shows it): a jive client
+# asks for the context menu with xmlBrowseInterimCM, and XMLBrowser then
+# puts Add to end, Play next, Play and Save to favourites in front of the
+# feed's own items, so the radio entry stays the last and only own entry.
+# The url comes from the validated seed only, never from a request param.
+sub _radioCLI {
+    my $request = shift;
+
+    if ($request->isNotQuery([['spotonradio'], ['items', 'playlist']])) {
+        $request->setStatusBadDispatch();
+        return;
+    }
+
+    my $seed = $request->getParam('seed') // '';
+    unless (_radioSeedType($seed)) {
+        $request->setStatusBadParams();
+        return;
+    }
+
+    require Slim::Control::XMLBrowser;
+
+    # moreMenu stays in `query`: the entry's own context menu (XMLBrowser's
+    # base `more` action with item_id 0) has to find this menu again, not
+    # the radio's first track.
+    if ($request->getParam('moreMenu')) {
+        my @items = _radioItem($request->client, $seed);
+        # the item's name and image come as tokens (see _radioMenuAction); the
+        # icon goes on to XMLBrowser as the request's icon param, which it
+        # takes for the favourite
+        my $title = _linkSafeDecode($request->getParam('t64'));
+        my $icon  = _linkSafeDecode($request->getParam('i64'));
+        $request->addParam('icon', $icon) if defined $icon;
+
+        my %feed = (
+            name  => $items[0]{name},
+            items => \@items,
+            query => { seed => $seed, moreMenu => 1, (defined $title ? (t64 => $request->getParam('t64')) : ()) },
+        );
+
+        if ($seed =~ /\Aspotify:(album|playlist):([0-9A-Za-z]{22})\z/) {
+            my $url = "spoton://$1:$2";
+            $feed{type}        = 'playlist';
+            $feed{playlist}    = $url;
+            # fresh hashes per call: XMLBrowser writes into them
+            $feed{itemActions} = {
+                map { my $verb = $_; ($verb => { command => ['playlist', $verb, $url] }) } qw(play add insert)
+            };
+            if (defined $title) {
+                # `name`, not only favorites_title: LMS 8.0 to 8.4 know no
+                # favorites_title and would save the favourite under the radio
+                # label. `defined`, not truth: a list named "0" keeps its name.
+                $feed{name}            = $title;
+                $feed{favorites_url}   = $url;
+                $feed{favorites_title} = $title;
+            }
+        }
+
+        Slim::Control::XMLBrowser::cliQuery('spotonradio', \%feed, $request);
+        return;
+    }
+
+    Slim::Control::XMLBrowser::cliQuery('spotonradio', sub {
+        my ($client, $callback, $args) = @_;
+        _radioFeed($client, sub {
+            my ($feed) = @_;
+            $feed->{query} = { seed => $seed } if ref $feed eq 'HASH';
+            $callback->($feed);
+        }, $args, { seed => $seed });
+    }, $request);
+}
+
+# _radioFeed($client, $callback, $args, $passthrough) -- opens a radio: a
+# radio playlist is shown by _playlistFeed (paging, play-all and caches as
+# for any playlist), a station by _radioStationFeed.
+sub _radioFeed {
+    my ($client, $callback, $args, $passthrough) = @_;
+
+    my $seed      = $passthrough->{seed} // '';
+    my $accountId = _getAccountId($client);
+
+    Plugins::SpotOn::API::SpClient->getRadio($accountId, $seed, sub {
+        my ($radio, $err) = @_;
+
+        if ($radio && $radio->{playlistId}) {
+            _playlistFeed($client, $callback, $args, { playlistId => $radio->{playlistId} });
+            return;
+        }
+        if ($radio && $radio->{station}) {
+            _radioStationFeed($client, $callback, $args, { seed => $radio->{station} });
+            return;
+        }
+
+        if ($err && ($err->{error} // '') ne 'no_radio') {
+            $callback->({ items => [ _authRequiredItem($client, $accountId, $err) ] });
+            return;
+        }
+        $callback->({ items => [{ name => cstring($client, 'PLUGIN_SPOTON_RADIO_UNAVAILABLE'), type => 'textarea' }] });
+    });
+}
+
+# _radioStationFeed($client, $callback, $args, $passthrough) -- a station's
+# tracks (radio-apollo, one list of RADIO_STATION_COUNT, cached 300 s), sliced
+# per the client's index/quantity. Play-all (no quantity, or >= 500) gets the
+# whole list. A track whose metadata failed keeps its slot as the id/uri stub,
+# as in _playlistFeed: offset and total count it, so Play on a later track
+# starts that track, and the stub itself still plays.
+sub _radioStationFeed {
+    my ($client, $callback, $args, $passthrough) = @_;
+
+    my $seed      = $passthrough->{seed} // '';
+    my $accountId = _getAccountId($client);
+    my $offset    = $args->{index}    // 0;
+    my $isPlayAll = !defined($args->{quantity}) || ($args->{quantity} >= 500);
+    my $limit     = $isPlayAll ? Plugins::SpotOn::API::SpClient::RADIO_STATION_COUNT() : ($args->{quantity} || 200);
+    $offset = 0 if $isPlayAll;
+
+    Plugins::SpotOn::API::SpClient->getRadioStationTracks($accountId, $seed, { offset => $offset, limit => $limit }, sub {
+        my ($page, $err) = @_;
+
+        if (!$page) {
+            $callback->({ items => [ _authRequiredItem($client, $accountId, $err) ] });
+            return;
+        }
+
+        my @deferredMeta;
+        my @items = map  { _trackItem($client, $_->{track}, { defer_cache => \@deferredMeta }) }
+                    grep { defined $_->{track} }
+                    @{ $page->{items} || [] };
+
+        unless (@items) {
+            $callback->({ items => [{ name => cstring($client, 'PLUGIN_SPOTON_RADIO_UNAVAILABLE'), type => 'textarea' }] });
+            return;
+        }
+
+        $callback->({ items => \@items, offset => $offset, total => $page->{total} // scalar @items });
+        _flushDeferredMeta(undef, \@deferredMeta, 0) if @deferredMeta;
+    });
+}
+
 # _trackInfoItemsCLI($request)
 # GH #94: CLI backend for the browse items' `info` itemAction
-# (['spotoninfo','items'] with a url fixedParam). Builds the SAME feed as
+# (['spotoninfo','items'] with the url as the u64 token, or a raw url param). Builds the SAME feed as
 # the Now Playing More menu via Slim::Menu::TrackInfo->menu() -- LMS
 # standard items (favorites, More Info, ...) plus every registered
 # provider (spotonTrackInfo: Artist View / Album View / Like / Add to
@@ -3167,7 +3522,22 @@ sub _trackInfoItemsCLI {
     }
 
     my $client = $request->client;
-    my $url    = $request->getParam('url') || '';
+
+    # the browse items' info action sends the url as the token u64 (see
+    # _trackInfoAction). Decoded, it goes on the request as `url`, where
+    # XMLBrowser and the playlist form (Play / Add / Play next) read it; a
+    # token that does not decode is bad params, whatever `url` says.
+    my $token = $request->getParam('u64');
+    if (defined $token) {
+        my $decoded = _linkSafeDecode($token);
+        unless (defined $decoded) {
+            $request->setStatusBadParams();
+            return;
+        }
+        $request->addParam('url', $decoded);
+    }
+
+    my $url = $request->getParam('url') || '';
 
     # T-76-08: spoton:// urls carry public track/episode ids only; strict
     # shape check before the url reaches Schema/TrackInfo.
@@ -3585,7 +3955,8 @@ sub _searchTypeFeed {
 # ============================================================
 
 # _artistFeed($client, $callback, $args, $passthrough)
-# Returns four navigation sections for an artist's discography.
+# Returns the artist radio (GH #82), then four navigation sections for an
+# artist's discography.
 # Per D-09: Albums, Singles, Compilations, Appears On — NO Top Tracks, NO Related Artists
 # (both removed in Dev Mode as of Feb 2026 / Nov 2024).
 sub _artistFeed {
@@ -3594,6 +3965,8 @@ sub _artistFeed {
     my $artistId = $passthrough->{artistId} // '';
 
     my @items = (
+        # unprefixed label: this is SpotOn's own page, like the rows below
+        _radioItem($client, "spotify:artist:$artistId", 'PLUGIN_SPOTON_ARTIST_PAGE_RADIO'),
         {
             name        => cstring($client, 'PLUGIN_SPOTON_ALBUMS'),
             url         => \&_artistAlbumsFeed,
@@ -4014,6 +4387,8 @@ sub _albumTrackItem {
             type        => 'link',
         };
     }
+    # bare: no actions in the Default-skin drill-down (see _radioItem)
+    push @contextItems, _radioItems($client, _radioTrackId($track), ($track->{artists} && @{ $track->{artists} }) ? $track->{artists}[0]{id} : undef, 1);
 
     # T-04.1-01: Extract path from Spotify URI to prevent double-prefix.
     # spotify:track:ID -> track:ID; fallback preserves original URI if no match.
@@ -4075,12 +4450,7 @@ sub _albumTrackItem {
         type      => 'audio',
         # GH #94: More menu routed through the TrackInfo framework -- one
         # menu source for browse and Now Playing.
-        itemActions => {
-            info => {
-                command     => ['spotoninfo', 'items'],
-                fixedParams => { url => $spoton_url },
-            },
-        },
+        itemActions => _trackInfoAction($spoton_url),
     );
     $item{items} = \@contextItems if @contextItems;
 

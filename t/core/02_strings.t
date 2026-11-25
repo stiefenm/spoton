@@ -72,6 +72,7 @@ SKIP: {
         PLUGIN_SPOTON_LIKED_SONGS
         PLUGIN_SPOTON_RECENTLY_PLAYED
         PLUGIN_SPOTON_MADE_FOR_YOU
+        PLUGIN_SPOTON_MFY_RADIOS
         PLUGIN_SPOTON_MFY_FALLBACK
         PLUGIN_SPOTON_MFY_HASH_BROKEN
         PLUGIN_SPOTON_TOP_TRACKS_UNAVAILABLE
@@ -354,11 +355,16 @@ SKIP: {
         if ($line =~ /^(PLUGIN_SPOTON\w*)\s*$/) { $cur = $1; next; }
         $langs_of{$cur}{$1} = $2 if defined $cur && $line =~ /^\t([A-Z]{2})\t(.+)$/;
     }
-    for my $key (qw(PLUGIN_SPOTON_MFY_FALLBACK PLUGIN_SPOTON_MFY_HASH_BROKEN PLUGIN_SPOTON_TOP_TRACKS_UNAVAILABLE PLUGIN_SPOTON_SEARCH_LIMITED)) {
+    for my $key (qw(PLUGIN_SPOTON_MFY_FALLBACK PLUGIN_SPOTON_MFY_HASH_BROKEN PLUGIN_SPOTON_TOP_TRACKS_UNAVAILABLE PLUGIN_SPOTON_SEARCH_LIMITED PLUGIN_SPOTON_MFY_RADIOS)) {
         for my $lang (qw(CS DA DE EN ES FR IT NL NO PL SV)) {
             ok(defined $langs_of{$key}{$lang} && length $langs_of{$key}{$lang}, "$key has a $lang translation");
         }
     }
+
+    # 91 (RAD-04): the Radios folder of Made For You has exactly the eleven shipped languages, no em or en dash.
+    is(scalar(keys %{ $langs_of{PLUGIN_SPOTON_MFY_RADIOS} || {} }), 11, "91: PLUGIN_SPOTON_MFY_RADIOS has exactly the eleven shipped languages");
+    is(scalar(grep { $langs_of{PLUGIN_SPOTON_MFY_RADIOS}{$_} =~ /[\x{2013}\x{2014}]/ } keys %{ $langs_of{PLUGIN_SPOTON_MFY_RADIOS} || {} }), 0,
+        "91: PLUGIN_SPOTON_MFY_RADIOS carries no em or en dash");
 
     # 79-69 T2 (GH #151, D-36): the three tokens of the power-off-after-Connect setting exist in
     # all eleven languages, and no value carries an em or en dash (plain "-" only).

@@ -3260,6 +3260,161 @@ sub getPlaylistItems {
 }
 
 # ============================================================
+# Radio (GH #82)
+# ============================================================
+# Spotify's own radios, through the requests its clients send (librespot-core
+# spclient.rs get_radio_for_track / get_apollo_station), with SpotOn's login5
+# bearer -- not the Web API /recommendations that #82 found gone. Measured
+# 2026-11-09 (seed: a track of a saved album):
+#   inspiredby-mix/v2/seed_to_playlist/<seed>?response-format=json
+#     -> { mediaItems: [{ uri }], total }
+#     track seed  -> spotify:playlist:37i9dQZF1E8..., "<track> - radio" (format inspiredby-mix), 50 tracks
+#     artist seed -> "<artist> - radio" (37i9dQZF1E4...), 50 tracks
+#     album seed  -> the same playlist as its artist seed (Spotify has no album radio)
+#     playlist    -> spotify:station:playlist:<id>, a station, not a playlist
+#   radio-apollo/v3/stations/<seed>?autoplay=false&count=N
+#     -> { tracks: [{ uri, ... }], title, next_page_url, ... }
+# A radio playlist is an ordinary playlist: playlist/v2 reads it and the
+# existing feeds play it. A station is read through radio-apollo. Requests
+# happen only when a radio is opened or played -- the menu entries are lazy.
+
+use constant RADIO_SEED_TTL      => 6 * 3600;   # seed -> radio playlist id; Spotify refreshes the playlist's contents itself
+use constant RADIO_STATION_TTL   => 300;        # station track list, the browse tier (CLAUDE.md)
+use constant RADIO_STATION_COUNT => 50;         # what a radio playlist holds
+
+# radioSeedType($class, $seedUri) -> 'track' | 'artist' | 'album' | 'playlist',
+# or undef for anything else. The seed is spliced into a request path and a
+# cache key, so only these exact shapes pass (WR-04 discipline).
+sub radioSeedType {
+    my ($class, $seed) = @_;
+    return undef unless defined $seed && !ref $seed;
+    return $seed =~ /\Aspotify:(track|artist|album|playlist):[0-9A-Za-z]{22}\z/ ? $1 : undef;
+}
+
+# getRadio($class, $accountId, $seedUri, $cb)
+# The radio Spotify offers for a seed: cb->({ playlistId, uri }) when it is a
+# radio playlist, cb->({ station => $seedUri }) when Spotify answers with a
+# station (playlist seeds), cb->(undef, { error => 'no_radio' }) when it names
+# neither, or cb->(undef, $err) for a failed request. One request per seed and
+# RADIO_SEED_TTL; a cache hit sends nothing.
+sub getRadio {
+    my ($class, $accountId, $seed, $cb) = @_;
+
+    unless ($class->_hasLogin5Creds($accountId)) {
+        main::INFOLOG && $log->info('SpClient: getRadio without stored credentials');
+        $cb->(undef, { error => 'no_credentials' });
+        return;
+    }
+
+    unless ($class->radioSeedType($seed)) {
+        $cb->(undef, { error => 'invalid_id' });
+        return;
+    }
+
+    my $cacheKey = "spoton_radio_${accountId}_$seed";
+    if (my $cached = $cache->get($cacheKey)) {
+        $cb->($cached);
+        return;
+    }
+
+    $class->_request('get', "inspiredby-mix/v2/seed_to_playlist/$seed?response-format=json", {
+        _accountId => $accountId,
+        _accept    => 'application/json',
+        _noCache   => 1,   # the seed -> radio answer is cached below
+    }, sub {
+        my ($result, $err) = @_;
+
+        if ($err) {
+            $cb->(undef, $err);
+            return;
+        }
+
+        my $items = (ref $result eq 'HASH' && ref $result->{mediaItems} eq 'ARRAY') ? $result->{mediaItems} : [];
+        my $uri   = (ref $items->[0] eq 'HASH' && defined $items->[0]{uri} && !ref $items->[0]{uri}) ? $items->[0]{uri} : '';
+
+        my $radio;
+        if ($uri =~ /\Aspotify:playlist:([0-9A-Za-z]{22})\z/) {
+            $radio = { playlistId => $1, uri => $uri };
+        }
+        elsif ($uri =~ /\Aspotify:station:/) {
+            $radio = { station => $seed };
+        }
+        else {
+            main::INFOLOG && $log->info('SpClient: no radio for ' . $class->radioSeedType($seed) . ' seed');
+            $cb->(undef, { error => 'no_radio' });
+            return;
+        }
+
+        $cache->set($cacheKey, $radio, RADIO_SEED_TTL);
+        $cb->($radio);
+    });
+}
+
+# getRadioStationTracks($class, $accountId, $seedUri, $params, $cb)
+# A station's tracks from radio-apollo (RADIO_STATION_COUNT of them, the list
+# cached RADIO_STATION_TTL so paging sees one list), sliced per
+# $params->{offset}/{limit} (defaults 0/50) and named through _enrichTracks.
+# Result shape = getPlaylistItems: { items => [{ track }], total, offset,
+# limit, next }. cb->(undef, $err) for a failed request.
+sub getRadioStationTracks {
+    my ($class, $accountId, $seed, $params, $cb) = @_;
+    $params ||= {};
+    my $offset = $params->{offset} // 0;
+    my $limit  = $params->{limit}  // RADIO_STATION_COUNT;
+
+    unless ($class->_hasLogin5Creds($accountId)) {
+        $cb->(undef, { error => 'no_credentials' });
+        return;
+    }
+
+    unless ($class->radioSeedType($seed)) {
+        $cb->(undef, { error => 'invalid_id' });
+        return;
+    }
+
+    my $deliver = sub {
+        my ($station) = @_;
+        my ($slice, $total) = $class->_sliceAsPage($station->{trackIds} || [], $offset, $limit);
+        $class->_enrichTracks($accountId, $slice, sub {
+            my ($tracks) = @_;
+            $cb->({
+                items  => [ map { { track => $_ } } @$tracks ],
+                total  => $total,
+                offset => $offset,
+                limit  => $limit,
+                next   => (($offset + $limit) < $total) ? 1 : undef,
+            });
+        });
+    };
+
+    my $cacheKey = "spoton_radio_station_${accountId}_$seed";
+    if (my $cached = $cache->get($cacheKey)) {
+        $deliver->($cached);
+        return;
+    }
+
+    $class->_request('get', "radio-apollo/v3/stations/$seed?autoplay=false&count=" . RADIO_STATION_COUNT, {
+        _accountId => $accountId,
+        _accept    => 'application/json',
+        _noCache   => 1,   # the station list is cached below
+    }, sub {
+        my ($result, $err) = @_;
+
+        if ($err) {
+            $cb->(undef, $err);
+            return;
+        }
+
+        my @trackIds = map { (ref $_ eq 'HASH' && ($_->{uri} // '') =~ /\Aspotify:track:([0-9A-Za-z]{22})\z/) ? $1 : () }
+                       @{ (ref $result eq 'HASH' && ref $result->{tracks} eq 'ARRAY') ? $result->{tracks} : [] };
+
+        my $station = { trackIds => \@trackIds };
+        $cache->set($cacheKey, $station, RADIO_STATION_TTL) if @trackIds;
+        $deliver->($station);
+    });
+}
+
+# ============================================================
 # Pathfinder-backed feeds and removed Web-API methods
 # ============================================================
 # 85-15 (D-01, D-08): the former Web-API-only passthroughs are gone. getMe
@@ -3621,12 +3776,17 @@ sub _addToPlaylistAttempt {
 #
 # Which home lists are kept (79-59, user decision 2026-10-31 "Regel ja, aber
 # ohne Radios"): a Playlist whose id starts with 37i9dQZF1E or 37i9dQZEVX,
-# whose attributes carry madeFor.username, and whose format is not
-# inspiredby-mix (the artist radios). No title list and no format allow-list,
-# so a new kind of personal list appears without a code change. The id prefix
-# is an observed, undocumented Spotify convention: if Spotify changes it,
-# lists go missing, but wrong ones are never added. The two homeSection rows
-# keep their old rule (Playlist, not DJ) and lose only inspiredby-mix.
+# whose attributes carry madeFor.username. No title list and no format
+# allow-list, so a new kind of personal list appears without a code change.
+# The id prefix is an observed, undocumented Spotify convention: if Spotify
+# changes it, lists go missing, but wrong ones are never added. The two
+# homeSection rows keep their old rule (Playlist, not DJ).
+#
+# The inspiredby-mix lists (the artist and song radios Spotify suggests) are
+# never part of the mixes list, `items` and `layout` stay without them (phase
+# 91, RAD-04): they are partitioned into their own `radios` list, in the
+# order the placement meets them, and cached with the list. They are not
+# nameless mixes (no name lookup, no nameless warning) and carry no format.
 #
 # Layout (user decision "Feste oben, Rest in Ordnern"): daylist, Daily Mixes,
 # Discover Weekly, Release Radar on top (by format); the lists of untitled
@@ -3675,8 +3835,10 @@ use constant MFY_NAME_WARN_INTERVAL => 3600;
 # getMadeForYou($class, $accountId, $cb)
 # cb->({ items => [{ id, uri, name, images }, ...], source => 'pathfinder' |
 # 'rootlist-fallback', layout => { top => [...], loose => [...],
-# folders => [{ title, items => [...] }] } }) or cb->(undef, $err). items is
-# the flat menu order; layout is present only when op home answered with rows.
+# folders => [{ title, items => [...] }] }, radios => [{ id, uri, name,
+# images }, ...] }) or cb->(undef, $err). items is the flat menu order; layout
+# is present only when op home answered with rows; radios (pathfinder source
+# only) holds the inspiredby-mix lists, which are in neither items nor layout.
 # No login5 credentials answer (undef, { error => 'no_credentials' }) without
 # a request. A name of '' means "unknown" (the feed labels it, 261110-is9):
 # the id is never used as a name; an item that arrives without a name is
@@ -3736,7 +3898,6 @@ sub getMadeForYou {
             return undef unless ($it->{typename} // '') eq 'Playlist';
             return undef unless $uri =~ /\Aspotify:playlist:([A-Za-z0-9]{1,40})\z/;
             my $id = $1;
-            return undef if ($it->{format} // '') eq MFY_RADIO_FORMAT;
             if ($personal) {
                 return undef unless $id =~ /\A37i9dQZ(?:F1E|EVX)/;
                 return undef unless $it->{madeFor};
@@ -3781,7 +3942,7 @@ sub getMadeForYou {
             for my $e (@{ $row->{entries} }) {
                 my $m = $usable->($e->[0], $e->[1]) or next;
                 # what Pathfinder sent in place of a name, kept once per list for the warning below
-                if (!length $m->{name} && !$recorded{ $m->{uri} }++) {
+                if (!length $m->{name} && $m->{format} ne MFY_RADIO_FORMAT && !$recorded{ $m->{uri} }++) {
                     my $src = $e->[0];
                     my $t = $src->{nameType} // 'unknown';
                     my $k = $src->{dataKeys} // '';
@@ -3804,14 +3965,17 @@ sub getMadeForYou {
             }
         }
 
-        my $layout;
+        my ($layout, @radios);
         if ($haveHome) {
             my @tops = @{ MFY_TOP_FORMATS() };
             my %tier = map { $tops[$_] => $_ } 0 .. $#tops;
             my (@top, @loose, @folders, %folderOf);
             for my $p (@placed) {
                 my ($m, $row) = @$p;
-                if (exists $tier{ $m->{format} }) {
+                if ($m->{format} eq MFY_RADIO_FORMAT) {
+                    push @radios, $m;   # before the row logic: a radio never makes a row folder
+                }
+                elsif (exists $tier{ $m->{format} }) {
                     push @top, $m;
                 }
                 elsif (!length $row->{title}) {
@@ -3833,9 +3997,12 @@ sub getMadeForYou {
             $layout = { top => \@top, loose => \@loose, folders => \@folders };
         }
         else {
-            @merged = map { $_->[0] } @placed;
+            for my $p (@placed) {
+                if ($p->[0]{format} eq MFY_RADIO_FORMAT) { push @radios, $p->[0] }
+                else                                     { push @merged, $p->[0] }
+            }
         }
-        delete $_->{format} for @merged;
+        delete $_->{format} for @merged, @radios;
 
         # WR-13: keep the reason a source failed, and (79-59) name the source.
         # A Pathfinder answer that merely carries no Playlist items is NOT a
@@ -3855,7 +4022,7 @@ sub getMadeForYou {
                 $counts ||= {};
                 $class->_warnNamelessMfy(\@noName, $dupCount, $counts);
                 %_mfy = (source => 'pathfinder', mixCount => scalar(@merged), lastError => $lastError);
-                my $result = { items => \@merged, source => 'pathfinder', ($layout ? (layout => $layout) : ()) };
+                my $result = { items => \@merged, source => 'pathfinder', radios => \@radios, ($layout ? (layout => $layout) : ()) };
                 $cache->set($listKey, $result, $complete ? MFY_LIST_TTL : MFY_LIST_PARTIAL_TTL) if !$pfFailed;
                 $cb->($result);
             };

@@ -7,6 +7,7 @@ use File::Temp qw(tempdir);
 use File::Path qw(make_path);
 use Cwd qw(abs_path);
 use Digest::MD5 qw(md5_hex);
+use MIME::Base64 ();
 
 # Resolve project root
 my $test_dir    = dirname(abs_path($0));
@@ -409,9 +410,25 @@ sub getArtistAlbums {
     $cb->($next_artist_albums);
 }
 sub pageLimit { return 10 }
+# GH #82: radio
+use constant RADIO_STATION_COUNT => 50;
+our ($next_radio, $next_radio_err, @radio_calls, $next_station, $next_station_err, @station_calls);
+sub getRadio {
+    my ($class, $accountId, $seed, $cb) = @_;
+    push @radio_calls, [$accountId, $seed];
+    $cb->($next_radio, $next_radio_err);
+}
+sub getRadioStationTracks {
+    my ($class, $accountId, $seed, $params, $cb) = @_;
+    push @station_calls, [$accountId, $seed, $params];
+    $cb->($next_station, $next_station_err);
+}
 sub reset_calls {
     $next_artist_albums   = { items => [], total => 0, offset => 0, limit => 10 };
     @artist_albums_calls  = ();
+    ($next_radio, $next_radio_err, $next_station, $next_station_err) = ();
+    @radio_calls   = ();
+    @station_calls = ();
     $next_top             = undef;
     $next_top_err         = undef;
     @top_calls            = ();
@@ -942,8 +959,40 @@ ok( !defined(&Plugins::SpotOn::ProtocolHandler::trackInfoURL),
         'CTX-14: _trackItem carries an info itemAction' );
     is_deeply( $item->{itemActions}{info}{command}, ['spotoninfo', 'items'],
         'CTX-14: info itemAction dispatches the spotoninfo/items CLI command (GH-94 routing)' );
-    is( $item->{itemActions}{info}{fixedParams}{url}, 'spoton://track:GH94TRACKID',
-        'CTX-14: info itemAction carries the item\'s own spoton:// url as fixedParams' );
+    is_deeply( $item->{itemActions}{info}{fixedParams}, { u64 => 'c3BvdG9uOi8vdHJhY2s6R0g5NFRSQUNLSUQ' },
+        'CTX-14: info itemAction carries the item\'s own spoton:// url as a link-safe token (u64), not the raw url' );
+}
+
+# Test 14b (review of phase 91, F6): the info action of every track-like item must survive LMS's web
+# link. The Classic skin pastes fixedParams values unescaped into k=v&k=v and reads the link back by
+# cutting at the first / and splitting on & and =, so the raw url spoton://track:<id> lost everything
+# after "spoton:".
+{
+    my $client = MockClient->new('player-test14b');
+    my $T = 'T' x 22;
+    my $track = { id => $T, name => 'F6 Song', uri => "spotify:track:$T", duration_ms => 1000, track_number => 1,
+                  artists => [ { id => 'A' x 22, name => 'F6 Artist' } ], album => { id => 'L' x 22, name => 'F6 Album', images => [] } };
+    my $episode = { id => 'E' x 22, uri => 'spotify:episode:' . ('E' x 22), name => 'F6 Episode', duration_ms => 1000, release_date => '2026-01-01',
+                    show => { id => 'S' x 22, name => 'F6 Show', uri => 'spotify:show:' . ('S' x 22) } };
+    my @cases = (
+        [ '_trackItem'      => Plugins::SpotOn::Plugin::_trackItem($client, $track),                                        "spoton://track:$T" ],
+        [ '_albumTrackItem' => Plugins::SpotOn::Plugin::_albumTrackItem($client, $track, [], 'F6 Artist', 'F6 Album'),       "spoton://track:$T" ],
+        [ '_episodeItem'    => Plugins::SpotOn::Plugin::_episodeItem($client, $episode),                                    'spoton://episode:' . ('E' x 22) ],
+    );
+    for my $c (@cases) {
+        my ($what, $item, $want) = @$c;
+        my $a  = $item->{itemActions}{info};
+        my $fp = $a->{fixedParams};
+        is_deeply($a->{command}, ['spotoninfo', 'items'], "F6: $what: the info action still runs spotoninfo items");
+        is_deeply([ sort keys %$fp ], ['u64'], "F6: $what: the info action carries the url as the one token u64, no raw url");
+        my @bad = grep { $fp->{$_} !~ /\A[A-Za-z0-9:_-]*\z/ } sort keys %$fp;
+        is_deeply(\@bad, [], "F6: $what: every fixedParams value is link-safe (no / \" & ? or whitespace)");
+        my $link = join '&', map { "$_=$fp->{$_}" } sort keys %$fp;
+        my %back = map { split /=/, $_, 2 } split /&/, (split m{/}, $link)[0];
+        is_deeply(\%back, $fp, "F6: $what: the web link reads back to the same parameters");
+        my $tok = $fp->{u64}; $tok =~ tr{-_}{+/}; $tok .= '=' x ((4 - length($tok) % 4) % 4);
+        is(MIME::Base64::decode_base64($tok), $want, "F6: $what: the token is the item's spoton url");
+    }
 }
 
 # Test 15: the CLI backend (_trackInfoItemsCLI) is wired to the
@@ -989,6 +1038,7 @@ ok( !defined(&Plugins::SpotOn::ProtocolHandler::trackInfoURL),
         }
         sub client   { $_[0]{client} }
         sub getParam { $_[0]{params}{ $_[1] } }
+        sub addParam { $_[0]{params}{ $_[1] } = $_[2]; return }
         sub isNotQuery {
             my ($self, $names) = @_;
             return 1 unless $self->{isQuery};
@@ -1036,6 +1086,43 @@ ok( !defined(&Plugins::SpotOn::ProtocolHandler::trackInfoURL),
         my $c = $calls[0] || [];
         is( scalar(@calls), 1, 'B91-0: items form reaches cliQuery once' );
         is( $c->[0], 'spotoninfo', 'B91-0: items form passes spotoninfo as the query name' );
+    }
+
+    # F6: the items form with the url as a u64 token (what the browse items' info action sends)
+    {
+        my $b64u = sub { my $v = shift; (my $e = MIME::Base64::encode_base64($v, '')) =~ tr{+/}{-_}; $e =~ s/=+\z//; return $e };
+        my $req = $run->(
+            request => ['spotoninfo', 'items', '0', '100'],
+            isQuery => 1,
+            client  => $client,
+            params  => { u64 => $b64u->($url), _index => 0, _quantity => 100, menu => 'spotoninfo' },
+        );
+        my @calls = @Slim::Control::XMLBrowser::calls;
+        my @menu  = @Slim::Menu::TrackInfo::menu_calls;
+        is( scalar(@calls), 1, 'F6: items form with a u64 token reaches cliQuery once' );
+        is( $menu[0][1], $url, 'F6: the TrackInfo menu is built for the decoded url' );
+        is( $req->getParam('url'), $url, 'F6: the decoded url is put on the request, so XMLBrowser carries it into the play, add and insert actions' );
+        ok( !defined $req->{status}, 'F6: no error status' );
+
+        # a token that is not a token, or decodes to something that is not a spoton track or episode url, is bad params
+        for my $bad ('!!!', 'a', $b64u->('spoton://track:abc/../x'), $b64u->('http://evil.example/x'), $b64u->("$url\n")) {
+            my $r = $run->(
+                request => ['spotoninfo', 'items', '0', '100'],
+                isQuery => 1,
+                client  => $client,
+                params  => { u64 => $bad, _index => 0, _quantity => 100, menu => 'spotoninfo' },
+            );
+            is( $r->{status}, 'bad_params', "F6: u64 '$bad' gets BadParams" );
+            is( scalar(@Slim::Control::XMLBrowser::calls), 0, "F6: u64 '$bad' never reaches cliQuery" );
+        }
+        # a bad token is not rescued by a good raw url
+        my $r = $run->(
+            request => ['spotoninfo', 'items', '0', '100'],
+            isQuery => 1,
+            client  => $client,
+            params  => { u64 => '!!!', url => $url, _index => 0, _quantity => 100, menu => 'spotoninfo' },
+        );
+        is( $r->{status}, 'bad_params', 'F6: a bad u64 token next to a good raw url is still BadParams' );
     }
 
     # B91-1: initPlugin registers the playlist form
@@ -1881,6 +1968,369 @@ Plugins::SpotOn::API::Client::reset_queue_calls();
         'playlist_keeps_the_popup: one showBriefly with the jive popup for the players');
     is_deeply($reply[0], { items => [ { name => 'Added to Mix', nextWindow => 'grandparent' } ] },
         'playlist_menu_reply: one text item with nextWindow grandparent');
+}
+
+# ============================================================
+# GH #82: Spotify radio entries -- lazy menu entries (no request while a menu is
+# built), song + artist radio for tracks, artist radio on the artist page, the
+# entries' own actions on the spotonradio command, and the radio feed.
+# ============================================================
+
+# A request with the methods and status codes of Slim::Control::Request that
+# the CLI handlers use (isNotQuery = !_isQuery || no __matchingRequest).
+{
+    package RadioTestRequest;
+    sub new {
+        my ($class, $cmd, $params, $client) = @_;
+        return bless { _request => [@$cmd], _params => { %{ $params || {} } }, _isQuery => 1, _status => 0, _client => $client }, $class;
+    }
+    sub __matchingRequest {
+        my ($self, $names) = @_;
+        my $i = 0;
+        for my $n (@$names) {
+            my $req = $self->{_request}[$i++];
+            return 0 if !$req || !grep { $_ eq $req } @$n;
+        }
+        return 1;
+    }
+    sub isNotQuery           { return !$_[0]{_isQuery} || !$_[0]->__matchingRequest($_[1]) }
+    sub isQuery              { return $_[0]{_isQuery} && $_[0]->__matchingRequest($_[1]) }
+    sub getRequest           { return $_[0]{_request}[$_[1]] }
+    sub getRequestCount      { return scalar @{ $_[0]{_request} } }
+    sub getParam             { return $_[0]{_params}{$_[1]} }
+    sub getParamsCopy        { return { %{ $_[0]{_params} } } }
+    sub addParam             { $_[0]{_params}{$_[1]} = $_[2]; return }
+    sub client               { return $_[0]{_client} }
+    sub setStatusBadDispatch { $_[0]{_status} = 101 }
+    sub isStatusBadDispatch  { return $_[0]{_status} == 101 }
+    sub setStatusBadParams   { $_[0]{_status} = 102 }
+    sub isStatusBadParams    { return $_[0]{_status} == 102 }
+    sub isStatusError        { return $_[0]{_status} > 100 }
+}
+
+# XMLBrowser stand-in: the Slim::Control::XMLBrowser stub in $stub_dir records
+# what the CLI hands to cliQuery in @calls.
+require Slim::Control::XMLBrowser;
+
+{
+    my $SPS    = 'Plugins::SpotOn::API::SpClient';
+    my $client = MockClient->new('player-radio');
+    my $T      = 'T' x 22;
+    my $A      = 'A' x 22;
+    my $AL     = 'L' x 22;
+    my $isRadio = sub { ref $_[0]{url} && $_[0]{url} == \&Plugins::SpotOn::Plugin::_radioFeed };
+    Slim::Utils::Prefs::preferences('plugin.spoton')->set('activeAccount', 'test-account-id');
+    $SPS->reset_calls();
+
+    # trackInfoMenu (Material/jive More menu of every SpotOn track: Now Playing and, via spotoninfo, Browse)
+    Slim::Utils::Cache->new()->set('spoton_meta_' . md5_hex("spoton://track:$T"), {
+        _spoton_fmt => 2, title => 'Radio Song', artist => 'Radio Artist', artistId => $A, albumId => $AL,
+    });
+    my $menu  = Plugins::SpotOn::Plugin::trackInfoMenu($client, "spoton://track:$T", {}, {});
+    my %radio = map { $_->{name} => $_ } grep { $isRadio->($_) } @$menu;
+    # the whole menu, in order: CTX-04's fixture ids are too short for a radio,
+    # so only this count catches a radio pair added twice or in the wrong place
+    is_deeply([ map { $_->{name} } grep { ($_->{type} // '') ne 'text' } @$menu ],
+        [ qw(PLUGIN_SPOTON_ARTIST_VIEW PLUGIN_SPOTON_ALBUM_VIEW PLUGIN_SPOTON_SONG_RADIO PLUGIN_SPOTON_ARTIST_RADIO PLUGIN_SPOTON_MANAGE_LIKE PLUGIN_SPOTON_ADD_TO_PLAYLIST) ],
+        'RADIO-01: a track\'s More menu, in order: artist, album, song radio, artist radio, like, add to playlist');
+    is(scalar @$menu, 7, 'RADIO-01: the format line + 6 entries for a track with Spotify ids');
+    is_deeply([ sort keys %radio ], [ 'PLUGIN_SPOTON_ARTIST_RADIO', 'PLUGIN_SPOTON_SONG_RADIO' ], 'RADIO-01: a track\'s More menu offers song radio and artist radio');
+    is($radio{PLUGIN_SPOTON_SONG_RADIO}{passthrough}[0]{seed}, "spotify:track:$T", 'RADIO-01: song radio is seeded with the track');
+    is($radio{PLUGIN_SPOTON_ARTIST_RADIO}{passthrough}[0]{seed}, "spotify:artist:$A", 'RADIO-01: artist radio is seeded with the first artist');
+    is($radio{PLUGIN_SPOTON_SONG_RADIO}{type}, 'playlist', 'RADIO-01: type playlist (Play / Add / Play next actions)');
+    is(scalar(@Plugins::SpotOn::API::SpClient::radio_calls), 0, 'RADIO-01: building the menu sends no radio request');
+
+    my $short = Plugins::SpotOn::Plugin::trackInfoMenu($client, 'spoton://track:ABC123', {}, {});
+    ok(!(grep { $isRadio->($_) } @{ $short || [] }), 'RADIO-02: no radio entry for an id that is not a Spotify id');
+
+    # default-skin drill-down of browse tracks and album tracks
+    my $spTrack = {
+        id => $T, name => 'Radio Song', uri => "spotify:track:$T", duration_ms => 1000, track_number => 1,
+        artists => [ { id => $A, name => 'Radio Artist' } ], album => { id => $AL, name => 'Radio Album', images => [] },
+    };
+    my $item = Plugins::SpotOn::Plugin::_trackItem($client, $spTrack);
+    is_deeply([ map { $_->{name} } grep { $isRadio->($_) } @{ $item->{items} || [] } ],
+        [ 'PLUGIN_SPOTON_SONG_RADIO', 'PLUGIN_SPOTON_ARTIST_RADIO' ], 'RADIO-03: _trackItem drill-down carries song radio, then artist radio');
+    my $albumTrack = Plugins::SpotOn::Plugin::_albumTrackItem($client, $spTrack, [], 'Radio Artist', 'Radio Album');
+    is_deeply([ map { $_->{name} } grep { $isRadio->($_) } @{ $albumTrack->{items} || [] } ],
+        [ 'PLUGIN_SPOTON_SONG_RADIO', 'PLUGIN_SPOTON_ARTIST_RADIO' ], 'RADIO-03: _albumTrackItem drill-down carries song radio, then artist radio');
+    my $seeds = sub { [ map { $_->{passthrough}[0]{seed} } grep { $isRadio->($_) } @{ $_[0]{items} || [] } ] };
+    my %noId = (%$spTrack); delete $noId{id};
+    is_deeply($seeds->(Plugins::SpotOn::Plugin::_trackItem($client, \%noId)), [ "spotify:track:$T", "spotify:artist:$A" ],
+        'RADIO-03: a track item with a uri and no id (Up Next) still gets its song radio, seeded from the uri');
+    my %episode = (%$spTrack, uri => "spotify:episode:$T");
+    is_deeply($seeds->(Plugins::SpotOn::Plugin::_trackItem($client, \%episode)), [ "spotify:artist:$A" ],
+        'RADIO-03: an episode gets no song radio, even with an id');
+
+    # artist page: SpotOn's own page, so the label has no "SpotOn:" prefix
+    my $artistFeed;
+    Plugins::SpotOn::Plugin::_artistFeed($client, sub { $artistFeed = shift }, {}, { artistId => $A });
+    is($artistFeed->{items}[0]{name}, 'PLUGIN_SPOTON_ARTIST_PAGE_RADIO', 'RADIO-04: the artist page starts with the artist radio, unprefixed label');
+    is($artistFeed->{items}[1]{name}, 'PLUGIN_SPOTON_ALBUMS', 'RADIO-04: then the discography sections');
+    is($artistFeed->{items}[0]{passthrough}[0]{seed}, "spotify:artist:$A", 'RADIO-04: seeded with the artist');
+    Plugins::SpotOn::Plugin::_artistFeed($client, sub { $artistFeed = shift }, {}, { artistId => 'bad' });
+    is($artistFeed->{items}[0]{name}, 'PLUGIN_SPOTON_ALBUMS', 'RADIO-04: no radio entry for an invalid artist id');
+    ok(!(grep { $isRadio->($_) && $_->{name} eq 'PLUGIN_SPOTON_ARTIST_PAGE_RADIO' } @$menu, @{ $item->{items} || [] }),
+        'RADIO-04: the More menus keep the prefixed label');
+
+    # the entries jive and Material show carry their own actions: spotonradio with the seed, nothing else
+    my $want = sub {
+        my ($seed) = @_;
+        return {
+            items  => { command => ['spotonradio', 'items'],             fixedParams => { seed => $seed } },
+            play   => { command => ['spotonradio', 'playlist', 'play'],   fixedParams => { seed => $seed } },
+            add    => { command => ['spotonradio', 'playlist', 'add'],    fixedParams => { seed => $seed } },
+            insert => { command => ['spotonradio', 'playlist', 'insert'], fixedParams => { seed => $seed } },
+        };
+    };
+    my @entries = (
+        [ 'trackInfoMenu song radio',   $radio{PLUGIN_SPOTON_SONG_RADIO} ],
+        [ 'trackInfoMenu artist radio', $radio{PLUGIN_SPOTON_ARTIST_RADIO} ],
+        [ 'artist page', do { my $f; Plugins::SpotOn::Plugin::_artistFeed($client, sub { $f = shift }, {}, { artistId => $A }); $f->{items}[0] } ],
+    );
+    is(scalar @entries, 3, 'RADIO-05: three radio entries with actions to check');
+    for my $e (@entries) {
+        is_deeply($e->[1]{itemActions}, $want->($e->[1]{passthrough}[0]{seed}), "RADIO-05: $e->[0]: open/play/add/insert on spotonradio with its seed, no item_id");
+    }
+    isnt($entries[1][1]{itemActions}{play}{fixedParams}, $entries[2][1]{itemActions}{play}{fixedParams},
+        'RADIO-05: each entry gets its own action hashes (XMLBrowser writes menu => 1 into them)');
+
+    # the Default-skin drill-down of every track has none: a client that walks
+    # it opens and plays these through the CODE url, and the actions would be
+    # built for every track of every list
+    my @bare = (
+        (map { [ "_trackItem $_->{name}", $_ ] } grep { $isRadio->($_) } @{ $item->{items} }),
+        (map { [ "_albumTrackItem $_->{name}", $_ ] } grep { $isRadio->($_) } @{ $albumTrack->{items} }),
+    );
+    is_deeply([ map { $_->[1]{passthrough}[0]{seed} } @bare ],
+        [ ("spotify:track:$T", "spotify:artist:$A") x 2 ], 'RADIO-05: four drill-down entries, seeded with the track and the artist');
+    for my $e (@bare) {
+        ok(!exists $e->[1]{itemActions}, "RADIO-05: $e->[0]: no itemActions in the drill-down");
+        ok($e->[1]{url} == \&Plugins::SpotOn::Plugin::_radioFeed && $e->[1]{type} eq 'playlist',
+            "RADIO-05: $e->[0]: opened and played through the radio feed (url, type playlist)");
+    }
+
+    # the spotonradio command: registration, then each entry action dispatched to the CLI
+    open(my $fh, '<', "$project_dir/Plugins/SpotOn/Plugin.pm") or die $!;
+    my $src = do { local $/; <$fh> };
+    close($fh);
+    like($src, qr/addDispatch\(\s*\[\s*'spotonradio',\s*'items',\s*'_index',\s*'_quantity'\s*\],\s*\[\s*0,\s*1,\s*1,\s*\\&_radioCLI\s*\]/s,
+        'RADIO-06: spotonradio items is registered against _radioCLI');
+    like($src, qr/addDispatch\(\s*\[\s*'spotonradio',\s*'playlist',\s*'_method'\s*\],\s*\[\s*1,\s*1,\s*1,\s*\\&_radioCLI\s*\]/s,
+        'RADIO-06: spotonradio playlist _method is registered against _radioCLI (needs a player)');
+
+    my $dispatch = sub {
+        my ($action, %extra) = @_;
+        my @cmd = @{ $action->{command} };
+        my %p   = (%{ $action->{fixedParams} }, menu => 1, %extra);
+        $p{_method} = $cmd[2] if $cmd[1] eq 'playlist';
+        @p{qw(_index _quantity)} = (0, 100) if $cmd[1] eq 'items';
+        my $req = RadioTestRequest->new(\@cmd, \%p, $client);
+        @Slim::Control::XMLBrowser::calls = ();
+        Plugins::SpotOn::Plugin::_radioCLI($req);
+        return ($req, $Slim::Control::XMLBrowser::calls[0]);
+    };
+    my $songActions = $radio{PLUGIN_SPOTON_SONG_RADIO}{itemActions};
+    for my $name (qw(items play add insert)) {
+        my ($req, $call) = $dispatch->($songActions->{$name});
+        ok(!$req->isStatusError, "RADIO-06: the $name action is accepted by _radioCLI");
+        ok($call && $call->[0] eq 'spotonradio' && ref $call->[1] eq 'CODE' && $call->[2] == $req,
+            "RADIO-06: the $name action reaches XMLBrowser::cliQuery('spotonradio', <radio feed>, request)");
+    }
+    is(scalar(@Plugins::SpotOn::API::SpClient::radio_calls), 0, 'RADIO-06: dispatching sends nothing until XMLBrowser reads the feed');
+
+    {
+        my ($req, $call) = $dispatch->({ command => ['spotonradio', 'other'], fixedParams => { seed => "spotify:track:$T" } });
+        ok($req->isStatusBadDispatch && !$call, 'RADIO-06: another subcommand is a bad dispatch');
+    }
+    for my $bad (undef, '', "spotify:episode:$T", 'spotify:track:short', "spotify:track:$T x", "spotify:show:$AL") {
+        my ($req, $call) = $dispatch->({ command => ['spotonradio', 'items'], fixedParams => { defined $bad ? (seed => $bad) : () } });
+        ok($req->isStatusBadParams && !$call, 'RADIO-06: seed ' . (defined $bad ? "'$bad'" : 'missing') . ' -> bad params, no cliQuery');
+    }
+
+    # the feed the CLI hands to XMLBrowser: the radio itself, with the seed in `query`
+    $SPS->reset_calls();
+    $Plugins::SpotOn::API::SpClient::next_radio = { playlistId => 'R' x 22, uri => 'spotify:playlist:' . ('R' x 22) };
+    $Plugins::SpotOn::API::SpClient::next_playlist_items = { items => [ { track => $spTrack } ], total => 1 };
+    {
+        my ($req, $call) = $dispatch->($songActions->{items});
+        my $feed;
+        $call->[1]->($client, sub { $feed = shift }, { index => 0, quantity => 100, isControl => 1, params => $req->getParamsCopy });
+        is_deeply([ map { $_->[1] } @Plugins::SpotOn::API::SpClient::radio_calls ], [ "spotify:track:$T" ], 'RADIO-07: opening the radio asks for the seed\'s radio');
+        is($Plugins::SpotOn::API::SpClient::playlist_items_calls[0][1], 'R' x 22, 'RADIO-07: the radio playlist is read like any playlist');
+        is($feed->{items}[0]{title}, 'Radio Song', 'RADIO-07: its tracks are listed');
+        is_deeply($feed->{query}, { seed => "spotify:track:$T" }, 'RADIO-07: `query` carries the seed into the base actions of the opened list');
+    }
+    $SPS->reset_calls();
+    $Plugins::SpotOn::API::SpClient::next_radio = { playlistId => 'R' x 22, uri => 'spotify:playlist:' . ('R' x 22) };
+    $Plugins::SpotOn::API::SpClient::next_playlist_items = { items => [ { track => $spTrack } ], total => 1 };
+    {
+        my ($req, $call) = $dispatch->($songActions->{play});
+        my $feed;
+        $call->[1]->($client, sub { $feed = shift }, { isControl => 1, params => $req->getParamsCopy });   # XMLBrowser sends no index/quantity for a play
+        is($Plugins::SpotOn::API::SpClient::playlist_items_calls[0][1], 'R' x 22, 'RADIO-07: Play reads the radio playlist');
+        is_deeply([ map { $_->{play} } @{ $feed->{items} } ], [ "spoton://track:$T" ], 'RADIO-07: Play gets the playable tracks');
+    }
+
+    # _radioFeed: no radio / request error
+    $SPS->reset_calls();
+    my $feed;
+    $Plugins::SpotOn::API::SpClient::next_radio_err = { error => 'no_radio' };
+    Plugins::SpotOn::Plugin::_radioFeed($client, sub { $feed = shift }, {}, { seed => "spotify:track:$T" });
+    is($feed->{items}[0]{name}, 'PLUGIN_SPOTON_RADIO_UNAVAILABLE', 'RADIO-08: no radio -> a plain "no radio" line');
+    is(scalar @Plugins::SpotOn::API::SpClient::playlist_items_calls, 0, 'RADIO-08: nothing else is requested');
+    $SPS->reset_calls();
+    $Plugins::SpotOn::API::SpClient::next_radio_err = { error => 'rate_limited' };
+    Plugins::SpotOn::Plugin::_radioFeed($client, sub { $feed = shift }, {}, { seed => "spotify:artist:$A" });
+    is($feed->{items}[0]{name}, 'PLUGIN_SPOTON_RATE_LIMITED', 'RADIO-08: a failed request shows the error line');
+    $SPS->reset_calls();
+
+    # album and playlist items: their More menu is the one-entry spotonradio menu
+    my $PL = 'P' x 22;
+    # the title and the icon travel as base64url tokens (t64, i64): LMS's web skins paste fixedParams
+    # values unescaped into a link, so a raw name or image url breaks (or injects into) that link
+    my $b64u = sub { my $v = shift; utf8::encode($v); (my $e = MIME::Base64::encode_base64($v, '')) =~ tr{+/}{-_}; $e =~ s/=+\z//; return $e };
+    my $albumItem = Plugins::SpotOn::Plugin::_albumItem($client, { id => $AL, name => 'Radio Album', images => [ { url => 'http://img.example/al-small.jpg', width => 64 }, { url => 'http://img.example/al.jpg', width => 640 } ], artists => [] });
+    is_deeply($albumItem->{itemActions}, { info => { command => ['spotonradio', 'items'], fixedParams => { seed => "spotify:album:$AL", moreMenu => 1, t64 => $b64u->('Radio Album'), i64 => $b64u->('http://img.example/al.jpg') } } },
+        'RADIO-09: album items open the radio More menu with the album seed, its name (favourite title) and its image (favourite icon) as link-safe tokens');
+    my $plItem = Plugins::SpotOn::Plugin::_playlistItem($client, { id => $PL, name => 'Radio Playlist', images => [ { url => 'http://img.example/pl.jpg', width => 300 } ], owner => {} });
+    is_deeply($plItem->{itemActions}, { info => { command => ['spotonradio', 'items'], fixedParams => { seed => "spotify:playlist:$PL", moreMenu => 1, t64 => $b64u->('Radio Playlist'), i64 => $b64u->('http://img.example/pl.jpg') } } },
+        'RADIO-09: playlist items open the radio More menu with the playlist seed, its name and its image as link-safe tokens');
+    is_deeply(Plugins::SpotOn::Plugin::_albumItem($client, { id => $AL, artists => [] })->{itemActions}{info}{fixedParams},
+        { seed => "spotify:album:$AL", moreMenu => 1 }, 'RADIO-09: an album without name and image passes neither title nor icon');
+    is_deeply(Plugins::SpotOn::Plugin::_playlistItem($client, { id => $PL, name => 'Only Name', owner => {} })->{itemActions}{info}{fixedParams},
+        { seed => "spotify:playlist:$PL", moreMenu => 1, t64 => $b64u->('Only Name') }, 'RADIO-09: a playlist without image passes no icon (never the skin placeholder)');
+
+    # F1 (review of phase 91): every fixedParams value must survive LMS's web link, which joins them as
+    # k=v with & and is read back by splitting on & and = and cutting at the first / (Slim::Web::XMLBrowser
+    # _makeWebLink and webLink). Names come from Spotify: quotes, &, /, ?, spaces and non-ASCII are normal.
+    my $uni = "Caf\x{e9} \x{263A}";
+    for my $name ('x" onmouseover="alert(1)', 'Rock & Roll / Live?', "  spaced  name  ", $uni, '0') {
+        for my $it ([ album => Plugins::SpotOn::Plugin::_albumItem($client, { id => $AL, name => $name, images => [ { url => "http://img.example/a b/\"c\"?x=1&y=2.jpg", width => 640 } ], artists => [] }) ],
+                    [ playlist => Plugins::SpotOn::Plugin::_playlistItem($client, { id => $PL, name => $name, images => [ { url => "http://img.example/a b/\"c\"?x=1&y=2.jpg", width => 300 } ], owner => {} }) ]) {
+            my ($kind, $src) = @$it;
+            my $fp = $src->{itemActions}{info}{fixedParams};
+            my @bad = grep { $fp->{$_} !~ /\A[A-Za-z0-9:_-]*\z/ } sort keys %$fp;
+            is_deeply(\@bad, [], "RADIO-09: $kind named '$name': every fixedParams value is link-safe (no / \" & ? or whitespace)");
+            ok(!exists $fp->{title} && !exists $fp->{icon}, "RADIO-09: $kind named '$name': no raw title or icon in the action");
+            my $link = join '&', map { "$_=$fp->{$_}" } sort keys %$fp;
+            my %back = map { split /=/, $_, 2 } split /&/, (split m{/}, $link)[0];
+            is_deeply(\%back, $fp, "RADIO-09: $kind named '$name': the web link reads back to the same parameters");
+            my ($reqRt, $callRt) = $dispatch->($src->{itemActions}{info});
+            is_deeply([ $callRt->[1]{favorites_title}, $reqRt->getParam('icon'), $callRt->[1]{query}{t64} ],
+                [ $name, "http://img.example/a b/\"c\"?x=1&y=2.jpg", $fp->{t64} ],
+                "RADIO-09: $kind named '$name': _radioCLI decodes the favourite title and icon exactly, and keeps the encoded title in `query`");
+
+            # F2/F3 (review of phase 91): the favourite is named by the item on every LMS. 8.5 and later read
+            # favorites_title || title || name, 8.0 to 8.4 read title || name (_favoritesParams), both by
+            # Perl truth, so a name that is false ("0") has to fall through to a name that is the item's too.
+            my $fd = $callRt->[1];
+            is($fd->{favorites_title} || $fd->{title} || $fd->{name}, $name, "RADIO-12: $kind named '$name': the LMS 8.5+ title rule yields the item's name");
+            is($fd->{title} || $fd->{name}, $name, "RADIO-12: $kind named '$name': the LMS 8.0-8.4 title rule yields the item's name");
+            is($fd->{name}, $name, "RADIO-12: $kind named '$name': the feed's name is the item's name, not the radio label");
+        }
+    }
+    ok(!exists Plugins::SpotOn::Plugin::_playlistItem($client, { id => 'x', name => 'n', owner => {} })->{itemActions},
+        'RADIO-09: no radio More menu for an invalid playlist id (LMS default More menu)');
+    ok(!exists Plugins::SpotOn::Plugin::_albumItem($client, { name => 'n', artists => [] })->{itemActions},
+        'RADIO-09: no radio More menu for an album without id');
+    is(Plugins::SpotOn::Plugin::_radioItem($client, "spotify:album:$AL")->{name}, 'PLUGIN_SPOTON_ARTIST_RADIO',
+        'RADIO-09: an album seed is labelled artist radio (Spotify answers it with the artist radio)');
+    is(Plugins::SpotOn::Plugin::_radioItem($client, "spotify:playlist:$PL")->{name}, 'PLUGIN_SPOTON_PLAYLIST_RADIO', 'RADIO-09: playlist radio label');
+
+    # the info action dispatched: a one-entry menu whose entry opens and plays the radio itself
+    for my $it ([ album => $albumItem, "spotify:album:$AL" ], [ playlist => $plItem, "spotify:playlist:$PL" ]) {
+        my ($kind, $src, $seed) = @$it;
+        my ($req, $call) = $dispatch->($src->{itemActions}{info});
+        ok(!$req->isStatusError && $call && ref $call->[1] eq 'HASH', "RADIO-10: $kind More menu reaches cliQuery with a menu feed");
+        my $menuFeed = $call->[1];
+        is(scalar @{ $menuFeed->{items} }, 1, "RADIO-10: $kind More menu holds one entry");
+        is_deeply($menuFeed->{query}, { seed => $seed, moreMenu => 1, t64 => $b64u->($src->{name}) }, "RADIO-10: $kind More menu keeps seed, moreMenu and title in `query` (the entry's context menu finds it again)");
+        is_deeply($menuFeed->{items}[0]{itemActions}, $want->($seed), "RADIO-10: $kind entry's own actions name the radio, without moreMenu");
+        my ($req2, $call2) = $dispatch->($menuFeed->{items}[0]{itemActions}{play});
+        ok(!$req2->isStatusError && $call2 && ref $call2->[1] eq 'CODE', "RADIO-10: $kind entry's Play reaches the radio feed");
+    }
+    is(scalar(@Plugins::SpotOn::API::SpClient::radio_calls), 0, 'RADIO-10: building the More menus sends no request');
+
+    # D-05/D-06: the More menu feed of an album or playlist carries the play attributes of the
+    # album or playlist, so XMLBrowser's own context-menu builder puts Add to end, Play next,
+    # Play and Save to favourites in front of the radio entry
+    for my $it ([ album => $albumItem, 'album', $AL, 'Radio Album', 'PLUGIN_SPOTON_ARTIST_RADIO', 'http://img.example/al.jpg' ],
+                [ playlist => $plItem, 'playlist', $PL, 'Radio Playlist', 'PLUGIN_SPOTON_PLAYLIST_RADIO', 'http://img.example/pl.jpg' ]) {
+        my ($kind, $src, $type, $id, $title, $label, $img) = @$it;
+        my $url = "spoton://$type:$id";
+        my ($req, $call) = $dispatch->($src->{itemActions}{info});
+        my $f = $call->[1];
+        is_deeply([ @$f{qw(type playlist favorites_url favorites_title)} ], [ 'playlist', $url, $url, $title ],
+            "RADIO-12: $kind More menu feed is type playlist with the spoton url as playlist and favourites url and the name as favourites title");
+        is_deeply({ map { $_ => $f->{itemActions}{$_}{command} } sort keys %{ $f->{itemActions} || {} } },
+            { play => [ 'playlist', 'play', $url ], add => [ 'playlist', 'add', $url ], insert => [ 'playlist', 'insert', $url ] },
+            "RADIO-12: $kind More menu feed: play, add and insert are the core playlist commands on the spoton url");
+        is_deeply([ map { $_->{name} } @{ $f->{items} } ], [ $label ],
+            "RADIO-12: $kind More menu feed: its own items hold only the radio entry, so it follows the entries LMS prepends");
+        is($req->getParam('icon'), $img, "RADIO-12: $kind info request carries the item's image as icon (the favourite's icon)");
+        ok(!exists $f->{image}, "RADIO-12: $kind More menu feed has no image key (the icon travels as request param)");
+
+        # without a title the favourites part stays out: never a favourite named after the radio
+        my $noTitle = { %{ $src->{itemActions}{info} }, fixedParams => { %{ $src->{itemActions}{info}{fixedParams} } } };
+        delete $noTitle->{fixedParams}{t64};
+        my (undef, $callNT) = $dispatch->($noTitle);
+        my $fnt = $callNT->[1];
+        ok(!exists $fnt->{favorites_url} && !exists $fnt->{favorites_title} && exists $fnt->{itemActions}{play} && $fnt->{type} eq 'playlist',
+            "RADIO-12: $kind without a title keeps play, add and insert but has no favorites_url and no favorites_title");
+        is_deeply($fnt->{query}, { seed => $src->{itemActions}{info}{fixedParams}{seed}, moreMenu => 1 }, "RADIO-12: $kind without a title: `query` has no title");
+
+        # an injected url, playlist or item param is ignored: the url comes from the validated seed
+        # a raw title or icon request param is not read either (only the encoded tokens are)
+        {
+            my ($reqRaw, $callRaw) = $dispatch->($noTitle, title => 'Raw Title', icon => 'http://evil.example/x.jpg');
+            ok(!exists $callRaw->[1]{favorites_title} && !exists $callRaw->[1]{favorites_url} && $callRaw->[1]{query}{seed} eq $noTitle->{fixedParams}{seed} && !exists $callRaw->[1]{query}{title},
+                "RADIO-12: $kind a raw title request param is ignored (no favourite part, not kept in `query`)");
+        }
+        # bad tokens are dropped, never decoded into something else
+        for my $badTok ('!!!', 'a', '', 'QQ=', '/+') {
+            my (undef, $callBad) = $dispatch->($src->{itemActions}{info}, t64 => $badTok, i64 => $badTok);
+            ok(!exists $callBad->[1]{favorites_title} && !exists $callBad->[1]{query}{t64}, "RADIO-12: $kind the token '$badTok' gives no favourite part");
+        }
+        my (undef, $callInj) = $dispatch->($src->{itemActions}{info}, playlist => "spoton://album:$A", url => "spoton://track:$T", item => 'x', favorites_url => 'spoton://album:' . ('Z' x 22));
+        my $fi = $callInj->[1];
+        is_deeply([ @$fi{qw(playlist favorites_url)}, map { $fi->{itemActions}{$_}{command}[2] } qw(play add insert) ], [ ($url) x 5 ],
+            "RADIO-12: $kind an extra playlist, url or favorites_url request param is ignored");
+    }
+    for my $seed ("spotify:track:$T", "spotify:artist:$A") {
+        my ($req, $call) = $dispatch->({ command => ['spotonradio', 'items'], fixedParams => { seed => $seed, moreMenu => 1, t64 => $b64u->('Not Used') } });
+        my $f = $call->[1];
+        ok(!exists $f->{type} && !exists $f->{playlist} && !exists $f->{itemActions} && !exists $f->{favorites_url} && scalar @{ $f->{items} } == 1,
+            "RADIO-12: a $seed moreMenu keeps the one-entry menu with no type, playlist or itemActions on the feed");
+    }
+
+    # _radioFeed: a station (playlist seed) is read through radio-apollo
+    $SPS->reset_calls();
+    $Plugins::SpotOn::API::SpClient::next_radio   = { station => "spotify:playlist:$PL" };
+    $Plugins::SpotOn::API::SpClient::next_station = { items => [ { track => { %$spTrack, name => 'Station Song' } },
+        { track => { id => 'X' x 22, uri => 'spotify:track:' . ('X' x 22), name => undef } } ], total => 2 };
+    Plugins::SpotOn::Plugin::_radioFeed($client, sub { $feed = shift }, {}, { seed => "spotify:playlist:$PL" });
+    is($Plugins::SpotOn::API::SpClient::station_calls[0][1], "spotify:playlist:$PL", 'RADIO-11: a station is read through getRadioStationTracks');
+    is($Plugins::SpotOn::API::SpClient::station_calls[0][2]{limit}, 50, 'RADIO-11: play-all asks for the whole station');
+    is_deeply([ map { $_->{title} } @{ $feed->{items} } ], [ 'Station Song', '' ], 'RADIO-11: a track without metadata (stub) keeps its slot, as in playlists');
+    is($feed->{items}[1]{play}, 'spoton://track:' . ('X' x 22), 'RADIO-11: the stub still plays');
+    $SPS->reset_calls();
+    $Plugins::SpotOn::API::SpClient::next_radio   = { station => "spotify:playlist:$PL" };
+    $Plugins::SpotOn::API::SpClient::next_station = { items => [ { track => { %$spTrack, name => 'Station Song' } } ], total => 50 };
+    Plugins::SpotOn::Plugin::_radioFeed($client, sub { $feed = shift }, { index => 10, quantity => 20 }, { seed => "spotify:playlist:$PL" });
+    is_deeply($Plugins::SpotOn::API::SpClient::station_calls[0][2], { offset => 10, limit => 20 }, 'RADIO-11: a page asks for that slice');
+    is_deeply([ @$feed{qw(offset total)} ], [ 10, 50 ], 'RADIO-11: offset and total of the station page');
+    $SPS->reset_calls();
+    $Plugins::SpotOn::API::SpClient::next_radio       = { station => "spotify:playlist:$PL" };
+    { no warnings 'once'; $Plugins::SpotOn::API::SpClient::next_station_err = { error => 'rate_limited' }; }
+    Plugins::SpotOn::Plugin::_radioFeed($client, sub { $feed = shift }, {}, { seed => "spotify:playlist:$PL" });
+    is($feed->{items}[0]{name}, 'PLUGIN_SPOTON_RATE_LIMITED', 'RADIO-11: a failed station request shows the error line');
+    $SPS->reset_calls();
+    $Plugins::SpotOn::API::SpClient::next_radio   = { station => "spotify:playlist:$PL" };
+    $Plugins::SpotOn::API::SpClient::next_station = { items => [], total => 0 };
+    Plugins::SpotOn::Plugin::_radioFeed($client, sub { $feed = shift }, {}, { seed => "spotify:playlist:$PL" });
+    is($feed->{items}[0]{name}, 'PLUGIN_SPOTON_RADIO_UNAVAILABLE', 'RADIO-11: an empty station -> the "no radio" line');
+    $SPS->reset_calls();
 }
 
 done_testing();
