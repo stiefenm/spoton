@@ -41,7 +41,7 @@ SpotOn plays audio through one of two backends, chosen in SpotOn Settings:
 - **Like / Unlike** - Save or remove tracks from your Liked Songs directly from any track context menu. In Material Skin, open the track's "..." menu, then "More", then "Like / Unlike". The plugin checks Spotify for the current state and shows either "Like" (to save) or "Unlike" (to remove). In Classic Skin, the same flow is available via the Track Info panel. After the action, a popup confirms "Liked!" or "Removed" and the menu navigates back automatically.
 - **Streaming** - Per-player Stream Format. With librespot: OGG passthrough, FLAC, PCM or MP3, 96/160/320 kbps and volume normalization. With Soloist: FLAC 16, PCM or MP3, with Spotify's quality setting up to Lossless.
 - **Spotify Connect** - Full bidirectional control: appear as a Connect device, control from any Spotify client, state syncs both ways
-- **Made For You** - Daily Mixes, Discover Weekly, Daylist, Release Radar with locale-aware sorting
+- **Made For You** - Daily Mixes, Discover Weekly, Daylist, Release Radar with locale-aware sorting, and a Radios folder with the song and artist radios Spotify suggests on your home page
 - **Don't Stop The Music** - Automatic queue extension with multi-artist search, diversity pool from your top tracks, and anti-bubble deduplication
 - **Material Skin Integration** - Menu icons for all navigation entries, fallback artwork for grid/cover-view compatibility, and optional home-screen rows (Recently Played, Top Tracks, Made For You, Main Menu, Playlists)
 - **Multi-Account** - Pair more than one Spotify account and switch between them
