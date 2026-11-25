@@ -446,4 +446,61 @@ subtest '79-58 overview: limit 10, cached, Top Result skips slots' => sub {
     Slim::Utils::Cache->new->clear;
 };
 
+# ============================================================
+# F7 (review of phase 91): the delete action of a history entry must survive LMS's web link.
+# The Classic skin pastes fixedParams values unescaped into k=v&k=v and reads the link back by
+# cutting at the first / and splitting on & and =, so a typed search such as "a/b", "Rock & Roll"
+# or a quote broke the link (a quote also closed the href attribute). The action carries the text
+# as a base64url token (delete64); the CLI decodes it and still reads a raw `delete`.
+# ============================================================
+
+{
+    require MIME::Base64;
+    my $b64u = sub { my $v = shift; utf8::encode($v); (my $e = MIME::Base64::encode_base64($v, '')) =~ tr{+/}{-_}; $e =~ s/=+\z//; return $e };
+    my @names = ('a/b', 'Rock & Roll?', 'x" onmouseover="alert(1)', "Caf\x{e9} \x{263A}", '0', 'two  words', 'plain');
+
+    $prefs->set('recentSearches', [ @names ]);
+    my $feed;
+    Plugins::SpotOn::Plugin::_searchPageFeed(undef, sub { $feed = shift }, {});
+    my %entry = map { $_->{name} => $_ } grep { $_->{itemActions} } @{ $feed->{items} };
+    is_deeply([ sort keys %entry ], [ sort @names ], 'F7: every history entry has an info action');
+
+    for my $name (@names) {
+        my $a  = $entry{$name}{itemActions}{info};
+        my $fp = $a->{fixedParams};
+        is_deeply($a->{command}, ['spoton', 'recentsearches'], "F7 '$name': the info action still runs spoton recentsearches");
+        is_deeply([ sort keys %$fp ], ['delete64'], "F7 '$name': one token delete64, no raw delete");
+        my @bad = grep { $fp->{$_} !~ /\A[A-Za-z0-9_-]*\z/ } sort keys %$fp;
+        is_deeply(\@bad, [], "F7 '$name': every fixedParams value is link-safe (no / \" & ? or whitespace)");
+        my $link = join '&', map { "$_=$fp->{$_}" } sort keys %$fp;
+        my %back = map { split /=/, $_, 2 } split /&/, (split m{/}, $link)[0];
+        is_deeply(\%back, $fp, "F7 '$name': the web link reads back to the same parameters");
+        is($fp->{delete64}, $b64u->($name), "F7 '$name': the token is the entry's text");
+
+        $prefs->set('recentSearches', [ @names ]);
+        my $req = FakeRequest->new(%$fp);
+        Plugins::SpotOn::Plugin::_recentSearchesCLI($req);
+        is($req->{status}, 'done', "F7 '$name': the CLI accepts the token");
+        is($req->{results}{item_loop}[0]{actions}{go}{params}{confirm_delete}, $name, "F7 '$name': the confirm entry names the decoded text");
+    }
+
+    $prefs->set('recentSearches', ['alpha']);
+    for my $bad ('!!!', 'a', '', $b64u->('nonexistent')) {
+        my $req = FakeRequest->new(delete64 => $bad);
+        Plugins::SpotOn::Plugin::_recentSearchesCLI($req);
+        is($req->{status}, 'bad_params', "F7: delete64 '$bad' is bad params");
+        ok(!$req->{results}{item_loop}, "F7: delete64 '$bad' shows no menu");
+    }
+    {
+        my $req = FakeRequest->new(delete64 => '!!!', delete => 'alpha');
+        Plugins::SpotOn::Plugin::_recentSearchesCLI($req);
+        is($req->{status}, 'bad_params', 'F7: a bad token next to a good raw delete is still bad params');
+    }
+    {
+        my $req = FakeRequest->new(delete => 'alpha');
+        Plugins::SpotOn::Plugin::_recentSearchesCLI($req);
+        is($req->{status}, 'done', 'F7: the raw delete is still accepted');
+    }
+}
+
 done_testing;

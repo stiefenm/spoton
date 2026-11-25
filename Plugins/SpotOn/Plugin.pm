@@ -3093,10 +3093,14 @@ sub _searchPageFeed {
             url         => \&_searchFromHistoryFeed,
             passthrough => [{ query => $list->[$i] }],
             cachetime   => 0,
+            # the typed text travels as the link-safe token delete64, not raw:
+            # LMS's web skins paste fixedParams values unescaped into a link
+            # that is read back by cutting at the first / and splitting on &
+            # and = (see _radioMenuAction). _recentSearchesCLI decodes it.
             itemActions => {
                 info => {
                     command     => ['spoton', 'recentsearches'],
-                    fixedParams => { delete => $list->[$i] },
+                    fixedParams => { delete64 => _linkSafeEncode($list->[$i]) },
                 },
             },
         };
@@ -3129,7 +3133,19 @@ sub _recentSearchesCLI {
 
     my $list = _recentSearches();
 
-    if (defined(my $q = $request->getParam('delete'))) {
+    # `delete` as the text itself (older menus) or as the token delete64 (see
+    # _searchPageFeed); a token that does not decode is bad params, whatever
+    # `delete` says.
+    my $delete = $request->getParam('delete');
+    if (defined(my $token = $request->getParam('delete64'))) {
+        $delete = _linkSafeDecode($token);
+        unless (defined $delete) {
+            $request->setStatusBadParams();
+            return;
+        }
+    }
+
+    if (defined(my $q = $delete)) {
         unless (grep { $_ eq $q } @$list) {
             $request->setStatusBadParams();
             return;
