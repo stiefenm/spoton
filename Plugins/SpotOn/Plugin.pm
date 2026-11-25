@@ -1522,16 +1522,28 @@ sub _trackItem {
         # GH #94: More menu routed through the TrackInfo framework -- one
         # menu source for browse and Now Playing. @contextItems stays as the
         # Default-skin drill-down (`items`); jive/Material clients use this.
-        itemActions   => {
-            info => {
-                command     => ['spotoninfo', 'items'],
-                fixedParams => { url => $spoton_url },
-            },
-        },
+        itemActions   => _trackInfoAction($spoton_url),
     );
     $item{items} = \@contextItems if @contextItems;
 
     return \%item;
+}
+
+# _trackInfoAction($spotonUrl) -> the itemActions of a track or episode item:
+# `info` opens the More menu through ['spotoninfo','items'] (GH #94). The url
+# travels as the link-safe token u64 (see _linkSafeEncode), not raw: LMS's web
+# skins paste fixedParams values unescaped into a link that is read back by
+# cutting at the first /, so spoton://track:<id> lost everything after
+# "spoton:". _trackInfoItemsCLI decodes it. The hash is new per call, as
+# XMLBrowser writes into it.
+sub _trackInfoAction {
+    my ($spotonUrl) = @_;
+    return {
+        info => {
+            command     => ['spotoninfo', 'items'],
+            fixedParams => { u64 => _linkSafeEncode($spotonUrl) },
+        },
+    };
 }
 
 # _authRequiredItem($client, $accountId, $err)
@@ -2688,12 +2700,7 @@ sub _episodeItem {
         favorites_url => $spoton_url,
         # GH #94: More menu routed through the TrackInfo framework (episode
         # parity -- shows/episodes discrepancy called out in the issue).
-        itemActions   => {
-            info => {
-                command     => ['spotoninfo', 'items'],
-                fixedParams => { url => $spoton_url },
-            },
-        },
+        itemActions   => _trackInfoAction($spoton_url),
     );
     $item{items} = \@contextItems;
 
@@ -3474,7 +3481,7 @@ sub _radioStationFeed {
 
 # _trackInfoItemsCLI($request)
 # GH #94: CLI backend for the browse items' `info` itemAction
-# (['spotoninfo','items'] with a url fixedParam). Builds the SAME feed as
+# (['spotoninfo','items'] with the url as the u64 token, or a raw url param). Builds the SAME feed as
 # the Now Playing More menu via Slim::Menu::TrackInfo->menu() -- LMS
 # standard items (favorites, More Info, ...) plus every registered
 # provider (spotonTrackInfo: Artist View / Album View / Like / Add to
@@ -3499,7 +3506,22 @@ sub _trackInfoItemsCLI {
     }
 
     my $client = $request->client;
-    my $url    = $request->getParam('url') || '';
+
+    # the browse items' info action sends the url as the token u64 (see
+    # _trackInfoAction). Decoded, it goes on the request as `url`, where
+    # XMLBrowser and the playlist form (Play / Add / Play next) read it; a
+    # token that does not decode is bad params, whatever `url` says.
+    my $token = $request->getParam('u64');
+    if (defined $token) {
+        my $decoded = _linkSafeDecode($token);
+        unless (defined $decoded) {
+            $request->setStatusBadParams();
+            return;
+        }
+        $request->addParam('url', $decoded);
+    }
+
+    my $url = $request->getParam('url') || '';
 
     # T-76-08: spoton:// urls carry public track/episode ids only; strict
     # shape check before the url reaches Schema/TrackInfo.
@@ -4412,12 +4434,7 @@ sub _albumTrackItem {
         type      => 'audio',
         # GH #94: More menu routed through the TrackInfo framework -- one
         # menu source for browse and Now Playing.
-        itemActions => {
-            info => {
-                command     => ['spotoninfo', 'items'],
-                fixedParams => { url => $spoton_url },
-            },
-        },
+        itemActions => _trackInfoAction($spoton_url),
     );
     $item{items} = \@contextItems if @contextItems;
 

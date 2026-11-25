@@ -959,8 +959,40 @@ ok( !defined(&Plugins::SpotOn::ProtocolHandler::trackInfoURL),
         'CTX-14: _trackItem carries an info itemAction' );
     is_deeply( $item->{itemActions}{info}{command}, ['spotoninfo', 'items'],
         'CTX-14: info itemAction dispatches the spotoninfo/items CLI command (GH-94 routing)' );
-    is( $item->{itemActions}{info}{fixedParams}{url}, 'spoton://track:GH94TRACKID',
-        'CTX-14: info itemAction carries the item\'s own spoton:// url as fixedParams' );
+    is_deeply( $item->{itemActions}{info}{fixedParams}, { u64 => 'c3BvdG9uOi8vdHJhY2s6R0g5NFRSQUNLSUQ' },
+        'CTX-14: info itemAction carries the item\'s own spoton:// url as a link-safe token (u64), not the raw url' );
+}
+
+# Test 14b (review of phase 91, F6): the info action of every track-like item must survive LMS's web
+# link. The Classic skin pastes fixedParams values unescaped into k=v&k=v and reads the link back by
+# cutting at the first / and splitting on & and =, so the raw url spoton://track:<id> lost everything
+# after "spoton:".
+{
+    my $client = MockClient->new('player-test14b');
+    my $T = 'T' x 22;
+    my $track = { id => $T, name => 'F6 Song', uri => "spotify:track:$T", duration_ms => 1000, track_number => 1,
+                  artists => [ { id => 'A' x 22, name => 'F6 Artist' } ], album => { id => 'L' x 22, name => 'F6 Album', images => [] } };
+    my $episode = { id => 'E' x 22, uri => 'spotify:episode:' . ('E' x 22), name => 'F6 Episode', duration_ms => 1000, release_date => '2026-01-01',
+                    show => { id => 'S' x 22, name => 'F6 Show', uri => 'spotify:show:' . ('S' x 22) } };
+    my @cases = (
+        [ '_trackItem'      => Plugins::SpotOn::Plugin::_trackItem($client, $track),                                        "spoton://track:$T" ],
+        [ '_albumTrackItem' => Plugins::SpotOn::Plugin::_albumTrackItem($client, $track, [], 'F6 Artist', 'F6 Album'),       "spoton://track:$T" ],
+        [ '_episodeItem'    => Plugins::SpotOn::Plugin::_episodeItem($client, $episode),                                    'spoton://episode:' . ('E' x 22) ],
+    );
+    for my $c (@cases) {
+        my ($what, $item, $want) = @$c;
+        my $a  = $item->{itemActions}{info};
+        my $fp = $a->{fixedParams};
+        is_deeply($a->{command}, ['spotoninfo', 'items'], "F6: $what: the info action still runs spotoninfo items");
+        is_deeply([ sort keys %$fp ], ['u64'], "F6: $what: the info action carries the url as the one token u64, no raw url");
+        my @bad = grep { $fp->{$_} !~ /\A[A-Za-z0-9:_-]*\z/ } sort keys %$fp;
+        is_deeply(\@bad, [], "F6: $what: every fixedParams value is link-safe (no / \" & ? or whitespace)");
+        my $link = join '&', map { "$_=$fp->{$_}" } sort keys %$fp;
+        my %back = map { split /=/, $_, 2 } split /&/, (split m{/}, $link)[0];
+        is_deeply(\%back, $fp, "F6: $what: the web link reads back to the same parameters");
+        my $tok = $fp->{u64}; $tok =~ tr{-_}{+/}; $tok .= '=' x ((4 - length($tok) % 4) % 4);
+        is(MIME::Base64::decode_base64($tok), $want, "F6: $what: the token is the item's spoton url");
+    }
 }
 
 # Test 15: the CLI backend (_trackInfoItemsCLI) is wired to the
@@ -1006,6 +1038,7 @@ ok( !defined(&Plugins::SpotOn::ProtocolHandler::trackInfoURL),
         }
         sub client   { $_[0]{client} }
         sub getParam { $_[0]{params}{ $_[1] } }
+        sub addParam { $_[0]{params}{ $_[1] } = $_[2]; return }
         sub isNotQuery {
             my ($self, $names) = @_;
             return 1 unless $self->{isQuery};
@@ -1053,6 +1086,43 @@ ok( !defined(&Plugins::SpotOn::ProtocolHandler::trackInfoURL),
         my $c = $calls[0] || [];
         is( scalar(@calls), 1, 'B91-0: items form reaches cliQuery once' );
         is( $c->[0], 'spotoninfo', 'B91-0: items form passes spotoninfo as the query name' );
+    }
+
+    # F6: the items form with the url as a u64 token (what the browse items' info action sends)
+    {
+        my $b64u = sub { my $v = shift; (my $e = MIME::Base64::encode_base64($v, '')) =~ tr{+/}{-_}; $e =~ s/=+\z//; return $e };
+        my $req = $run->(
+            request => ['spotoninfo', 'items', '0', '100'],
+            isQuery => 1,
+            client  => $client,
+            params  => { u64 => $b64u->($url), _index => 0, _quantity => 100, menu => 'spotoninfo' },
+        );
+        my @calls = @Slim::Control::XMLBrowser::calls;
+        my @menu  = @Slim::Menu::TrackInfo::menu_calls;
+        is( scalar(@calls), 1, 'F6: items form with a u64 token reaches cliQuery once' );
+        is( $menu[0][1], $url, 'F6: the TrackInfo menu is built for the decoded url' );
+        is( $req->getParam('url'), $url, 'F6: the decoded url is put on the request, so XMLBrowser carries it into the play, add and insert actions' );
+        ok( !defined $req->{status}, 'F6: no error status' );
+
+        # a token that is not a token, or decodes to something that is not a spoton track or episode url, is bad params
+        for my $bad ('!!!', 'a', $b64u->('spoton://track:abc/../x'), $b64u->('http://evil.example/x'), $b64u->("$url\n")) {
+            my $r = $run->(
+                request => ['spotoninfo', 'items', '0', '100'],
+                isQuery => 1,
+                client  => $client,
+                params  => { u64 => $bad, _index => 0, _quantity => 100, menu => 'spotoninfo' },
+            );
+            is( $r->{status}, 'bad_params', "F6: u64 '$bad' gets BadParams" );
+            is( scalar(@Slim::Control::XMLBrowser::calls), 0, "F6: u64 '$bad' never reaches cliQuery" );
+        }
+        # a bad token is not rescued by a good raw url
+        my $r = $run->(
+            request => ['spotoninfo', 'items', '0', '100'],
+            isQuery => 1,
+            client  => $client,
+            params  => { u64 => '!!!', url => $url, _index => 0, _quantity => 100, menu => 'spotoninfo' },
+        );
+        is( $r->{status}, 'bad_params', 'F6: a bad u64 token next to a good raw url is still BadParams' );
     }
 
     # B91-1: initPlugin registers the playlist form
