@@ -3776,12 +3776,17 @@ sub _addToPlaylistAttempt {
 #
 # Which home lists are kept (79-59, user decision 2026-10-31 "Regel ja, aber
 # ohne Radios"): a Playlist whose id starts with 37i9dQZF1E or 37i9dQZEVX,
-# whose attributes carry madeFor.username, and whose format is not
-# inspiredby-mix (the artist radios). No title list and no format allow-list,
-# so a new kind of personal list appears without a code change. The id prefix
-# is an observed, undocumented Spotify convention: if Spotify changes it,
-# lists go missing, but wrong ones are never added. The two homeSection rows
-# keep their old rule (Playlist, not DJ) and lose only inspiredby-mix.
+# whose attributes carry madeFor.username. No title list and no format
+# allow-list, so a new kind of personal list appears without a code change.
+# The id prefix is an observed, undocumented Spotify convention: if Spotify
+# changes it, lists go missing, but wrong ones are never added. The two
+# homeSection rows keep their old rule (Playlist, not DJ).
+#
+# The inspiredby-mix lists (the artist and song radios Spotify suggests) are
+# never part of the mixes list, `items` and `layout` stay without them (phase
+# 91, RAD-04): they are partitioned into their own `radios` list, in the
+# order the placement meets them, and cached with the list. They are not
+# nameless mixes (no name lookup, no nameless warning) and carry no format.
 #
 # Layout (user decision "Feste oben, Rest in Ordnern"): daylist, Daily Mixes,
 # Discover Weekly, Release Radar on top (by format); the lists of untitled
@@ -3830,8 +3835,10 @@ use constant MFY_NAME_WARN_INTERVAL => 3600;
 # getMadeForYou($class, $accountId, $cb)
 # cb->({ items => [{ id, uri, name, images }, ...], source => 'pathfinder' |
 # 'rootlist-fallback', layout => { top => [...], loose => [...],
-# folders => [{ title, items => [...] }] } }) or cb->(undef, $err). items is
-# the flat menu order; layout is present only when op home answered with rows.
+# folders => [{ title, items => [...] }] }, radios => [{ id, uri, name,
+# images }, ...] }) or cb->(undef, $err). items is the flat menu order; layout
+# is present only when op home answered with rows; radios (pathfinder source
+# only) holds the inspiredby-mix lists, which are in neither items nor layout.
 # No login5 credentials answer (undef, { error => 'no_credentials' }) without
 # a request. A name of '' means "unknown" (the feed labels it, 261110-is9):
 # the id is never used as a name; an item that arrives without a name is
@@ -3891,7 +3898,6 @@ sub getMadeForYou {
             return undef unless ($it->{typename} // '') eq 'Playlist';
             return undef unless $uri =~ /\Aspotify:playlist:([A-Za-z0-9]{1,40})\z/;
             my $id = $1;
-            return undef if ($it->{format} // '') eq MFY_RADIO_FORMAT;
             if ($personal) {
                 return undef unless $id =~ /\A37i9dQZ(?:F1E|EVX)/;
                 return undef unless $it->{madeFor};
@@ -3936,7 +3942,7 @@ sub getMadeForYou {
             for my $e (@{ $row->{entries} }) {
                 my $m = $usable->($e->[0], $e->[1]) or next;
                 # what Pathfinder sent in place of a name, kept once per list for the warning below
-                if (!length $m->{name} && !$recorded{ $m->{uri} }++) {
+                if (!length $m->{name} && $m->{format} ne MFY_RADIO_FORMAT && !$recorded{ $m->{uri} }++) {
                     my $src = $e->[0];
                     my $t = $src->{nameType} // 'unknown';
                     my $k = $src->{dataKeys} // '';
@@ -3959,14 +3965,17 @@ sub getMadeForYou {
             }
         }
 
-        my $layout;
+        my ($layout, @radios);
         if ($haveHome) {
             my @tops = @{ MFY_TOP_FORMATS() };
             my %tier = map { $tops[$_] => $_ } 0 .. $#tops;
             my (@top, @loose, @folders, %folderOf);
             for my $p (@placed) {
                 my ($m, $row) = @$p;
-                if (exists $tier{ $m->{format} }) {
+                if ($m->{format} eq MFY_RADIO_FORMAT) {
+                    push @radios, $m;   # before the row logic: a radio never makes a row folder
+                }
+                elsif (exists $tier{ $m->{format} }) {
                     push @top, $m;
                 }
                 elsif (!length $row->{title}) {
@@ -3988,9 +3997,12 @@ sub getMadeForYou {
             $layout = { top => \@top, loose => \@loose, folders => \@folders };
         }
         else {
-            @merged = map { $_->[0] } @placed;
+            for my $p (@placed) {
+                if ($p->[0]{format} eq MFY_RADIO_FORMAT) { push @radios, $p->[0] }
+                else                                     { push @merged, $p->[0] }
+            }
         }
-        delete $_->{format} for @merged;
+        delete $_->{format} for @merged, @radios;
 
         # WR-13: keep the reason a source failed, and (79-59) name the source.
         # A Pathfinder answer that merely carries no Playlist items is NOT a
@@ -4010,7 +4022,7 @@ sub getMadeForYou {
                 $counts ||= {};
                 $class->_warnNamelessMfy(\@noName, $dupCount, $counts);
                 %_mfy = (source => 'pathfinder', mixCount => scalar(@merged), lastError => $lastError);
-                my $result = { items => \@merged, source => 'pathfinder', ($layout ? (layout => $layout) : ()) };
+                my $result = { items => \@merged, source => 'pathfinder', radios => \@radios, ($layout ? (layout => $layout) : ()) };
                 $cache->set($listKey, $result, $complete ? MFY_LIST_TTL : MFY_LIST_PARTIAL_TTL) if !$pfFailed;
                 $cb->($result);
             };

@@ -1584,6 +1584,19 @@ PLUGIN_SPOTON_MADE_FOR_YOU
 	PL	Stworzone dla Ciebie
 	SV	Gjort för dig
 
+PLUGIN_SPOTON_MFY_RADIOS
+	CS	Rádia
+	DA	Radioer
+	DE	Radios
+	EN	Radios
+	ES	Radios
+	FR	Radios
+	IT	Radio
+	NL	Radio's
+	NO	Radioer
+	PL	Radia
+	SV	Radior
+
 PLUGIN_SPOTON_MFY_FALLBACK
 	CS	Domovská stránka Spotify je právě nedostupná: zobrazují se pouze vaše uložené mixy. Podrobnosti na stavové stránce SpotOn.
 	DA	Spotify-startsiden kan ikke nås lige nu: viser kun dine gemte mixes. Detaljer på SpotOn-statussiden.

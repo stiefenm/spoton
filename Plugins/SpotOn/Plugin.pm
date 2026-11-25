@@ -1798,7 +1798,8 @@ sub _madeForYouPriority {
 # folder per Spotify row, or flat in Pathfinder's order without home; when
 # Pathfinder fails, the Spotify-made mixes of the rootlist, sorted by
 # @MFY_PRIORITY. The feed never consults the playback backend (D-20) and
-# sends no browse/categories request (D-08).
+# sends no browse/categories request (D-08). The radios of the result
+# (`radios`, phase 91) follow as one last folder, Radios.
 sub _madeForYouFeed {
     my ($client, $callback, $args) = @_;
     my $accountId = _getAccountId($client);
@@ -1861,6 +1862,18 @@ sub _madeForYouFeed {
         }
         else {
             push @items, map { $mfyItem->($_) } @sorted;
+        }
+
+        # phase 91 (RAD-04): the radios Spotify suggests on the home page (not mixes, so
+        # never in the list above) sit in one last folder; the rootlist fallback has none.
+        my $radios = $result->{radios};
+        if (ref $radios eq 'ARRAY' && @$radios && ($result->{source} // '') ne 'rootlist-fallback') {
+            push @items, {
+                name  => cstring($client, 'PLUGIN_SPOTON_MFY_RADIOS'),
+                type  => 'link',
+                image => 'html/images/playlists.png',
+                items => [ map { $mfyItem->($_) } @$radios ],
+            };
         }
 
         $callback->({ items => \@items });
