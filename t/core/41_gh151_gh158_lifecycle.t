@@ -2476,6 +2476,7 @@ for my $ji ('1', '+1', '-1') {
     h_stop($client, $ctl);                 # 2. the `playlist stop` its _Stop queued (LMS plays B)
     is(scalar(h_log(qr/^Connect: hold closed by/)), 0, "$n: the jump's own LMS stop does not close the advanced hold");
     is(h_timers(), 1, "$n: the cap timer is still armed after that stop");
+    is(scalar(h_log(qr/^Connect: hold advanced by foreign jump stays open on LMS stop \(/)), 1, "$n: the jump's own LMS stop logs exactly one `stays open` line");
     is(scalar(h_deletes()), 0, "$n: nothing is deleted before B's newsong");
     h_event($client, $ctl, \&Plugins::SpotOn::Connect::_onNewSong);    # 3. B's newsong
     is(scalar(h_log(qr/^Connect: hold closed by newsong \(/)), 1, "$n: B's newsong closes the hold `newsong`");
