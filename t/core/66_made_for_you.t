@@ -1759,6 +1759,32 @@ t_block('RAD-04 radios edges', sub {
     ok(!@{ $res->{radios} || [] }, 'RAD-04 edge: the rootlist-fallback source carries no radios');
     $out = rad04_feed();
     ok(!(grep { ($_->{name} // '') eq 'PLUGIN_SPOTON_MFY_RADIOS' } @{ $out->{items} || [] }), 'RAD-04 edge: and its feed has no Radios folder');
+
+    # the feed's own guard (review of phase 91): a rootlist-fallback result that did carry radios would
+    # still make no folder. SpClient never builds one, so the clause is pinned with a synthetic result.
+    {
+        ok(@{ $res->{items} || [] } >= 1, 'RAD-04 edge: the fallback result of this fixture has playlists to list');
+        my $radioIt = clone($res->{items}[0]);
+        @$radioIt{qw(id uri name)} = ('Z' x 22, 'spotify:playlist:' . ('Z' x 22), 'Synthetic Radio');
+        my $synthetic = { %$res, source => 'rootlist-fallback', radios => [ $radioIt ] };
+        my $fed;
+        {
+            no warnings 'redefine';
+            local *Plugins::SpotOn::API::SpClient::getMadeForYou = sub { my ($class, $acct, $cb) = @_; $cb->($synthetic); return };
+            Slim::Utils::Prefs::preferences('plugin.spoton')->set('activeAccount', 'acct1');
+            Plugins::SpotOn::Plugin::_madeForYouFeed(MockClient->new('player-rad04'), sub { $fed = shift }, {});
+        }
+        ok($fed && @{ $fed->{items} || [] } >= 1, 'RAD-04 edge: a rootlist-fallback result with radios still lists its playlists');
+        ok(!(grep { ($_->{name} // '') eq 'PLUGIN_SPOTON_MFY_RADIOS' } @{ $fed->{items} || [] }), 'RAD-04 edge: and makes no Radios folder, whatever radios it carries');
+        # the same result without the fallback marker does get the folder: the test stands on the clause alone
+        $synthetic->{source} = 'pathfinder';
+        {
+            no warnings 'redefine';
+            local *Plugins::SpotOn::API::SpClient::getMadeForYou = sub { my ($class, $acct, $cb) = @_; $cb->($synthetic); return };
+            Plugins::SpotOn::Plugin::_madeForYouFeed(MockClient->new('player-rad04'), sub { $fed = shift }, {});
+        }
+        ok((grep { ($_->{name} // '') eq 'PLUGIN_SPOTON_MFY_RADIOS' } @{ $fed->{items} || [] }), 'RAD-04 edge: the same radios under another source do make the folder');
+    }
 });
 
 # ============================================================
