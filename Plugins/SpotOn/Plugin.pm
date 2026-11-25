@@ -1588,16 +1588,17 @@ sub _albumItem {
 
     # spoton:// URL for LMS Favorites playback (explodePlaylist resolves to tracks)
     my $album_spoton = 'spoton://album:' . ($album->{id} // '');
+    my $album_image  = _largestImage($album->{images});
 
     return {
         name          => $album->{name} // '',
         url           => \&_albumFeed,
         passthrough   => [{ albumId => $album->{id}, albumImages => $album->{images}, albumArtist => $firstArtist, albumName => $album->{name}, albumReleaseDate => $releaseDate }],
-        image         => _largestImage($album->{images}) || 'html/images/albums.png',
+        image         => $album_image || 'html/images/albums.png',
         line2         => $line2,
         favorites_url => $album_spoton,
         type          => 'playlist',
-        _radioMenuAction("spotify:album:" . ($album->{id} // '')),
+        _radioMenuAction("spotify:album:" . ($album->{id} // ''), $album->{name}, $album_image),
     };
 }
 
@@ -1624,16 +1625,17 @@ sub _playlistItem {
     my ($client, $playlist, $opts) = @_;
     # spoton:// URL for LMS Favorites playback (explodePlaylist resolves to tracks)
     my $pl_spoton = 'spoton://playlist:' . ($playlist->{id} // '');
+    my $pl_image  = _largestImage($playlist->{images});
 
     return {
         name          => $playlist->{name} // '',
         url           => \&_playlistFeed,
         passthrough   => [{ playlistId => $playlist->{id} }],
-        image         => _largestImage($playlist->{images}) || 'html/images/playlists.png',
+        image         => $pl_image || 'html/images/playlists.png',
         line2         => $playlist->{owner}{display_name} // '',
         favorites_url => $pl_spoton,
         type          => 'playlist',
-        _radioMenuAction("spotify:playlist:" . ($playlist->{id} // '')),
+        _radioMenuAction("spotify:playlist:" . ($playlist->{id} // ''), $playlist->{name}, $pl_image),
     };
 }
 
@@ -3253,19 +3255,27 @@ sub _radioItems {
     );
 }
 
-# _radioMenuAction($seedUri) -> (itemActions => ...) for album and playlist
-# items: their More menu opens ['spotonradio','items'] with the seed and
-# moreMenu, a one-entry menu with the radio. Album and playlist feeds are
-# paged track lists, so a radio row inside them would break the offset/total
-# contract and play-all. () for an invalid seed, so the item keeps LMS's
-# default More menu.
+# _radioMenuAction($seedUri, $title, $icon) -> (itemActions => ...) for album
+# and playlist items: their More menu opens ['spotonradio','items'] with the
+# seed and moreMenu, a menu with the radio entry after the usual play entries
+# (see _radioCLI). Album and playlist feeds are paged track lists, so a radio
+# row inside them would break the offset/total contract and play-all. () for
+# an invalid seed, so the item keeps LMS's default More menu.
+# $title and $icon (the item's name and image, each only when a non-empty
+# string) travel in the action: LMS saves "Save to favourites" from the
+# More menu with that title and, from the request's icon param, that icon.
 sub _radioMenuAction {
-    my ($seed) = @_;
+    my ($seed, $title, $icon) = @_;
     return () unless _radioSeedType($seed);
     return (itemActions => {
         info => {
             command     => ['spotonradio', 'items'],
-            fixedParams => { seed => $seed, moreMenu => 1 },
+            fixedParams => {
+                seed => $seed,
+                moreMenu => 1,
+                (defined $title && !ref $title && length $title ? (title => $title) : ()),
+                (defined $icon  && !ref $icon  && length $icon  ? (icon  => $icon)  : ()),
+            },
         },
     });
 }
@@ -3274,7 +3284,14 @@ sub _radioMenuAction {
 # param: the radio itself, served through XMLBrowser. `query` puts the seed
 # into the base actions of the opened list, so Play / Add / Play next on one
 # of its tracks come back here with the seed. With moreMenu (the `info`
-# itemAction of album and playlist items): the one-entry More menu.
+# itemAction of album and playlist items): the More menu. For an album or
+# playlist seed its feed carries the play attributes of that album or
+# playlist (type playlist, playlist url, play/add/insert as core playlist
+# commands, and with a title the favourites url and title): a jive client
+# asks for the context menu with xmlBrowseInterimCM, and XMLBrowser then
+# puts Add to end, Play next, Play and Save to favourites in front of the
+# feed's own items, so the radio entry stays the last and only own entry.
+# The url comes from the validated seed only, never from a request param.
 sub _radioCLI {
     my $request = shift;
 
@@ -3296,11 +3313,30 @@ sub _radioCLI {
     # the radio's first track.
     if ($request->getParam('moreMenu')) {
         my @items = _radioItem($request->client, $seed);
-        Slim::Control::XMLBrowser::cliQuery('spotonradio', {
+        my $title = $request->getParam('title');
+        $title = undef unless defined $title && !ref $title && length $title;
+
+        my %feed = (
             name  => $items[0]{name},
             items => \@items,
-            query => { seed => $seed, moreMenu => 1 },
-        }, $request);
+            query => { seed => $seed, moreMenu => 1, (defined $title ? (title => $title) : ()) },
+        );
+
+        if ($seed =~ /\Aspotify:(album|playlist):([0-9A-Za-z]{22})\z/) {
+            my $url = "spoton://$1:$2";
+            $feed{type}        = 'playlist';
+            $feed{playlist}    = $url;
+            # fresh hashes per call: XMLBrowser writes into them
+            $feed{itemActions} = {
+                map { my $verb = $_; ($verb => { command => ['playlist', $verb, $url] }) } qw(play add insert)
+            };
+            if (defined $title) {
+                $feed{favorites_url}   = $url;
+                $feed{favorites_title} = $title;
+            }
+        }
+
+        Slim::Control::XMLBrowser::cliQuery('spotonradio', \%feed, $request);
         return;
     }
 

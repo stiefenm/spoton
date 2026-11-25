@@ -2115,12 +2115,16 @@ require Slim::Control::XMLBrowser;
 
     # album and playlist items: their More menu is the one-entry spotonradio menu
     my $PL = 'P' x 22;
-    my $albumItem = Plugins::SpotOn::Plugin::_albumItem($client, { id => $AL, name => 'Radio Album', artists => [] });
-    is_deeply($albumItem->{itemActions}, { info => { command => ['spotonradio', 'items'], fixedParams => { seed => "spotify:album:$AL", moreMenu => 1 } } },
-        'RADIO-09: album items open the radio More menu with the album seed');
-    my $plItem = Plugins::SpotOn::Plugin::_playlistItem($client, { id => $PL, name => 'Radio Playlist', owner => {} });
-    is_deeply($plItem->{itemActions}, { info => { command => ['spotonradio', 'items'], fixedParams => { seed => "spotify:playlist:$PL", moreMenu => 1 } } },
-        'RADIO-09: playlist items open the radio More menu with the playlist seed');
+    my $albumItem = Plugins::SpotOn::Plugin::_albumItem($client, { id => $AL, name => 'Radio Album', images => [ { url => 'http://img.example/al-small.jpg', width => 64 }, { url => 'http://img.example/al.jpg', width => 640 } ], artists => [] });
+    is_deeply($albumItem->{itemActions}, { info => { command => ['spotonradio', 'items'], fixedParams => { seed => "spotify:album:$AL", moreMenu => 1, title => 'Radio Album', icon => 'http://img.example/al.jpg' } } },
+        'RADIO-09: album items open the radio More menu with the album seed, its name (favourite title) and its image (favourite icon)');
+    my $plItem = Plugins::SpotOn::Plugin::_playlistItem($client, { id => $PL, name => 'Radio Playlist', images => [ { url => 'http://img.example/pl.jpg', width => 300 } ], owner => {} });
+    is_deeply($plItem->{itemActions}, { info => { command => ['spotonradio', 'items'], fixedParams => { seed => "spotify:playlist:$PL", moreMenu => 1, title => 'Radio Playlist', icon => 'http://img.example/pl.jpg' } } },
+        'RADIO-09: playlist items open the radio More menu with the playlist seed, its name and its image');
+    is_deeply(Plugins::SpotOn::Plugin::_albumItem($client, { id => $AL, artists => [] })->{itemActions}{info}{fixedParams},
+        { seed => "spotify:album:$AL", moreMenu => 1 }, 'RADIO-09: an album without name and image passes neither title nor icon');
+    is_deeply(Plugins::SpotOn::Plugin::_playlistItem($client, { id => $PL, name => 'Only Name', owner => {} })->{itemActions}{info}{fixedParams},
+        { seed => "spotify:playlist:$PL", moreMenu => 1, title => 'Only Name' }, 'RADIO-09: a playlist without image passes no icon (never the skin placeholder)');
     ok(!exists Plugins::SpotOn::Plugin::_playlistItem($client, { id => 'x', name => 'n', owner => {} })->{itemActions},
         'RADIO-09: no radio More menu for an invalid playlist id (LMS default More menu)');
     ok(!exists Plugins::SpotOn::Plugin::_albumItem($client, { name => 'n', artists => [] })->{itemActions},
@@ -2136,12 +2140,53 @@ require Slim::Control::XMLBrowser;
         ok(!$req->isStatusError && $call && ref $call->[1] eq 'HASH', "RADIO-10: $kind More menu reaches cliQuery with a menu feed");
         my $menuFeed = $call->[1];
         is(scalar @{ $menuFeed->{items} }, 1, "RADIO-10: $kind More menu holds one entry");
-        is_deeply($menuFeed->{query}, { seed => $seed, moreMenu => 1 }, "RADIO-10: $kind More menu keeps seed and moreMenu in `query` (the entry's context menu finds it again)");
+        is_deeply($menuFeed->{query}, { seed => $seed, moreMenu => 1, title => $src->{name} }, "RADIO-10: $kind More menu keeps seed, moreMenu and title in `query` (the entry's context menu finds it again)");
         is_deeply($menuFeed->{items}[0]{itemActions}, $want->($seed), "RADIO-10: $kind entry's own actions name the radio, without moreMenu");
         my ($req2, $call2) = $dispatch->($menuFeed->{items}[0]{itemActions}{play});
         ok(!$req2->isStatusError && $call2 && ref $call2->[1] eq 'CODE', "RADIO-10: $kind entry's Play reaches the radio feed");
     }
     is(scalar(@Plugins::SpotOn::API::SpClient::radio_calls), 0, 'RADIO-10: building the More menus sends no request');
+
+    # D-05/D-06: the More menu feed of an album or playlist carries the play attributes of the
+    # album or playlist, so XMLBrowser's own context-menu builder puts Add to end, Play next,
+    # Play and Save to favourites in front of the radio entry
+    for my $it ([ album => $albumItem, 'album', $AL, 'Radio Album', 'PLUGIN_SPOTON_ARTIST_RADIO', 'http://img.example/al.jpg' ],
+                [ playlist => $plItem, 'playlist', $PL, 'Radio Playlist', 'PLUGIN_SPOTON_PLAYLIST_RADIO', 'http://img.example/pl.jpg' ]) {
+        my ($kind, $src, $type, $id, $title, $label, $img) = @$it;
+        my $url = "spoton://$type:$id";
+        my ($req, $call) = $dispatch->($src->{itemActions}{info});
+        my $f = $call->[1];
+        is_deeply([ @$f{qw(type playlist favorites_url favorites_title)} ], [ 'playlist', $url, $url, $title ],
+            "RADIO-12: $kind More menu feed is type playlist with the spoton url as playlist and favourites url and the name as favourites title");
+        is_deeply({ map { $_ => $f->{itemActions}{$_}{command} } sort keys %{ $f->{itemActions} || {} } },
+            { play => [ 'playlist', 'play', $url ], add => [ 'playlist', 'add', $url ], insert => [ 'playlist', 'insert', $url ] },
+            "RADIO-12: $kind More menu feed: play, add and insert are the core playlist commands on the spoton url");
+        is_deeply([ map { $_->{name} } @{ $f->{items} } ], [ $label ],
+            "RADIO-12: $kind More menu feed: its own items hold only the radio entry, so it follows the entries LMS prepends");
+        is($req->getParam('icon'), $img, "RADIO-12: $kind info request carries the item's image as icon (the favourite's icon)");
+        ok(!exists $f->{image}, "RADIO-12: $kind More menu feed has no image key (the icon travels as request param)");
+
+        # without a title the favourites part stays out: never a favourite named after the radio
+        my $noTitle = { %{ $src->{itemActions}{info} }, fixedParams => { %{ $src->{itemActions}{info}{fixedParams} } } };
+        delete $noTitle->{fixedParams}{title};
+        my (undef, $callNT) = $dispatch->($noTitle);
+        my $fnt = $callNT->[1];
+        ok(!exists $fnt->{favorites_url} && !exists $fnt->{favorites_title} && exists $fnt->{itemActions}{play} && $fnt->{type} eq 'playlist',
+            "RADIO-12: $kind without a title keeps play, add and insert but has no favorites_url and no favorites_title");
+        is_deeply($fnt->{query}, { seed => $src->{itemActions}{info}{fixedParams}{seed}, moreMenu => 1 }, "RADIO-12: $kind without a title: `query` has no title");
+
+        # an injected url, playlist or item param is ignored: the url comes from the validated seed
+        my (undef, $callInj) = $dispatch->($src->{itemActions}{info}, playlist => "spoton://album:$A", url => "spoton://track:$T", item => 'x', favorites_url => 'spoton://album:' . ('Z' x 22));
+        my $fi = $callInj->[1];
+        is_deeply([ @$fi{qw(playlist favorites_url)}, map { $fi->{itemActions}{$_}{command}[2] } qw(play add insert) ], [ ($url) x 5 ],
+            "RADIO-12: $kind an extra playlist, url or favorites_url request param is ignored");
+    }
+    for my $seed ("spotify:track:$T", "spotify:artist:$A") {
+        my ($req, $call) = $dispatch->({ command => ['spotonradio', 'items'], fixedParams => { seed => $seed, moreMenu => 1, title => 'Not Used' } });
+        my $f = $call->[1];
+        ok(!exists $f->{type} && !exists $f->{playlist} && !exists $f->{itemActions} && !exists $f->{favorites_url} && scalar @{ $f->{items} } == 1,
+            "RADIO-12: a $seed moreMenu keeps the one-entry menu with no type, playlist or itemActions on the feed");
+    }
 
     # _radioFeed: a station (playlist seed) is read through radio-apollo
     $SPS->reset_calls();
