@@ -3276,10 +3276,13 @@ sub _radioItems {
 # an invalid seed, so the item keeps LMS's default More menu.
 # $title and $icon (the item's name and image, each only when a non-empty
 # string) travel in the action as the link-safe tokens t64 and i64 (see
-# _linkSafeEncode): LMS saves "Save to favourites" from the More menu with that
-# title and, from the request's icon param, that icon. They are tokens, not the
-# raw strings, because LMS's web skins paste fixedParams values unescaped into
-# a link: a name with a quote, & or / would break it or inject into the page.
+# _linkSafeEncode). _radioCLI makes the title the feed's name (every LMS reads
+# the favourite's title from title || name; only 8.5 and later also read
+# favorites_title) and passes the icon as the request's icon param, so "Save to
+# favourites" in the More menu saves the album or playlist under its own name
+# and image. They are tokens, not the raw strings, because LMS's web skins
+# paste fixedParams values unescaped into a link: a name with a quote, & or /
+# would break it or inject into the page.
 sub _radioMenuAction {
     my ($seed, $title, $icon) = @_;
     return () unless _radioSeedType($seed);
@@ -3329,7 +3332,8 @@ sub _linkSafeDecode {
 # itemAction of album and playlist items): the More menu. For an album or
 # playlist seed its feed carries the play attributes of that album or
 # playlist (type playlist, playlist url, play/add/insert as core playlist
-# commands, and with a title the favourites url and title): a jive client
+# commands, and with a title the favourites url and title, the title also as
+# the feed's name, so the menu's header shows it): a jive client
 # asks for the context menu with xmlBrowseInterimCM, and XMLBrowser then
 # puts Add to end, Play next, Play and Save to favourites in front of the
 # feed's own items, so the radio entry stays the last and only own entry.
@@ -3377,6 +3381,10 @@ sub _radioCLI {
                 map { my $verb = $_; ($verb => { command => ['playlist', $verb, $url] }) } qw(play add insert)
             };
             if (defined $title) {
+                # `name`, not only favorites_title: LMS 8.0 to 8.4 know no
+                # favorites_title and would save the favourite under the radio
+                # label. `defined`, not truth: a list named "0" keeps its name.
+                $feed{name}            = $title;
                 $feed{favorites_url}   = $url;
                 $feed{favorites_title} = $title;
             }

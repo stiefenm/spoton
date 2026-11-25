@@ -2150,6 +2150,14 @@ require Slim::Control::XMLBrowser;
             is_deeply([ $callRt->[1]{favorites_title}, $reqRt->getParam('icon'), $callRt->[1]{query}{t64} ],
                 [ $name, "http://img.example/a b/\"c\"?x=1&y=2.jpg", $fp->{t64} ],
                 "RADIO-09: $kind named '$name': _radioCLI decodes the favourite title and icon exactly, and keeps the encoded title in `query`");
+
+            # F2/F3 (review of phase 91): the favourite is named by the item on every LMS. 8.5 and later read
+            # favorites_title || title || name, 8.0 to 8.4 read title || name (_favoritesParams), both by
+            # Perl truth, so a name that is false ("0") has to fall through to a name that is the item's too.
+            my $fd = $callRt->[1];
+            is($fd->{favorites_title} || $fd->{title} || $fd->{name}, $name, "RADIO-12: $kind named '$name': the LMS 8.5+ title rule yields the item's name");
+            is($fd->{title} || $fd->{name}, $name, "RADIO-12: $kind named '$name': the LMS 8.0-8.4 title rule yields the item's name");
+            is($fd->{name}, $name, "RADIO-12: $kind named '$name': the feed's name is the item's name, not the radio label");
         }
     }
     ok(!exists Plugins::SpotOn::Plugin::_playlistItem($client, { id => 'x', name => 'n', owner => {} })->{itemActions},
