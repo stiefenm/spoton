@@ -3275,8 +3275,11 @@ sub _radioItems {
 # row inside them would break the offset/total contract and play-all. () for
 # an invalid seed, so the item keeps LMS's default More menu.
 # $title and $icon (the item's name and image, each only when a non-empty
-# string) travel in the action: LMS saves "Save to favourites" from the
-# More menu with that title and, from the request's icon param, that icon.
+# string) travel in the action as the link-safe tokens t64 and i64 (see
+# _linkSafeEncode): LMS saves "Save to favourites" from the More menu with that
+# title and, from the request's icon param, that icon. They are tokens, not the
+# raw strings, because LMS's web skins paste fixedParams values unescaped into
+# a link: a name with a quote, & or / would break it or inject into the page.
 sub _radioMenuAction {
     my ($seed, $title, $icon) = @_;
     return () unless _radioSeedType($seed);
@@ -3286,11 +3289,37 @@ sub _radioMenuAction {
             fixedParams => {
                 seed => $seed,
                 moreMenu => 1,
-                (defined $title && !ref $title && length $title ? (title => $title) : ()),
-                (defined $icon  && !ref $icon  && length $icon  ? (icon  => $icon)  : ()),
+                (defined $title && !ref $title && length $title ? (t64 => _linkSafeEncode($title)) : ()),
+                (defined $icon  && !ref $icon  && length $icon  ? (i64 => _linkSafeEncode($icon))  : ()),
             },
         },
     });
+}
+
+# _linkSafeEncode($string) -> the UTF-8 bytes of the string as base64url
+# ([A-Za-z0-9_-] only, no padding): safe inside a URL, an href and LMS's
+# k=v&k=v web link. _linkSafeDecode reverses it.
+sub _linkSafeEncode {
+    my $string = shift;
+    utf8::encode($string);
+    require MIME::Base64;
+    my $token = MIME::Base64::encode_base64($string, '');
+    $token =~ tr{+/}{-_};
+    $token =~ s/=+\z//;
+    return $token;
+}
+
+# _linkSafeDecode($token) -> the string, or undef for anything that is not a
+# token of _linkSafeEncode (wrong characters or length, not UTF-8, empty).
+sub _linkSafeDecode {
+    my $token = shift;
+    return undef unless defined $token && !ref $token && $token =~ /\A[A-Za-z0-9_-]+\z/ && length($token) % 4 != 1;
+    $token =~ tr{-_}{+/};
+    $token .= '=' x ((4 - length($token) % 4) % 4);
+    require MIME::Base64;
+    my $string = MIME::Base64::decode_base64($token);
+    return undef unless utf8::decode($string) && length $string;
+    return $string;
 }
 
 # _radioCLI($request) -- ['spotonradio', 'items' | 'playlist'] with a seed
@@ -3326,13 +3355,17 @@ sub _radioCLI {
     # the radio's first track.
     if ($request->getParam('moreMenu')) {
         my @items = _radioItem($request->client, $seed);
-        my $title = $request->getParam('title');
-        $title = undef unless defined $title && !ref $title && length $title;
+        # the item's name and image come as tokens (see _radioMenuAction); the
+        # icon goes on to XMLBrowser as the request's icon param, which it
+        # takes for the favourite
+        my $title = _linkSafeDecode($request->getParam('t64'));
+        my $icon  = _linkSafeDecode($request->getParam('i64'));
+        $request->addParam('icon', $icon) if defined $icon;
 
         my %feed = (
             name  => $items[0]{name},
             items => \@items,
-            query => { seed => $seed, moreMenu => 1, (defined $title ? (title => $title) : ()) },
+            query => { seed => $seed, moreMenu => 1, (defined $title ? (t64 => $request->getParam('t64')) : ()) },
         );
 
         if ($seed =~ /\Aspotify:(album|playlist):([0-9A-Za-z]{22})\z/) {
