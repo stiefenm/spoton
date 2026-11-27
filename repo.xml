@@ -17,20 +17,20 @@
     <plugins>
         <plugin
             name="SpotOn"
-            version="4.0.0"
+            version="4.1.0"
             target="unix|mac|windows"
             minTarget="8.0"
             maxTarget="*"
-            sha="fa02536e5d26495123e9e263f332989a19356ec7"
-            url="https://github.com/stiefenm/spoton/releases/download/v4.0.0/SpotOn-v4.0.0.zip"
+            sha="2698750a4e4025ba3f2ded13cdfa58d41d4e14e1"
+            url="https://github.com/stiefenm/spoton/releases/download/v4.1.0/SpotOn-v4.1.0.zip"
             category="musicservices"
             creator="Marek Stiefenhofer"
             email="sti@posteo.de"
         >
             <title lang="EN">SpotOn</title>
             <title lang="DE">SpotOn</title>
-            <desc lang="EN">Spotify plugin for Lyrion Music Server. 4.0: no Spotify Developer App any more - after the update, pair your account once in SpotOn Settings (see UPGRADING.md on GitHub).</desc>
-            <desc lang="DE">Spotify-Plugin fuer Lyrion Music Server. 4.0: keine Spotify Developer App mehr - nach dem Update das Konto einmal in den SpotOn-Einstellungen koppeln (siehe UPGRADING.md auf GitHub).</desc>
+            <desc lang="EN">Spotify plugin for Lyrion Music Server. Coming from 3.5.x: no Spotify Developer App any more - after the update, pair your account once in SpotOn Settings (see UPGRADING.md on GitHub).</desc>
+            <desc lang="DE">Spotify-Plugin fuer Lyrion Music Server. Von 3.5.x kommend: keine Spotify Developer App mehr - nach dem Update das Konto einmal in den SpotOn-Einstellungen koppeln (siehe UPGRADING.md auf GitHub).</desc>
             <link>https://github.com/stiefenm/spoton</link>
         </plugin>
     </plugins>
