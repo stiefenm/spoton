@@ -1034,6 +1034,9 @@ sub onStream {
 # Single tracks/episodes pass through unchanged.
 # T-22-01: regex-validated ID extraction — only [A-Za-z0-9]+ IDs reach API calls.
 # T-22-02: pagination bounded by API total; max 50/100 per page.
+# Forum #424 / GH #238: the playlist branch hands the next page to a 0-delay timer after a page
+# that was answered synchronously (cache hit), so a warm list never blocks LMS for more than
+# one page; the album and show branches page directly.
 sub explodePlaylist {
     my ($class, $client, $uri, $cb) = @_;
 
@@ -1142,11 +1145,13 @@ sub explodePlaylist {
         my $fetchPage;
         $fetchPage = sub {
             my ($offset) = @_;
+            my $inCall = 1;    # true while getPlaylistItems has not returned: the page was answered synchronously
             Plugins::SpotOn::API::SpClient->getPlaylistItems($accountId, $playlistId, {
                 offset => $offset,
                 limit  => Plugins::SpotOn::API::SpClient->pageLimit('playlist_items'),
             }, sub {
                 my ($data, $err) = @_;
+                my $answeredSynchronously = $inCall;
                 unless ($data && $data->{items}) {
                     undef $fetchPage;
                     main::INFOLOG && $log->is_info && $log->info(
@@ -1170,7 +1175,15 @@ sub explodePlaylist {
                 }
                 my $total = $data->{total} || 0;
                 if (scalar(@allItems) < $total && @{ $data->{items} }) {
-                    $fetchPage->($offset + scalar(@{ $data->{items} }));
+                    my $nextOffset = $offset + scalar(@{ $data->{items} });
+                    if ($answeredSynchronously) {
+                        # cache hit: yield to the event loop before the next page (forum #424)
+                        Slim::Utils::Timers::setTimer(undef, Time::HiRes::time(), sub {
+                            $fetchPage->($nextOffset) if $fetchPage;
+                        });
+                    } else {
+                        $fetchPage->($nextOffset);
+                    }
                 } else {
                     undef $fetchPage;
                     main::INFOLOG && $log->is_info && $log->info(
@@ -1179,6 +1192,7 @@ sub explodePlaylist {
                     $cb->({ items => \@allItems });
                 }
             });
+            $inCall = 0;
         };
         $fetchPage->(0);
         return;

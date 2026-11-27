@@ -499,6 +499,16 @@ sub shutdown {
         Slim::Control::Request::unsubscribe(\&_onLmsPlaylistChanged);
         Slim::Control::Request::unsubscribe(\&_onPower);
 
+        # 92-06 (84 review WR-02, closes 79 IN-02/IN-03): a pending hold's _holdCheck timer
+        # must not outlive the subscribers - its cap fallback could start a title after
+        # shutdown. Kill the timer of every open hold (the client is resolved by id; one that
+        # is gone took its timers with it), then empty the hold state.
+        for my $holdId (keys %_hold) {
+            my $holdClient = Slim::Player::Client::getClient($holdId);
+            Slim::Utils::Timers::killTimers($holdClient, \&_holdCheck) if $holdClient;
+        }
+        %_hold = ();
+
         %_claim = ();
         %_connectEntrySong = ();
         $initialized = 0;
@@ -928,6 +938,7 @@ sub _onNewSong {
             }
             $client->pluginData(progress => 0);
             $client->pluginData(connectSessionPaused => 0);
+            $client->pluginData(connectFollowUpPause => 0);   # 92-06 WR-02: one-shot mark goes with the pause mark
             $client->pluginData(connectStreamDispatchTs => Time::HiRes::time());
         }
         else {
@@ -1056,6 +1067,24 @@ sub _onNewSong {
                 $seekReq->source(__PACKAGE__);
                 $seekReq->execute();
             }
+        }
+
+        # 92-06 (GH #230 R3 WR-02): the app paused inside the start grace while LMS still buffered
+        # (the grace branch only marked it: LMS discards a pause in BUFFERING). Now the session's
+        # stream is PLAYING and the mark is still set (a resume would have cleared it): send the
+        # pause once. The mark is cleared first, so a second newsong never pauses again.
+        if (($client->pluginData('connectFollowUpPause') // 0) == 1
+            && ($client->pluginData('connectSessionPaused') // 0) == 1
+            && $client->isPlaying(1))
+        {
+            $client->pluginData(connectFollowUpPause => 0);
+            $client->pluginData(connectPauseTs => Time::HiRes::time());
+            main::INFOLOG && $log->is_info && $log->info(
+                "GH #230 WR-02: session was paused while LMS buffered - pausing now: " . $client->id
+            );
+            my $followUpReq = Slim::Control::Request->new($client->id, ['pause', 1]);
+            $followUpReq->source(__PACKAGE__);
+            $followUpReq->execute();
         }
         return;
     }
@@ -1497,6 +1526,7 @@ sub _dispatchChangePlay {
 
     my $changePlayUrl = _itemUrl($kind || 'track', $newTrackId);
     $client->pluginData(connectSessionPaused => 0);
+    $client->pluginData(connectFollowUpPause => 0);   # 92-06 WR-02: one-shot mark goes with the pause mark
     $client->pluginData(connectStartTime => Time::HiRes::time());
     $client->pluginData(connectStreamDispatchTs => Time::HiRes::time());   # 84-02: _streamElapsedSeconds
     # 84.2-05 (debug b6-prefetch-b7-africa-replay): the one-shot dispatch marker
@@ -1788,6 +1818,7 @@ sub _onPause {
             # (The "forwarding to Connect binary" info lines moved with the
             # sender into Backend::Librespot::control, 84-07.)
             $client->pluginData(connectSessionPaused => 0);
+            $client->pluginData(connectFollowUpPause => 0);   # 92-06 WR-02: one-shot mark goes with the pause mark
         }
         elsif (!$isStop) {
             # GH #219: an LMS pause pauses the Spotify session - remember it now, not only
@@ -2060,6 +2091,7 @@ sub _onPlaylistJump {
         # Spotify session too, as an LMS unpause does (GH #158), or that stream never gets data.
         if ($gate && !$staleEject && ($client->pluginData('connectSessionPaused') // 0)) {
             $client->pluginData(connectSessionPaused => 0);
+            $client->pluginData(connectFollowUpPause => 0);   # 92-06 WR-02: one-shot mark goes with the pause mark
             $be->control('play', source => 'lms_next_while_paused');
         }
     }
@@ -2438,7 +2470,21 @@ sub _connectEvent {
             . " isPaused=" . ($client->isPaused ? 1 : 0)
         ) if $diagMode;
 
-        if (!$actuallyInConnect) {
+        # 92-06 (GH #230, review HIGH): after `stop paused-start` (or the never-started stop) LMS
+        # is STOPPED while its playing song still is the player's own live `spoton://connect-`
+        # entry and the claim is held. The plain path below would send `pause 0`, which on a
+        # stopped player is LMS's own unmarked `playlist jump` without the newTrack and
+        # connectStartTime protection: that case takes the re-entry branch (source-marked
+        # `playlist play`). A PAUSED LMS keeps the plain `pause 0`.
+        my $stoppedOnOwnEntry = ($actuallyInConnect && !$client->isPlaying && !$client->isPaused
+            && $currentUrl =~ m{spoton://connect-} && __PACKAGE__->isSpotifyConnect($client)) ? 1 : 0;
+
+        if (!$actuallyInConnect || $stoppedOnOwnEntry) {
+            if ($stoppedOnOwnEntry) {
+                main::INFOLOG && $log->is_info && $log->info(
+                    "GH #230: resume on a stopped player standing on its own Connect entry - re-entering Connect via playlist play: " . $client->id
+                );
+            }
             # History replay: _onPause already skipped the daemon forward, so this
             # resume event is spurious — drop it and let getNextTrack do the translation.
             if ($currentUrl =~ m{spoton://connect-}
@@ -2497,6 +2543,7 @@ sub _connectEvent {
             # sequence to the binary, which would immediately re-pause Spotify.
             $client->pluginData(connectPauseTs => 0);
             $client->pluginData(connectSessionPaused => 0);   # GH #158: resuming
+            $client->pluginData(connectFollowUpPause => 0);   # 92-06 WR-02: one-shot mark goes with the pause mark
             $client->pluginData(newTrack => 1);
             _armNewTrackFallback($client);   # H7
             $client->pluginData(connectStartTime => Time::HiRes::time());
@@ -2573,6 +2620,7 @@ sub _connectEvent {
         # ['play'] would open a new HTTP stream connection and break the
         # continuous PCM stream (Pitfall 1). Source-mark for T-05-13 loop prevention.
         $client->pluginData(connectSessionPaused => 0);   # GH #158: session resumed
+        $client->pluginData(connectFollowUpPause => 0);   # 92-06 WR-02: one-shot mark goes with the pause mark
         $client->pluginData(connectPauseTs => Time::HiRes::time());
 
         # 84-26 F-24-2 (C6, 84-24): LMS PAUSED with the stream gone (PAUSED-IDLE) -- the plain
@@ -2664,8 +2712,17 @@ sub _connectEvent {
     # transitional stop -- it reaches its handler below inside this window too
     # (a transfer away 1-2 s after the start used to be swallowed here).
     # -----------------------------------------------------------------
+    # 92-06 (GH #230 R3 WR-01): the same trust as fix A below - both setters of newTrack issue
+    # `playlist play` right after, so strict PLAYING with the claim held means the new stream and
+    # the stop is the user's app pause, not the transitional stop-before-play. While LMS buffers
+    # (not strictly playing) the filter still swallows it.
+    # 92-06 (GH #230 paused transfer): `stop paused-start` (92-05: a transfer that arrived
+    # paused and got no Playing) is no transitional stop either - it passes this filter and
+    # the start grace below, and is decided in the stop branch.
     if ($cmd eq 'stop' && $client->pluginData('newTrack')
-        && ($request->getParam('_p2') || '') ne 'inactive') {
+        && ($request->getParam('_p2') || '') ne 'inactive'
+        && ($request->getParam('_p2') || '') ne 'paused-start'
+        && !($client->isPlaying(1) && __PACKAGE__->isSpotifyConnect($client))) {
         main::INFOLOG && $log->is_info && $log->info(
             "Ignoring stop event while starting new track"
         );
@@ -2787,6 +2844,7 @@ sub _connectEvent {
         $client->pluginData(connectPauseTs => 0);
         # GH #158: a fresh session start supersedes any remembered pause state
         $client->pluginData(connectSessionPaused => 0);
+        $client->pluginData(connectFollowUpPause => 0);   # 92-06 WR-02: one-shot mark goes with the pause mark
 
         # D-08 mutual exclusion: stop any Browse playback on this player.
         # Phase 78-04: do not stop a Soloist-owned Connect session (the
@@ -3041,6 +3099,8 @@ sub _connectEvent {
         # adopted session, a wake refused inside the own-echo window); its getNextTrack names another title than the
         # daemon's and Control hands the session to browse. For the per-track backend the `playlist play` of the new
         # title below opens it by itself. librespot is untouched (connectEntry is not pertrack).
+        # 92-06 (GH #230): the resume handler keeps the same rule for a stopped player on its own connect entry
+        # (`$stoppedOnOwnEntry`: re-entry via `playlist play`, never `pause 0`).
         elsif (!$client->isPlaying && !$client->isPaused && $newTrackId && !$wantHold
             && (_liveCaps($client)->{connectEntry} // '') eq 'pertrack')
         {
@@ -3092,6 +3152,7 @@ sub _connectEvent {
                 # track; this playlist play starts the next one.
                 my $changePlayUrl = _itemUrl($kind, $newTrackId);
                 $client->pluginData(connectSessionPaused => 0);
+                $client->pluginData(connectFollowUpPause => 0);   # 92-06 WR-02: one-shot mark goes with the pause mark
                 $client->pluginData(connectStartTime => Time::HiRes::time());
                 $client->pluginData(connectStreamDispatchTs => Time::HiRes::time());   # 84-02: _streamElapsedSeconds
                 $client->pluginData(connectOwnPlayUri => $changePlayUrl);   # 84.2-05: one-shot dispatch marker (see _dispatchChangePlay)
@@ -3147,7 +3208,9 @@ sub _connectEvent {
         # handled BEFORE the newTrack/grace suppressions below. Pause the
         # stream (mirrors the plain-stop behavior), then restore the saved
         # pre-Connect power state. The generic un-marked stop (app pause)
-        # never restores power.
+        # never restores power. 92-06 (D-09a): only a deliberate device switch arms
+        # the power-off wait; `_p4 = lost` (failed recovery) skips it, absent marker =
+        # today (old helper, Soloist).
         if (($request->getParam('_p2') || '') eq 'inactive') {
             # 88-10 (D-20, IN-05): a late `stop inactive` of an EARLIER session (counter in _p3)
             # must not end the current one. Compared before anything is touched - no hold/settle
@@ -3198,8 +3261,16 @@ sub _connectEvent {
 
             # GH #158: session over — drop the remembered pause state
             $client->pluginData(connectSessionPaused => 0);
+            $client->pluginData(connectFollowUpPause => 0);   # 92-06 WR-02: one-shot mark goes with the pause mark
 
-            _restorePowerAfterConnect($client);
+            # 92-06 (GH #151 T6, D-09a): only a deliberate device switch arms the power-off.
+            # The helper marks the session end of a failed or given-up recovery as
+            # `_p4 = lost` (92-05): a dropped connection leaves the player on. The marker
+            # is compared exactly; absent or any other value = unmarked = today's rule (old
+            # helper, Soloist, whose Control emits no marker). Read after the D-20 counter
+            # check above, so a stale marked stop never gets here.
+            my $lost = (($request->getParam('_p4') // '') eq 'lost') ? 1 : 0;
+            _restorePowerAfterConnect($client, $lost ? 'lost' : undef);
 
             # GH #216: the claim must not outlive the session - a Spirc ready
             # hours later re-issued play on a switched-off player. Placed after
@@ -3220,6 +3291,65 @@ sub _connectEvent {
 
             return;
         }
+        # 92-06 (GH #230 paused transfer): the helper reports a transfer that arrived paused and
+        # stayed paused (`stop paused-start`, 92-05). LMS plays the entry (`playlist play`) and
+        # sits at BUFFERING/playing 0:00, where it DISCARDS `pause 1` (StreamingController state
+        # table, row Pause) - so the stop must be an LMS `stop`. Only on the player's OWN live
+        # Connect stream: a buffering Browse title (the claim outlives a source switch) is never
+        # stopped (T-92-41). connectPauseTs goes first, so the unmarked LMS echo of this stop
+        # (_onPause, within 1 s) reaches no daemon (T-92-42). The claim and the session counter
+        # stay: the app's Play re-enters through the resume handler. With LMS strictly playing
+        # the stop takes the normal pause path below (fix A).
+        if (($request->getParam('_p2') || '') eq 'paused-start') {
+            unless (__PACKAGE__->isSpotifyConnect($client)) {
+                main::INFOLOG && $log->is_info && $log->info(
+                    "GH #230: paused-start ignored - " . $client->id . " holds no Connect claim"
+                );
+                return;
+            }
+            if (!$client->isPlaying(1)) {
+                if (_neverStarted($client) && _playsOwnLiveConnectStream($client)) {
+                    main::INFOLOG && $log->is_info && $log->info(
+                        "GH #230: transfer arrived paused and LMS never started - stopping instead of pausing: " . $client->id
+                    );
+                    $client->pluginData(connectPauseTs => Time::HiRes::time());
+                    my $pausedStopReq = Slim::Control::Request->new($client->id, ['stop']);
+                    $pausedStopReq->source(__PACKAGE__);
+                    $pausedStopReq->execute();
+                    $client->pluginData(connectSessionPaused => 1);
+                }
+                elsif (_playsOwnLiveConnectStream($client)) {
+                    # 92-08 (review WR-04): the player IS on its own live Connect stream but past INITIAL
+                    # buffering - LMS rebuffers (the stream ran dry behind an app pause inside the helper's
+                    # grace), is paused already, or stopped. The helper has declared the session paused, so it
+                    # is remembered like the sibling branches do (GH #158, an LMS Next then resumes it). Only a
+                    # stuck rebuffer needs the LMS stop (LMS discards `pause 1` while BUFFERING); connectPauseTs
+                    # goes first so the unmarked echo of that stop reaches no daemon.
+                    $client->pluginData(connectSessionPaused => 1);
+                    if (_stuckRebuffer($client)) {
+                        main::INFOLOG && $log->is_info && $log->info(
+                            "GH #230: paused-start while LMS rebuffers on its own Connect stream - stopping instead of pausing: " . $client->id
+                        );
+                        $client->pluginData(connectPauseTs => Time::HiRes::time());
+                        my $rebufferStopReq = Slim::Control::Request->new($client->id, ['stop']);
+                        $rebufferStopReq->source(__PACKAGE__);
+                        $rebufferStopReq->execute();
+                    }
+                    else {
+                        main::INFOLOG && $log->is_info && $log->info(
+                            "GH #230: paused-start - LMS is already not playing its own Connect stream, session remembered as paused: " . $client->id
+                        );
+                    }
+                }
+                else {
+                    main::INFOLOG && $log->is_info && $log->info(
+                        "GH #230: paused-start ignored - " . $client->id . " is not on its own Connect stream"
+                    );
+                }
+                return;
+            }
+        }
+
         # Grace period: ignore spurious stop events during Connect session setup.
         # This is librespot's grace: its old binary fired Stopped between
         # TrackChanged and Playing, which must not pause the LMS player.
@@ -3253,6 +3383,9 @@ sub _connectEvent {
             # a later Next in LMS then follows the paused session (/control/next, /control/play).
             if (__PACKAGE__->isSpotifyConnect($client)) {
                 $client->pluginData(connectSessionPaused => 1);
+                # 92-06 (GH #230 R3 WR-02): LMS discarded nothing here, it was only not asked - the
+                # pause is followed up ONCE when the session's stream reaches PLAYING (_onNewSong).
+                $client->pluginData(connectFollowUpPause => 1);
             }
 
             $log->warn("[DIAG] [$diagTs] stop: player=" . $client->id
@@ -3280,13 +3413,27 @@ sub _connectEvent {
             my $snap = _ctxEndSnapshot($client);
 
             $client->pluginData(connectPauseTs => Time::HiRes::time());
-            my $pauseReq = Slim::Control::Request->new($client->id, ['pause', 1]);
-            $pauseReq->source(__PACKAGE__);
-            $pauseReq->execute();
+            $client->pluginData(connectFollowUpPause => 0);   # 92-06 WR-02: this pause is the follow-up
+            if (_neverStarted($client) && _playsOwnLiveConnectStream($client)) {
+                # 92-06 (GH #230): LMS never started the own stream (INITIAL buffering): it would
+                # discard `pause 1` and play the buffer out at 0:00 - stop it (connectPauseTs is
+                # already stamped above: the echo is suppressed). Same condition as paused-start.
+                main::INFOLOG && $log->is_info && $log->info(
+                    "GH #230: app paused and LMS never started - stopping instead of pausing: " . $client->id
+                );
+                my $neverStopReq = Slim::Control::Request->new($client->id, ['stop']);
+                $neverStopReq->source(__PACKAGE__);
+                $neverStopReq->execute();
+            }
+            else {
+                my $pauseReq = Slim::Control::Request->new($client->id, ['pause', 1]);
+                $pauseReq->source(__PACKAGE__);
+                $pauseReq->execute();
 
-            # 84.3-01 (D-01): did LMS honour the pause? If it discarded it while
-            # rebuffering at a context end, settle with one source-marked stop.
-            _settleCheck($client, $snap);
+                # 84.3-01 (D-01): did LMS honour the pause? If it discarded it while
+                # rebuffering at a context end, settle with one source-marked stop.
+                _settleCheck($client, $snap);
+            }
         }
 
         $log->warn("[DIAG] [$diagTs] stop: player=" . $client->id
@@ -3428,7 +3575,11 @@ sub _roleMode {
     return $be ? $be->state->{mode} : undef;
 }
 
-# _restorePowerAfterConnect($client)
+# _restorePowerAfterConnect($client, $cause)
+# 92-06 (GH #151 T6, D-09a): $cause is 'lost' when the helper marked the session end as a lost
+# connection (`stop inactive <n> lost`): the saved state is cleared and NO wait is armed - a
+# dropped connection never switches the player off (side effect: after a drop the player stays
+# on until it is switched off by hand). Any other value, or none, is the deliberate end.
 # GH #151 (D-36): at Connect session end, power the player OFF again if it was
 # off before the session - as a per-player opt-in (pref connectPowerOff,
 # default off) and CONNECT_POWER_OFF_DELAY_S seconds later (_powerOffDue),
@@ -3444,15 +3595,24 @@ sub _roleMode {
 # lives on the master), so save/restore applies to the player that received
 # the event and the master's setting counts.
 sub _restorePowerAfterConnect {
-    my ($client) = @_;
+    my ($client, $cause) = @_;
 
     my $prev = _prevPowerGet($client);
     return unless defined $prev;
 
     if ($prev) {
         _prevPowerClear($client);
-        main::DEBUGLOG && $log->is_debug && $log->debug(
+        # INFO, not DEBUG (maintainer promise in GH #151, 2026-11-14)
+        main::INFOLOG && $log->is_info && $log->info(
             "Session end: player " . $client->id . " was on before Connect - leaving on (GH #151)"
+        );
+        return;
+    }
+
+    if (defined $cause && $cause eq 'lost') {
+        _prevPowerClear($client);
+        main::INFOLOG && $log->is_info && $log->info(
+            "Session end: connection to Spotify lost - leaving " . $client->id . " on, no power-off (GH #151 T6)"
         );
         return;
     }

@@ -781,6 +781,109 @@ sub _isLivePlayback {
     return 0;
 }
 
+# _pendingChanges($class, $helper, $client) -> hash of the settings whose wanted
+# value differs from the alive helper's spawn value (92-03, GH #232). Keys: name,
+# and for a librespot helper also connect, passthrough, bitrate; the value is the
+# WANTED value. The ONE place that compares spawn values with the wanted ones:
+# startHelper (both backend branches) and pendingRestartReasons read it, so the
+# restart decision and the settings-page note cannot drift apart. A pure read: no
+# stop, no start, no log.
+sub _pendingChanges {
+    my ($class, $helper, $client) = @_;
+    my %chg;
+    return %chg unless $helper && $client;
+
+    my $expectedName = $class->deviceNameForClient($client);
+    $chg{name} = $expectedName if ($helper->name || '') ne $expectedName;
+
+    # a Soloist helper has no librespot spawn values: only its name is compared
+    return %chg if ($helper->backendName // '') eq 'soloist';
+
+    my $wantConnect = _isConnectEnabled($client) ? 1 : 0;
+    $chg{connect} = $wantConnect if ($helper->_connectEnabled // -1) != $wantConnect;
+
+    my $wantPassthrough = $class->resolvePassthroughForClient($client) ? 1 : 0;
+    $chg{passthrough} = $wantPassthrough if ($helper->_passthrough // -1) != $wantPassthrough;
+
+    # Issue #97: the bitrate preference is a spawn argument too
+    require Plugins::SpotOn::Plugin;
+    my $wantBitrate = Plugins::SpotOn::Plugin->_bitrateConfigForClient($client);
+    $chg{bitrate} = $wantBitrate if ($helper->_bitrate // 0) != $wantBitrate;
+
+    return %chg;
+}
+
+# _restartUnlessStreaming($class, $clientId, $helper, $client, $what, $detail) ->
+# 1 when the daemon was stopped for the restart, 0 when the change waits (92-03,
+# GH #232, D-04). The name-change rule for every spawn setting: while the player
+# pulls audio from the daemon (_isStreamActive) the change is only logged and the
+# 60 s watchdog (initHelpers) retries; no second timer or queue. Callers set their
+# $helper to undef on a 1.
+sub _restartUnlessStreaming {
+    my ($class, $clientId, $helper, $client, $what, $detail) = @_;
+
+    if ($class->_isStreamActive($helper, $client)) {
+        main::INFOLOG && $log->is_info && $log->info(
+            "$what change for $clientId deferred - stream active; watchdog will retry"
+        );
+        return 0;
+    }
+
+    main::INFOLOG && $log->is_info && $log->info(
+        "$what changed for $clientId ($detail) - restarting daemon"
+    );
+    $class->stopHelper($clientId);
+    return 1;
+}
+
+# _connectOffEndsSession($class, $client, $chg) -> 1 when the pending change set
+# ($chg, the hash ref form of _pendingChanges) turns Spotify Connect OFF while this
+# player holds the Connect claim (92-03, D-05). That restart is never deferred: a
+# deliberate Connect-off ends the session now. Connect ON, or OFF while only Browse
+# plays, follow the ordinary rule. A missing or failing Connect module reads as no
+# claim. Shared by startHelper and pendingRestartReasons.
+sub _connectOffEndsSession {
+    my ($class, $client, $chg) = @_;
+    return 0 unless $client && ref $chg eq 'HASH' && exists $chg->{connect} && !$chg->{connect};
+    my $claimed = eval {
+        require Plugins::SpotOn::Connect;
+        Plugins::SpotOn::Connect->isSpotifyConnect($client);
+    };
+    return $claimed ? 1 : 0;
+}
+
+# pendingRestartReasons($class, $client) -> { branch => 'live'|'snapshot', reasons => [...] }
+# while a saved spawn setting of this player's alive daemon waits behind playback,
+# else an empty list (92-03, GH #232, D-06). Read by the player settings page on
+# EVERY render, so it is a pure read: it compares nothing itself (_pendingChanges),
+# stops nothing and starts nothing. The D-05 case (Connect OFF with the claim held)
+# restarts at once and is not pending. `branch` names which half of _isStreamActive
+# holds, so the page can word the note to the real rule: 'live' = a SpotOn title is
+# playing on this player; 'snapshot' = nothing plays but the health snapshot still
+# counts the daemon as busy (up to ~5 min after playback ended).
+sub pendingRestartReasons {
+    my ($class, $client) = @_;
+    return unless $client;
+
+    my $helper = $class->helperForClient($client);
+    return unless $helper && $helper->alive;
+
+    # the daemon belongs to the player it was spawned for (the sync master for a group):
+    # startHelper compares that player's values, so the page of a synced slave must too (92-08, WR-01)
+    my $owner = Slim::Player::Client::getClient($helper->mac) || $client;
+
+    my %chg = $class->_pendingChanges($helper, $owner);
+    # D-05: Connect OFF with the claim held stops the whole daemon at once (startHelper), the fresh spawn
+    # carries every wanted value - nothing waits, whatever else changed (92-08, WR-02)
+    return if $class->_connectOffEndsSession($owner, \%chg);
+    return unless %chg && $class->_isStreamActive($helper, $owner);
+
+    return {
+        branch  => ($class->_isLivePlayback($owner) ? 'live' : 'snapshot'),
+        reasons => [ sort keys %chg ],
+    };
+}
+
 # _helperSessionPaired($class, $helper) -> 1 when the helper's current session is
 # the paired account itself, else 0 (89-07, D-20 and its amendment). The evidence
 # is the session user of the last periodic /health (%helperSessionUser): at most
@@ -2169,8 +2272,11 @@ sub _roleOf {
 # 84-12 (SEAM-6.2): asks the dying helper's own role what a dead daemon
 # means (onDaemonExit; $exitCode undef = the role reads it itself). A role
 # that cannot be resolved (amputated install) answers 'restart' -- the
-# generic path. The hook itself is NOT eval-guarded, exactly like the
-# former _handleSoloistBuildExpiry call it replaces.
+# generic path. The hook IS eval-guarded (84 review WR-03, the IN-05
+# reasoning of _soloistHealthTick): a die in the role must never stop
+# _streamAlivePoll before its re-arm. It costs one WARN (player + error)
+# and the generic restart path. The success-flag form tells a die from a
+# plain undef answer (undef stays a silent 'restart').
 sub _exitActionFor {
     my ($class, $helper, $exitCode) = @_;
     my $role = eval { _roleOf($helper) };
@@ -2179,7 +2285,16 @@ sub _exitActionFor {
             . ($helper->backendName // '?') . "' -- generic restart path");
         return 'restart';
     }
-    return $role->onDaemonExit($helper, $exitCode) // 'restart';
+    my $action;
+    my $ok = eval { $action = $role->onDaemonExit($helper, $exitCode); 1 };
+    unless ($ok) {
+        my $err = $@ // '';
+        chomp $err;
+        $log->warn("SpotOn daemon for " . ($helper->mac // '?') . ": onDaemonExit failed: "
+            . ($err || 'unknown error') . " -- generic restart path");
+        return 'restart';
+    }
+    return $action // 'restart';
 }
 
 # _applyExitAction($class, $helper, $action) -> 1 handled here | 0 restart
@@ -3400,8 +3515,9 @@ sub startHelper {
         my $helper = $existing;
 
         if ($helper && $helper->alive) {
-            my $expectedName = $class->deviceNameForClient($client);
-            if (($helper->name || '') ne $expectedName) {
+            my %chg = $class->_pendingChanges($helper, $client);   # 92-03: the one comparison site
+            if (exists $chg{name}) {
+                my $expectedName = $chg{name};
                 if ($class->_isStreamActive($helper, $client)) {
                     main::INFOLOG && $log->is_info && $log->info(
                         "Soloist name change for $clientId deferred - stream active; watchdog will retry"
@@ -3622,8 +3738,13 @@ sub startHelper {
     if ($helper && $helper->alive) {
         my $client = Slim::Player::Client::getClient($clientId);
         if ($client) {
-            my $expectedName = $class->deviceNameForClient($client);
-            if (($helper->name || '') ne $expectedName) {
+            # 92-03 (GH #232, D-04): _pendingChanges is the one comparison site; every
+            # spawn setting except the account follows the name-change rule - while the
+            # player pulls audio the restart waits for the 60 s watchdog.
+            my %chg = $class->_pendingChanges($helper, $client);
+
+            if (exists $chg{name}) {
+                my $expectedName = $chg{name};
                 if ($class->_isStreamActive($helper, $client)) {
                     main::INFOLOG && $log->is_info && $log->info(
                         "Name change for $clientId deferred - stream active; watchdog will retry"
@@ -3639,38 +3760,39 @@ sub startHelper {
                 }
             }
 
-            if ($helper && $helper->alive) {
-                my $wantConnect = _isConnectEnabled($client) ? 1 : 0;
-                if (($helper->_connectEnabled // -1) != $wantConnect) {
+            if ($helper && $helper->alive && exists $chg{connect}) {
+                my $wantConnect = $chg{connect};
+                my $detail = "was " . ($helper->_connectEnabled // '?') . ", now $wantConnect";
+                if ($class->_connectOffEndsSession($client, \%chg)) {
+                    # D-05: a deliberate Connect-off ends the session now, as before 92-03
                     main::INFOLOG && $log->is_info && $log->info(
-                        "Connect toggle changed for $clientId (was " . ($helper->_connectEnabled // '?') . ", now $wantConnect) - restarting daemon"
+                        "Connect toggle changed for $clientId ($detail) - Connect session active, restarting now (D-05)"
                     );
                     $class->stopHelper($clientId);
                     $helper = undef;
+                }
+                else {
+                    $helper = undef if $class->_restartUnlessStreaming(
+                        $clientId, $helper, $client, 'Connect toggle', $detail
+                    );
                 }
             }
 
-            if ($helper && $helper->alive) {
-                my $wantPassthrough = $class->resolvePassthroughForClient($client) ? 1 : 0;
-                if (($helper->_passthrough // -1) != $wantPassthrough) {
-                    main::INFOLOG && $log->is_info && $log->info(
-                        "Passthrough format changed for $clientId (was " . ($helper->_passthrough // '?') . ", now $wantPassthrough) - restarting daemon"
-                    );
-                    $class->stopHelper($clientId);
-                    $helper = undef;
-                }
-                # Issue #97: restart daemon when bitrate preference changes
-                if ($helper && $helper->alive) {
-                    require Plugins::SpotOn::Plugin;
-                    my $wantBitrate = Plugins::SpotOn::Plugin->_bitrateConfigForClient($client);
-                    if (($helper->_bitrate // 0) != $wantBitrate) {
-                        main::INFOLOG && $log->is_info && $log->info(
-                            "Bitrate changed for $clientId (was " . ($helper->_bitrate // '?') . ", now $wantBitrate) - restarting daemon"
-                        );
-                        $class->stopHelper($clientId);
-                        $helper = undef;
-                    }
-                }
+            if ($helper && $helper->alive && exists $chg{passthrough}) {
+                my $wantPassthrough = $chg{passthrough};
+                $helper = undef if $class->_restartUnlessStreaming(
+                    $clientId, $helper, $client, 'Passthrough format',
+                    "was " . ($helper->_passthrough // '?') . ", now $wantPassthrough"
+                );
+            }
+
+            # Issue #97: restart daemon when bitrate preference changes
+            if ($helper && $helper->alive && exists $chg{bitrate}) {
+                my $wantBitrate = $chg{bitrate};
+                $helper = undef if $class->_restartUnlessStreaming(
+                    $clientId, $helper, $client, 'Bitrate',
+                    "was " . ($helper->_bitrate // '?') . ", now $wantBitrate"
+                );
             }
         }
     }

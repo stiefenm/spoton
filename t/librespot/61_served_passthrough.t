@@ -343,7 +343,13 @@ sub code_of {
     ok(defined $start, "79-34 D-29: startHelper found in DaemonManager.pm");
     like($daemon, qr/->resolvePassthroughForClient\(\$client\)/, "79-34 D-29: Daemon.pm spawn still calls the pref resolver (--passthrough flag)");
     unlike($daemon, qr/resolveServedPassthroughForClient/, "79-34 D-29: Daemon.pm spawn does not call the served resolver");
-    like($start // '', qr/->resolvePassthroughForClient\(\$client\)/, "79-34 D-29: startHelper passthrough restart branch still calls the pref resolver");
+    # 92-03: the spawn-value comparison moved out of startHelper into _pendingChanges (the one comparison site);
+    # the restart trigger still compares the PREF resolver with the helper's spawn flag.
+    my $pending = code_of($module, '_pendingChanges');
+    ok(defined $pending, "92-03: _pendingChanges found in DaemonManager.pm");
+    like($pending // '', qr/->resolvePassthroughForClient\(\$client\)/, "79-34 D-29: the passthrough restart comparison (_pendingChanges, read by startHelper) still calls the pref resolver");
+    unlike($pending // '', qr/resolveServedPassthroughForClient/, "79-34 D-29: _pendingChanges does not call the served resolver");
+    like($start // '', qr/_pendingChanges\(/, "92-03: startHelper reads its comparison from _pendingChanges");
     unlike($start // '', qr/resolveServedPassthroughForClient/, "79-34 D-29: startHelper does not call the served resolver");
 }
 

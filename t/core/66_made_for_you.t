@@ -2386,7 +2386,8 @@ sub k1b_run {
 sub k1b_rl_reqs  { return grep { $_->{url} =~ m{/rootlist} } @Slim::Networking::SimpleAsyncHTTP::requests; }
 sub k1b_all_reqs { return scalar grep { $_->{url} !~ /apresolve/ } @Slim::Networking::SimpleAsyncHTTP::requests; }
 sub k1b_drop_lists { my ($acct) = @_; $CK->remove('spoton_spclient_libpl_' . ($acct // 'acct1')); $CK->remove('spoton_spclient_rootlist_' . ($acct // 'acct1')); }
-sub k1b_rev_key { my ($r) = @_; my ($id) = $r->{uri} =~ /\Aspotify:playlist:(.+)\z/; return "spoton_plmeta_${id}_" . ($r->{revision} // 'norev'); }
+# 92-01 (GH #209): the per-playlist meta key carries the account id: spoton_plmeta_<account>_<id>_<revision or norev>
+sub k1b_rev_key { my ($r, $acct) = @_; $acct //= 'acct1'; my ($id) = $r->{uri} =~ /\Aspotify:playlist:(.+)\z/; return "spoton_plmeta_${acct}_${id}_" . ($r->{revision} // 'norev'); }
 sub k1b_stats {
     my ($res) = @_;
     my @it = @{ ($res && $res->{items}) || [] };
@@ -2433,7 +2434,7 @@ t_block('k1b T2 page', sub {
     no warnings 'redefine';
     local *Plugins::SpotOn::API::SpClient::_libClock = sub { $T };
     my $nameless = { id => 'k1bMissing0000000000001', name => 'Nowhere', owner => 'testuser' };
-    my $NK = 'spoton_plmeta_k1bMissing0000000000001_norev';
+    my $NK = 'spoton_plmeta_acct1_k1bMissing0000000000001_norev';
     my $MK = 'spoton_libv3_capped_acct1_k1bMissing0000000000001';
     k1b_setup(fx => $fx, defs => [ $nameless ], all => sub { my ($e, $o) = @_; return (200, $JSON->encode(k1b_unrelated_page($o, 5000))) });
     my ($r2) = k1b_run();
@@ -2496,6 +2497,109 @@ t_block('k1b T2 page', sub {
     ok(scalar(pf_requests()) == 10 && $r5 && @{ $r5->{items}[1]{images} || [] } >= 1 && ref $m5 eq 'HASH' && @{ $m5->{images} || [] } >= 1
         && !defined $CK->get("spoton_libv3_capped_acct1_$sid"),
         'j57 cap: a hit on a page before the limit is still applied (cover in the list, positive entry, no marker)');
+});
+
+# 92-01 (GH #209): the per-playlist meta key carries the account
+# a libraryV3 page for one account: %$with maps playlist id -> cover file name (undef = the playlist is in the page, without a cover)
+sub k1b209_page {
+    my ($off, $total, $with) = @_;
+    my @items = map {
+        my $id = $_;
+        my $cv = $with->{$id};
+        +{ depth => 0, item => { __typename => 'PlaylistResponseWrapper', _uri => "spotify:playlist:$id", data => {
+            __typename => 'Playlist', uri => "spotify:playlist:$id", name => 'Shared', revisionId => 'AAAA',
+            images => { items => (defined $cv ? [ { sources => [ { url => 'https://i.scdn.co/image/' . $cv, width => undef, height => undef } ] } ] : []) },
+            ownerV2 => { data => { __typename => 'User', username => 'testuser', name => 'Test User', uri => 'spotify:user:testuser' } },
+        } } };
+    } sort keys %{ $with || {} };
+    return { data => { me => { libraryV3 => { __typename => 'LibraryPage', items => \@items, totalCount => $total, pagingInfo => { limit => 50, offset => $off } } } } };
+}
+sub k1b209_images { my ($res) = @_; return join(',', map { $_->{url} } @{ ($res && $res->{items}[0]{images}) || [] }); }
+
+t_block('92-01 #209 account key', sub {
+    my $P  = 'k1b209Shared0000000001';
+    my $CA = 'ab67706c0000da84' . ('aa' x 12);
+    my $CB = 'ab67706c0000da84' . ('bb' x 12);
+    my $def = +{ id => $P, name => 'Shared', owner => 'testuser' };
+
+    # #209-1 / #209-2: the positive direction (a cover of account A is never read by account B)
+    k1b_setup(defs => [ $def ], all => sub { my ($e, $o) = @_; return (200, $JSON->encode(k1b209_page($o, 1, { $P => $CA }))) });
+    my ($rA) = k1b_run('acct1');
+    like(k1b209_images($rA), qr/\Q$CA\E/, '#209-0: account A shows the cover libraryV3 answered');
+    my $keyA = "spoton_plmeta_acct1_${P}_norev";
+    my $keyB = "spoton_plmeta_acct2_${P}_norev";
+    ok(ref $CK->get($keyA) eq 'HASH' && @{ $CK->get($keyA)->{images} || [] } == 1, '#209-2: after account A\'s run the meta entry exists under the account A key');
+    ok(!defined $CK->get($keyB) && !defined $CK->get("spoton_plmeta_${P}_norev"),
+        '#209-2: and none under the account B key nor under the old unkeyed key');
+    k1b_drop_lists('acct1');
+    http_rule(qr{pathfinder/v2/query}, k1b_pf_rule(clone($K1B), all => sub { my ($e, $o) = @_; return (200, $JSON->encode(k1b209_page($o, 1, { $P => undef }))) }));
+    my $b1 = scalar(pf_requests());
+    my ($rB) = k1b_run('acct2');
+    ok(scalar(pf_requests()) - $b1 >= 1, '#209-1: account B asks libraryV3 for the playlist account A already resolved');
+    unlike(k1b209_images($rB), qr/\Q$CA\E/, '#209-1: and its item never carries the cover cached by account A');
+
+    # #209-4: the negative direction (account A's "Spotify has nothing" never hides account B's cover)
+    k1b_setup(defs => [ $def ], all => sub { my ($e, $o) = @_; return (200, $JSON->encode(k1b209_page($o, 1, {}))) });
+    k1b_run('acct1');
+    my $negA = $CK->get($keyA);
+    ok(ref $negA eq 'HASH' && !@{ $negA->{images} || [] }, '#209-4: account A\'s run wrote the negative entry (no such playlist in its library)');
+    k1b_drop_lists('acct1');
+    http_rule(qr{pathfinder/v2/query}, k1b_pf_rule(clone($K1B), all => sub { my ($e, $o) = @_; return (200, $JSON->encode(k1b209_page($o, 1, { $P => $CB }))) }));
+    my $b4 = scalar(pf_requests());
+    my ($rB4) = k1b_run('acct2');
+    ok(scalar(pf_requests()) - $b4 >= 1, '#209-4: account B still asks libraryV3 for the playlist account A holds a negative entry for');
+    like(k1b209_images($rB4), qr/\Q$CB\E/, '#209-4: and its item carries account B\'s own cover');
+});
+
+# 92-01 (DJ): Spotify DJ never in Library > Playlists
+t_block('92-01 DJ filter', sub {
+    my $DJID = '37i9dQZF1EYkqdzj48dyYq';
+    my $CV   = 'ab67706c0000da84' . ('cc' x 12);
+    my $rev  = sub { pack('H*', $_[0]) };
+    my $dA  = +{ id => 'k1bDjAlpha000000000001', name => 'Alpha', owner => 'testuser', picture => pack('H*', $CV) };
+    my $dJ  = +{ id => $DJID, name => 'DJ', owner => 'spotify' };
+    my $dC1 = +{ id => 'k1bDjCover00000000001', name => 'Covered', owner => 'testuser', revision => $rev->('11aa22bb') };
+    my $dC2 = +{ id => 'k1bDjBare000000000001', name => 'Bare',    owner => 'testuser', revision => $rev->('33cc44dd') };
+    my $page = sub { my ($o, $with) = @_; return (200, $JSON->encode(k1b209_page($o, 2, $with))) };
+
+    # DJ-1, DJ-4, DJ-5, DJ-2 (need set): DJ in the middle of the rootlist, two playlists after it that libraryV3 resolves
+    k1b_setup(defs => [ $dA, $dJ, $dC1, $dC2 ], all => sub { my ($e, $o) = @_; return $page->($o, { $dC1->{id} => $CV }) });
+    my ($res) = k1b_run('acct1');
+    my @uris = map { $_->{uri} } @{ ($res && $res->{items}) || [] };
+    is_deeply(\@uris, [ map { 'spotify:playlist:' . $_->{id} } $dA, $dC1, $dC2 ],
+        'DJ-1: Spotify DJ is not in Library > Playlists, the others stay in rootlist order');
+    ok(!defined $CK->get("spoton_plmeta_acct1_${DJID}_norev"),
+        'DJ-2: DJ is not in the libraryV3 need set (it is neither asked nor negatively cached)');
+    my $k1 = $CK->get(k1b_rev_key({ uri => 'spotify:playlist:' . $dC1->{id}, revision => '11aa22bb' }));
+    my $k2 = $CK->get(k1b_rev_key({ uri => 'spotify:playlist:' . $dC2->{id}, revision => '33cc44dd' }));
+    ok(ref $k1 eq 'HASH' && @{ $k1->{images} || [] } == 1 && ref $k2 eq 'HASH' && !@{ $k2->{images} || [] },
+        'DJ-4: the playlists after DJ get their own revision-keyed entries (cover found, negative entry)');
+    like(k1b209_images({ items => [ $res->{items}[1] ] }), qr/\Q$CV\E/, 'DJ-4: and the covered one carries its libraryV3 cover');
+    my $rl = $CK->get('spoton_spclient_rootlist_acct1');
+    ok(ref $rl eq 'ARRAY' && scalar(grep { ($_->{id} // '') eq $DJID } @$rl) == 1 && scalar(@$rl) == 4,
+        'DJ-5: the shared rootlist cache still holds DJ (Made For You reads it)');
+
+    # DJ-2: a rootlist of DJ alone sends no libraryV3 request at all
+    k1b_setup(defs => [ $dJ ], all => sub { my ($e, $o) = @_; return $page->($o, {}) });
+    my ($resJ) = k1b_run('acct1');
+    is(scalar(pf_requests()), 0, 'DJ-2: a rootlist of DJ alone sends no libraryV3 request');
+    is(scalar(@{ ($resJ && $resJ->{items}) || [] }), 0, 'DJ-2: and lists nothing');
+
+    # DJ-3: libraryMetaStatus does not count DJ as missing or skipped (a capped run leaves the unseen ones missing + skipped)
+    my $T = 1_700_200_000;
+    no warnings 'redefine';
+    local *Plugins::SpotOn::API::SpClient::_libClock = sub { $T };
+    my $dZ = +{ id => 'k1bDjZed0000000000001', name => 'Zed', owner => 'testuser' };
+    my $cap = sub { my ($e, $o) = @_; return (200, $JSON->encode(k1b_unrelated_page($o, 5000))) };
+    k1b_setup(defs => [ $dJ, $dZ ], all => $cap);
+    k1b_run('acct1');
+    my $with = $SP->libraryMetaStatus() || {};
+    k1b_setup(defs => [ $dZ ], all => $cap);
+    k1b_run('acct1');
+    my $without = $SP->libraryMetaStatus() || {};
+    is(join(',', $with->{state} // '?', $with->{missing} // '?', $with->{skipped} // '?'), 'ok,1,1',
+        'DJ-3: with DJ in the rootlist the status counts missing 1 and skipped 1 (only the playlist that is not DJ)');
+    is(join(',', $without->{missing} // '?', $without->{skipped} // '?'), '1,1', 'DJ-3: the same run without DJ gives the same counts');
 });
 
 t_block('k1b T2 merge', sub {
@@ -2709,7 +2813,7 @@ t_block('k1b T3 status', sub {
     push @$defsS, +{ id => 'k1bSeeded00000000000001', name => 'Seeded', owner => 'k1bnobodyowner',
                      picture => pack('H*', 'ab67706c0000da84' . ('cc' x 12)) };
     k1b_setup(fx => $fxS, defs => $defsS);
-    $CK->set('spoton_plmeta_k1bSeeded00000000000001_norev',
+    $CK->set('spoton_plmeta_acct1_k1bSeeded00000000000001_norev',
         { images => [ { url => 'https://i.scdn.co/image/ab67706c0000da84' . ('cc' x 12), width => undef, height => undef } ] }, 86400);
     k1b_run();
     my $b3 = $st->() || {};

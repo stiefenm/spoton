@@ -148,4 +148,4 @@ jobs:
         with:
           name: fake-libpulse-${{ matrix.bin_dir }}
           path: Plugins/SpotOn/Bin/${{ matrix.bin_dir }}/libpulse.so.0
-          retention-days: 30
+          retention-days: 1

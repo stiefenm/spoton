@@ -450,6 +450,93 @@ my $DM = 'Plugins::SpotOn::Unified::DaemonManager';
 }
 
 # ============================================================
+# 92-02 (84 review WR-03): a die in onDaemonExit does not stop the poll.
+# _exitActionFor guards the role hook with the success-flag eval: a die is
+# told apart from an undef answer, costs one WARN naming the player and the
+# error, and maps to 'restart' (the generic counted restart path runs and the
+# poll re-arms itself). Modelled on W2 (i) above (librespot mock role).
+# ============================================================
+{
+    require Plugins::SpotOn::Backend;
+    Plugins::SpotOn::Backend::classFor('librespot');
+
+    my $cachedir = tempdir(CLEANUP => 1);
+    make_path("$cachedir/spoton");
+    open(my $cf, '>', "$cachedir/spoton/credentials.json") or die "credentials.json: $!";
+    print $cf '{}';
+    close $cf;
+
+    local $Slim::Utils::Prefs::FAKE_VALUES{backend}       = 'librespot';
+    local $Slim::Utils::Prefs::FAKE_VALUES{cachedir}      = $cachedir;
+    local $Slim::Utils::Prefs::FAKE_VALUES{activeAccount} = undef;
+
+    my $hookMode = 'die';
+    my @warns;
+    my @polls;
+    no warnings 'redefine';
+    local *Plugins::SpotOn::Backend::Librespot::onDaemonExit = sub {
+        die "boom-92-02 cache unwritable\n" if $hookMode eq 'die';
+        return undef                        if $hookMode eq 'undef';
+        return 'park';
+    };
+    local *Slim::Utils::Log::warn = sub { shift; push @warns, join('', map { $_ // '' } @_); };
+    local *Slim::Utils::Timers::setTimer = sub {
+        my ($obj, $when, $cb) = @_;
+        push @polls, $cb if ref($cb) eq 'CODE' && $cb == \&Plugins::SpotOn::Unified::DaemonManager::_streamAlivePoll;
+    };
+    local $Plugins::SpotOn::API::Credentials::IS_CRED_ERROR = 0;
+    local $Plugins::SpotOn::Unified::Daemon::TAIL = 'thread main panicked: something unrelated';
+
+    my $mac = 'aa:bb:cc:dd:ee:92';
+
+    # WR03-1 + WR03-2: the hook dies
+    {
+        my $helper = $DM->startHelper($mac);
+        ok($helper && $helper->backendName eq 'librespot', "92-02 WR03 setup: startHelper registered a librespot helper for $mac");
+        $helper->alive(0);
+        $hookMode = 'die';
+        (@warns, @polls) = ();
+        my $countBefore = $DM->_crashStateFor($mac)->{count} // 0;
+
+        my $lived = eval { Plugins::SpotOn::Unified::DaemonManager::_streamAlivePoll(); 1 };
+        ok($lived, '92-02 WR03-1: _streamAlivePoll returns normally when onDaemonExit dies') or diag($@);
+        is($DM->_crashStateFor($mac)->{count}, $countBefore + 1,
+            '92-02 WR03-1: the generic counted restart path ran (crash count +1)');
+        my @w = grep { /onDaemonExit failed/ && /\Q$mac\E/ && /boom-92-02/ } @warns;
+        is(scalar(@w), 1, '92-02 WR03-1: one WARN names the player MAC, "onDaemonExit failed" and the error');
+        ok(scalar(@polls) >= 1, '92-02 WR03-2: the poll armed its own timer again after the die');
+        $DM->stopHelper($mac);
+    }
+
+    # WR03-3: undef answer, no die -> restart path, no WARN
+    # (own MAC: the crash backoff state of $mac above would swallow a second count)
+    {
+        my $mac = 'aa:bb:cc:dd:ee:93';
+        my $helper = $DM->startHelper($mac);
+        $helper->alive(0);
+        $hookMode = 'undef';
+        @warns = ();
+        my $countBefore = $DM->_crashStateFor($mac)->{count} // 0;
+        Plugins::SpotOn::Unified::DaemonManager::_streamAlivePoll();
+        is($DM->_crashStateFor($mac)->{count}, $countBefore + 1,
+            '92-02 WR03-3: a hook answering undef still maps to the generic restart path');
+        is(scalar(grep { /onDaemonExit failed/ } @warns), 0, '92-02 WR03-3: an undef answer logs no "onDaemonExit failed" WARN');
+        is($DM->_exitActionFor($helper, undef), 'restart', '92-02 WR03-3: _exitActionFor answers restart for undef');
+        $DM->stopHelper($mac);
+    }
+
+    # WR03-4: a defined word passes through unchanged
+    {
+        my $helper = $DM->startHelper($mac);
+        $hookMode = 'park';
+        @warns = ();
+        is($DM->_exitActionFor($helper, undef), 'park', "92-02 WR03-4: a hook answering 'park' passes through");
+        is(scalar(grep { /onDaemonExit failed/ } @warns), 0, '92-02 WR03-4: no WARN for a normal answer');
+        $DM->stopHelper($mac);
+    }
+}
+
+# ============================================================
 # 79-61 (79-REVIEW-FULL-2 WR-01): a daemon stop no longer blocks until the
 # process has exited (Unified/ProcStop.pm). startHelper must not spawn a new
 # daemon for a player whose previous process is still exiting (same data

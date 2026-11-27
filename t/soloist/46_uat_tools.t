@@ -6554,4 +6554,93 @@ subtest 'extract-run-90.1-09-gh230-stop-grace' => sub {
     unlike($o2, qr/GH #230: stop inside|Ignoring spurious stop during|Spotify told us to pause: /, '90.1-09 G1: no title carries a literal its pattern matches');
 };
 
+# 92-11 (phase 92 rig proofs): the log lines of #151 (session end, power state), #232 (deferred daemon restarts) and #230
+# (paused transfer, app pause at the start) and the helper's three markers (4.1.0) are printed in their own categories, so every
+# phase-92 rig proof quotes them from extract.txt (rule 4: an uncategorised line is only counted). The literals are read from
+# Connect.pm, DaemonManager.pm and the helper sources (drift guard); the line forms are SYNTHETIC, texts from the 92-03, 92-05 and
+# 92-06 SUMMARYs. X92-3: the 90.1-07 entry is still the last server.log category and no title carries a literal of its pattern.
+subtest 'extract-run-92' => sub {
+    my $mac = $p90_mac;
+    my $pfx = $p90_pfx;
+    my $con = _slurp("$project_dir/Plugins/SpotOn/Connect.pm");
+    my $dm  = _slurp("$project_dir/Plugins/SpotOn/Unified/DaemonManager.pm");
+    for my $lit ('Connect session ended (device inactive)', 'Session end: ', 'power-off cancelled', 'power-off skipped',
+                 'was on before Connect', 'GH #230 WR-02: ', 'LMS never started - stopping instead of pausing',
+                 'paused-start ignored - ', 'standing on its own Connect entry - re-entering Connect',
+                 'Ignoring stop event while starting new track',
+                 'paused-start while LMS rebuffers on its own Connect stream - stopping instead of pausing',
+                 'paused-start - LMS is already not playing its own Connect stream, session remembered as paused') {
+        ok(index($con, $lit) >= 0, "92-11 X92: Connect.pm still carries the literal '$lit'");
+    }
+    for my $lit ('deferred - stream active', 'restarting now (D-05)', '- restarting daemon') {
+        ok(index($dm, $lit) >= 0, "92-11 X92: DaemonManager.pm still carries the literal '$lit'");
+    }
+    my $rs = "$project_dir/librespot-spoton/src/connect.rs";
+    if (-f $rs) {
+        my $rust = _slurp($rs);
+        for my $lit ('paused start: no Playing within', 'stop inactive marked lost') {
+            ok(index($rust, $lit) >= 0, "92-11 X92: connect.rs still carries the literal '$lit'");
+        }
+    }
+    my %sl = (
+        ended   => "${pfx}1.0000] Plugins::SpotOn::Connect::_connectEvent (3254) Connect session ended (device inactive) - pausing $mac",
+        lost    => "${pfx}1.1000] Plugins::SpotOn::Connect::_restorePowerAfterConnect (3592) Session end: connection to Spotify lost - leaving $mac on, no power-off (GH #151 T6)",
+        wason   => "${pfx}1.2000] Plugins::SpotOn::Connect::_restorePowerAfterConnect (3584) Session end: player $mac was on before Connect - leaving on (GH #151)",
+        cancel  => "${pfx}1.3000] Plugins::SpotOn::Connect::_powerOffCancel (3645) power-off cancelled - Connect is active again ($mac) (GH #151)",
+        skip    => "${pfx}1.4000] Plugins::SpotOn::Connect::_powerOffFire (3661) power-off skipped - $mac is already off (GH #151)",
+        defer   => "${pfx}2.0000] Plugins::SpotOn::Unified::DaemonManager::_restartUnlessStreaming (827) Connect toggle change for $mac deferred - stream active; watchdog will retry",
+        restart => "${pfx}2.1000] Plugins::SpotOn::Unified::DaemonManager::_restartUnlessStreaming (833) Bitrate changed for $mac (was 160, now 320) - restarting daemon",
+        d05     => "${pfx}2.2000] Plugins::SpotOn::Unified::DaemonManager::startHelper (3763) Connect toggle changed for $mac (was 1, now 0) - Connect session active, restarting now (D-05)",
+        wr02    => "${pfx}3.0000] Plugins::SpotOn::Connect::_onNewSong (1083) GH #230 WR-02: session was paused while LMS buffered - pausing now: $mac",
+        never   => "${pfx}3.1000] Plugins::SpotOn::Connect::_connectEvent (3313) GH #230: transfer arrived paused and LMS never started - stopping instead of pausing: $mac",
+        pignore => "${pfx}3.2000] Plugins::SpotOn::Connect::_connectEvent (3306) GH #230: paused-start ignored - $mac holds no Connect claim",
+        reenter => "${pfx}3.3000] Plugins::SpotOn::Connect::_onResume (2485) GH #230: resume on a stopped player standing on its own Connect entry - re-entering Connect via playlist play: $mac",
+        newtr   => "${pfx}3.4000] Plugins::SpotOn::Connect::_connectEvent (2727) Ignoring stop event while starting new track",
+        wr04a   => "${pfx}3.5000] Plugins::SpotOn::Connect::_connectEvent (3331) GH #230: paused-start while LMS rebuffers on its own Connect stream - stopping instead of pausing: $mac",
+        wr04b   => "${pfx}3.6000] Plugins::SpotOn::Connect::_connectEvent (3340) GH #230: paused-start - LMS is already not playing its own Connect stream, session remembered as paused: $mac",
+        other   => "${pfx}4.0000] Plugins::SpotOn::Connect::_connectEvent (3200) Connect event start for $mac",
+    );
+    my %dl = (
+        lost   => "2026-11-20 12:00:05.000: [spoton] session end after a failed recovery: stop inactive marked lost",
+        paused => "2026-11-20 12:00:06.000: [spoton] paused start: no Playing within 8000 ms after a suppressed Paused - sending stop paused-start",
+        drop   => "2026-11-20 12:00:07.000: [spoton/unified] paused start expiry dropped (recovering, invalid session, Browse or settle window)",
+        other  => "2026-11-20 12:00:08.000: heartbeat ok",
+    );
+    my ($exit, $stdout, $stderr) = $p90_run->(
+        server => [ map { $sl{$_} } qw(ended lost wason cancel skip defer restart d05 wr02 never pignore reenter newtr wr04a wr04b other) ],
+        daemon => [ map { $dl{$_} } qw(lost paused drop other) ],
+    );
+    is($exit, 0, '92-11 X92: extract-run runs (exit 0)') or diag("stderr: $stderr");
+
+    my %cat = (
+        end   => 'server.log: phase-92 end of a Connect session and the power state afterwards (Connect.pm, #151)',
+        defer => 'server.log: phase-92 setting changes that wait for playback or restart the daemon (DaemonManager, #232)',
+        paus  => 'server.log: phase-92 paused transfer, app pause at the start and resume re-entry (Connect.pm, #230)',
+        dmn   => 'Daemon-Log: phase-92 helper markers (lost session end, start that never got Playing, dropped expiry; helper 4.1.0)',
+    );
+    my %body = map { $_ => $p90_section->($stdout, $cat{$_}) } keys %cat;
+    # X92-1: server.log
+    ok(index($body{end}, $sl{$_}) >= 0, "92-11 X92-1: the '$_' line is printed in the session-end category") for qw(ended lost wason cancel skip);
+    ok(index($body{defer}, $sl{$_}) >= 0, "92-11 X92-1: the '$_' line is printed in the deferral category") for qw(defer restart d05);
+    ok(index($body{paus}, $sl{$_}) >= 0, "92-11 X92-1: the '$_' line is printed in the #230 category") for qw(wr02 never pignore reenter newtr wr04a wr04b);
+    for my $c (qw(end defer paus)) {
+        ok(index($body{$c}, $sl{other}) < 0, "92-11 X92-1: an ordinary Connect line stays out of the '$c' category");
+    }
+    # X92-2: daemon log
+    ok(index($body{dmn}, substr($dl{$_}, index($dl{$_}, '[spoton')) ) >= 0, "92-11 X92-2: the '$_' daemon line is printed in the helper-marker category") for qw(lost paused drop);
+    unlike($body{dmn}, qr/heartbeat/, '92-11 X92-2: an ordinary daemon line stays out of the helper-marker category');
+    # empty window: not-found marker per category, no title carries a literal its pattern matches
+    my ($e2, $o2) = $p90_run->(server => [], daemon => []);
+    is($e2, 0, '92-11 X92: extract-run on empty logs runs (exit 0)');
+    like($o2, qr/\[MUSTER NICHT GEFUNDEN IM FENSTER\] \Q$cat{$_}\E/, "92-11 X92: an empty window carries the not-found marker for '$_'") for sort keys %cat;
+    unlike($o2, qr/Connect session ended \(device inactive\)|Session end: |power-off cancelled|power-off skipped|was on before Connect|deferred - stream active|- restarting daemon|restarting now \(D-05\)|GH #230 WR-02: |LMS never started - stopping instead of pausing|paused-start ignored - |standing on its own Connect entry|Ignoring stop event while starting new track|stop inactive marked lost|paused start: no Playing within|paused start expiry dropped/,
+        '92-11 X92-3: no title carries a literal its pattern matches');
+    # X92-3: the 90.1-07 entry is still the last server.log category (its section is followed by the remainder line)
+    my $xr = _slurp("$project_dir/tools/uat/extract-run.pl");
+    my ($srv_block) = $xr =~ /my \@SRV_CATS = \((.*?)\n\);/s;
+    my @names = $srv_block =~ /^\s*\{ name => (?:'([^']*)'|"([^"]*)"),/mg;
+    @names = grep { defined } @names;
+    like($names[-1], qr/^server\.log: SpotOn next-title dispatch to Control/, '92-11 X92-3: the 90.1-07 entry is still the last server.log category');
+};
+
 done_testing();

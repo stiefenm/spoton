@@ -681,6 +681,22 @@ my @SRV_CATS = (
     # the pattern matches (an empty block prints the title too).
     { name => 'server.log: Connect app pause in the start window (#230 fix A honoured / spurious-stop grace / normal pause path; Connect.pm _connectEvent, phase 90.1-09)',
       pat  => qr/GH #230: stop inside the start grace while LMS really plays|Ignoring spurious stop during Connect session setup grace period|Spotify told us to pause: /, count => 1 },
+    # 92-11 (phase 92 rig proofs): three groups of server.log lines the phase-92 proofs quote and that no category printed (rule 4:
+    # uncategorised lines are only counted). They sit before the 90.1-07 entry, which stays last (its section is followed by the
+    # remainder line). The TITLES carry none of the literals the patterns match, because an empty block prints the title too.
+    # (a) #151: the end of a Connect session and what happens to the power state afterwards (Connect.pm: the `inactive` stop, the
+    #     `Session end: ` INFO lines incl. the T6 lost case, the power-off wait's cancel/skip lines; 92-06).
+    { name => 'server.log: phase-92 end of a Connect session and the power state afterwards (Connect.pm, #151)',
+      pat  => qr/Connect session ended \(device inactive\)|Session end: |power-off cancelled|power-off skipped|was on before Connect/, count => 1 },
+    # (b) #232: a setting change that waits for playback, its restart, and the D-05 immediate restart (DaemonManager.pm, 92-03).
+    #     `- restarting daemon` is the common tail of every restart line (name, connect, passthrough, bitrate, account).
+    { name => 'server.log: phase-92 setting changes that wait for playback or restart the daemon (DaemonManager, #232)',
+      pat  => qr/change for \S+ deferred - stream active|- restarting daemon|restarting now \(D-05\)/, count => 1 },
+    # (c) #230: the paused-transfer path of 92-06 (WR-02 follow-up pause, LMS stop instead of pause while the own stream never
+    #     started, the ignored paused-start cases, the two 92-08 WR-04 own-stream cases, the resume re-entry) and the H7 filter's stop line. The 90.1-09 lines (stop
+    #     inside the start grace, spurious-stop grace, normal pause path) stay in their own category above.
+    { name => 'server.log: phase-92 paused transfer, app pause at the start and resume re-entry (Connect.pm, #230)',
+      pat  => qr/GH #230 WR-02: |LMS never started - stopping instead of pausing|paused-start ignored - |paused-start while LMS rebuffers on its own Connect stream|paused-start - LMS is already not playing its own Connect stream|standing on its own Connect entry - re-entering Connect|Ignoring stop event while starting new track/, count => 1 },
     # 90.1-07 (#225 re-measurement): the dispatch line of every LMS next-title request on a Soloist player (Backend::Soloist,
     # `origin=lms` or `origin=connect`; the older ProtocolHandler 896 echo has the same tail). The historical `(718...)`
     # category above matches only the [DIAG] line, which exists only with diagnosticMode on, so on the rig it read empty
@@ -862,6 +878,13 @@ my @DMN_CATS = (
     # "nicht gefunden im Fenster" (no early end attempted in that window), never "the shim ignored the mark".
     { name => 'Daemon-Log: phase-90 end-gap early EOF (near-end mark / early-end outcome; fake-libpulse PR #212)',
       pat  => qr/\] (?:near-end|early-end): /, count => 1 },
+    # 92-11 (helper 4.1.0, plan 92-05): the helper's three session markers. `stop inactive marked lost` (INFO, after a sent notify
+    # of a failed or given-up recovery), `paused start: no Playing within <ms> ms after a suppressed Paused - sending stop
+    # paused-start` (INFO) and `paused start expiry dropped (..)` (INFO, `[spoton/unified]`). The 92-09 counter of the paused-start
+    # line reads each fixture's extract.txt from here. Before this entry the lines were only counted (rule 4). The title carries none
+    # of the literals the pattern matches.
+    { name => 'Daemon-Log: phase-92 helper markers (lost session end, start that never got Playing, dropped expiry; helper 4.1.0)',
+      pat  => qr/stop inactive marked lost|paused start: no Playing within|paused start expiry dropped/, count => 1 },
 );
 
 # Rauschkategorien des Daemon-Logs: eigene Behandlung, aber sie zaehlen als

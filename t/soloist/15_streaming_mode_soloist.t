@@ -493,7 +493,7 @@ my $prefs = Slim::Utils::Prefs::preferences('plugin.spoton');
 # ============================================================
 SKIP: {
     my $player_module = "$project_dir/Plugins/SpotOn/Settings/Player.pm";
-    skip "Settings/Player.pm not yet updated with soloistQuality handler", 5
+    skip "Settings/Player.pm not yet updated with soloistQuality handler", 13
         unless -f $player_module && do {
             open(my $fh, '<', $player_module) or die $!;
             my $src = do { local $/; <$fh> };
@@ -501,7 +501,7 @@ SKIP: {
             $src =~ /pref_soloistQuality/;
         };
 
-    skip "Settings::Player and Quality.pm required for per-player soloistQuality test", 5
+    skip "Settings::Player and Quality.pm required for per-player soloistQuality test", 13
         unless eval { require Plugins::SpotOn::Settings::Player; require Plugins::SpotOn::Soloist::Quality; 1 };
 
     no warnings 'redefine', 'once';
@@ -544,6 +544,47 @@ SKIP: {
         sub { }, undef, undef
     );
     is($apply_calls, 1, '83.3-02: changing away from global calls applyChange once');
+
+    # 92-02 AUTO-3..6: an own level Automatic (0) is a real own level, not
+    # 'global' (the old `|| 'global'` default read the falsy 0 as 'global').
+    my $a3 = MockClient->new('gate92a3');
+    $prefs->client($a3)->set('soloistQuality', 0);
+    $apply_calls = 0;
+    Plugins::SpotOn::Settings::Player->handler(
+        $a3, { saveSettings => 1, pref_soloistQuality => 'global' },
+        sub { }, undef, undef
+    );
+    is($prefs->client($a3)->get('soloistQuality'), 'global',
+        "92-02 AUTO-3: own level 0, page saved with 'global' -> pref becomes 'global'");
+    is($apply_calls, 1, '92-02 AUTO-3: the role quality() is called once for the switch back to global');
+
+    my $a4 = MockClient->new('gate92a4');
+    $prefs->client($a4)->set('soloistQuality', 0);
+    $apply_calls = 0;
+    Plugins::SpotOn::Settings::Player->handler(
+        $a4, { saveSettings => 1, pref_soloistQuality => 0 },
+        sub { }, undef, undef
+    );
+    is($prefs->client($a4)->get('soloistQuality'), 0, '92-02 AUTO-4: own level 0 saved as 0 -> pref stays 0');
+    is($apply_calls, 0, '92-02 AUTO-4: saving 0 again writes nothing and calls no role');
+
+    my $a5 = MockClient->new('gate92a5');
+    $apply_calls = 0;
+    Plugins::SpotOn::Settings::Player->handler(
+        $a5, { saveSettings => 1, pref_soloistQuality => 0 },
+        sub { }, undef, undef
+    );
+    my $v5 = $prefs->client($a5)->get('soloistQuality');
+    ok(defined $v5 && $v5 eq '0', '92-02 AUTO-5: no pref before, saved with 0 -> pref 0 written');
+    is($apply_calls, 1, '92-02 AUTO-5: the role quality() is called once with level 0');
+
+    my $a6 = MockClient->new('gate92a6');
+    $prefs->client($a6)->set('soloistQuality', 0);
+    my $p6 = {};
+    my $lived6 = eval { Plugins::SpotOn::Settings::Player->handler($a6, $p6, sub { }, undef, undef); 1 };
+    ok($lived6, '92-02 AUTO-6: the player page renders with own level 0') or diag($@);
+    ok(defined $p6->{soloistQuality} && $p6->{soloistQuality} eq '0',
+        "92-02 AUTO-6: render param soloistQuality is 0 (Automatic selected), not 'global'");
 }
 
 # ============================================================

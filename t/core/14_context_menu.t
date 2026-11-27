@@ -117,6 +117,10 @@ sub get {
 
 sub set {
     my (\$self, \$key, \$val) = \@_;
+    if (exists \$_ns_store{ \$self->{_ns} }) {    # 92-13: the server namespace is settable (maxPlaylistLength, itemsPerPage)
+        \$_ns_store{ \$self->{_ns} }{\$key} = \$val;
+        return;
+    }
     \$_store{ \$self->{_ns} }{\$key} = \$val;
 }
 
@@ -153,7 +157,9 @@ END
 # Stub: Slim::Utils::Timers
 write_stub($stub_dir, 'Slim::Utils::Timers', <<'END');
 package Slim::Utils::Timers;
-sub setTimer   { }
+# 92-13 (GH #238): a queue, so that a test can step through the timers the plugin sets
+our @queue;
+sub setTimer   { my ($obj, $when, $cb, @args) = @_; push @queue, [ $obj, $when, $cb, @args ]; return }
 sub killTimers { }
 1;
 END
@@ -389,11 +395,22 @@ sub getMadeForYou {
     push @mfy_calls, [$accountId];
     $cb->($next_mfy, $next_mfy_err);
 }
+our $playlist_items_hook = undef;    # 92-13: when set, answers instead of $next_playlist_items: ($params, $cb)
 sub getPlaylistItems {
     my ($class, $accountId, $playlistId, $params, $cb) = @_;
     push @playlist_items_calls, [$accountId, $playlistId, $params];
+    return $playlist_items_hook->($params, $cb) if $playlist_items_hook;
     $cb->($next_playlist_items);
 }
+our $saved_tracks_hook = undef;      # 92-13: ($params, $cb); default answer is an empty list
+our @saved_tracks_calls = ();
+sub getSavedTracks {
+    my ($class, $accountId, $params, $cb) = @_;
+    push @saved_tracks_calls, [$accountId, $params];
+    return $saved_tracks_hook->($params, $cb) if $saved_tracks_hook;
+    $cb->({ items => [], total => 0 });
+}
+sub trackBatchSize { return 100 }
 sub getTopTracks {
     my ($class, $accountId, $params, $cb) = @_;
     push @top_calls, [$accountId, $params];
@@ -439,6 +456,9 @@ sub reset_calls {
     $next_mfy             = { items => [], source => 'pathfinder' };
     $next_mfy_err         = undef;
     $next_playlist_items  = { items => [], total => 0 };
+    $playlist_items_hook  = undef;
+    $saved_tracks_hook    = undef;
+    @saved_tracks_calls   = ();
     @mfy_calls            = ();
     @playlist_items_calls = ();
 }
@@ -546,6 +566,36 @@ require_ok('Plugins::SpotOn::Plugin')
 
 require_ok('Plugins::SpotOn::ProtocolHandler')
     or BAIL_OUT("Failed to load ProtocolHandler.pm");
+
+# ============================================================
+# Timer queue helpers (92-13): the Slim::Utils::Timers stub queues every setTimer call
+# ============================================================
+sub reset_timers { @Slim::Utils::Timers::queue = (); return }
+
+# run_one_timer: runs the oldest queued timer, 1 when one ran, 0 when the queue was empty
+sub run_one_timer {
+    my $t = shift @Slim::Utils::Timers::queue or return 0;
+    my ($obj, $when, $cb, @args) = @$t;
+    $cb->($obj, @args);
+    return 1;
+}
+
+# is_deeply_quiet: deep comparison of two arrays of plain strings without emitting a test line
+sub is_deeply_quiet {
+    my ($got, $want) = @_;
+    return 0 unless @$got == @$want;
+    for my $i (0 .. $#$got) { return 0 unless ($got->[$i] // '') eq $want->[$i] }
+    return 1;
+}
+
+# run_timers: steps until the queue is empty, returns the number of steps
+sub run_timers {
+    my $steps = 0;
+    while (run_one_timer()) {
+        die "run_timers: more than 10000 steps" if ++$steps > 10000;
+    }
+    return $steps;
+}
 
 # ============================================================
 # Mock client object
@@ -1794,6 +1844,7 @@ my @gone_hints = qw(PLUGIN_SPOTON_MIGRATION_REQUIRED PLUGIN_SPOTON_REAUTH_REQUIR
 #   AOF-5 control: album tab has no cap, no hint
 # ============================================================
 {
+    main::reset_timers();
     my $client = MockClient->new('player-kus');
     Slim::Utils::Prefs::preferences('plugin.spoton')->set('activeAccount', 'kus-account');
 
@@ -1821,6 +1872,7 @@ my @gone_hints = qw(PLUGIN_SPOTON_MIGRATION_REQUIRED PLUGIN_SPOTON_REAUTH_REQUIR
         my $res;
         Plugins::SpotOn::Plugin::_artistAlbumsFeed($client, sub { $res = shift }, $args,
             { artistId => $artistId, includeGroups => $groups });
+        main::run_timers();
         return $res;
     };
     my $isHint = sub {
@@ -1922,6 +1974,435 @@ my @gone_hints = qw(PLUGIN_SPOTON_MIGRATION_REQUIRED PLUGIN_SPOTON_REAUTH_REQUIR
         is(scalar @$it, 150, 'AOF-5: album Play-All fill holds 150 items');
         is($texts->($it), 0, 'AOF-5: album Play-All fill has no hint row');
     }
+}
+
+# 92-13 (GH #238): the favourite path (explodePlaylist, playlist branch) yields per cached page (cells #238-X1..X3)
+# LMS plays the favorites_url spoton://playlist:<id> of a playlist item through explodePlaylist, which pages
+# getPlaylistItems on its own. A page answered synchronously (cache hit) hands the next page to a 0-delay timer;
+# a page that arrived later continues directly; a list of one page completes inside the call.
+{
+    my $client = MockClient->new('player-fav238');
+    Slim::Utils::Prefs::preferences('plugin.spoton')->set('activeAccount', 'fav238-account');
+
+    my $entries = sub {
+        my ($n) = @_;
+        return [ map { { track => { id => sprintf('XT%03d', $_), name => "Fav Track $_", uri => sprintf('spotify:track:XT%03d', $_),
+                                    artists => [ { id => 'XA1', name => 'Fav Artist' } ],
+                                    album   => { id => 'XAL1', name => 'Fav Album', images => [] },
+                                    duration_ms => 1000 } } } 1 .. $n ];
+    };
+    my $slice_for = sub {
+        my ($all, $params) = @_;
+        my $from = $params->{offset};
+        my $to   = $from + $params->{limit} - 1;
+        $to = $#$all if $to > $#$all;
+        return { items => ($from <= $to ? [ @{$all}[$from .. $to] ] : []), total => scalar(@$all) };
+    };
+    my $requests = sub {
+        join(' ', map { $_->[2]{offset} . '+' . $_->[2]{limit} } @Plugins::SpotOn::API::SpClient::playlist_items_calls);
+    };
+    my $wanted_urls = sub { [ map { sprintf('spoton://track:XT%03d', $_) } 1 .. $_[0] ] };
+
+    # X1: warm, 25 entries, page size 10, every page answered synchronously
+    {
+        Plugins::SpotOn::API::SpClient::reset_calls();
+        main::reset_timers();
+        my $all = $entries->(25);
+        $Plugins::SpotOn::API::SpClient::playlist_items_hook = sub { my ($params, $cb) = @_; $cb->($slice_for->($all, $params)) };
+        my ($res, $fired) = (undef, 0);
+        Plugins::SpotOn::ProtocolHandler->explodePlaylist($client, 'spoton://playlist:xfav238a', sub { $res = shift; $fired++ });
+        my @bad;
+        push @bad, 'after the call: requests "' . $requests->() . '" (want 0+10)' unless $requests->() eq '0+10';
+        push @bad, "after the call: callback fired $fired times" if $fired;
+        my @q = @Slim::Utils::Timers::queue;
+        push @bad, 'after the call: ' . scalar(@q) . ' queued timers (want 1)' unless @q == 1;
+        push @bad, 'timer object is not undef or the timer is not due now'
+            unless @q && !defined $q[0][0] && $q[0][1] <= Time::HiRes::time();
+        main::run_one_timer();
+        push @bad, 'after one step: requests "' . $requests->() . '" (want 0+10 10+10)' unless $requests->() eq '0+10 10+10';
+        push @bad, "after one step: callback fired $fired times" if $fired;
+        main::run_one_timer();
+        push @bad, 'after two steps: requests "' . $requests->() . '" (want 0+10 10+10 20+10)' unless $requests->() eq '0+10 10+10 20+10';
+        push @bad, "after two steps: callback fired $fired times (want 1)" unless $fired == 1;
+        my @urls = map { $_->{url} } @{ ($res && $res->{items}) || [] };
+        push @bad, 'urls: ' . scalar(@urls) . ' items, not the 25 entries in order' unless is_deeply_quiet(\@urls, $wanted_urls->(25));
+        push @bad, scalar(@Slim::Utils::Timers::queue) . ' timers left in the queue' if @Slim::Utils::Timers::queue;
+        diag(join("\n", @bad)) if @bad;
+        ok(!@bad, '#238-X1: warm favourite playlist - one request per timer tick, 25 items in order after the last tick');
+    }
+
+    # X2: one page (7 entries) completes inside the call
+    {
+        Plugins::SpotOn::API::SpClient::reset_calls();
+        main::reset_timers();
+        my $all = $entries->(7);
+        $Plugins::SpotOn::API::SpClient::playlist_items_hook = sub { my ($params, $cb) = @_; $cb->($slice_for->($all, $params)) };
+        my ($res, $fired) = (undef, 0);
+        Plugins::SpotOn::ProtocolHandler->explodePlaylist($client, 'spoton://playlist:xfav238b', sub { $res = shift; $fired++ });
+        my @bad;
+        push @bad, "callback fired $fired times before the call returned (want 1)" unless $fired == 1;
+        push @bad, 'requests "' . $requests->() . '" (want 0+10)' unless $requests->() eq '0+10';
+        push @bad, scalar(@Slim::Utils::Timers::queue) . ' timers queued (want 0)' if @Slim::Utils::Timers::queue;
+        push @bad, 'items: ' . scalar(@{ ($res && $res->{items}) || [] }) . ' (want 7)' unless @{ ($res && $res->{items}) || [] } == 7;
+        diag(join("\n", @bad)) if @bad;
+        ok(!@bad, '#238-X2: a favourite playlist of one page completes inside the call, no timer');
+    }
+
+    # X3: cold, every page arrives later - the next page is requested directly, never through the timer
+    {
+        Plugins::SpotOn::API::SpClient::reset_calls();
+        main::reset_timers();
+        my $all = $entries->(25);
+        my @pending;
+        $Plugins::SpotOn::API::SpClient::playlist_items_hook = sub { my ($params, $cb) = @_; push @pending, [ $params, $cb ] };
+        my ($res, $fired) = (undef, 0);
+        Plugins::SpotOn::ProtocolHandler->explodePlaylist($client, 'spoton://playlist:xfav238c', sub { $res = shift; $fired++ });
+        my @bad;
+        push @bad, 'after the call: requests "' . $requests->() . '" (want 0+10)' unless $requests->() eq '0+10';
+        push @bad, 'timer queued after the call' if @Slim::Utils::Timers::queue;
+        for my $step (1 .. 3) {
+            my $p = shift @pending or do { push @bad, "no pending page $step"; last };
+            $p->[1]->($slice_for->($all, $p->[0]));
+            push @bad, "after callback $step: " . scalar(@Slim::Utils::Timers::queue) . ' timers queued (want 0)' if @Slim::Utils::Timers::queue;
+            if ($step == 1) {
+                push @bad, 'after callback 1: requests "' . $requests->() . '" (want 0+10 10+10)' unless $requests->() eq '0+10 10+10';
+            } elsif ($step == 2) {
+                push @bad, 'after callback 2: requests "' . $requests->() . '" (want 0+10 10+10 20+10)' unless $requests->() eq '0+10 10+10 20+10';
+            }
+        }
+        push @bad, "callback fired $fired times (want 1)" unless $fired == 1;
+        my @urls = map { $_->{url} } @{ ($res && $res->{items}) || [] };
+        push @bad, 'urls: ' . scalar(@urls) . ' items, not the 25 entries in order' unless is_deeply_quiet(\@urls, $wanted_urls->(25));
+        diag(join("\n", @bad)) if @bad;
+        ok(!@bad, '#238-X3: cold favourite playlist - each page continues directly, no timer, 25 items in order');
+    }
+
+    Plugins::SpotOn::API::SpClient::reset_calls();
+    main::reset_timers();
+}
+
+# 92-13 (GH #238): play/add stops at the queue limit (cells #238-P1..P11)
+# An ADD or INSERT request for a playlist or for Liked Songs fetches at most the server pref maxPlaylistLength
+# entries (92-08 WR-03, user decision 2026-11-26: PLAY is never capped, so touch-to-play on a track beyond the
+# limit keeps its entry); a browse is never capped and a truncated list never enters the play-all cache.
+{
+    my $client = MockClient->new('player-cap238');
+    my $prefsrv = Slim::Utils::Prefs::preferences('server');
+    Slim::Utils::Prefs::preferences('plugin.spoton')->set('activeAccount', 'cap238-account');
+    my $setlimit = sub { $prefsrv->set('maxPlaylistLength', $_[0]); $prefsrv->set('itemsPerPage', $_[1] // 50) };
+
+    # symbol-table guard: the file runs to its end while _playAddCap does not exist yet (RED)
+    my $cap = sub { defined(&Plugins::SpotOn::Plugin::_playAddCap) ? Plugins::SpotOn::Plugin::_playAddCap($_[0]) : '<no _playAddCap>' };
+
+    # --- the rule (P1..P5)
+    $setlimit->(150, 50);
+    my $ctl = sub { return { isControl => 1, params => { _method => $_[0], %{ $_[1] || {} } } } };
+    is($cap->($ctl->('add')),    150, '#238-P1: a control ADD command (no index, no quantity) is capped at maxPlaylistLength');
+    is($cap->($ctl->('insert')), 150, '#238-P1: a control INSERT command is capped at maxPlaylistLength');
+    is($cap->($ctl->('play')),  undef, '#238-P1: a control PLAY command is NOT capped (WR-03)');
+    is($cap->($ctl->('load')),  undef, '#238-P1: a control LOAD command is NOT capped (WR-03)');
+    is($cap->($ctl->('play', { touchToPlay => 1 })), undef, '#238-P1: touch-to-play is NOT capped (WR-03)');
+    is($cap->({ isControl => 1 }), undef, '#238-P1: a control request without a method is NOT capped (unknown = full list, as before 92-13)');
+    is($cap->({ isControl => 1, index => 0, quantity => 25000 }), undef, '#238-P2: a control browse with quantity 25000 is not capped');
+    is($cap->({ isControl => 1, index => 0, quantity => 200 }), undef, '#238-P2: a control browse with quantity 200 is not capped');
+    is($cap->({ isWeb => 1, index => 0, quantity => 150 }), undef, '#238-P3: web play/addall (quantity = limit) cannot be told from a play, so it is NOT capped (WR-03)');
+    is($cap->({ isWeb => 1, index => 0, quantity => 50 }), undef, '#238-P3: a web page (quantity 50) is not capped');
+    $setlimit->(150, 150);
+    is($cap->({ isWeb => 1, index => 0, quantity => 150 }), undef, '#238-P4: itemsPerPage equal to maxPlaylistLength is ambiguous, not capped');
+    for my $none (0, undef, '', 'abc') {
+        $setlimit->($none, 50);
+        is($cap->($ctl->('add')), undef, '#238-P5: maxPlaylistLength ' . (defined $none ? "'$none'" : 'undef') . ' means no cap');
+    }
+
+    # --- the feeds (P6..P11)
+    my $mk = sub {
+        my ($n, $prefix) = @_;
+        return [ map { { track => { id => sprintf('CT%03d', $_), name => "$prefix $_", uri => sprintf('spotify:track:CT%03d', $_),
+                                    artists => [ { id => 'CA1', name => 'Cap Artist' } ],
+                                    album   => { id => 'CAL1', name => 'Cap Album', images => [] },
+                                    duration_ms => 1000 } } } 1 .. $n ];
+    };
+    my $slice_for = sub {
+        my ($all, $params) = @_;
+        my $from = $params->{offset};
+        my $to   = $from + $params->{limit} - 1;
+        $to = $#$all if $to > $#$all;
+        return { items => ($from <= $to ? [ @{$all}[$from .. $to] ] : []), total => scalar(@$all) };
+    };
+    my $playlist = $mk->(250, 'Cap Track');
+    my $liked    = $mk->(250, 'Liked Track');
+    my $reqs = sub { join(' ', map { $_->[2]{offset} . '+' . $_->[2]{limit} } @Plugins::SpotOn::API::SpClient::playlist_items_calls) };
+    my $reqs_saved = sub { join(' ', map { $_->[1]{offset} . '+' . $_->[1]{limit} } @Plugins::SpotOn::API::SpClient::saved_tracks_calls) };
+    my $names = sub { [ map { ($_->{name} // '') =~ /^(?:Cap|Liked) Track (\d+) - / ? $1 + 0 : -1 } @{ $_[0] || [] } ] };
+    my $in_order = sub { my ($got, $n) = @_; return @$got == $n && !grep { $got->[$_ - 1] != $_ } 1 .. $n };
+
+    # run: one feed call; returns ($reply, $fired_before_pump, $requests_string)
+    my $run = sub {
+        my ($kind, $args, $id) = @_;
+        Plugins::SpotOn::API::SpClient::reset_calls();
+        main::reset_timers();
+        $Plugins::SpotOn::API::SpClient::playlist_items_hook = sub { my ($p, $cb) = @_; $cb->($slice_for->($playlist, $p)) };
+        $Plugins::SpotOn::API::SpClient::saved_tracks_hook   = sub { my ($p, $cb) = @_; $cb->($slice_for->($liked, $p)) };
+        my ($res, $fired) = (undef, 0);
+        my $cb = sub { $res = shift; $fired++ };
+        if ($kind eq 'playlist') {
+            Plugins::SpotOn::Plugin::_playlistFeed($client, $cb, $args, { playlistId => $id });
+        } else {
+            Plugins::SpotOn::Plugin::_savedTracksFeed($client, $cb, $args);
+        }
+        my $before = $fired;
+        main::run_timers();
+        return ($res, $before, $kind eq 'playlist' ? $reqs->() : $reqs_saved->());
+    };
+
+    # P6 / P7: one playlist, play command then browse
+    $setlimit->(150, 50);
+    my ($r, $before, $rq) = $run->('playlist', $ctl->('add'), 'pcap238a');
+    is($rq, '0+100 100+50', '#238-P6: the add command asks 0+100 and 100+50 (limit 150)');
+    is($before, 0, '#238-P6: the callback has not fired before the pump');
+    ok($in_order->($names->($r && $r->{items}), 150), '#238-P6: the add command delivers the first 150 tracks in order');
+    ($r, $before, $rq) = $run->('playlist', { isControl => 1, index => 0, quantity => 200 }, 'pcap238a');
+    is($r && $r->{total}, 250, '#238-P7: the browse 0/200 right after reports total 250');
+    is(scalar @{ ($r && $r->{items}) || [] }, 200, '#238-P7: the browse 0/200 right after holds 200 items (the truncated list is not cached)');
+
+    # P8: a quantity-25000 browse is not capped; a complete list is cached
+    ($r, $before, $rq) = $run->('playlist', { isControl => 1, index => 0, quantity => 25000 }, 'pcap238b');
+    is($rq, '0+100 100+100 200+100', '#238-P8: a quantity-25000 browse asks 0+100 100+100 200+100');
+    is(scalar @{ ($r && $r->{items}) || [] }, 250, '#238-P8: ... and delivers 250 items');
+    ($r, $before, $rq) = $run->('playlist', { isControl => 1, index => 240, quantity => 20 }, 'pcap238b');
+    ok($r && @{ $r->{items} } == 10 && $r->{total} == 250 && $rq eq '',
+        '#238-P8: the slice 240/20 after it has 10 items, total 250 and sends no request (got ' . scalar(@{ ($r && $r->{items}) || [] }) . ' items, requests "' . $rq . '")');
+
+    # P9: the limit equals the list: nothing is cut, so the list is cached
+    $setlimit->(250, 50);
+    ($r, $before, $rq) = $run->('playlist', $ctl->('add'), 'pcap238c');
+    is(scalar @{ ($r && $r->{items}) || [] }, 250, '#238-P9: limit 250 on a 250-entry list: the add command delivers 250 items');
+    ($r, $before, $rq) = $run->('playlist', { isControl => 1, index => 240, quantity => 20 }, 'pcap238c');
+    ok($r && @{ $r->{items} } == 10 && $r->{total} == 250 && $rq eq '',
+        '#238-P9: the slice 240/20 after it is served from the cache with total 250');
+
+    # P10: no limit
+    $setlimit->(0, 50);
+    ($r, $before, $rq) = $run->('playlist', $ctl->('add'), 'pcap238d');
+    is($rq, '0+100 100+100 200+100', '#238-P10: limit 0: the add command asks 0+100 100+100 200+100');
+    is(scalar @{ ($r && $r->{items}) || [] }, 250, '#238-P10: limit 0: the add command delivers 250 items');
+
+    # P11: Liked Songs
+    $setlimit->(150, 50);
+    ($r, $before, $rq) = $run->('saved', $ctl->('add'));
+    ok($rq eq '0+100 100+50' && $in_order->($names->($r && $r->{items}), 150),
+        '#238-P11: Liked Songs add command asks 0+100 and 100+50 and delivers 150 tracks in order (requests "' . $rq . '")');
+    ($r, $before, $rq) = $run->('saved', { isControl => 1, index => 0, quantity => 200 });
+    is($r && $r->{total}, 250, '#238-P11: the Liked Songs browse 0/200 right after reports total 250');
+
+    # P12 (92-08 WR-03): a PLAY of a list beyond the limit fetches the whole list again, so touch-to-play on
+    # track 200 (index beyond the limit 150) still finds its entry; the complete list is cached
+    $setlimit->(150, 50);
+    for my $m ([ 'play', {} ], [ 'play', { touchToPlay => 1 } ], [ 'load', {} ]) {
+        my $id = 'pcap238p' . $m->[0] . ($m->[1]{touchToPlay} ? 't' : '');
+        ($r, $before, $rq) = $run->('playlist', $ctl->(@$m), $id);
+        is($rq, '0+100 100+100 200+100', '#238-P12: the ' . $m->[0] . ($m->[1]{touchToPlay} ? ' (touch-to-play)' : '') . ' command asks the whole list 0+100 100+100 200+100');
+        ok($in_order->($names->($r && $r->{items}), 250), '#238-P12: ... and delivers all 250 tracks in order, so track 200 exists');
+        ($r, $before, $rq) = $run->('playlist', { isControl => 1, index => 240, quantity => 20 }, $id);
+        ok($r && @{ $r->{items} } == 10 && $r->{total} == 250 && $rq eq '',
+            '#238-P12: the complete play list is cached (slice 240/20 sends no request)');
+    }
+    ($r, $before, $rq) = $run->('saved', $ctl->('play', { touchToPlay => 1 }));
+    ok($rq eq '0+100 100+100 200+100' && $in_order->($names->($r && $r->{items}), 250),
+        '#238-P12: Liked Songs touch-to-play asks the whole list and delivers 250 tracks in order (requests "' . $rq . '")');
+
+    # --- 92-14 (GH #238): the cap in the request shape LMS really sends (cells #238-R1..R6)
+    # What Slim/Control/XMLBrowser.pm (LMS 8.0 to 9.1.1) hands to the feeds of a `spoton` request:
+    #   root feed (handleFeed):  sub cliQuery        params => the request's params copy, isControl => 1;
+    #                                                a levelled item id adds index => <first index>, quantity => 1
+    #   every deeper feed:       sub _cliQuery_done  params => <root reply>->{query}, isControl => 1;
+    #                                                an item query adds index and quantity at the last level,
+    #                                                an intermediate level gets index => <next index>, quantity => 1,
+    #                                                the last level of a playlist command gets neither
+    # The P cells above call the feeds with the ROOT shape (params = request params). That is what the radio
+    # root does (_radioFeed), not what a `spoton playlist add item_id:...` does: its playlist feed is a deeper feed.
+    {
+        my $ITEM = '1.0_Haruki%20Murakami%20Vinyl%20Collection.4.0';   # the item id of the rig command (92-12 step 5(d))
+        my $root_reply = sub {
+            my ($args) = @_;
+            my $out;
+            Plugins::SpotOn::Plugin::handleFeed($client, sub { $out = shift }, $args);
+            return $out || {};
+        };
+        my $ctl_root   = sub { my ($params) = @_; return $root_reply->({ params => $params, isControl => 1, index => 1, quantity => 1 }) };
+        my $pl_cmd     = sub { my ($method, %more) = @_; return { _method => $method, item_id => $ITEM, %more } };
+        my $last_level = sub { my ($root) = @_; return { params => $root->{query}, isControl => 1 } };
+        my $touch      = { _index => 0, _quantity => 200, item_id => '1.0_x.4.0', touchToPlay => '1.0_x.4.0.7', _method => 'play', playIndex => 7 };
+
+        my @verdicts;
+        my $orig_trunc = \&Plugins::SpotOn::Plugin::_playAllTruncated;
+        no warnings 'redefine';
+        local *Plugins::SpotOn::Plugin::_playAllTruncated = sub { my $v = $orig_trunc->(@_); push @verdicts, [ @_[0 .. 3], $v ]; return $v };
+        use warnings 'redefine';
+        my $cuts = sub { join(' ', map { "$_->[3]:$_->[1]/$_->[2]" } grep { $_->[4] } @verdicts) };
+
+        # R1: the root reply relays an add-type method
+        $setlimit->(150, 50);
+        for my $m (qw(add addall insert)) {
+            my $root = $ctl_root->($pl_cmd->($m));
+            is_deeply($root->{query}, { _method => $m }, "#238-R1: the root reply of a control $m command relays the method to the deeper feeds");
+        }
+
+        # R2: nothing else is relayed
+        for my $case (
+            [ 'a play command',                      { params => $pl_cmd->('play'),    isControl => 1, index => 1, quantity => 1 } ],
+            [ 'a load command',                      { params => $pl_cmd->('load'),    isControl => 1, index => 1, quantity => 1 } ],
+            [ 'a playall command',                   { params => $pl_cmd->('playall'), isControl => 1, index => 1, quantity => 1 } ],
+            [ 'touch-to-play',                       { params => $touch, isControl => 1, index => 1, quantity => 1 } ],
+            [ 'an add that carries touchToPlay',     { params => $pl_cmd->('add', touchToPlay => "$ITEM.7"), isControl => 1, index => 1, quantity => 1 } ],
+            [ 'an add that carries playIndex',       { params => $pl_cmd->('add', playIndex => 7), isControl => 1, index => 1, quantity => 1 } ],
+            [ 'an item query with a stray _method',  { params => { _index => 0, _quantity => 200, item_id => $ITEM, _method => 'add' }, isControl => 1, index => 1, quantity => 1 } ],
+            [ 'a root browse',                       { params => { _index => 0, _quantity => 200, menu => 'spoton' }, isControl => 1, index => 0, quantity => 210 } ],
+            [ 'a control request without params',    { isControl => 1 } ],
+            [ 'the web path, even with _method add', { isWeb => 1, wantMetadata => 1, wantIndex => 1, params => { _method => 'add', action => 'addall' } } ],
+            [ 'a request without any flag',          { params => $pl_cmd->('add') } ],
+        ) {
+            my $root = $root_reply->($case->[1]);
+            ok(ref $root->{items} eq 'ARRAY' && !exists $root->{query}, "#238-R2: a root reply arrives and carries no relay for $case->[0]");
+        }
+
+        # R3: the rig command end to end: the root reply, then the last-level call as XMLBrowser makes it
+        @verdicts = ();
+        my $root = $ctl_root->($pl_cmd->('add'));
+        ($r, $before, $rq) = $run->('playlist', $last_level->($root), 'pcap238r3');
+        is($rq, '0+100 100+50', '#238-R3: `spoton playlist add item_id:...` asks 0+100 and 100+50 (limit 150)');
+        ok($in_order->($names->($r && $r->{items}), 150), '#238-R3: ... and delivers the first 150 tracks in order');
+        is($cuts->(), 'playlist:150/250', '#238-R3: ... and reports exactly one cut, 150 of 250 (the queue-limit INFO line)');
+        ($r, $before, $rq) = $run->('playlist', { params => undef, isControl => 1, index => 0, quantity => 200 }, 'pcap238r3');
+        ok($r && $r->{total} == 250 && @{ $r->{items} } == 200, '#238-R3: the browse 0/200 right after reports total 250 and holds 200 items');
+
+        # R4: Liked Songs through the same relay
+        @verdicts = ();
+        ($r, $before, $rq) = $run->('saved', $last_level->($ctl_root->($pl_cmd->('insert', item_id => '3.0'))));
+        ok($rq eq '0+100 100+50' && $in_order->($names->($r && $r->{items}), 150),
+            '#238-R4: an insert of Liked Songs asks 0+100 and 100+50 and delivers 150 tracks in order (requests "' . $rq . '")');
+        is($cuts->(), 'liked songs:150/250', '#238-R4: ... and reports exactly one cut, 150 of 250');
+
+        # R5: a play in the same shape is never capped (WR-03)
+        @verdicts = ();
+        for my $m (qw(play load playall)) {
+            ($r, $before, $rq) = $run->('playlist', $last_level->($ctl_root->($pl_cmd->($m))), "pcap238r5$m");
+            ok($rq eq '0+100 100+100 200+100' && $in_order->($names->($r && $r->{items}), 250),
+                "#238-R5: `spoton playlist $m item_id:...` asks the whole list and delivers 250 tracks (requests \"$rq\")");
+        }
+        ($r, $before, $rq) = $run->('playlist', $last_level->($root_reply->({ params => $touch, isControl => 1, index => 1, quantity => 1 })), 'pcap238r5t');
+        ok($rq eq '0+100 100+100 200+100' && $in_order->($names->($r && $r->{items}), 250),
+            '#238-R5: touch-to-play asks the whole list and delivers 250 tracks (requests "' . $rq . '")');
+        is($cuts->(), '', '#238-R5: ... and no play reports a cut');
+
+        # R6: the relay is a fresh hash per request and holds the method only
+        my $a1 = $ctl_root->($pl_cmd->('add', menu => 'spoton', useContextMenu => 1));
+        my $a2 = $ctl_root->($pl_cmd->('add'));
+        ok(ref $a1->{query} eq 'HASH' && ref $a2->{query} eq 'HASH' && $a1->{query} != $a2->{query} && join(',', sort keys %{ $a1->{query} }) eq '_method',
+            '#238-R6: the relay is a fresh hash per request with the single key _method');
+
+        # --- W cells (92-14 CR-01 / WR-01 / WR-02): the REGISTERED roots of the Material Skin home rows.
+        # HomeExtraBase wraps the root feed in a 60 s memo keyed tag_client_index_quantity, without the method:
+        # every request below one top-level entry (add, play, touch-to-play, browse) shares a slot. The relay
+        # must therefore be derived per request in the wrapper and never be memoized, and it must come from the
+        # row's root args, so that the Playlists and Made For You rows (roots that never relay) relay an add too.
+        {
+            package Plugins::MaterialSkin::HomeExtraBase;
+            our @registered;
+            sub initPlugin { my ($class, %args) = @_; push @registered, { %args }; 1 }
+        }
+        $INC{'Plugins/MaterialSkin/HomeExtraBase.pm'} = 1;
+        my $fake_root = sub {
+            my ($tag) = @_;
+            return sub {
+                my ($cl, $cb, $args) = @_;
+                $cb->({ items => [ { name => "$tag list", type => 'playlist', url => sub { $_[1]->({ items => [] }) } } ], total => 1 });
+            };
+        };
+        {
+            no warnings qw(redefine once);
+            local *Plugins::SpotOn::Plugin::_userPlaylistsFeed  = $fake_root->('Playlists');
+            local *Plugins::SpotOn::Plugin::_madeForYouFeed     = $fake_root->('MadeForYou');
+            local *Plugins::SpotOn::Plugin::_recentlyPlayedFeed = $fake_root->('RecentlyPlayed');
+            local *Plugins::SpotOn::Plugin::_topTracksFeed      = $fake_root->('TopTracks');
+            require Plugins::SpotOn::HomeExtras;
+        }
+        my %row;
+        for my $reg (@Plugins::MaterialSkin::HomeExtraBase::registered) {
+            (my $tag = $reg->{tag}) =~ s/^SpotOnExtras//;
+            $row{$tag} = $reg->{feed};
+        }
+        is_deeply([ sort keys %row ], [ sort qw(MainMenu Playlists MadeForYou RecentlyPlayed TopTracks) ],
+            '#238-W0: the five home rows registered a wrapped root feed');
+
+        my $wclient = MockClient->new('player-w238');
+        my $wrow = sub {
+            my ($tag, $args) = @_;
+            my $out;
+            $row{$tag}->($wclient, sub { $out = shift }, $args);
+            return $out || {};
+        };
+        my $w_add    = sub { return { params => $pl_cmd->('add'),  isControl => 1, index => 1, quantity => 1 } };
+        my $w_play   = sub { return { params => $pl_cmd->('play'), isControl => 1, index => 1, quantity => 1 } };
+        my $w_touch  = sub { return { params => $touch,            isControl => 1, index => 1, quantity => 1 } };
+        my $w_browse = sub { return { params => { _index => 0, _quantity => 200, item_id => $ITEM, menu => 1 }, isControl => 1, index => 1, quantity => 1 } };
+        my $fresh    = sub { Plugins::SpotOn::HomeExtraBase::clearFeedCache() };
+        my $relayed  = sub { my ($rep) = @_; return ref $rep->{items} eq 'ARRAY' && ref $rep->{query} eq 'HASH' && join(',', %{ $rep->{query} }) eq '_method,add' };
+        my $plain    = sub { my ($rep) = @_; return ref $rep->{items} eq 'ARRAY' && !exists $rep->{query} };
+
+        # W1..W3 (CR-01 scenarios 1-3): an add leaves nothing behind for a play, a touch-to-play or a browse
+        for my $later ([ 'play', $w_play ], [ 'touch-to-play', $w_touch ], [ 'browse', $w_browse ]) {
+            $fresh->();
+            ok($relayed->($wrow->('MainMenu', $w_add->())), "#238-W1: the home row root relays an add (before the $later->[0])");
+            ok($plain->($wrow->('MainMenu', $later->[1]->())), "#238-W1: a $later->[0] right after an add (memo window) gets no relay, so it is never capped");
+        }
+
+        # W4 (CR-01 scenario 4): a play or browse that filled the memo slot first must not take the add's relay away
+        for my $first ([ 'play', $w_play ], [ 'browse', $w_browse ], [ 'touch-to-play', $w_touch ]) {
+            $fresh->();
+            ok($plain->($wrow->('MainMenu', $first->[1]->())), "#238-W4: the $first->[0] fills the memo slot without a relay");
+            ok($relayed->($wrow->('MainMenu', $w_add->())), "#238-W4: an add right after the $first->[0] (memo hit) is relayed");
+        }
+
+        # W5: repeated adds on a memo hit: a fresh relay hash each time, items intact
+        $fresh->();
+        my $h1 = $wrow->('MainMenu', $w_add->());
+        my $h2 = $wrow->('MainMenu', $w_add->());
+        ok($relayed->($h1) && $relayed->($h2) && $h1->{query} != $h2->{query} && $h1->{items} != $h2->{items},
+            '#238-W5: a second add on a memo hit is relayed with its own hash and its own items');
+
+        # W6 (WR-01): every other home row relays an add too, on a miss and on a hit, and never a play or a browse
+        for my $tag (qw(Playlists MadeForYou RecentlyPlayed TopTracks)) {
+            $fresh->();
+            ok($relayed->($wrow->($tag, $w_add->())),  "#238-W6: the $tag row relays an add (miss)");
+            ok($relayed->($wrow->($tag, $w_add->())),  "#238-W6: the $tag row relays an add (memo hit)");
+            ok($plain->($wrow->($tag, $w_play->())),   "#238-W6: the $tag row relays no play right after an add");
+            ok($plain->($wrow->($tag, $w_browse->())), "#238-W6: the $tag row relays no browse right after an add");
+            ok($plain->($wrow->($tag, { params => { menu => 'spoton' }, isControl => 1, index => 0, quantity => 210 })),
+                "#238-W6: the $tag row relays nothing on a root browse (item query)");
+        }
+
+        # W7: the relay of a Playlists-row add reaches the playlist cap (XMLBrowser hands the root's `query` on as params)
+        $setlimit->(150, 50);
+        $fresh->();
+        @verdicts = ();
+        ($r, $before, $rq) = $run->('playlist', $last_level->($wrow->('Playlists', $w_add->())), 'pcap238w7');
+        is($rq, '0+100 100+50', '#238-W7: `SpotOnExtrasPlaylists playlist add item_id:...` asks 0+100 and 100+50 (limit 150)');
+        is($cuts->(), 'playlist:150/250', '#238-W7: ... and reports exactly one cut, 150 of 250');
+        @verdicts = ();
+        $fresh->();
+        $wrow->('MainMenu', $w_add->());
+        ($r, $before, $rq) = $run->('playlist', $last_level->($wrow->('MainMenu', $w_play->())), 'pcap238w7b');
+        is($rq, '0+100 100+100 200+100', '#238-W7: a play right after an add on the main menu row still asks the whole list');
+        is($cuts->(), '', '#238-W7: ... and reports no cut');
+
+        delete $INC{'Plugins/SpotOn/HomeExtras.pm'};   # the file-scoped refresh() hook of Plugin.pm keys on it
+    }
+
+    $prefsrv->set('maxPlaylistLength', undef);
+    $prefsrv->set('itemsPerPage', undef);
+    Plugins::SpotOn::API::SpClient::reset_calls();
+    main::reset_timers();
 }
 
 Plugins::SpotOn::API::Client::reset_queue_calls();

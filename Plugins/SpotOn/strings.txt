@@ -921,6 +921,32 @@ PLUGIN_SPOTON_PLAYER_SECTION_GENERAL_DESC
 	PL	Te ustawienia dotyczą obu backendów odtwarzania (librespot i Soloist).
 	SV	Dessa inställningar gäller för båda uppspelningsbackendarna (librespot och Soloist).
 
+PLUGIN_SPOTON_PLAYER_RESTART_DEFERRED_LIVE
+	CS	Uložená změna čeká: právě hraná skladba hraje dál a změna se použije po několika minutách bez přehrávání na tomto přehrávači.
+	DA	En gemt ændring venter: den nuværende titel spiller videre, og ændringen anvendes efter nogle minutter uden afspilning på denne afspiller.
+	DE	Eine gespeicherte Änderung wartet: der laufende Titel spielt weiter, die Änderung wird nach einigen Minuten ohne Wiedergabe auf diesem Player übernommen.
+	EN	A saved change is waiting: the title playing now keeps playing, and the change is applied after a few minutes without playback on this player.
+	ES	Hay un cambio guardado en espera: el tema que suena ahora sigue sonando y el cambio se aplica tras unos minutos sin reproducción en este reproductor.
+	FR	Un changement enregistré est en attente : le titre en cours continue de jouer et le changement est appliqué après quelques minutes sans lecture sur ce lecteur.
+	IT	Una modifica salvata è in attesa: il brano in riproduzione continua e la modifica viene applicata dopo alcuni minuti senza riproduzione su questo player.
+	NL	Een opgeslagen wijziging wacht: de nu spelende titel speelt door en de wijziging wordt toegepast na enkele minuten zonder weergave op deze speler.
+	NO	En lagret endring venter: tittelen som spilles nå fortsetter, og endringen brukes etter noen minutter uten avspilling på denne spilleren.
+	PL	Zapisana zmiana oczekuje: aktualnie odtwarzany utwór gra dalej, a zmiana zostanie zastosowana po kilku minutach bez odtwarzania na tym odtwarzaczu.
+	SV	En sparad ändring väntar: titeln som spelas nu fortsätter, och ändringen tillämpas efter några minuter utan uppspelning på denna spelare.
+
+PLUGIN_SPOTON_PLAYER_RESTART_DEFERRED_IDLE
+	CS	Uložená změna čeká: použije se po několika minutách bez přehrávání na tomto přehrávači.
+	DA	En gemt ændring venter: den anvendes efter nogle minutter uden afspilning på denne afspiller.
+	DE	Eine gespeicherte Änderung wartet: sie wird nach einigen Minuten ohne Wiedergabe auf diesem Player übernommen.
+	EN	A saved change is waiting: it is applied after a few minutes without playback on this player.
+	ES	Hay un cambio guardado en espera: se aplica tras unos minutos sin reproducción en este reproductor.
+	FR	Un changement enregistré est en attente : il est appliqué après quelques minutes sans lecture sur ce lecteur.
+	IT	Una modifica salvata è in attesa: viene applicata dopo alcuni minuti senza riproduzione su questo player.
+	NL	Een opgeslagen wijziging wacht: ze wordt toegepast na enkele minuten zonder weergave op deze speler.
+	NO	En lagret endring venter: den brukes etter noen minutter uten avspilling på denne spilleren.
+	PL	Zapisana zmiana oczekuje: zostanie zastosowana po kilku minutach bez odtwarzania na tym odtwarzaczu.
+	SV	En sparad ändring väntar: den tillämpas efter några minuter utan uppspelning på denna spelare.
+
 PLUGIN_SPOTON_PLAYER_SECTION_LIBRESPOT
 	CS	Pouze s librespot
 	DA	Kun med librespot
@@ -2077,6 +2103,19 @@ PLUGIN_SPOTON_CONNECT_ENABLED_LABEL
 	NO	Aktiver Spotify Connect
 	PL	Włącz Spotify Connect
 	SV	Aktivera Spotify Connect
+
+PLUGIN_SPOTON_CONNECT_OFF_SOLOIST_NOTE
+	CS	S přehráváním Soloist je tento přehrávač v aplikaci Spotify stále uveden, ale SpotOn tam přehrávání odmítne, dokud je Spotify Connect vypnuté.
+	DA	Med Soloist-afspilning vises denne afspiller stadig i Spotify-appen, men SpotOn afviser afspilning dér, så længe Spotify Connect er slået fra.
+	DE	Mit der Soloist-Wiedergabe steht dieser Player weiter in der Spotify-App, SpotOn lehnt die Wiedergabe dort aber ab, solange Spotify Connect aus ist.
+	EN	With the Soloist playback engine this player is still listed in the Spotify app, but SpotOn refuses playback there while Spotify Connect is off.
+	ES	Con la reproducción Soloist este reproductor sigue apareciendo en la app de Spotify, pero SpotOn rechaza la reproducción allí mientras Spotify Connect esté desactivado.
+	FR	Avec la lecture Soloist, ce lecteur reste affiché dans l'application Spotify, mais SpotOn y refuse la lecture tant que Spotify Connect est désactivé.
+	IT	Con la riproduzione Soloist questo player resta visibile nell'app Spotify, ma SpotOn rifiuta la riproduzione lì finché Spotify Connect è disattivato.
+	NL	Met Soloist-weergave blijft deze speler in de Spotify-app staan, maar SpotOn weigert daar het afspelen zolang Spotify Connect uit staat.
+	NO	Med Soloist-avspilling vises denne spilleren fortsatt i Spotify-appen, men SpotOn avviser avspilling der så lenge Spotify Connect er slått av.
+	PL	Przy odtwarzaniu przez Soloist ten odtwarzacz nadal jest widoczny w aplikacji Spotify, ale SpotOn odrzuca tam odtwarzanie, dopóki Spotify Connect jest wyłączone.
+	SV	Med Soloist-uppspelning visas den här spelaren fortfarande i Spotify-appen, men SpotOn avvisar uppspelning där så länge Spotify Connect är avstängt.
 
 PLUGIN_SPOTON_CONNECT_POWER_OFF
 	CS	Po Connectu vypnout

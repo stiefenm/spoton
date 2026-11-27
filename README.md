@@ -89,6 +89,7 @@ See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for common issues and solutions, in
 
 ## Known limitations
 
+- **Soloist and the Spotify Connect switch:** with the Soloist backend a player stays listed in the Spotify app's device picker while its daemon runs, even with Spotify Connect switched off for that player. SpotOn refuses playback started from the Spotify app on such a player, but it cannot hide the entry. SpotOn Settings shows the same note next to the switch. See [#203](https://github.com/stiefenm/spoton/issues/203).
 - **Sync groups:** with the Soloist backend, one very brief stutter within the first second after a group starts can occur (LMS re-aligns the members). Details and a tip for squeezelite on PulseAudio/PipeWire are in [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 - **Docker:** Soloist needs glibc 2.38 or newer. The official Lyrion Docker image is based on Debian 12 (glibc 2.36), so Soloist can't run there and SpotOn uses librespot; an image based on Debian 13 works. See [#183](https://github.com/stiefenm/spoton/issues/183).
 

@@ -38,6 +38,22 @@ sub initPlugin {
     # The memo and XMLBrowser never share a tree: XMLBrowser writes items/
     # fetched/offset into what it is handed, so both the miss and the hit path
     # hand out a copy (GH #210, a second playlist within 60s read an empty slice).
+    # The add-method relay (92-14, GH #238) is NOT part of the memo: XMLBrowser hands the `query` hash of the
+    # root reply to every deeper feed of the request, and for a levelled item_id it calls the root with the
+    # same index/quantity for an add, a play, a touch-to-play and a browse, so they all share one memo slot.
+    # A memoized relay would turn the next play into a capped one (WR-03) or a browse into an add. So the
+    # wrapper strips `query` from what it memoizes and derives the relay again for every request from the
+    # row's root args (_controlAddRelay), on a hit and on a miss alike, for every row (Playlists and Made
+    # For You roots never relay by themselves).
+    my $withRelay = sub {
+        my ($menu, $feedArgs) = @_;
+        delete $menu->{query};
+        if (my $relay = Plugins::SpotOn::Plugin::_controlAddRelay($feedArgs)) {
+            $menu->{query} = $relay;
+        }
+        return $menu;
+    };
+
     $args{feed} = sub {
         my ($client, $cb, $feedArgs) = @_;
 
@@ -45,7 +61,7 @@ sub initPlugin {
         my $cached = $_feedCache{$cacheKey};
 
         if ($cached && time() - $cached->{ts} < 60) {
-            $cb->(copyMenu($cached->{result}));
+            $cb->($withRelay->(copyMenu($cached->{result}), $feedArgs));
             return;
         }
 
@@ -55,9 +71,11 @@ sub initPlugin {
             my $result = shift;
             my @items = grep { ($_->{type} || '') ne 'textarea' }
                         @{ $result->{items} || [] };
-            my $filtered = { %$result, items => \@items };
+            my %shared = %$result;
+            delete $shared{query};   # per request, never memoized
+            my $filtered = { %shared, items => \@items };
             $_feedCache{$cacheKey} = { ts => time(), result => copyMenu($filtered) };
-            $cb->($filtered);
+            $cb->($withRelay->($filtered, $feedArgs));
         }, $feedArgs);
     };
 

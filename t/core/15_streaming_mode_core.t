@@ -333,6 +333,10 @@ write_stub($stub_dir, 'Plugins::SpotOn::Unified::DaemonManager', <<'END');
 package Plugins::SpotOn::Unified::DaemonManager;
 sub helperForClient { return bless {}, 'MockDaemonHelper' }
 sub scheduleInit { }
+# 92-03 (D-06): the predicate the player page reads on every render; the cells set $PENDING
+# (undef = nothing pending, the real predicate returns an empty list then)
+our $PENDING;
+sub pendingRestartReasons { return $PENDING ? $PENDING : () }
 sub resolvePassthroughForClient { return 0 }
 # 84-08: ProtocolHandler reaches the backend through the role. The backend
 # pref is unset here (librespot), so the factory hands out the REAL
@@ -655,7 +659,22 @@ subtest 'COMPAT-01: global streamingMode enum regex (direct|proxy)' => sub {
     my $connect_box = index($html, 'name="pref_enableSpotifyConnect"');
     my $power_box   = index($html, 'name="pref_connectPowerOff"');
     my $marker      = index($html, 'name="has_connectPowerOff"');
-    my $backend_if  = index($html, q{[% IF backend == 'soloist' %]});
+    # 92-07 (GH #203): the one-line Soloist note next to the Connect switch is its own small
+    # `IF backend == 'soloist'` block; it is not the Soloist section, so skip a block whose
+    # body is only that note and look for the first real Soloist-only block.
+    my $if_tag     = q{[% IF backend == 'soloist' %]};
+    my $backend_if = -1;
+    my $from       = 0;
+    while ((my $at = index($html, $if_tag, $from)) >= 0) {
+        my $end  = index($html, '[% END %]', $at);
+        my $body = $end > $at ? substr($html, $at + length($if_tag), $end - $at - length($if_tag)) : '';
+        if ($body =~ /PLUGIN_SPOTON_CONNECT_OFF_SOLOIST_NOTE/ && $body !~ /<input|WRAPPER|IF /) {
+            $from = $at + 1;
+            next;
+        }
+        $backend_if = $at;
+        last;
+    }
     ok($connect_box >= 0 && $power_box > $connect_box && $marker > $connect_box,
         '79-69 T2 d: the connectPowerOff checkbox and its marker sit after the Connect checkbox');
     ok($power_box >= 0 && $marker >= 0 && ($backend_if < 0 || ($power_box < $backend_if && $marker < $backend_if)),
@@ -822,6 +841,36 @@ subtest 'i18n: PLUGIN_SPOTON_STREAMING_MODE* keys have all 11 locales' => sub {
     undef $dying;
     is($! + 0, EAGAIN, 'DESTROY errno: a parent DESTROY that dies changes nothing either');
     is($warned, '', 'DESTROY errno: and warns nothing');
+}
+
+# 92-03 (GH #232, D-06): the player settings page says a saved change waits - on EVERY render while the
+# restart is pending (after a save here, after a reload, after a global save), never decided by the save branch.
+{
+    require Plugins::SpotOn::Settings::Player;
+    no warnings 'redefine';
+    my $DMS = 'Plugins::SpotOn::Unified::DaemonManager';
+    my $run = sub {
+        my ($id, $pending, %post) = @_;
+        local $Plugins::SpotOn::Unified::DaemonManager::PENDING = $pending;
+        my $c = MockClient->new($id);
+        my %p = %post;
+        Plugins::SpotOn::Settings::Player->handler($c, \%p, sub { }, undef, undef);
+        return \%p;
+    };
+    is($run->('pr4a', { branch => 'live', reasons => ['format'] })->{restartDeferred}, 'live',
+        'PR-4a: a plain render (no save) while a restart is pending shows the live note');
+    is($run->('pr4b', { branch => 'snapshot', reasons => ['format'] })->{restartDeferred}, 'snapshot',
+        'PR-4b: the snapshot branch is passed through as it is');
+    ok(!$run->('pr4c', undef)->{restartDeferred}, 'PR-4c: nothing pending -> no note');
+    {
+        local *Plugins::SpotOn::Unified::DaemonManager::pendingRestartReasons;   # the sub is gone: can() is false
+        ok(!$DMS->can('pendingRestartReasons'), 'PR-4c: setup - the manager has no pendingRestartReasons');
+        my $p = eval { $run->('pr4c2', { branch => 'live', reasons => ['x'] }) };
+        is($@, '', 'PR-4c: a manager without the predicate does not die the render');
+        ok(!($p && $p->{restartDeferred}), 'PR-4c: and shows no note');
+    }
+    is($run->('pr4d', { branch => 'live', reasons => ['bitrate'] }, saveSettings => 1)->{restartDeferred}, 'live',
+        'PR-4d: a save on this page shows the note at once');
 }
 
 done_testing();

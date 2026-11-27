@@ -1457,6 +1457,31 @@ subtest 'Case 19: qualityInfo($client)->{wanted} is the level SpotOn writes' => 
     is($qi->{wanted}, 0, "global Automatic -> wanted 0 (no MP3 note)");
 };
 
+# ============================================================
+# 92-02 AUTO-1/2: a player's own level Automatic (0) is a real own level.
+# Perl treats 0 as false, so the old `|| 'global'` default read it as 'global'.
+# An unset or empty pref still reads 'global'.
+# ============================================================
+subtest '92-02: own level Automatic (0) is not read as global' => sub {
+    reset_all();
+    require_ok('Plugins::SpotOn::Backend::Soloist');
+    my $S = 'Plugins::SpotOn::Backend::Soloist';
+
+    my $c0 = MockClient->new('00:AA:92:00:00:01', 'player-92-0');
+    $prefs->client($c0)->set('soloistQuality', 0);
+    my $qi = eval { $S->qualityInfo($c0) } || {};
+    ok(defined $qi->{stored} && $qi->{stored} eq '0', "92-02 AUTO-1: per-player pref 0 -> stored is 0, not 'global'");
+
+    my $cu = MockClient->new('00:AA:92:00:00:02', 'player-92-u');
+    $qi = eval { $S->qualityInfo($cu) } || {};
+    is($qi->{stored}, 'global', "92-02 AUTO-2: per-player pref unset -> stored 'global'");
+
+    my $ce = MockClient->new('00:AA:92:00:00:03', 'player-92-e');
+    $prefs->client($ce)->set('soloistQuality', '');
+    $qi = eval { $S->qualityInfo($ce) } || {};
+    is($qi->{stored}, 'global', "92-02 AUTO-2: per-player pref '' -> stored 'global'");
+};
+
 
 # ============================================================
 # 79-43 (D-33 FULL-3 WR-02): the device name is a character string from LMS; the quality request carries it

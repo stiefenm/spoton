@@ -5,6 +5,32 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.1.0-beta.6] - 2026-11-27
+
+**Installing this beta.** This is the sixth beta of SpotOn 4.1. It comes through the beta repository URL `https://stiefenm.github.io/spoton/beta/repo.xml`; if you do not have it yet, add it under **Settings > Plugins > Additional Repositories** and save. The Plugins page then offers SpotOn 4.1.0beta6 as an update over 4.1.0beta5, 4.1.0beta4, 4.1.0beta3, 4.1.0beta2, 4.1.0beta1 and 4.0.0. Restart LMS after the update. The changes below are for both backends, Soloist and Spotify Connect (librespot), except where a line names one of them. This beta also brings a new version of SpotOn's librespot helper, 4.1.0.
+
+### Fixed
+
+- Adding a very large Spotify playlist, one with thousands of titles, to the queue, or playing it from a favourite, no longer blocks LMS, and the players stay connected. SpotOn now loads such a playlist in steps. Adding a playlist from the SpotOn menu in Material Skin or an app loads only as many titles as the LMS queue takes (2500 by default); the Default skin's web interface and playing a playlist are not limited that way. ([#238](https://github.com/stiefenm/spoton/issues/238))
+- Library > Playlists: the playlist details SpotOn remembers are now kept per Spotify account, so a second account on the same LMS no longer sees the first account's covers and details. Details remembered before the update are loaded again once for each account. ([#209](https://github.com/stiefenm/spoton/issues/209))
+- Library > Playlists no longer lists Spotify's DJ entry.
+- Album track lists show the track numbers again. Titles SpotOn remembered from before the update are loaded again the first time you open them. ([#233](https://github.com/stiefenm/spoton/issues/233))
+- Spotify Connect (librespot): saving the Connect switch, the passthrough format or the bitrate of a player no longer restarts its helper while a title is playing, which cut the title short. The title keeps playing, and the change is applied after the player has been without playback for a few minutes; the player settings page shows a note while a change is waiting. Switching Connect off for a player that is in a Connect session still applies at once. ([#232](https://github.com/stiefenm/spoton/issues/232))
+- Spotify Connect (librespot): a session that is already paused in the Spotify app when it moves to an LMS player now leaves LMS stopped, where it used to sit at play 0:00 without sound, and play in the app then starts it. ([#230](https://github.com/stiefenm/spoton/issues/230))
+- Spotify Connect (librespot): when the connection to Spotify is lost, the player is no longer switched off after the session ended, with the player setting "Switch off after Connect" on. A deliberate switch to another device still switches it off. After such a lost connection the player stays on until you switch it off by hand. ([#151](https://github.com/stiefenm/spoton/issues/151))
+- Soloist: a player whose own quality level is set to Automatic now uses Automatic; before, SpotOn read it as "global" and used the global level instead.
+- Soloist: an error while a stopped daemon is handled no longer stops the check for crashed daemons.
+- Spotify Connect (librespot): shutting SpotOn down no longer leaves a timer of an open Connect session behind.
+
+### Changed
+
+- Spotify Connect (librespot): a pause in the Spotify app during the first seconds of a Connect start is now passed on to LMS: LMS pauses when it is already playing, otherwise it pauses once when the title starts. The test setup could not reproduce the original timing of that case, so this change is covered by tests of the code only and was not verified there. ([#230](https://github.com/stiefenm/spoton/issues/230))
+- The librespot helper is now version 4.1.0. It tells SpotOn whether a Connect session ended because the connection was lost or because you switched devices, and whether a session arrived already paused.
+
+### Known limitations
+
+- Soloist: a player with Spotify Connect switched off stays in the Spotify app's device list for as long as its daemon runs, and SpotOn refuses playback started from the app on such a player. The player settings show a note next to the switch and the README says the same. A follow-up change is being prepared. ([#203](https://github.com/stiefenm/spoton/issues/203))
+
 ## [4.1.0-beta.5] - 2026-11-25
 
 **Installing this beta.** This is the fifth beta of SpotOn 4.1. It comes through the beta repository URL `https://stiefenm.github.io/spoton/beta/repo.xml`; if you do not have it yet, add it under **Settings > Plugins > Additional Repositories** and save. The Plugins page then offers SpotOn 4.1.0beta5 as an update over 4.1.0beta4, 4.1.0beta3, 4.1.0beta2, 4.1.0beta1 and 4.0.0. Restart LMS after the update. The change below is for both backends, Soloist and Spotify Connect (librespot).

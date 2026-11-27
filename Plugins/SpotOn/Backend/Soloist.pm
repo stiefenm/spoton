@@ -1007,7 +1007,9 @@ sub qualityInfo {
     require Slim::Utils::Strings;
     my $string = \&Slim::Utils::Strings::string;
     my $mac    = $client->id;
-    my $stored = $prefs->client($client)->get('soloistQuality') || 'global';
+    # 92-02: an own level 0 (Automatic) is falsy in Perl; only an unset or empty pref reads 'global'.
+    my $stored = $prefs->client($client)->get('soloistQuality');
+    $stored = 'global' unless defined $stored && length $stored;
     my $cached = $Q->effectiveCached($mac);
     my $effective = $cached ? $cached->{level} : undef;
     my $wanted    = $Q->effectiveLevelForClient($client);

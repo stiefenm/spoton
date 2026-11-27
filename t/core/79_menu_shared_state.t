@@ -92,6 +92,10 @@ my $QTY       = 25000;
 
     sub _pluginDataFor { 'icon.png' }
 
+    # 92-14: the wrapper asks the real plugin for the add-method relay of every request; the fake
+    # relays nothing (the relay itself is covered in t/core/14_context_menu.t, cells #238-W*).
+    sub _controlAddRelay { undef }
+
     # Playlists level: honours index/quantity, as the real playlists feed does.
     sub _fake_playlists_level {
         my ($client, $cb, $args) = @_;

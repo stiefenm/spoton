@@ -158,6 +158,14 @@ If the issue persists, collect a diagnostic bundle and include your Docker setup
 
 **Solution:** To compare with the old behaviour, or to switch the new handover off, enter `pref plugin.spoton:soloistEarlyEnd 0` on the LMS command line interface (CLI, port 9090 by default). `pref plugin.spoton:soloistEarlyEnd 1` switches it on again. No restart is needed. If you hear a gap outside the two cases above, collect a diagnostic bundle right after it happens and open an issue.
 
+### Soloist: end of a title cut off with the DisableShuffle plugin
+
+**Symptoms:** With the Soloist backend and a playlist or album started from the Spotify app, the last seconds of each title are cut off (up to about 10 seconds). Before 4.1.0-beta.4, the first title repeated instead and playback stopped after it.
+
+**Cause:** The **DisableShuffle** plugin has an option **Disable Add to Playlist**. When it is set to Yes, the plugin jumps to every entry that is added to the LMS queue. SpotOn adds the next title to the queue shortly before the current one ends, so the plugin starts it right away.
+
+**Solution:** In the DisableShuffle settings, set **Disable Add to Playlist** to No (its default), or disable the plugin. Since 4.1.0-beta.4 the playlist plays through either way; the option only costs the end of each title. See [#234](https://github.com/stiefenm/spoton/issues/234).
+
 ### Several Spotify accounts on Soloist players
 
 **What the Account row means:** since 4.1.0-beta.3 the SpotOn status page shows an **Account** row for each Soloist player. `paired` means Soloist on that player is signed in to the Spotify account you set up in SpotOn. `guest ...abcd` (the last 4 characters of the account id) means someone else connected to that player from their own Spotify app, for example a family member, and Soloist stayed signed in to their account. Several accounts can play on different Soloist players of one LMS at the same time.

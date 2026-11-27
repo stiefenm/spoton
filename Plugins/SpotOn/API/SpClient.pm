@@ -24,7 +24,6 @@ use strict;
 use warnings;
 
 use JSON::XS::VersionOneAndTwo;
-use Math::BigInt;
 use Slim::Networking::SimpleAsyncHTTP;
 use Slim::Utils::Cache;
 use Slim::Utils::Log;
@@ -74,6 +73,11 @@ use constant APPEARS_ON_CAP          => 100;
 #   a one-shot sweep of spoton_spclient_resp_* keys - DbCache lists no keys, and a sweep is migration code;
 #   decoding in place on read - guesses the representation of every stored string.
 use constant TRACK_META_FORMAT       => 2;
+# 92-01 (GH #233): the format of a stored metadata/4/track value ONLY: _storeTrackMeta stamps it, _trackMetaCurrent
+# checks it. 2 = character names (79-43); 3 = track number and disc number (number/disc_number, GH #233: a format-2
+# entry carries none, so it is a miss and is fetched again). TRACK_META_FORMAT stays the marker of the
+# spoton_meta_<md5> stream and history records: they carry no track number, so they keep 2 and stay valid.
+use constant TRACK_CACHE_FORMAT      => 3;
 use constant RENEW_BATCH             => 50;
 use constant APRESOLVE_URL           => 'https://apresolve.spotify.com/?type=spclient';
 # 79-61 (FULL-3 WR-05): after a confirmed 'unauthorized' (401 after the D-07a
@@ -93,6 +97,15 @@ use constant SPCLIENT_FALLBACK_HOST  => 'gew4-spclient.spotify.com:443';
 use constant HOST_CACHE_KEY          => 'spoton_spclient_host';
 use constant HOST_CACHE_TTL          => 3600;
 use constant BASE62_CHARSET          => '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
+# base62 <-> hex id conversion (92-13, GH #238): 128-bit ids as limbs, see idToHex
+use constant ID_LIMB_BITS            => 16;
+use constant ID_LIMB_MASK            => (1 << ID_LIMB_BITS) - 1;
+use constant ID_LIMBS                => 128 / ID_LIMB_BITS;
+use constant ID_LIMB_HEX             => ID_LIMB_BITS / 4;
+use constant ID_DIGIT_CHUNK          => 62 * 62;
+my @ID_ALPHABET = split //, BASE62_CHARSET;
+my %ID_VALUE    = map { $ID_ALPHABET[$_] => $_ } 0 .. $#ID_ALPHABET;
+my $ID_HEX_FMT  = ('%0' . ID_LIMB_HEX . 'x') x ID_LIMBS;
 
 # collection/v2 (S-06/S-07, Phase 75 Plan 04 Task 1)
 use constant COLLECTION_V2_CONTENT_TYPE => 'application/vnd.collection-v2.spotify.proto';
@@ -145,7 +158,7 @@ use constant OWNER_FIXED_NAMES    => { spotify => 'Spotify' };
 #   LIBV3_CAPPED_*    261111-j57: per account and playlist id, "never asked because the run stopped at LIBV3_MAX_PAGES";
 #                     value { at => epoch of _libClock }, kept 24 h; it keeps the playlist from asking libraryV3 again. It
 #                     carries no images key, so it is never read as a negative entry ("Spotify has nothing"). It is bound
-#                     to the account on purpose (PL_META is not yet, GH #209)
+#                     to the account on purpose (PL_META carries the account too since GH #209, see _plMetaKey)
 use constant LIBRARY_LIST_KEY     => 'spoton_spclient_libpl_';
 use constant LIBRARY_LIST_TTL     => 60;
 use constant PL_META_KEY          => 'spoton_plmeta_';
@@ -322,29 +335,44 @@ sub _noteError {
 # ============================================================
 # base62 <-> hex ID conversion (S-02)
 # ============================================================
-# Spotify's base62 track/album/artist IDs are 128-bit numbers -- native Perl
-# ints (64-bit) overflow, so this MUST go through Math::BigInt.
+# Spotify's base62 track/album/artist IDs are 128-bit numbers. Native Perl
+# ints can be 32 bit (pCP ships such perls), so the number is held as limbs of
+# ID_LIMB_BITS bits and handled two base62 digits (ID_DIGIT_CHUNK) per pass.
+# The largest intermediate value is 251920383, below 2^31: under `use integer`
+# every statement is a native integer operation on a 32-bit and on a 64-bit
+# perl alike, no float is involved, and nothing branches on the integer size.
+# Forum #424 / GH #238: the former implementation used the big-number module and
+# cost 96 % of the time a warm add of a long playlist blocked LMS; this one is
+# byte-identical to it for every input it accepted.
 
 # idToHex($class, $b62)
 # Validates 22 chars of [0-9A-Za-z], returns a lowercase 32-hex-char string,
 # or undef on any validation failure (wrong length, invalid charset).
+# An id above 2^128 is no Spotify id; it is answered with 33 hex characters,
+# exactly as before.
 sub idToHex {
     my ($class, $b62) = @_;
     return undef unless defined $b62 && length($b62) == 22;
     return undef unless $b62 =~ /^[0-9A-Za-z]{22}$/;
 
-    my $charset = BASE62_CHARSET;
-    my $n = Math::BigInt->new(0);
-    for my $c (split //, $b62) {
-        my $idx = index($charset, $c);
-        return undef if $idx < 0;
-        $n = $n * 62 + $idx;
+    use integer;
+    # limbs least significant first; one extra limb takes what runs over 2^128
+    my @limb = (0) x (ID_LIMBS + 1);
+    my $pos  = 0;
+    while ($pos < 22) {
+        my $carry = $ID_VALUE{ substr($b62, $pos, 1) } * 62 + $ID_VALUE{ substr($b62, $pos + 1, 1) };
+        $pos += 2;
+        for my $i (0 .. ID_LIMBS - 1) {
+            my $v = $limb[$i] * ID_DIGIT_CHUNK + $carry;
+            $limb[$i] = $v & ID_LIMB_MASK;
+            $carry    = $v >> ID_LIMB_BITS;
+        }
+        $limb[ID_LIMBS] = $limb[ID_LIMBS] * ID_DIGIT_CHUNK + $carry;
     }
 
-    my $hex = $n->as_hex;      # e.g. "0x1a2b3c"
-    $hex =~ s/^0x//;
-    $hex = ('0' x (32 - length($hex))) . $hex if length($hex) < 32;
-    return lc($hex);
+    my $hex = sprintf($ID_HEX_FMT, reverse @limb[0 .. ID_LIMBS - 1]);
+    $hex = sprintf('%x', $limb[ID_LIMBS]) . $hex if $limb[ID_LIMBS];
+    return $hex;
 }
 
 # hexToId($class, $hex)
@@ -354,24 +382,20 @@ sub hexToId {
     my ($class, $hex) = @_;
     return undef unless defined $hex && $hex =~ /^[0-9a-fA-F]{32}$/;
 
-    my $charset = BASE62_CHARSET;
-    my @alphabet = split //, $charset;
-    my $n = Math::BigInt->new('0x' . $hex);
-
-    my @digits;
-    if ($n == 0) {
-        push @digits, 0;
-    }
-    else {
-        while ($n > 0) {
-            my $rem = $n % 62;
-            push @digits, $rem->numify;
-            $n = ($n - $rem) / 62;
+    use integer;
+    # limbs most significant first
+    my @limb = map { hex(substr($hex, $_ * ID_LIMB_HEX, ID_LIMB_HEX)) } 0 .. ID_LIMBS - 1;
+    my $out = '';
+    # 2^128 < 62^22, so eleven divisions by 62^2 always give exactly 22 digits
+    for (1 .. 11) {
+        my $rem = 0;
+        for my $i (0 .. ID_LIMBS - 1) {
+            my $v = ($rem << ID_LIMB_BITS) | $limb[$i];
+            $limb[$i] = $v / ID_DIGIT_CHUNK;
+            $rem      = $v % ID_DIGIT_CHUNK;
         }
+        $out = $ID_ALPHABET[ $rem / 62 ] . $ID_ALPHABET[ $rem % 62 ] . $out;
     }
-
-    my $out = join('', map { $alphabet[$_] } reverse @digits);
-    $out = ('0' x (22 - length($out))) . $out if length($out) < 22;
     return $out;
 }
 
@@ -929,6 +953,8 @@ sub _normalizeTrack {
         uri         => $uri,
         name        => $meta->{name},
         duration_ms => $meta->{duration},
+        track_number => $meta->{number},        # 92-01 (GH #233); JSON keys `number` / `disc_number` assumed like the proto names
+        disc_number  => $meta->{disc_number},
         explicit    => $meta->{explicit} ? 1 : 0,
         popularity  => $meta->{popularity},
         artists     => \@artists,
@@ -1196,16 +1222,16 @@ sub _storeTrackMeta {
     my ($class, $cacheKey, $hexId, $meta) = @_;
     return unless ref($meta) eq 'HASH';
     my $ttl = $class->_cacheTTL("metadata/4/track/$hexId");
-    $cache->set($cacheKey, { %$meta, _spoton_cached_at => time(), _spoton_fmt => TRACK_META_FORMAT }, $ttl) if $ttl > 0;
+    $cache->set($cacheKey, { %$meta, _spoton_cached_at => time(), _spoton_fmt => TRACK_CACHE_FORMAT }, $ttl) if $ttl > 0;
 }
 
 # _trackMetaCurrent($class, $value) -- 79-43 (D-33 FULL-3 CR-01): true when a cached metadata/4/track value carries
-# the current format marker (_spoton_fmt >= TRACK_META_FORMAT). Anything else is a miss at every reader.
+# the current track-cache format marker (_spoton_fmt >= TRACK_CACHE_FORMAT, 92-01). Anything else is a miss at every reader.
 sub _trackMetaCurrent {
     my ($class, $value) = @_;
     return 0 unless ref($value) eq 'HASH';
     my $fmt = $value->{_spoton_fmt};
-    return (defined $fmt && $fmt =~ /\A\d+\z/ && $fmt >= TRACK_META_FORMAT) ? 1 : 0;
+    return (defined $fmt && $fmt =~ /\A\d+\z/ && $fmt >= TRACK_CACHE_FORMAT) ? 1 : 0;
 }
 
 # _noteTrackHit($class, $cacheKey, $value) -- 79-27 D-19: called from every metadata/4/track cache HIT. An
@@ -1289,10 +1315,11 @@ sub _decodeExtendedTracks {
 }
 
 # _decodeTrackMessage($class, $bytes) -> the hash GET metadata/4/track/<hex> returns as JSON (gid hex, name,
-# duration, explicit, popularity, artist[], album { gid, name, cover_group { image[] } }) so one normalizer
-# (_normalizeTrack) and one cache shape serve both paths. metadata.proto: Track { gid=1 name=2 album=3 artist=4
-# duration=7 popularity=8 explicit=9 }, Album { gid=1 name=2 cover_group=17 }, ImageGroup { image=1 },
-# Image { file_id=1 width=3 height=4 }, Artist { gid=1 name=2 }. duration/popularity/width/height are sint32
+# number, disc_number, duration, explicit, popularity, artist[], album { gid, name, cover_group { image[] } }) so one
+# normalizer (_normalizeTrack) and one cache shape serve both paths. metadata.proto: Track { gid=1 name=2 album=3
+# artist=4 number=5 disc_number=6 duration=7 popularity=8 explicit=9 }, Album { gid=1 name=2 cover_group=17 },
+# ImageGroup { image=1 }, Image { file_id=1 width=3 height=4 }, Artist { gid=1 name=2 }.
+# number/disc_number/duration/popularity/width/height are sint32
 # (zigzag); gid/file_id are raw bytes -> hex.
 sub _decodeTrackMessage {
     my ($class, $bytes) = @_;
@@ -1307,6 +1334,12 @@ sub _decodeTrackMessage {
     my %m;
     $m{gid}  = $hex->($PB->can('field_first')->($t, 1));
     $m{name} = $str->($PB->can('field_first')->($t, 2));
+
+    # 92-01 (GH #233): number=5 and disc_number=6 are sint32 like duration; absent fields add no key (no 0 invented)
+    my $num = $PB->can('decode_zigzag')->($PB->can('field_first')->($t, 5));
+    $m{number} = $num if defined $num;
+    my $disc = $PB->can('decode_zigzag')->($PB->can('field_first')->($t, 6));
+    $m{disc_number} = $disc if defined $disc;
 
     my $dur = $PB->can('decode_zigzag')->($PB->can('field_first')->($t, 7));
     $m{duration} = $dur if defined $dur;
@@ -2835,6 +2868,11 @@ sub _libraryPlaylists {
 # _libCapKey($class, $accountId, $playlistId): the page-limit marker key (the only place that builds it)
 sub _libCapKey { my ($class, $accountId, $id) = @_; return LIBV3_CAPPED_KEY . $accountId . '_' . $id; }
 
+# _plMetaKey($class, $accountId, $id, $revision): the per-playlist metadata key (the only place that builds it).
+# GH #209: it carries the account id, so a cover or a negative entry one account wrote is never read by another
+# account on the same server. Older unkeyed entries are simply not read any more and expire through PL_META_TTL.
+sub _plMetaKey { my ($class, $accountId, $id, $revision) = @_; return PL_META_KEY . $accountId . '_' . $id . '_' . ($revision // 'norev'); }
+
 # _libClock($class): the clock of the library run (a seam for tests)
 sub _libClock { return time(); }
 
@@ -2844,6 +2882,17 @@ sub _libClock { return time(); }
 # $early->(\@copy) once at the budget plus $release->() once when the chain ends later.
 sub _libraryMerge {
     my ($class, $accountId, $playlists, $listKey, $deliver, $early, $release) = @_;
+
+    # 92-01: Spotify DJ (Pathfinder DJ_URI) is no playlist one can open or play: it never shows in Library > Playlists, is
+    # never asked from libraryV3 and never counts in libraryMetaStatus. It is dropped from the INPUT here (a new array: the
+    # rootlist cache that Made For You reads keeps it), before the copies are built, so every later $playlists->[$idx]
+    # lookup stays aligned with @out. An exact compare against the one DJ identity, no pattern.
+    require Plugins::SpotOn::API::Pathfinder;
+    my $djUri = Plugins::SpotOn::API::Pathfinder::DJ_URI();
+    $playlists = [ grep {
+        my $u = ref($_) eq 'HASH' ? ($_->{uri} // (defined $_->{id} ? 'spotify:playlist:' . $_->{id} : '')) : '';
+        $u ne $djUri;
+    } @$playlists ];
 
     my $self = $class->_username($accountId);
     $self = '' unless defined $self;
@@ -2865,7 +2914,7 @@ sub _libraryMerge {
                  : exists OWNER_FIXED_NAMES->{$ownerId} ? 'fixed'
                  :                                      'foreign';
 
-        my $meta  = $cache->get(PL_META_KEY . $pl->{id} . '_' . ($pl->{revision} // 'norev'));
+        my $meta  = $cache->get($class->_plMetaKey($accountId, $pl->{id}, $pl->{revision}));
         my $owner = $kind eq 'foreign' ? $cache->get(OWNER_NAME_KEY . $ownerId) : undef;
         if (!@{ $c{images} } && ref($meta) eq 'HASH') {
             $c{images} = [ $class->_allowedImages($meta->{images}) ];
@@ -2914,7 +2963,7 @@ sub _libraryMerge {
         for my $id (keys %need) {
             for my $idx (@{ $need{$id} }) {
                 my $c   = $out[$idx];
-                my $key = PL_META_KEY . $id . '_' . ($playlists->[$idx]{revision} // 'norev');
+                my $key = $class->_plMetaKey($accountId, $id, $playlists->[$idx]{revision});
                 if (my $it = $seen{$id}) {
                     my @img = $class->_allowedImages($it->{images});
                     $c->{images} = [ map { +{ %$_ } } @img ] unless @{ $c->{images} };

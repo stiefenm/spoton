@@ -126,7 +126,7 @@ jobs:
         with:
           name: spoton-${{ matrix.bin_dir }}
           path: Plugins/SpotOn/Bin/${{ matrix.bin_dir }}/spoton${{ matrix.binary_ext }}
-          retention-days: 30
+          retention-days: 1
 
   build-windows:
     name: Build Windows x86_64
@@ -160,7 +160,7 @@ jobs:
         with:
           name: spoton-x86_64-win64
           path: ${{ env.SOURCE_DIR }}/target/release/${{ env.BINARY_NAME }}.exe
-          retention-days: 30
+          retention-days: 1
 
   build-macos:
     name: Build macOS ${{ matrix.arch }}
@@ -201,7 +201,7 @@ jobs:
         with:
           name: spoton-${{ matrix.arch }}-darwin
           path: ${{ env.SOURCE_DIR }}/target/${{ matrix.target }}/release/${{ env.BINARY_NAME }}
-          retention-days: 30
+          retention-days: 1
 
   lipo:
     name: Create macOS Universal Binary
@@ -245,7 +245,7 @@ jobs:
         with:
           name: spoton-darwin
           path: spoton
-          retention-days: 30
+          retention-days: 1
 
   # CR-02: built HERE (not in the independent build-fake-libpulse.yml
   # workflow) so the `release` job below can download its artifacts via
@@ -364,7 +364,7 @@ jobs:
         with:
           name: fake-libpulse-${{ matrix.bin_dir }}
           path: Plugins/SpotOn/Bin/${{ matrix.bin_dir }}/libpulse.so.0
-          retention-days: 30
+          retention-days: 1
 
   # D-09/D-03 (Phase 74): built HERE (not a separate workflow) for the same
   # CR-02 reason as build-fake-libpulse above -- the release job's
@@ -472,7 +472,7 @@ jobs:
           # otherwise mis-copy spoton-helper into the librespot flatten step.
           name: helper-${{ matrix.bin_dir }}
           path: Plugins/SpotOn/Bin/${{ matrix.bin_dir }}/spoton-helper
-          retention-days: 30
+          retention-days: 1
 
   reuse-binaries:
     name: Reuse binaries from previous release
@@ -516,49 +516,49 @@ jobs:
         with:
           name: spoton-x86_64-linux
           path: artifacts/x86_64-linux/spoton
-          retention-days: 30
+          retention-days: 1
 
       - name: Upload spoton-aarch64-linux
         uses: actions/upload-artifact@v4
         with:
           name: spoton-aarch64-linux
           path: artifacts/aarch64-linux/spoton
-          retention-days: 30
+          retention-days: 1
 
       - name: Upload spoton-armhf-linux
         uses: actions/upload-artifact@v4
         with:
           name: spoton-armhf-linux
           path: artifacts/armhf-linux/spoton
-          retention-days: 30
+          retention-days: 1
 
       - name: Upload spoton-arm-linux
         uses: actions/upload-artifact@v4
         with:
           name: spoton-arm-linux
           path: artifacts/arm-linux/spoton
-          retention-days: 30
+          retention-days: 1
 
       - name: Upload spoton-i386-linux
         uses: actions/upload-artifact@v4
         with:
           name: spoton-i386-linux
           path: artifacts/i386-linux/spoton
-          retention-days: 30
+          retention-days: 1
 
       - name: Upload spoton-x86_64-win64
         uses: actions/upload-artifact@v4
         with:
           name: spoton-x86_64-win64
           path: artifacts/x86_64-win64/spoton.exe
-          retention-days: 30
+          retention-days: 1
 
       - name: Upload spoton-darwin
         uses: actions/upload-artifact@v4
         with:
           name: spoton-darwin
           path: artifacts/darwin/spoton
-          retention-days: 30
+          retention-days: 1
 
   release:
     name: Create GitHub Release

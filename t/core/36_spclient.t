@@ -618,6 +618,195 @@ my $SHOW71_BOOK = '01DbzJA9caChG3VDgVmnFc';
     is($SP->idToHex('4iV5W9uYEdYUVa79Axb7R!'), undef, 'idToHex rejects an invalid-charset id');
 }
 
+# 92-13 (GH #238): id conversion without Math::BigInt (cells #238-C1..C9)
+# The pre-fix implementation (Math::BigInt, default backend Calc, the pure-Perl one the plugin ran
+# on) lives on in this block only, as the oracle of C4, C5 and C8. The two coderefs are verbatim
+# copies of the former SpClient subs; the alphabet is this block's own copy.
+{
+    require Math::BigInt;
+    my $CS = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
+
+    my $old_idToHex = sub {
+        my ($b62) = @_;
+        return undef unless defined $b62 && length($b62) == 22;
+        return undef unless $b62 =~ /^[0-9A-Za-z]{22}$/;
+        my $n = Math::BigInt->new(0);
+        for my $c (split //, $b62) {
+            my $idx = index($CS, $c);
+            return undef if $idx < 0;
+            $n = $n * 62 + $idx;
+        }
+        my $hex = $n->as_hex;
+        $hex =~ s/^0x//;
+        $hex = ('0' x (32 - length($hex))) . $hex if length($hex) < 32;
+        return lc($hex);
+    };
+    my $old_hexToId = sub {
+        my ($hex) = @_;
+        return undef unless defined $hex && $hex =~ /^[0-9a-fA-F]{32}$/;
+        my @alphabet = split //, $CS;
+        my $n = Math::BigInt->new('0x' . $hex);
+        my @digits;
+        if ($n == 0) {
+            push @digits, 0;
+        }
+        else {
+            while ($n > 0) {
+                my $rem = $n % 62;
+                push @digits, $rem->numify;
+                $n = ($n - $rem) / 62;
+            }
+        }
+        my $out = join('', map { $alphabet[$_] } reverse @digits);
+        $out = ('0' x (22 - length($out))) . $out if length($out) < 22;
+        return $out;
+    };
+
+    my @alpha = split //, $CS;
+    srand(92013);
+    my @rand_ids  = map { join('', map { $alpha[int(rand(62))] } 1 .. 22) } 1 .. 2000;
+    my @rand_hexs = map { join('', map { sprintf('%x', int(rand(16))) } 1 .. 32) } 1 .. 2000;
+
+    # --- C1: known pairs, idToHex
+    my %id2hex = (
+        '4iV5W9uYEdYUVa79Axb7Rh' => '8d745cb8532a41179f6f2353d89fc2fb',
+        '6y0igZArWVi6Iz0rj35c1Y' => 'd729742c79074257b7fd83edcfb71f12',
+        '7LxqhxqClpyc76C85V7Zs2' => 'ff30f8fba1197139a04c80648bfc8576',
+        '7N42dgm5tFLK9N8MT7fHC7' => 'f' x 32,
+        # over-range (above 2^128): no Spotify id, answered with 33 characters as before
+        '7N42dgm5tFLK9N8MT7fHC8' => '1' . ('0' x 32),
+        ('z' x 22)               => '490d79d2bc1bcecc4798fe37143075821',
+        ('Z' x 22)               => '7f520034c430770c424528c66503fffff',
+    );
+    for my $id (sort keys %id2hex) {
+        is($SP->idToHex($id), $id2hex{$id}, "#238-C1: idToHex($id) = $id2hex{$id}");
+    }
+
+    # --- C2: known pairs, hexToId
+    my @hex2id = (
+        [ ('0' x 31) . '1',              ('0' x 21) . '1' ],
+        [ '8' . ('0' x 31),              '3Tx16Db2JPSS4TzoryCQO4' ],
+        [ 'f' x 32,                      '7N42dgm5tFLK9N8MT7fHC7' ],
+        [ 'F' x 32,                      '7N42dgm5tFLK9N8MT7fHC7' ],
+        [ 'aa' . ('0' x 29) . '1',       '5aMH7Q24BCStcjypGpDYrL' ],
+    );
+    for my $p (@hex2id) {
+        is($SP->hexToId($p->[0]), $p->[1], "#238-C2: hexToId($p->[0]) = $p->[1]");
+    }
+
+    # --- C3: leading zeros and padding
+    is($SP->idToHex('0' x 21 . '1'), ('0' x 31) . '1', '#238-C3: idToHex pads a small id to 32 characters');
+    is($SP->idToHex(('0' x 21) . 'Z'), ('0' x 30) . '3d', '#238-C3: idToHex of 21 zeros and Z is 3d, padded');
+    is($SP->hexToId('0000000000000000ffffffffffffffff'), '00000000000lYGhA16ahyf', '#238-C3: hexToId of 2^64 - 1');
+    is($SP->hexToId('00000000000000010000000000000000'), '00000000000lYGhA16ahyg', '#238-C3: hexToId of 2^64');
+    {
+        my $bad = 0;
+        for my $h (@rand_hexs[0 .. 99]) { $bad++ unless length($SP->hexToId($h) // '') == 22 }
+        for my $id (@rand_ids[0 .. 99]) { my $x = $SP->idToHex($id); $bad++ unless defined $x && length($x) >= 32 }
+        is($bad, 0, '#238-C3: every hexToId answer is 22 characters long, every idToHex answer at least 32');
+        my $in_range = 0;
+        for my $id (@rand_ids) { my $x = $SP->idToHex($id); $in_range++ if defined $x && length($x) == 32 && $x =~ /^[0-9a-f]{32}$/ }
+        ok($in_range > 100, "#238-C3: in-range idToHex answers are 32 lowercase hex characters ($in_range of 2000 random ids in range)");
+    }
+
+    # --- C4: oracle, idToHex
+    {
+        my @inputs = (@rand_ids, keys %id2hex, '0' x 22, ('0' x 21) . 'Z');
+        my ($mismatch, $first, $over) = (0, undef, 0);
+        for my $id (@inputs) {
+            my ($o, $n) = ($old_idToHex->($id), $SP->idToHex($id));
+            $over++ if defined $o && length($o) > 32;
+            next if defined $o && defined $n && $o eq $n;
+            $mismatch++;
+            $first //= "$id old=" . ($o // 'undef') . " new=" . ($n // 'undef');
+        }
+        diag("#238-C4 first mismatch: $first") if defined $first;
+        is($mismatch, 0, '#238-C4: idToHex equals the Math::BigInt oracle for ' . scalar(@inputs) . ' ids');
+        ok($over >= 1000, "#238-C4: the over-range path is exercised ($over ids answer 33 characters)");
+    }
+
+    # --- C5: oracle and round trip, hexToId
+    {
+        my ($mismatch, $roundtrip_bad, $first) = (0, 0, undef);
+        for my $h (@rand_hexs) {
+            my ($o, $n) = ($old_hexToId->($h), $SP->hexToId($h));
+            if (!defined $o || !defined $n || $o ne $n) {
+                $mismatch++;
+                $first //= "$h old=" . ($o // 'undef') . " new=" . ($n // 'undef');
+            }
+            my $back = defined $n ? $SP->idToHex($n) : undef;
+            $roundtrip_bad++ unless defined $back && $back eq $h;
+        }
+        diag("#238-C5 first mismatch: $first") if defined $first;
+        is($mismatch, 0, '#238-C5: hexToId equals the Math::BigInt oracle for 2000 hex strings');
+        is($roundtrip_bad, 0, '#238-C5: idToHex(hexToId(h)) equals h for 2000 hex strings');
+    }
+
+    # --- C6: the IV-32 bound, derived from the module's own constants. No integer-size branch exists,
+    # so this is the one cell that guards why none is needed.
+    {
+        my $bits  = $SP->can('ID_LIMB_BITS')   ? $SP->can('ID_LIMB_BITS')->()   : undef;
+        my $chunk = $SP->can('ID_DIGIT_CHUNK') ? $SP->can('ID_DIGIT_CHUNK')->() : undef;
+        if (defined $bits && defined $chunk) {
+            my $mul = ((1 << $bits) - 1) * $chunk + $chunk - 1;
+            my $div = (($chunk - 1) << $bits) + (1 << $bits) - 1;
+            my $max = $mul > $div ? $mul : $div;
+            ok($mul < 2**31 && $div < 2**31,
+               "#238-C6: largest intermediate $max is below 2^31 (limb bits $bits, chunk $chunk)");
+        }
+        else {
+            ok(0, '#238-C6: SpClient exposes ID_LIMB_BITS and ID_DIGIT_CHUNK');
+        }
+    }
+
+    # --- C7: validation unchanged
+    is($SP->idToHex(undef), undef, '#238-C7: idToHex(undef) is undef');
+    is($SP->idToHex('0' x 21), undef, '#238-C7: idToHex rejects 21 characters');
+    is($SP->idToHex('0' x 23), undef, '#238-C7: idToHex rejects 23 characters');
+    is($SP->idToHex(('0' x 21) . '-'), undef, '#238-C7: idToHex rejects a non-base62 character');
+    is($SP->hexToId(undef), undef, '#238-C7: hexToId(undef) is undef');
+    is($SP->hexToId('0' x 31), undef, '#238-C7: hexToId rejects 31 characters');
+    is($SP->hexToId('0' x 33), undef, '#238-C7: hexToId rejects 33 characters');
+    is($SP->hexToId(('0' x 31) . 'g'), undef, '#238-C7: hexToId rejects a non-hex character');
+
+    # --- C8: speed, CPU time (builtin times: Time::HiRes is a whole-second stub in this file)
+    {
+        my $cpu = sub { my @t = times; $t[0] + $t[1] };
+        my $per_call = sub {
+            my ($fn, $inputs) = @_;
+            my ($calls, $t0, $spent) = (0, $cpu->(), 0);
+            do {
+                $fn->($_) for @$inputs;
+                $calls += @$inputs;
+                $spent = $cpu->() - $t0;
+            } while ($spent < 0.2);
+            return $spent / $calls;
+        };
+        my @ids  = @rand_ids[0 .. 99];
+        my @hexs = @rand_hexs[0 .. 99];
+        my $best = sub { my @v = sort { $a <=> $b } @_; $v[0] };
+        my $oa = $best->($per_call->(sub { $old_idToHex->($_[0]) }, \@ids),  $per_call->(sub { $old_idToHex->($_[0]) }, \@ids));
+        my $na = $best->($per_call->(sub { $SP->idToHex($_[0]) },  \@ids),  $per_call->(sub { $SP->idToHex($_[0]) },  \@ids));
+        my $ob = $best->($per_call->(sub { $old_hexToId->($_[0]) }, \@hexs), $per_call->(sub { $old_hexToId->($_[0]) }, \@hexs));
+        my $nb = $best->($per_call->(sub { $SP->hexToId($_[0]) },  \@hexs), $per_call->(sub { $SP->hexToId($_[0]) },  \@hexs));
+        my $ra = $oa / $na;
+        my $rb = $ob / $nb;
+        diag(sprintf('RATIO idToHex=%.1f hexToId=%.1f', $ra, $rb));
+        ok($ra >= 5, sprintf('#238-C8: idToHex is at least 5 times faster than the Math::BigInt oracle (%.1f)', $ra));
+        ok($rb >= 5, sprintf('#238-C8: hexToId is at least 5 times faster than the Math::BigInt oracle (%.1f)', $rb));
+    }
+
+    # --- C9: structure
+    {
+        open(my $fh, '<', "$project_dir/Plugins/SpotOn/API/SpClient.pm") or die $!;
+        my $named = grep { !/^\s*#/ && /Math::BigInt/ } <$fh>;
+        close $fh;
+        is($named, 0, '#238-C9: no non-comment line of SpClient.pm names Math::BigInt');
+    }
+
+    srand();
+}
+
 # ============================================================
 # (b) creds present -> HTTP request to metadata/4/track/, no Client delegation
 # ============================================================
@@ -685,6 +874,8 @@ sub pb_track_msg {
         $out .= pb_enc(3, 2, $a);
     }
     $out .= pb_enc(4, 2, pb_enc(1, 2, pack('H*', $_->{gid})) . pb_enc(2, 2, $_->{name})) for @{ $h->{artist} || [] };
+    $out .= pb_enc(5, 0, zz($h->{number}))       if defined $h->{number};        # 92-01 (GH #233): number, sint32
+    $out .= pb_enc(6, 0, zz($h->{disc_number}))  if defined $h->{disc_number};   # 92-01 (GH #233): disc_number, sint32
     $out .= pb_enc(7, 0, zz($h->{duration}))   if defined $h->{duration};
     $out .= pb_enc(8, 0, zz($h->{popularity})) if defined $h->{popularity};
     $out .= pb_enc(9, 0, $h->{explicit} ? 1 : 0);
@@ -3331,7 +3522,8 @@ sub seed_track { my ($acct, $id, $ageDays, %o) = @_;
     $h->{name} = $o{name} if defined $o{name};
     $h->{_spoton_cached_at} = time() - int($ageDays * 86400) if defined $ageDays;
     # 79-43 (D-33 FULL-3 CR-01): a seeded entry is written in the current format unless the case asks for the old one
-    $h->{_spoton_fmt} = (eval { Plugins::SpotOn::API::SpClient::TRACK_META_FORMAT() } // 2) unless $o{unmarked};
+    # 92-01 (GH #233): the track cache has its own marker TRACK_CACHE_FORMAT (TRACK_META_FORMAT marks the spoton_meta records)
+    $h->{_spoton_fmt} = (eval { Plugins::SpotOn::API::SpClient::TRACK_CACHE_FORMAT() } // 2) unless $o{unmarked};
     Slim::Utils::Cache->new()->set('spoton_spclient_resp_' . $acct . '_metadata/4/track/' . $SP->idToHex($id), $h, time() + 90 * 86400);
     return $h;
 }
@@ -3444,7 +3636,7 @@ my $DAY = 86400;
 # track cache entry without the current format marker (the byte form beta.1 wrote, up to 90 days to live) is a
 # miss at both readers: refetched, overwritten, never queued for renewal.
 # ============================================================
-my $FMT43 = eval { Plugins::SpotOn::API::SpClient::TRACK_META_FORMAT() } // 2;
+my $FMT43 = eval { Plugins::SpotOn::API::SpClient::TRACK_CACHE_FORMAT() } // 2;   # 92-01 (GH #233): the track cache's own marker
 # umlaut_track_bytes($id): the JSON-shaped hash with UTF-8 BYTE names, as protobuf delivers them and beta.1 stored them
 sub umlaut_track_bytes {
     my ($id) = @_;
@@ -3990,6 +4182,72 @@ sub pf71_ops { return map { pf_vars($_)->{operationName} } pf_reqs() }
     ($r, $e) = ();
     $SP->getSavedShows('acct71l', { offset => 0, limit => 50 }, sub { ($r, $e) = @_ });
     is(ref($r) eq 'HASH' ? scalar(@{ $r->{items} || [] }) : -1, 2, '79-71 T2 saved-names: when every show request fails both slots survive as stubs, no error');
+}
+
+# ============================================================
+# 92-01 (GH #233): track and disc numbers. The proto decoder reads Track fields 5 (number) and 6 (disc_number) as
+# sint32, _normalizeTrack maps them to track_number / disc_number, and the metadata/4/track cache has its own format
+# marker TRACK_CACHE_FORMAT 3 (a cached format-2 entry has no number: it is a miss and is fetched again). The
+# spoton_meta_<md5> records carry no track number and keep TRACK_META_FORMAT 2.
+# ============================================================
+{
+    # #233-1: the proto decoder
+    my $with = $SP->_decodeTrackMessage(pb_track_msg({ %{ track_hash_for_id(b62id(23301)) }, number => 7, disc_number => 2 })) || {};
+    is(join('/', $with->{number} // 'undef', $with->{disc_number} // 'undef'), '7/2',
+        '#233-1: _decodeTrackMessage reads number (field 5) and disc_number (field 6) as sint32');
+    my $none = $SP->_decodeTrackMessage(pb_track_msg(track_hash_for_id(b62id(23302)))) || {};
+    ok(!exists $none->{number} && !exists $none->{disc_number}, '#233-1: a track without the fields returns neither key (no 0 invented)');
+
+    # #233-2: the normalizer, and the JSON path (flagged assumption A4: the JSON keys are `number` and `disc_number`)
+    my $hash = track_hash_for_id(b62id(23303));
+    my $nWith = $SP->_normalizeTrack({ %$hash, number => 7, disc_number => 2 }) || {};
+    my $nNone = $SP->_normalizeTrack({ %$hash }) || {};
+    is(join('/', $nWith->{track_number} // 'undef', $nWith->{disc_number} // 'undef'), '7/2', '#233-2: _normalizeTrack maps number and disc_number to track_number and disc_number');
+    ok(!defined $nNone->{track_number} && !defined $nNone->{disc_number}, '#233-2: without them both are undef');
+    my %a = %$nWith; delete @a{qw(track_number disc_number)};
+    my %b = %$nNone; delete @b{qw(track_number disc_number)};
+    is_deeply(\%a, \%b, '#233-2: every other output key is unchanged');
+    reset_all();
+    my $jid = b62id(23304);
+    Slim::Networking::SimpleAsyncHTTP::set_response_for(qr{/metadata/4/track/},
+        JSON::PP->new->utf8->canonical->encode({ %{ track_hash_for_id($jid) }, number => 7, disc_number => 2 }));
+    my $jres;
+    $SP->getTrack('acct23304', $jid, sub { ($jres) = @_ });
+    is(join('/', $jres && $jres->{track_number} // 'undef', $jres && $jres->{disc_number} // 'undef'), '7/2',
+        '#233-2: getTrack on the JSON path returns track_number and disc_number');
+
+    # #233-3: the track cache's own marker
+    is(eval { Plugins::SpotOn::API::SpClient::TRACK_CACHE_FORMAT() } // 'undef', 3, '#233-3: TRACK_CACHE_FORMAT is 3');
+    is(join('/', map { $SP->_trackMetaCurrent({ _spoton_fmt => $_ }) } 2, 3), '0/1', '#233-3: _trackMetaCurrent: a format-2 value is a miss, a format-3 value a hit');
+    reset_all();
+    my $sid = b62id(23305);
+    $SP->_storeTrackMeta($SP->_trackCacheKey('acct23305', $SP->idToHex($sid)), $SP->idToHex($sid), { name => 'Stamped' });
+    my $stored = Slim::Utils::Cache->new()->get($SP->_trackCacheKey('acct23305', $SP->idToHex($sid))) || {};
+    is($stored->{_spoton_fmt} // 'none', 3, '#233-3: _storeTrackMeta stamps 3');
+    reset_all(); @BATCH_LOG = ();
+    my $oid = b62id(23306);
+    my $old = seed_track('acct23306', $oid, 1, name => 'Old Format');
+    $old->{_spoton_fmt} = 2;
+    Slim::Utils::Cache->new()->set($SP->_trackCacheKey('acct23306', $SP->idToHex($oid)), $old, time() + 90 * 86400);
+    set_batch(data => sub { return { %{ track_hash_for_id($_[0]) }, name => 'New Format', number => 5, disc_number => 1 } });
+    my $ores;
+    $SP->_enrichTracks('acct23306', [$oid], sub { ($ores) = @_ });
+    is(scalar(@BATCH_LOG) . '/' . ($ores && $ores->[0] && $ores->[0]{name} // 'undef'), '1/New Format',
+        '#233-3: a cached format-2 track entry is a miss and is fetched again (one extended-metadata POST)');
+
+    # #233-4: end to end on the proto path (the hydration the album view uses)
+    reset_all(); @BATCH_LOG = ();
+    my $eid = b62id(23307);
+    set_batch(data => sub { return { %{ track_hash_for_id($_[0]) }, number => 7, disc_number => 2 } });
+    my $eres;
+    $SP->_enrichTracks('acct23307', [$eid], sub { ($eres) = @_ });
+    is(join('/', $eres && $eres->[0] && $eres->[0]{track_number} // 'undef', $eres && $eres->[0] && $eres->[0]{disc_number} // 'undef'), '7/2',
+        '#233-4: a batch answer with number 7 yields a normalized track with track_number 7 (proto path)');
+
+    # #233-5: the spoton_meta marker is a separate constant and did not move
+    is(eval { Plugins::SpotOn::API::SpClient::TRACK_META_FORMAT() } // 'undef', 2, '#233-5: TRACK_META_FORMAT is still 2 (the spoton_meta_<md5> records stay valid)');
+    is(join('/', $SP->_trackMetaCurrent({ _spoton_fmt => 2 }), eval { Plugins::SpotOn::API::SpClient::TRACK_META_FORMAT() } // 'undef'), '0/2',
+        '#233-5: a value stamped 2 is a miss for the track cache while TRACK_META_FORMAT answers 2 (the two markers are separate)');
 }
 
 done_testing();

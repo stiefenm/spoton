@@ -853,7 +853,41 @@ sub handleFeed {
         };
     }
 
-    $callback->({ items => \@items });
+    # 92-14 (GH #238): XMLBrowser hands the `query` hash of this reply as `params` to every deeper
+    # feed of the same request (Slim/Control/XMLBrowser.pm, sub _cliQuery_done); _playAddCap reads
+    # the method of an add or insert command from there.
+    my $reply = { items => \@items };
+    if (my $relay = _controlAddRelay($args)) {
+        $reply->{query} = $relay;
+    }
+    $callback->($reply);
+}
+
+# _controlAddRelay($args)
+# Forum #424 / GH #238 (92-14): what the root reply of a control request passes on to the deeper
+# feeds, or undef. LMS gives the request's params only to the ROOT feed (Slim/Control/XMLBrowser.pm,
+# sub cliQuery: params => getParamsCopy); every deeper feed gets the root reply's `query` hash as
+# its params (sub _cliQuery_done: params => $feed->{'query'}). Without a relay the playlist feed of
+# `spoton playlist add item_id:...` never learns that the command is an add, and _playAddCap cannot
+# cap it (92-12 step 5(d): queue 2500 of 3500 entries and no queue-limit line).
+# Relayed is the method alone, in a fresh hash per request, and only for an add, addall or insert in
+# the `playlist` command form:
+#   - not without isControl (web path, WR-03) and not for play, load or playall (WR-03);
+#   - not with touchToPlay or playIndex: XMLBrowser then reads items->[playIndex] of the full list;
+#   - not with _index or _quantity (an item query): XMLBrowser's menu builder merges `query` into
+#     the action params of every menu entry, so it must never see this hash.
+sub _controlAddRelay {
+    my ($args) = @_;
+
+    return undef unless ref $args eq 'HASH' && $args->{isControl} && ref $args->{params} eq 'HASH';
+    my $p = $args->{params};
+
+    my $method = $p->{_method};
+    return undef unless defined $method && !ref($method) && $method =~ /^(?:add|addall|insert)$/i;
+    return undef if defined $p->{touchToPlay} || defined $p->{playIndex};
+    return undef if defined $p->{_index} || defined $p->{_quantity};
+
+    return { _method => $method };
 }
 
 # _accountSwitcherFeed()
@@ -1970,7 +2004,8 @@ sub _libraryFeed {
 # Per D-12: LMS index/quantity mapped to Spotify offset/limit.
 # Play-all detection: if quantity is undef (CLI/Material Skin "Play now") OR
 # $qty >= 500 (Classic/Web UI "Play All"), AND $offset == 0, fetches ALL tracks
-# via _fetchAllPages (Option D, Phase 54 Plan 04).
+# via _fetchAllPages (Option D, Phase 54 Plan 04). An add/insert request is capped at the
+# LMS queue limit (_playAddCap) and a truncated list stays out of the play-all cache (92-13).
 # Else-branch: bounded multi-page fill via _fetchPages honoring the requested
 # (offset, quantity) so JiveLite's ~210-item block requests get filled across
 # multiple Spotify API pages instead of stalling at the 50-item API cap (GH #157).
@@ -1991,16 +2026,19 @@ sub _savedTracksFeed {
     };
 
     if ($isPlayAll && $offset == 0) {
-        # Play-all mode: fetch all liked tracks via full pagination
+        # Play-all mode: fetch all liked tracks via full pagination (92-13: at most the queue limit
+        # for an add/insert request, never for a play, see _playAddCap)
+        my $cap = _playAddCap($args);
         _fetchAllPages({
             accountId    => $accountId,
             apiFn        => $apiFn,
             # 79-27 D-22: one page = one extended-metadata batch (trackBatchSize); play-all still loads
             # every page before the single callback.
             pageLimit    => Plugins::SpotOn::API::SpClient->trackBatchSize,
+            maxItems     => $cap,
             extractItems => sub { $_[0]->{items} || [] },
             done         => sub {
-                my ($allItems, $err) = @_;
+                my ($allItems, $err, $safeTotal) = @_;
                 # FIX-01: defer metadata cache writes to avoid blocking event loop
                 # with N synchronous SQLite INSERTs before callback fires.
                 my @deferredMeta;
@@ -2011,7 +2049,8 @@ sub _savedTracksFeed {
                 if (!@items) {
                     push @items, _authRequiredItem($client, $accountId, $err);
                 }
-                _playAllCacheStore($cacheKey, \@items);
+                _playAllCacheStore($cacheKey, \@items)
+                    unless _playAllTruncated($cap, scalar(@{$allItems}), $safeTotal, 'liked songs');
                 $callback->({ items => \@items });
                 # Flush deferred metadata cache writes in background (50 per event-loop tick).
                 _flushDeferredMeta(undef, \@deferredMeta, 0) if @deferredMeta;
@@ -2210,6 +2249,12 @@ sub _fetchAllFollowedArtists {
 # from a genuine empty result set (Plan 03 Task 2 -- this shared paginator
 # has no inline NO_RESULTS item of its own to substitute at its unless($data)
 # site, unlike the 15 standard call sites).
+#
+# Forum #424 / GH #238: with a warm cache every page was answered inside one event-loop
+# callback and the whole list blocked LMS. A page answered synchronously (inside the
+# $apiFn call) therefore hands the next page to a 0-delay timer; a page that arrived
+# later (network) continues directly. A list that fits one page still completes
+# inside the call.
 sub _fetchPages {
     my ($args) = @_;
 
@@ -2240,8 +2285,10 @@ sub _fetchPages {
             my $remaining = $maxItems - scalar(@accumulated);
             $requestLimit = $remaining if $remaining < $requestLimit;
         }
+        my $inCall = 1;    # true while $apiFn has not returned: the page was answered synchronously
         $apiFn->($accountId, { offset => $requestOffset, limit => $requestLimit }, sub {
             my ($data, $err) = @_;
+            my $answeredSynchronously = $inCall;
             unless ($data) {
                 undef $fetchPage;
                 $done->(\@accumulated, $err, $startOffset + scalar(@accumulated));
@@ -2261,7 +2308,14 @@ sub _fetchPages {
             my $reachedMax = defined($maxItems) && scalar(@accumulated) >= $maxItems;
             # T-25-01: stop if current page returned no items (prevents infinite loop)
             if (!$reachedMax && $itemCount > 0 && ($startOffset + scalar(@accumulated)) < $lastTotal) {
-                $fetchPage->();
+                if ($answeredSynchronously) {
+                    # cache hit: yield to the event loop before the next page (forum #424)
+                    Slim::Utils::Timers::setTimer(undef, Time::HiRes::time(), sub {
+                        $fetchPage->() if $fetchPage;
+                    });
+                } else {
+                    $fetchPage->();
+                }
             } else {
                 undef $fetchPage;
                 my $safeTotal;
@@ -2276,18 +2330,69 @@ sub _fetchPages {
                 $done->(\@accumulated, undef, $safeTotal);
             }
         });
+        $inCall = 0;
     };
 
     $fetchPage->();
 }
 
 # _fetchAllPages($args)
-# Backward-compatible wrapper around _fetchPages for the 7 existing play-all
-# call sites (unbounded fetch, 2-arg done callback -- the extra 3rd $safeTotal
-# arg is simply ignored by callers that only destructure ($allItems, $err)).
+# Backward-compatible wrapper around _fetchPages for the 8 play-all call sites
+# (unbounded fetch unless the caller passes maxItems -- _playlistFeed and
+# _savedTracksFeed pass the queue limit of an add/insert from _playAddCap, 92-13; 2-arg done
+# callback -- the extra 3rd $safeTotal arg is simply ignored by callers that
+# only destructure ($allItems, $err)).
 sub _fetchAllPages {
     my ($args) = @_;
     _fetchPages($args);
+}
+
+# _playAddCap($args)
+# Forum #424 / GH #238: how many entries an ADD or INSERT request for a playlist or for Liked
+# Songs needs at most, or undef when the whole list is to be fetched (browse, play, unknown).
+# PLAY is never capped (92-08 WR-03, user decision 2026-11-26): touch-to-play on a track beyond
+# the queue limit needs its entry in the returned list (XMLBrowser.pm reads items->[playIndex]),
+# so a play, load or touch-to-play fetches the full list as it did before 92-13.
+# LMS facts this rests on (checked against LMS 9.1):
+#   - XMLBrowser.pm (control): the last level of a playlist command (and touch-to-play) gets no
+#     index and no quantity; an item query (browse) always carries a quantity. The method of the
+#     command (add, insert, play, load) is in params->{_method}: for the ROOT feed params are the
+#     request's params (the radio root calls _playlistFeed with them, see _radioFeed); for every
+#     deeper feed params is the root reply's `query` hash, which handleFeed fills through
+#     _controlAddRelay for an add or insert command (92-14).
+#   - Web/XMLBrowser.pm: the feed call carries isWeb and a quantity equal to the server pref
+#     maxPlaylistLength for playall AND addall alike, and no action: a web play cannot be told from
+#     a web add, so the web path is not capped.
+#   - Player/Playlist.pm addTracks keeps a prefix of the added list up to maxPlaylistLength
+#     (0 = unlimited), so for an add fetching more than the limit is thrown away.
+sub _playAddCap {
+    my ($args) = @_;
+
+    my $limit = preferences('server')->get('maxPlaylistLength');
+    return undef unless defined $limit && !ref($limit) && $limit =~ /^\d+$/ && $limit > 0;
+    $limit += 0;
+
+    return undef if defined $args->{quantity};      # a browse (item query) or a web page
+    return undef unless $args->{isControl} && ref $args->{params} eq 'HASH';
+
+    my $method = $args->{params}->{_method};
+    return $limit if defined $method && !ref($method) && $method =~ /^(?:add|addall|insert)$/i;
+
+    return undef;
+}
+
+# _playAllTruncated($cap, $count, $safeTotal, $what)
+# True when a capped play-all fetch stopped short of the list's total: such a list must not enter the
+# play-all cache (a browse would see a shortened list). Logs the cut once at INFO.
+sub _playAllTruncated {
+    my ($cap, $count, $safeTotal, $what) = @_;
+
+    return 0 unless defined $cap && defined $safeTotal && $safeTotal > $count;
+
+    main::INFOLOG && $log->is_info && $log->info(
+        "play/add fetch of $what stopped at the queue limit: $count of $safeTotal entries"
+    );
+    return 1;
 }
 
 # _userPlaylistsFeed($client, $callback, $args)
@@ -4468,7 +4573,8 @@ sub _albumTrackItem {
 # Made-For-You 403 fallback: undef $data returns NO_RESULTS textarea (graceful).
 # Play-all detection: if quantity is undef (CLI/Material Skin "Play now") OR
 # $qty >= 500 (Classic/Web UI "Play All"), AND $offset == 0, fetches ALL tracks
-# via _fetchAllPages (Option D, Phase 54 Plan 04).
+# via _fetchAllPages (Option D, Phase 54 Plan 04). An add/insert request is capped at the
+# LMS queue limit (_playAddCap) and a truncated list stays out of the play-all cache (92-13).
 # Every playlist, Spotify-made 37i9 mixes included, is read through spclient
 # playlist/v2 (SpClient->getPlaylistItems, 85-08).
 sub _playlistFeed {
@@ -4490,14 +4596,17 @@ sub _playlistFeed {
     my $plCacheKey = "playlist:$accountId:$playlistId";
 
     if ($isPlayAll && $offset == 0) {
-        # Play-all mode: fetch all playlist tracks via full pagination
+        # Play-all mode: fetch all playlist tracks via full pagination (92-13: at most the queue limit
+        # for an add/insert request, never for a play, see _playAddCap)
+        my $cap = _playAddCap($args);
         _fetchAllPages({
             accountId    => $accountId,
             apiFn        => $apiFn,
             pageLimit    => 100,
+            maxItems     => $cap,
             extractItems => sub { $_[0]->{items} || [] },
             done         => sub {
-                my ($allItems, $err) = @_;
+                my ($allItems, $err, $safeTotal) = @_;
                 # T-03-10: Skip null track entries (local files in playlists return null track objects).
                 # FIX-01: defer metadata cache writes to avoid blocking event loop with N SQLite INSERTs.
                 my @deferredMeta;
@@ -4508,7 +4617,8 @@ sub _playlistFeed {
                 if (!@items) {
                     push @items, _authRequiredItem($client, $accountId, $err);
                 }
-                _playAllCacheStore($plCacheKey, \@items);
+                _playAllCacheStore($plCacheKey, \@items)
+                    unless _playAllTruncated($cap, scalar(@{$allItems}), $safeTotal, 'playlist');
                 $callback->({ items => \@items });
                 _flushDeferredMeta(undef, \@deferredMeta, 0) if @deferredMeta;
             },

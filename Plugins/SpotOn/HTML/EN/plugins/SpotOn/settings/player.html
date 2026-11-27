@@ -8,12 +8,23 @@
 	<h2>[% 'PLUGIN_SPOTON_PLAYER_SECTION_GENERAL' | string %]</h2>
 	<p style="margin:0 0 10px 0; font-size:0.9em; color:#888">[% 'PLUGIN_SPOTON_PLAYER_SECTION_GENERAL_DESC' | string %]</p>
 
+	[%# 92-03 (GH #232, D-06): a saved daemon setting waits behind playback on this player; the flag is set on every render, the wording follows the rule that holds (live: a title plays now; else: only the health snapshot still counts the daemon as busy) %]
+	[% IF restartDeferred == 'live' %]
+	<p style="margin:0 0 10px 0; font-size:0.9em; color:#888">[% 'PLUGIN_SPOTON_PLAYER_RESTART_DEFERRED_LIVE' | string %]</p>
+	[% ELSIF restartDeferred %]
+	<p style="margin:0 0 10px 0; font-size:0.9em; color:#888">[% 'PLUGIN_SPOTON_PLAYER_RESTART_DEFERRED_IDLE' | string %]</p>
+	[% END %]
+
 	[% WRAPPER setting title="PLUGIN_SPOTON_CONNECT_ENABLED" desc="PLUGIN_SPOTON_CONNECT_ENABLED_DESC" %]
 		<input type="checkbox" class="stdedit" name="pref_enableSpotifyConnect"
 		       id="pref_enableSpotifyConnect"
 		       value="1" [% IF connectEnabled %]checked[% END %]/>
 		<input type="hidden" name="has_enableSpotifyConnect" value="1">
 		<label for="pref_enableSpotifyConnect">[% 'PLUGIN_SPOTON_CONNECT_ENABLED_LABEL' | string %]</label>
+	[% END %]
+	[%# 92-07 (GH #203, D-03): a running Soloist daemon is listed in the Spotify app whatever this switch says; say so next to the switch %]
+	[% IF backend == 'soloist' %]
+	<p style="margin:0 0 10px 0; font-size:0.9em; color:#888">[% 'PLUGIN_SPOTON_CONNECT_OFF_SOLOIST_NOTE' | string %]</p>
 	[% END %]
 
 	[%# 79-69 (GH #151, D-36): switch the player off again about 30 s after Spotify Connect ends - off by default, both backends %]

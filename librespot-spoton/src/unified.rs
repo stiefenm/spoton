@@ -443,12 +443,12 @@ fn recovery_plan(intent: &RecoveryIntent, active_after_rebuild: bool, age: Durat
     }
 }
 
-/// The event the dispatcher passes to the ordinary `handle_player_event` call
-/// once the outcome is known. Recovered: the session continues, nothing is
-/// replayed. Failed / GaveUp: the held SessionDisconnected, or one built from
-/// the old session's connection id when none was held, so the ordinary arm
-/// sends `stop inactive <counter>` and resets the cursor. A held Paused/Stopped
-/// is never replayed (the replayed disconnect pauses LMS anyway).
+/// The event the dispatcher passes to `handle_dispatched_event` (with
+/// `replayed` set) once the outcome is known. Recovered: the session continues,
+/// nothing is replayed. Failed / GaveUp: the held SessionDisconnected, or one
+/// built from the old session's connection id when none was held, so LMS gets
+/// `stop inactive <counter> lost` (GH #151 T6) and the cursor is reset. A held
+/// Paused/Stopped is never replayed (the replayed disconnect pauses LMS anyway).
 fn held_event_after_recovery(
     outcome: RecoveryOutcome,
     held: Option<PlayerEvent>,
@@ -484,6 +484,35 @@ fn loss_poll_fires(connecting: bool, recovering: bool, session_invalid: bool) ->
 fn suppress_after_recovery(kind: EventKind, settle_until: Option<Instant>, now: Instant) -> bool {
     matches!(kind, EventKind::Paused | EventKind::Stopped)
         && settle_until.map(|u| now < u).unwrap_or(false)
+}
+
+/// GH #230: may the paused-start deadline expiry reach LMS? The expiry is a
+/// synthetic Paused, so it passes the gates a Paused event passes today: not
+/// while the helper recovers, not on an invalid session, not during Browse
+/// playback, not inside the settle window after a recovered takeover.
+fn paused_start_expiry_allowed(
+    recovering: bool,
+    session_invalid: bool,
+    browse_active: bool,
+    settle_until: Option<Instant>,
+    now: Instant,
+) -> bool {
+    !recovering
+        && !session_invalid
+        && !browse_active
+        && !suppress_after_recovery(EventKind::Paused, settle_until, now)
+}
+
+/// GH #230: the sleeper behind the dispatcher's third `select!` arm. Completes at
+/// the armed paused-start deadline; stays pending forever while none is armed.
+/// A plain future, not a task: the dispatcher re-reads the deadline at the top of
+/// every loop pass, so a deadline armed or cancelled by the previous event is
+/// always the one selected on.
+async fn paused_start_sleep(due: Option<(u64, Instant)>) {
+    match due {
+        Some((_, at)) => tokio::time::sleep_until(tokio::time::Instant::from_std(at)).await,
+        None => std::future::pending::<()>().await,
+    }
 }
 
 /// GH #207 (88-08 finding 1, V4): the rebuilt Spirc announces the title it takes
@@ -3186,10 +3215,15 @@ pub async fn run_unified(
                 let mut current_track: Option<String> = None;
                 let mut current_sink_track: Option<String> = None;
                 loop {
-                    // GH #207: the next player event, or a recovery outcome. A failed
-                    // recovery hands the held (or rebuilt) SessionDisconnected back as
-                    // `event` with `replayed` set, so it takes the SAME
-                    // `lms.handle_player_event` call below as every other event.
+                    // GH #230: the armed paused-start deadline, re-read every pass.
+                    let ps_due = lms.paused_start_deadline();
+                    // GH #207: the next player event, a recovery outcome, or (GH #230)
+                    // the paused-start deadline. A failed recovery hands the held (or
+                    // rebuilt) SessionDisconnected back as `event` with `replayed` set;
+                    // it takes the same `lms.handle_dispatched_event` call below as
+                    // every other event, which marks that session end `lost`
+                    // (GH #151 T6). The deadline arm runs in this task, sequentially
+                    // with every PlayerEvent.
                     let (event, replayed, _ack) = tokio::select! {
                         ev = event_chan.recv() => match ev {
                             Some(e) => (e, false, None::<AckOnDrop>),
@@ -3201,6 +3235,31 @@ pub async fn run_unified(
                                 Some(e) => (e, true, Some(ack)),
                                 None => continue,
                             }
+                        }
+                        _ = paused_start_sleep(ps_due) => {
+                            // GH #230: the suppressed Paused of a session start got no
+                            // Playing within the bound. It passes the gates a Paused
+                            // event passes today (recovery, invalid session, Browse,
+                            // settle window) before LMS hears `stop paused-start`.
+                            if let Some((gen, _)) = ps_due {
+                                let session_invalid = !rs_lms.deliberate.load(Ordering::Acquire)
+                                    && session_lms.lock().await.is_invalid();
+                                let browse_active = matches!(*mode_state_lms.lock().await, ActiveMode::Browse(_));
+                                if paused_start_expiry_allowed(
+                                    rs_lms.is_recovering(),
+                                    session_invalid,
+                                    browse_active,
+                                    rs_lms.settle_until(),
+                                    Instant::now(),
+                                ) {
+                                    lms.handle_paused_start_expiry(gen, &mut current_track).await;
+                                    rs_lms.set_cursor(&current_track);
+                                } else {
+                                    lms.cancel_paused_start();
+                                    log::info!("[spoton/unified] paused start expiry dropped (recovering, invalid session, Browse or settle window)");
+                                }
+                            }
+                            continue;
                         }
                     };
                     advance_connect_track_generation(&event, &mut current_sink_track, &track_gen_lms);
@@ -3310,7 +3369,7 @@ pub async fn run_unified(
                         rs_lms.end_settle();
                     }
 
-                    lms.handle_player_event(&event, &mut current_track).await;
+                    lms.handle_dispatched_event(&event, replayed, &mut current_track).await;
                     rs_lms.set_cursor(&current_track);
                 }
             }));
@@ -3710,7 +3769,10 @@ pub async fn run_unified(
                                             let mut current_track: Option<String> = seed_track;
                                             let mut current_sink_track: Option<String> = None;
                                             loop {
-                                                // Same outcome/replay handling as the initial dispatcher.
+                                                // Same outcome/replay handling as the initial dispatcher
+                                                // (replayed -> lost marker), and the same third arm on the
+                                                // paused-start deadline (GH #230).
+                                                let ps_due = lms_d.paused_start_deadline();
                                                 let (event, replayed, _ack) = tokio::select! {
                                                     ev = event_chan.recv() => match ev {
                                                         Some(e) => (e, false, None::<AckOnDrop>),
@@ -3722,6 +3784,28 @@ pub async fn run_unified(
                                                             Some(e) => (e, true, Some(ack)),
                                                             None => continue,
                                                         }
+                                                    }
+                                                    _ = paused_start_sleep(ps_due) => {
+                                                        // GH #230: same expiry handling as the initial dispatcher.
+                                                        if let Some((gen, _)) = ps_due {
+                                                            let session_invalid = !rs_d.deliberate.load(Ordering::Acquire)
+                                                                && session_d.lock().await.is_invalid();
+                                                            let browse_active = matches!(*mode_state_d.lock().await, ActiveMode::Browse(_));
+                                                            if paused_start_expiry_allowed(
+                                                                rs_d.is_recovering(),
+                                                                session_invalid,
+                                                                browse_active,
+                                                                rs_d.settle_until(),
+                                                                Instant::now(),
+                                                            ) {
+                                                                lms_d.handle_paused_start_expiry(gen, &mut current_track).await;
+                                                                rs_d.set_cursor(&current_track);
+                                                            } else {
+                                                                lms_d.cancel_paused_start();
+                                                                log::info!("[spoton/unified] paused start expiry dropped (recovering, invalid session, Browse or settle window)");
+                                                            }
+                                                        }
+                                                        continue;
                                                     }
                                                 };
                                                 advance_connect_track_generation(&event, &mut current_sink_track, &track_gen_d);
@@ -3805,7 +3889,7 @@ pub async fn run_unified(
                                                 if kind == EventKind::Playing {
                                                     rs_d.end_settle();
                                                 }
-                                                lms_d.handle_player_event(&event, &mut current_track).await;
+                                                lms_d.handle_dispatched_event(&event, replayed, &mut current_track).await;
                                                 rs_d.set_cursor(&current_track);
                                             }
                                         }));
@@ -5719,6 +5803,41 @@ mod recovery_tests {
             PlayerEvent::SessionDisconnected { connection_id, .. } => Some(connection_id.clone()),
             _ => None,
         }
+    }
+
+    // --- paused_start_expiry_allowed (GH #230) --------------------------
+
+    /// PSG-1: while the helper recovers, the expiry is dropped.
+    #[test]
+    fn paused_start_expiry_allowed_not_while_recovering() {
+        assert!(!paused_start_expiry_allowed(true, false, false, None, Instant::now()));
+    }
+
+    /// PSG-2: an invalid session (the loss is not yet recovered) drops it.
+    #[test]
+    fn paused_start_expiry_allowed_not_on_invalid_session() {
+        assert!(!paused_start_expiry_allowed(false, true, false, None, Instant::now()));
+    }
+
+    /// PSG-3: Browse playback owns LMS, the expiry is dropped.
+    #[test]
+    fn paused_start_expiry_allowed_not_during_browse() {
+        assert!(!paused_start_expiry_allowed(false, false, true, None, Instant::now()));
+    }
+
+    /// PSG-4: inside the settle window after a recovered takeover it is dropped.
+    #[test]
+    fn paused_start_expiry_allowed_not_inside_settle_window() {
+        let now = Instant::now();
+        assert!(!paused_start_expiry_allowed(false, false, false, Some(now + Duration::from_secs(5)), now));
+    }
+
+    /// PSG-5: none of the gates holds (an elapsed settle window is no gate).
+    #[test]
+    fn paused_start_expiry_allowed_when_nothing_stands_against_it() {
+        let now = Instant::now();
+        assert!(paused_start_expiry_allowed(false, false, false, None, now));
+        assert!(paused_start_expiry_allowed(false, false, false, Some(now - Duration::from_secs(1)), now));
     }
 
     // --- suppress_for_recovery ------------------------------------------

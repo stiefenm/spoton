@@ -103,7 +103,9 @@ sub handler {
                 my %valid = map { $_ => 1 } ('global', @{ $qi->{validLevels} || [] });
                 my $v = $paramRef->{'pref_soloistQuality'} // '';
                 $v = 'global' unless $valid{$v};
-                my $stored = $prefs->client($client)->get('soloistQuality') || 'global';
+                # 92-02: own level 0 (Automatic) is falsy; only unset/empty reads 'global'.
+                my $stored = $prefs->client($client)->get('soloistQuality');
+                $stored = 'global' unless defined $stored && length $stored;
                 if ($v ne $stored) {
                     $prefs->client($client)->set('soloistQuality', $v);
                     # client passed explicitly: backendFor resolves a sync
@@ -171,6 +173,17 @@ sub handler {
 
         # COMPAT-01: no legacy-pref fallback chain (D-05 — streamingMode has no predecessor pref)
         $paramRef->{streamingMode} = $prefs->client($client)->get('streamingMode') || 'global';
+
+        # 92-03 (GH #232, D-06): a saved daemon setting waits while this player pulls
+        # audio. Computed on EVERY render (after a save here, after a global save in
+        # Settings.pm, after a reload) from the pure read pendingRestartReasons; the
+        # branch ('live' | 'snapshot') picks the wording. Unset = no note.
+        require Plugins::SpotOn::Unified::DaemonManager;
+        if (Plugins::SpotOn::Unified::DaemonManager->can('pendingRestartReasons')) {
+            my $pending = eval { Plugins::SpotOn::Unified::DaemonManager->pendingRestartReasons($client) };
+            $paramRef->{restartDeferred} = $pending->{branch}
+                if ref $pending eq 'HASH' && $pending->{branch};
+        }
 
         # 83.3 D-12/D-13/D-15: per-player Spotify streaming-quality override.
         # 84-13 (SEAM-6.2): the whole block comes from this player's backend

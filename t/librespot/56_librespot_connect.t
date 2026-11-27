@@ -79,7 +79,8 @@ sub import {
     *{"${caller}::logger"} = \&logger;
 }
 sub logger { return bless {}, 'Slim::Utils::Log' }
-sub info  { }
+our @INFO;
+sub info  { shift; push @INFO, join('', @_); }   # 92-06: info lines recorded (read only while $main::INFO_ON)
 sub warn  { }
 sub error { }
 sub debug { }
@@ -282,7 +283,9 @@ BEGIN {
     *main::TRANSCODING = sub () { 0 };
     *main::WEBUI       = sub () { 0 };
     *main::SCANNER     = sub () { 0 };
-    *main::INFOLOG     = sub () { 0 };
+    # 92-06: INFOLOG is off unless a cell sets $main::INFO_ON (a non-constant body, so it is not
+    # inlined at compile time); only the cells that assert an info line switch it on
+    *main::INFOLOG     = sub () { $main::INFO_ON };
     *main::DEBUGLOG    = sub () { 0 };
     *main::PERFMON     = sub () { 0 };
     *main::ISWINDOWS   = sub () { 0 };
@@ -680,11 +683,70 @@ sub ev {
 }
 
 {
-    fresh(playing => 1);
+    # 92-06 WR-01: ignored only while LMS is not strictly playing (rewritten from `playing => 1`
+    # alone: strict follows `playing`, so the stop now passes the filter and the old cell would pause)
+    fresh(playing => 1, strict => 0);
     $CONNECT->bindConnectClaim($C, 'test');
     $C->pluginData(newTrack => 1);
     ev('stop');
-    is_deeply([ cmds() ], [], 'stop while newTrack is set: ignored');
+    is_deeply([ cmds() ], [], 'stop while newTrack is set and LMS is not strictly playing: ignored (92-06 WR-01)');
+}
+
+# 92-06 (GH #230 R3 WR-01/WR-02): an app pause inside the start window reaches LMS
+# WR-01: the H7 newTrack filter lets a stop through when LMS strictly plays and this player holds the claim
+{
+    fresh(playing => 1, strict => 1, song => MockSong->new(url => 'spoton://connect-9', info => 1));
+    $CONNECT->bindConnectClaim($C, 'test');
+    $C->pluginData(newTrack => 1);
+    ev('stop');
+    is_deeply([ cmds() ], ['pause 1'], '92-06 WR01-1: newTrack set, LMS strictly playing, claim held: one pause');
+    is(((sent())[0] || {})->{source}, $CONNECT_SRC, '92-06 WR01-1: the pause is source-marked');
+}
+{
+    fresh(playing => 1, strict => 1, song => MockSong->new(url => 'spoton://connect-9', info => 1));
+    $C->pluginData(newTrack => 1);
+    ev('stop');
+    is_deeply([ cmds() ], [], '92-06 WR01-3: newTrack set, LMS strictly playing, no claim: ignored');
+}
+# WR-02: a stop only marked while LMS buffers is followed by one pause when the stream reaches PLAYING
+sub wr02_marked {
+    fresh(playing => 1, strict => 0, song => MockSong->new(url => 'spoton://connect-9', info => 1));
+    $CONNECT->bindConnectClaim($C, 'test');
+    $C->pluginData(connectStartTime => Time::HiRes::time() - 3);
+    ev('stop');
+}
+sub newsong_req { return Test::Req->new(client => $C, cmd => ['playlist', 'newsong']); }
+{
+    wr02_marked();
+    is_deeply([ cmds() ], [], '92-06 WR02-1: the stop in the start grace while LMS buffers sends nothing yet');
+    is($C->pluginData('connectSessionPaused'), 1, '92-06 WR02-1: ... and marks the session paused');
+    $C->{strict} = 1;                         # LMS reaches PLAYING
+    Plugins::SpotOn::Connect::_onNewSong(newsong_req());
+    is_deeply([ cmds() ], ['pause 1'], '92-06 WR02-1: the newsong of the playing stream sends exactly one pause');
+    is(((sent())[0] || {})->{source}, $CONNECT_SRC, '92-06 WR02-1: the follow-up pause is source-marked');
+    Plugins::SpotOn::Connect::_onNewSong(newsong_req());
+    is_deeply([ cmds() ], ['pause 1'], '92-06 WR02-1: a second newsong does not pause again');
+}
+{
+    wr02_marked();
+    ev('resume', 'TRK1', '2.0');
+    @Slim::Control::Request::SENT = ();
+    $C->{strict} = 1;
+    Plugins::SpotOn::Connect::_onNewSong(newsong_req());
+    is_deeply([ cmds() ], [], '92-06 WR02-2: a resume before the newsong cancels the follow-up pause');
+    # the mark itself is gone, not only hidden behind connectSessionPaused: a later ordinary pause
+    # of the session (marks it paused again, no grace involved) must not revive the follow-up
+    $C->pluginData(connectSessionPaused => 1);
+    Plugins::SpotOn::Connect::_onNewSong(newsong_req());
+    is_deeply([ cmds() ], [], '92-06 WR02-2: ... and a later pause mark does not revive it (the resume cleared the one-shot mark)');
+}
+{
+    # an ordinary paused session that changes title: no grace mark, no follow-up
+    fresh(playing => 1, strict => 1, song => MockSong->new(url => 'spoton://connect-9', info => 1));
+    $CONNECT->bindConnectClaim($C, 'test');
+    $C->pluginData(connectSessionPaused => 1);
+    Plugins::SpotOn::Connect::_onNewSong(newsong_req());
+    is_deeply([ cmds() ], [], '92-06 WR02-3: connectSessionPaused without the grace mark: no follow-up pause');
 }
 
 {
@@ -712,6 +774,225 @@ sub ev {
     fire_power_off($C, 31);
     is_deeply([ cmds() ], ['pause 1', 'power 0'], '79-69 T1 i: power 0 from the timer callback after the wait');
     is(prev_power($C), undef, '79-69 T1 i: the saved power state is consumed after the wait');
+}
+
+# 92-06 (GH #151 T6): a lost connection never switches the player off
+# `stop inactive <n> lost` is the helper's failed or given-up recovery (92-05): LMS still pauses
+# and releases the claim, but no power-off wait is armed and the saved power state is cleared.
+sub t6_on_player {
+    fresh(playing => 1, song => MockSong->new(url => 'spoton://connect-9', info => 1));
+    $Slim::Utils::Prefs::CLIENT{connectPowerOff} = 1;
+    $CONNECT->bindConnectClaim($C, 'test');
+    $C->pluginData(connectPrevPower => 0);
+    @Slim::Utils::Log::INFO = ();
+}
+sub power_off_timers {
+    my $cb = \&Plugins::SpotOn::Connect::_powerOffDue;
+    return scalar(grep { $_->[2] == $cb } @Slim::Utils::Timers::TIMERS);
+}
+{
+    local $main::INFO_ON = 1;
+    t6_on_player();
+    ev('stop', 'inactive', '', 'lost');
+    is_deeply([ cmds() ], ['pause 1'], "92-06 T6-1: stop 'inactive' marked lost still pauses");
+    is(power_off_timers(), 0, '92-06 T6-1: no power-off wait is armed');
+    fire_power_off($C, 31);
+    is_deeply([ cmds() ], ['pause 1'], '92-06 T6-1: no power 0 after the wait either');
+    is(prev_power($C), undef, '92-06 T6-1: the saved power state is cleared');
+    ok(!$CONNECT->isSpotifyConnect($C), '92-06 T6-1: the claim is released');
+    ok((grep { /connection to Spotify lost/ } @Slim::Utils::Log::INFO), '92-06 T6-1: one INFO line says the connection was lost and the player stays on');
+}
+# T6-2: unmarked end is the deliberate device switch: the 30 s wait as before
+{
+    t6_on_player();
+    ev('stop', 'inactive', '');
+    is(power_off_timers(), 1, '92-06 T6-2: unmarked stop inactive arms the power-off wait');
+    fire_power_off($C, 31);
+    is_deeply([ cmds() ], ['pause 1', 'power 0'], '92-06 T6-2: the unmarked end still powers off after the wait (T1 unchanged)');
+}
+# T6-3: any marker other than exactly `lost` is unmarked
+{
+    t6_on_player();
+    ev('stop', 'inactive', '', 'lostx');
+    fire_power_off($C, 31);
+    is_deeply([ cmds() ], ['pause 1', 'power 0'], "92-06 T6-3: marker 'lostx' is treated as unmarked");
+}
+# T6-4: the counter check runs first; a stale counter ignores the marked stop
+{
+    t6_on_player();
+    $C->pluginData(connectSessionCounter => 5);
+    ev('stop', 'inactive', '4', 'lost');
+    is_deeply([ cmds() ], [], '92-06 T6-4: a lost marker with a stale counter does not pause');
+    is(prev_power($C), 0, '92-06 T6-4: ... and keeps the saved power state');
+    ok($CONNECT->isSpotifyConnect($C), '92-06 T6-4: ... and keeps the claim');
+}
+# T6-5: lost without saved state: pause only, nothing to clear
+{
+    t6_on_player();
+    $C->pluginData(connectPrevPower => Plugins::SpotOn::Connect::PREV_POWER_NONE());
+    ev('stop', 'inactive', '', 'lost');
+    is_deeply([ cmds() ], ['pause 1'], '92-06 T6-5: lost on a player without saved power state pauses only');
+    is(power_off_timers(), 0, '92-06 T6-5: ... and arms no wait');
+}
+# T6-6: the player was on before the session: the leave-on line is at INFO (maintainer promise 2026-11-14)
+{
+    local $main::INFO_ON = 1;
+    t6_on_player();
+    $C->pluginData(connectPrevPower => 1);
+    ev('stop', 'inactive', '');
+    ok((grep { /was on before Connect - leaving on/ } @Slim::Utils::Log::INFO), "92-06 T6-6: 'was on before Connect - leaving on' is logged at INFO");
+}
+
+# 92-06 (GH #230 paused transfer): `stop paused-start` and a plain stop on a never-started stream
+# send an LMS `stop` (LMS discards `pause 1` while BUFFERING) - only on the player's OWN live
+# Connect stream; the app's Play afterwards re-enters through the resume re-entry branch.
+{
+    package PstController;
+    our @ISA = ('MockController');
+    sub buffering { return $_[0]{b} // 0; }
+
+    package PstClient;
+    our @ISA = ('MockClient');
+    sub new {
+        my ($class, %a) = @_;
+        my $self = MockClient::new($class, %a);
+        $self->{ctl} = PstController->new;
+        $self->{ctl}{b} = $a{buffering} // 0;
+        return $self;
+    }
+    sub controller { return $_[0]{ctl}; }
+}
+# $a{claim}: bind the claim; $a{age}: seconds since connectStartTime (default 5: past the 3 s
+# _onPause start grace, inside the 12 s Connect start grace)
+sub pst_setup {
+    my (%a) = @_;
+    my $claim = exists $a{claim} ? delete $a{claim} : 1;
+    my $age   = exists $a{age}   ? delete $a{age}   : 5;
+    my $nt    = delete $a{newTrack};
+    fresh(%a);
+    $C = PstClient->new(%a);
+    $CONNECT->bindConnectClaim($C, 'test') if $claim;
+    $Slim::Utils::Prefs::CLIENT{activeAccount} = 'acct1234';
+    $C->pluginData(connectStartTime => Time::HiRes::time() - $age);
+    $C->pluginData(newTrack => 1) if $nt;
+    $C->pluginData(connectSessionCounter => 7);
+    return $C;
+}
+sub own_song { return MockSong->new(url => 'spoton://connect-9', info => { live => 1 }); }
+sub never_started_args { return (playing => 1, strict => 0, buffering => 1, song => own_song()); }
+
+{
+    # PST-1: paused transfer, LMS never started, own live Connect stream: stop, echo suppressed
+    pst_setup(never_started_args(), newTrack => 1);
+    ev('stop', 'paused-start');
+    is_deeply([ cmds() ], ['stop'], '92-06 PST-1: stop paused-start on a never-started own stream sends an LMS stop');
+    is(((sent())[0] || {})->{source}, $CONNECT_SRC, '92-06 PST-1: the stop is source-marked');
+    ok(Time::HiRes::time() - ($C->pluginData('connectPauseTs') || 0) < 2, '92-06 PST-1: connectPauseTs is stamped (echo suppression)');
+    is($C->pluginData('connectSessionPaused'), 1, '92-06 PST-1: the session is remembered as paused');
+    ok($CONNECT->isSpotifyConnect($C), '92-06 PST-1: the claim is kept');
+    is($C->pluginData('connectSessionCounter'), 7, '92-06 PST-1: the session counter is kept');
+    @Slim::Networking::SimpleAsyncHTTP::POSTS = ();
+    Plugins::SpotOn::Connect::_onPause(pause_req('stop', undef));      # the unmarked LMS echo of that stop
+    is_deeply([ control_urls() ], [], '92-06 PST-1: the unmarked echo of the LMS stop reaches no daemon (PST-1 echo)');
+}
+{
+    # PST-2: LMS strictly playing: the normal pause path
+    pst_setup(playing => 1, strict => 1, buffering => 0, song => own_song(), newTrack => 1);
+    ev('stop', 'paused-start');
+    is_deeply([ cmds() ], ['pause 1'], '92-06 PST-2: stop paused-start with LMS strictly playing takes the normal pause path');
+}
+{
+    # PST-3: no claim
+    pst_setup(never_started_args(), claim => 0, newTrack => 1);
+    ev('stop', 'paused-start');
+    is_deeply([ cmds() ], [], '92-06 PST-3: stop paused-start without the claim does nothing');
+}
+{
+    # PST-4: a plain app stop after the grace while LMS never started: stop instead of the discarded pause
+    pst_setup(never_started_args(), age => 20);
+    ev('stop');
+    is_deeply([ cmds() ], ['stop'], '92-06 PST-4: plain stop after the grace, LMS never started on its own stream: LMS stop, not pause 1');
+    ok(Time::HiRes::time() - ($C->pluginData('connectPauseTs') || 0) < 2, '92-06 PST-4: connectPauseTs is stamped');
+}
+{
+    # PST-5: the app's Play after the stop re-enters through the re-entry branch, never `pause 0`
+    pst_setup(never_started_args(), newTrack => 1);
+    ev('stop', 'paused-start');
+    $C->{playing} = 0; $C->{strict} = 0; $C->{paused} = 0;             # LMS now reads stopped
+    @Slim::Control::Request::SENT = ();
+    ev('resume', 'TRK9', '0.000');
+    my @c = cmds();
+    ok((grep { m{^playlist play spoton://connect-\d+$} } @c), '92-06 PST-5: Play on the stopped own entry re-enters via playlist play spoton://connect-<ts>');
+    ok(!(grep { $_ eq 'pause 0' } @c), '92-06 PST-5: ... and never sends pause 0 (a playlist jump on a stopped player)');
+    is($C->pluginData('newTrack'), 1, '92-06 PST-5: newTrack is set again');
+    ok(Time::HiRes::time() - ($C->pluginData('connectStartTime') || 0) < 2, '92-06 PST-5: connectStartTime is fresh');
+    is($C->pluginData('connectSessionPaused'), 0, '92-06 PST-5: connectSessionPaused is cleared');
+}
+{
+    # PST-5b: LMS paused (not stopped) on its own entry: the plain pause 0 as today
+    pst_setup(playing => 0, strict => 0, paused => 1, buffering => 0, song => own_song());
+    ev('resume', 'TRK9', '12.000');
+    my @c = cmds();
+    ok((grep { $_ eq 'pause 0' } @c), '92-06 PST-5b: a paused LMS keeps the plain pause 0');
+    ok(!(grep { m{^playlist play} } @c), '92-06 PST-5b: ... and no playlist play');
+}
+{
+    # PST-6: an unknown _p2 keeps today's plain-stop behaviour
+    pst_setup(playing => 1, strict => 1, buffering => 0, song => own_song(), age => 20);
+    ev('stop', 'something');
+    is_deeply([ cmds() ], ['pause 1'], "92-06 PST-6: an unknown stop marker behaves as a plain stop");
+}
+{
+    # PST-7: a Browse title buffering while the claim is still held is never stopped
+    for my $song (MockSong->new(url => 'spoton://track:BRW1', info => undef),
+                  MockSong->new(url => 'spoton://connect-9', info => { live => 1 }, streamUrl => 'spoton://track:XYZ')) {
+        pst_setup(playing => 1, strict => 0, buffering => 1, song => $song);
+        ev('stop', 'paused-start');
+        is_deeply([ cmds() ], [], '92-06 PST-7: stop paused-start on a buffering Browse title sends nothing');
+        pst_setup(playing => 1, strict => 0, buffering => 1, song => $song, age => 20);
+        ev('stop');
+        is_deeply([ cmds() ], ['pause 1'], '92-06 PST-7: a plain stop on a buffering Browse title keeps today\'s pause 1, no LMS stop');
+    }
+}
+
+{
+    # PST-8 (92-08 WR-04): paused-start on the own stream while LMS REBUFFERS (buffering() == 2, not the
+    # INITIAL buffering of PST-1): LMS would discard `pause 1`, so the stop is an LMS stop, the pause is
+    # remembered, the echo is suppressed - the signal is not dropped as "not on its own Connect stream"
+    pst_setup(playing => 1, strict => 0, buffering => 2, song => own_song());
+    ev('stop', 'paused-start');
+    is_deeply([ cmds() ], ['stop'], '92-08 PST-8: stop paused-start while LMS rebuffers on its own stream sends an LMS stop');
+    is(((sent())[0] || {})->{source}, $CONNECT_SRC, '92-08 PST-8: the stop is source-marked');
+    ok(Time::HiRes::time() - ($C->pluginData('connectPauseTs') || 0) < 2, '92-08 PST-8: connectPauseTs is stamped (echo suppression)');
+    is($C->pluginData('connectSessionPaused'), 1, '92-08 PST-8: the session is remembered as paused');
+    ok($CONNECT->isSpotifyConnect($C), '92-08 PST-8: the claim is kept');
+    is($C->pluginData('connectSessionCounter'), 7, '92-08 PST-8: the session counter is kept');
+    @Slim::Networking::SimpleAsyncHTTP::POSTS = ();
+    Plugins::SpotOn::Connect::_onPause(pause_req('stop', undef));
+    is_deeply([ control_urls() ], [], '92-08 PST-8: the unmarked echo of the LMS stop reaches no daemon');
+}
+{
+    # PST-9 (92-08 WR-04): LMS already PAUSED on its own stream: nothing to send, the pause is remembered
+    pst_setup(playing => 0, strict => 0, paused => 1, buffering => 0, song => own_song());
+    ev('stop', 'paused-start');
+    is_deeply([ cmds() ], [], '92-08 PST-9: stop paused-start with LMS already paused on its own stream sends nothing');
+    is($C->pluginData('connectSessionPaused'), 1, '92-08 PST-9: ... and remembers the session as paused');
+
+    # PST-10: LMS STOPPED on its own entry
+    pst_setup(playing => 0, strict => 0, paused => 0, buffering => 0, song => own_song());
+    ev('stop', 'paused-start');
+    is_deeply([ cmds() ], [], '92-08 PST-10: stop paused-start with LMS stopped on its own entry sends nothing');
+    is($C->pluginData('connectSessionPaused'), 1, '92-08 PST-10: ... and remembers the session as paused');
+}
+{
+    # PST-11: a Browse title that rebuffers while the claim is held is still left alone, nothing is remembered
+    for my $song (MockSong->new(url => 'spoton://track:BRW1', info => undef),
+                  MockSong->new(url => 'spoton://connect-9', info => { live => 1 }, streamUrl => 'spoton://track:XYZ')) {
+        pst_setup(playing => 1, strict => 0, buffering => 2, song => $song);
+        ev('stop', 'paused-start');
+        is_deeply([ cmds() ], [], '92-08 PST-11: stop paused-start on a rebuffering Browse title sends nothing');
+        ok(!$C->pluginData('connectSessionPaused'), '92-08 PST-11: ... and records no pause');
+    }
 }
 
 # ============================================================

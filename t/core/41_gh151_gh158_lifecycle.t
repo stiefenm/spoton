@@ -3797,8 +3797,9 @@ sub grace_case {
     is(power_off_dispatched(), 1, '79-61 WR-04: ... and restores the pre-session power state (after the 30 s wait)');
     set_power_pref(undef);
 
-    # a plain (unmarked) stop inside the window is still ignored, as before
-    my $c2 = Test::FakeClient->new(power => 1, isPlaying => 1);
+    # a plain (unmarked) stop inside the window is still ignored, as before - while LMS is not
+    # strictly playing (92-06 WR-01: with strict PLAYING and the claim it is the app pause and passes)
+    my $c2 = Test::FakeClient->new(power => 1, isPlaying => 1, strict => 0);
     start_session($c2);
     $c2->pluginData(newTrack => 1);
     @Slim::Control::Request::EXECUTED = ();
@@ -4651,6 +4652,43 @@ sub grace_case {
         is(scalar(h_inserts()), 0, '90.1-03 G3: a later change of the released player is dropped as today');
         Plugins::SpotOn::Connect->releaseConnectClaim($p2, 'test');
     }
+}
+
+# ==================================================================
+# 92-06 (84 review WR-02): shutdown leaves no hold behind
+# A hold's _holdCheck timer outlived Connect->shutdown and its fallback could start a title after
+# the subscribers were gone (closes 79 review IN-02/IN-03). Shutdown kills the timer of every open
+# hold and empties the hold state.
+# ==================================================================
+{
+    my ($client, $ctl, $old) = h_setup();
+    Plugins::SpotOn::Connect->initConnectHandlers();      # earlier cells already shut Connect down once
+    h_change($client, $ctl, $H_NEW, 'live');
+    is(h_timers(), 1, '92-06 H84-pre: a hold is open and its _holdCheck timer is armed');
+
+    my @killed;
+    {
+        no warnings 'redefine';
+        my $orig = \&Slim::Utils::Timers::killTimers;
+        local *Slim::Utils::Timers::killTimers = sub { push @killed, [@_]; $orig->(@_); };
+        local %Slim::Player::Client::BY_ID = ($client->id => $client);
+        Plugins::SpotOn::Connect->shutdown;
+    }
+    is(scalar(grep { $_->[0] == $client && $_->[1] == \&Plugins::SpotOn::Connect::_holdCheck } @killed), 1,
+        '92-06 H84-1: shutdown kills the _holdCheck timer of the client with an open hold');
+    is(h_timers(), 0, '92-06 H84-1: no timer is left armed');
+
+    # the hold state is empty: a late _holdCheck (cap long passed) does nothing at all
+    @Slim::Control::Request::EXECUTED = ();
+    $H_NOW += 200;
+    {
+        no warnings 'redefine';
+        local *Plugins::SpotOn::Soloist::Control::for_client = sub { $H_CTL };
+        Plugins::SpotOn::Connect::_holdCheck($client);
+    }
+    is(scalar(@Slim::Control::Request::EXECUTED), 0, '92-06 H84-2: after shutdown _holdCheck issues no request (no playlist play fallback)');
+    is(h_timers(), 0, '92-06 H84-2: ... and re-arms no timer');
+    Plugins::SpotOn::Connect->initConnectHandlers();
 }
 
 done_testing();
