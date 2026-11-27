@@ -61,14 +61,14 @@ close($fh);
         'F3 static: data-key-missing carries soloistKeyMissing as 1/0');
 
     my @spans = $line =~ m{(<span\b[^>]*>)}g;
-    is(scalar @spans, 4, 'F3 static: the four status branches are kept');
+    is(scalar @spans, 5, 'F3 static: the four status branches are kept, plus the 93-02 failure span inside the missing branch');
     my @ids    = grep { m{id="soloist-binary-status"} } @spans;
-    is(scalar @ids, 4, 'F3 static: every branch span carries id="soloist-binary-status"');
+    is(scalar @ids, 5, 'F3 static: every branch span carries id="soloist-binary-status"');
     my @states = map { m{data-state="([^"]*)"} ? $1 : '' } @spans;
-    is_deeply(\@states, [qw(unsupported missing ready ready)],
-        'F3 static: data-state per branch is unsupported, missing, ready (key missing), ready');
+    is_deeply(\@states, [qw(unsupported missing missing ready ready)],
+        'F3 static: data-state per branch is unsupported, missing (failure text), missing, ready (key missing), ready');
     my @colors = map { m{color:\s*(\w+)} ? $1 : '' } @spans;
-    is_deeply(\@colors, [qw(red red orange green)], 'F3 static: the four branch colors are unchanged');
+    is_deeply(\@colors, [qw(red orange red orange green)], 'F3 static: the branch colors are unchanged, the failure span is orange');
     like($line, qr{'PLUGIN_SPOTON_SOLOIST_BINARY_MISSING'\s*\|\s*string}, 'F3 static: the missing text is unchanged');
 }
 
@@ -385,6 +385,35 @@ NODE_HARNESS
     is($r->{howto}{howto}, 'block', 'F2 node: spotonSoloistPairHowtoShow() opens the how-to');
     is($r->{howto}{link}, 'none', 'F2 node: spotonSoloistPairHowtoShow() hides its link');
     is($r->{absent}, 'ok', 'F2 node: both functions throw nothing when their elements are absent');
+}
+
+# ------------------------------------------------------------
+# 93-02 (D-10): the failure text replaces the red "binary not found - it will
+# be downloaded" line, and the Renew poll shows the same text the page does.
+# ------------------------------------------------------------
+{
+    my ($line) = $html =~ m{(<div id="soloist-binary-line".*?</div>\s*\[%\s*IF\s+!soloistUnsupportedOS)}s;
+    $line //= '';
+    my ($missing) = $line =~ m{\[%\s*ELSIF\s+soloistMissing\s*%\](.*?)\[%\s*ELSIF\s+soloistKeyMissing\s*%\]}s;
+    ok(defined $missing, '93-02 TS-1: the soloistMissing branch of #soloist-binary-line is there');
+    $missing //= '';
+    my ($ifPart, $elsePart) = $missing =~ m{\[%\s*IF\s+soloistFailure\.text\s*%\](.*?)\[%\s*ELSE\s*%\](.*?)\[%\s*END\s*%\]}s;
+    ok(defined $ifPart && defined $elsePart, '93-02 TS-1: the missing branch splits on IF soloistFailure.text ... ELSE ... END');
+    $ifPart //= ''; $elsePart //= '';
+    like($ifPart, qr{\[%\s*soloistFailure\.text\s*\|\s*html\s*%\]}, '93-02 TS-1: the failure text is rendered through | html');
+    unlike($ifPart, qr{PLUGIN_SPOTON_SOLOIST_BINARY_MISSING}, '93-02 TS-1: the BINARY_MISSING string is not in the failure branch');
+    like($elsePart, qr{'PLUGIN_SPOTON_SOLOIST_BINARY_MISSING'\s*\|\s*string}, '93-02 TS-1: the BINARY_MISSING string remains in the ELSE only');
+
+    like($ifPart, qr{<span\b[^>]*id="soloist-binary-status"[^>]*data-state="missing"}, '93-02 TS-2: the failure span keeps id="soloist-binary-status" and data-state="missing"');
+    my ($open) = $line =~ m{^(<div id="soloist-binary-line"[^>]*>)}s;
+    like($open // '', qr{data-poll="\[%\s*IF\s+backend\s*==\s*'soloist'\s*&&\s*soloistMissing\s*&&\s*!soloistUnsupportedOS\s*%\]1}, '93-02 TS-2: data-poll is unchanged, a later install still turns the line ready');
+
+    my ($poll) = $html =~ m{(function spotonSoloistPollStatus\(.*?)// 79-39}s;
+    ok(defined $poll, '93-02 TS-3: extracted spotonSoloistPollStatus');
+    $poll //= '';
+    like($poll, qr{var text = renewal\.text \|\| renewal\.phase;}, '93-02 TS-3: the poll shows renewal.text, renewal.phase only as the fallback');
+    like($poll, qr{result\.textContent = text;}, '93-02 TS-3: the text goes in through textContent');
+    unlike($poll, qr{renewal\.detail}, '93-02 TS-3: the raw phase(detail) concatenation is gone');
 }
 
 done_testing();

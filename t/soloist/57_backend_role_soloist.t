@@ -143,6 +143,9 @@ sub pendingBinarySwitches { return {}; }
 sub switchedAtFor         { return undef; }
 sub soloistHealthFor      { return undef; }
 sub crashStateSnapshot    { return undef; }
+# 93-02: the platform reads settingsInfo / platformFit make.
+sub platformSupportsSoloist { return 1; }
+sub soloistGlibcOk          { return 1; }
 sub queuePendingTrackRequest {
     my ($class, $clientId, $uri, $posMs, $opts, $deadlineFor) = @_;
     push @QUEUED, [ $clientId, $uri, $posMs, $opts, ($deadlineFor ? $deadlineFor->($opts) : undef) ];
@@ -226,8 +229,15 @@ sub clearKey { push @CLEAR, 1; return 1; }
 our @RENEW;
 our $INSTALLED = '/fake/cache/soloist/x86_64-linux/soloist';
 sub renewBinary         { my %a = @_; push @RENEW, {%a}; return 'started'; }
-sub activeVersion       { return '1.3.8.70'; }
-sub renewalState        { return { phase => 'idle' }; }
+our $ACTIVE  = '1.3.8.70';
+our $RENEWAL = { phase => 'idle' };
+our $PROBE;
+sub activeVersion       { return $ACTIVE; }
+sub renewalState        { return { %$RENEWAL }; }
+# 93-02 (D-10): the last version probe failure and the settingsInfo head reads.
+sub lastProbeFailure    { return $PROBE ? { %$PROBE } : undef; }
+sub expectedVersion     { return '1.3.8.70'; }
+sub packageHintFor      { my ($so) = @_; return $so eq 'libatomic.so.1' ? 'libatomic1' : "the package that provides $so"; }
 sub expiryDaysRemaining { return 40; }
 sub placedState         { return { status => 'absent' }; }
 sub manualDir           { return '/fake/cache/soloist/manual'; }
@@ -1185,5 +1195,202 @@ like($control_src, qr/\('spottyconnect', \$cmd/, "events: Control's _emit dispat
             "79-68 T3 item-bridge e: librespot side amputated: Backend::Librespot does not load (leg check)");
     }
 }
+
+# ------------------------------------------------------------
+# 93-02 D-09: a stale failed/no_key renewal state never shows once a key is
+# stored (state written by older versions has TTL never), neither on the
+# settings page nor in the status poll.
+# ------------------------------------------------------------
+subtest '93-02 D-09: stale failed/no_key' => sub {
+    local $Plugins::SpotOn::Soloist::RENEWAL = { phase => 'failed', detail => 'no_key' };
+    local @Plugins::SpotOn::Unified::DaemonManager::HELPERS = ();
+
+    local $Plugins::SpotOn::Soloist::HASKEY = 1;
+    my $p3 = {};
+    eval { $S->settingsInfo($p3, keyMaskedPreview => '') };
+    is(($p3->{soloistRenewal} || {})->{text}, '', '93-02 NK-3: stale failed/no_key with a stored key -> soloistRenewal.text is empty');
+    is($p3->{soloistFailure}, undef, '93-02 NK-3: stale failed/no_key with a stored key -> soloistFailure is undef');
+
+    local $Plugins::SpotOn::Soloist::HASKEY = 0;
+    my $p4 = {};
+    eval { $S->settingsInfo($p4, keyMaskedPreview => '') };
+    is(($p4->{soloistFailure} || {})->{text}, 'S:PLUGIN_SPOTON_SOLOIST_FAIL_NO_KEY',
+        '93-02 NK-4: failed/no_key without a key -> soloistFailure.text is the FAIL_NO_KEY sentence (enter the key)');
+
+    local $Plugins::SpotOn::Soloist::HASKEY = 1;
+    my $st = eval { $S->renewStatus() } || {};
+    is(($st->{renewal} || {})->{text}, '', '93-02 NK-5: renewStatus with the stale state and a stored key -> renewal.text is empty');
+    is(($st->{renewal} || {})->{phase}, 'idle', '93-02 NK-5: renewStatus reports the stale state as idle');
+};
+
+
+# ------------------------------------------------------------
+# 93-02 D-10: one plain next-step sentence per failure reason (_failureText),
+# one failure struct (soloistFailure) for the failed renewal or, while the
+# binary is missing, the last version probe (a failed FIRST install writes no
+# renewal state). The EN sentences are read from the shipped strings.txt so
+# the test asserts the real wording.
+# ------------------------------------------------------------
+subtest '93-02 D-10: failure text' => sub {
+    my %en;
+    {
+        open(my $sfh, '<', "$project_dir/Plugins/SpotOn/strings.txt") or die "strings.txt: $!";
+        my $cur;
+        while (my $line = <$sfh>) {
+            chomp $line;
+            if ($line =~ /^(PLUGIN_SPOTON_SOLOIST_FAIL_\w+)\s*$/) { $cur = $1; next; }
+            if ($line =~ /^PLUGIN_/) { $cur = undef; next; }
+            $en{$cur} = $1 if defined $cur && $line =~ /^\tEN\t(.*)$/;
+        }
+        close($sfh);
+    }
+    local %Slim::Utils::Strings::S = (%Slim::Utils::Strings::S, %en);
+    my $str = \&Slim::Utils::Strings::string;
+    my $ft  = sub {
+        my ($r) = @_;
+        my $t = eval { Plugins::SpotOn::Backend::Soloist::_failureText($r, $str) };
+        return defined $t ? $t : '';
+    };
+    my $same = sub { my ($r, $key) = @_; return (length($en{$key} // '') && $ft->($r) eq $en{$key}) ? 1 : 0; };
+
+    # FT-1: glibc
+    my $g = $ft->('glibc_too_old:GLIBC_2.38');
+    like($g, qr/glibc 2\.38/,     '93-02 FT-1: glibc sentence names glibc 2.38');
+    like($g, qr/Debian 13/,       '93-02 FT-1: glibc sentence names Debian 13');
+    like($g, qr/Ubuntu 24\.04/,   '93-02 FT-1: glibc sentence names Ubuntu 24.04');
+    like($g, qr/librespot/,       '93-02 FT-1: glibc sentence names the librespot alternative');
+    like($ft->('glibc_too_old:GLIBC_2.40'), qr/glibc 2\.40/, '93-02 FT-1: the glibc version comes from the reason, not from the floor');
+
+    # FT-2: missing library with and without a known package
+    my $l = $ft->('missing_library:libatomic.so.1');
+    like($l, qr/libatomic\.so\.1/, '93-02 FT-2: library sentence names the soname');
+    like($l, qr/libatomic1/,       '93-02 FT-2: library sentence names the package libatomic1');
+    like($ft->('missing_library:libfoo.so.9'), qr/the package that provides libfoo\.so\.9/,
+        '93-02 FT-2: an unknown soname reads "the package that provides <soname>"');
+
+    # FT-3: every reason of the inventory reaches its sentence
+    my %group = (
+        PLUGIN_SPOTON_SOLOIST_FAIL_DOWNLOAD      => [qw(download_failed:timeout download_empty stalled)],
+        PLUGIN_SPOTON_SOLOIST_FAIL_BELOW_MINIMUM => [qw(below_minimum)],
+        PLUGIN_SPOTON_SOLOIST_FAIL_START         => ['expired', 'exited_rc_3', 'spawn_failed', 'no_expiry_line', 'smoke_failed',
+                                                     'smoke_exception', 'CDN still serves the expired build'],
+        PLUGIN_SPOTON_SOLOIST_FAIL_INSTALL       => [qw(tar_failed no_binary escapes_dir move_failed extract_failed:foo promote_move_failed activation_failed)],
+        PLUGIN_SPOTON_SOLOIST_FAIL_VERSION       => [qw(version_unparsable)],
+        PLUGIN_SPOTON_SOLOIST_FAIL_NO_KEY        => [qw(no_key)],
+    );
+    my @all = ('glibc_too_old:GLIBC_2.38', 'missing_library:libatomic.so.1', 'weird_new');
+    for my $key (sort keys %group) {
+        for my $reason (@{ $group{$key} }) {
+            ok($same->($reason, $key), "93-02 FT-3: reason '$reason' -> $key");
+            push @all, $reason;
+        }
+    }
+    my $o = $ft->('weird_new');
+    like($o, qr/\(weird_new\)/, '93-02 FT-3: an unknown reason shows the raw code in brackets');
+    like($o, qr/^Soloist could not be installed/, '93-02 FT-3: an unknown reason gets the generic sentence');
+
+    # FT-4: no sentence promises a retry tomorrow
+    my @promise = grep { $ft->($_) =~ /tomorrow|morgen/i } @all;
+    is(scalar(@promise), 0, '93-02 FT-4: no sentence promises a retry tomorrow') or diag("@promise");
+    ok(length($ft->($_)), "93-02 FT-4: '$_' has a sentence") for ('glibc_too_old:GLIBC_2.38', 'download_empty');
+
+    # FS-1..FS-3: the failure struct of settingsInfo
+    local @Plugins::SpotOn::Unified::DaemonManager::HELPERS = ();
+    local $Plugins::SpotOn::Soloist::HASKEY = 1;
+    my $info = sub { my $p = {}; eval { $S->settingsInfo($p, keyMaskedPreview => '') }; return $p; };
+
+    {
+        local $Plugins::SpotOn::Soloist::ACTIVE  = undef;
+        local $Plugins::SpotOn::Soloist::RENEWAL = { phase => 'failed', detail => 'glibc_too_old:GLIBC_2.38' };
+        my $f = $info->()->{soloistFailure} || {};
+        is($f->{reason}, 'glibc_too_old:GLIBC_2.38', '93-02 FS-1: binary missing + failed renewal -> soloistFailure.reason is the renewal detail');
+        like($f->{text} // '', qr/glibc 2\.38.*Debian 13/, '93-02 FS-1: soloistFailure.text is the glibc sentence');
+    }
+    {
+        local $Plugins::SpotOn::Soloist::ACTIVE  = undef;
+        local $Plugins::SpotOn::Soloist::RENEWAL = { phase => 'idle' };
+        local $Plugins::SpotOn::Soloist::PROBE   = { reason => 'missing_library:libatomic.so.1', soname => 'libatomic.so.1', package_hint => 'libatomic1' };
+        my $f = $info->()->{soloistFailure} || {};
+        is($f->{reason}, 'missing_library:libatomic.so.1', '93-02 FS-2: first install (no renewal state) -> soloistFailure from the probe');
+        like($f->{text} // '', qr/libatomic1/, '93-02 FS-2: the probe failure reads as the library sentence');
+    }
+    {
+        local $Plugins::SpotOn::Soloist::RENEWAL = { phase => 'idle' };
+        local $Plugins::SpotOn::Soloist::PROBE   = { reason => 'missing_library:libatomic.so.1', soname => 'libatomic.so.1' };
+        is($info->()->{soloistFailure}, undef, '93-02 FS-3: binary present + idle renewal -> soloistFailure undef (a stale probe is ignored)');
+        local $Plugins::SpotOn::Soloist::ACTIVE = undef;
+        local $Plugins::SpotOn::Soloist::PROBE  = undef;
+        is($info->()->{soloistFailure}, undef, '93-02 FS-3: binary missing, no probe failure, no failed renewal -> soloistFailure undef');
+    }
+};
+
+
+# ------------------------------------------------------------
+# 93-05 WR-01: a failed renewal's sentence is a leftover once a binary became
+# active after the attempt (state written with TTL never, stamped with
+# active_at_attempt by _finishRenewal). Same active build, no stamp (state of
+# an older version) and a binary still missing keep the sentence.
+# ------------------------------------------------------------
+subtest '93-05 WR-01: stale failed renewal' => sub {
+    local @Plugins::SpotOn::Unified::DaemonManager::HELPERS = ();
+    local $Plugins::SpotOn::Soloist::HASKEY = 1;
+    my $info = sub { my $p = {}; eval { $S->settingsInfo($p, keyMaskedPreview => '') }; return $p; };
+    my $lib  = 'missing_library:libatomic.so.1';
+
+    # WR1-a: the library was installed and LMS restarted: a build is active now, the attempt was stamped before.
+    {
+        local $Plugins::SpotOn::Soloist::ACTIVE  = '1.3.8.70';
+        local $Plugins::SpotOn::Soloist::RENEWAL = { phase => 'failed', detail => $lib, active_at_attempt => '', last_attempt_at => 1000 };
+        my $p = $info->();
+        is(($p->{soloistRenewal} || {})->{text}, '', '93-05 WR1-a: a build became active after the failed attempt -> soloistRenewal.text is empty');
+        is(($p->{soloistRenewal} || {})->{phase}, 'idle', '93-05 WR1-a: the page reads the state as idle');
+        is($p->{soloistFailure}, undef, '93-05 WR1-a: soloistFailure is undef');
+        my $st = eval { $S->renewStatus() } || {};
+        is(($st->{renewal} || {})->{text}, '', '93-05 WR1-a: renewStatus renewal.text is empty too');
+        is(($st->{renewal} || {})->{phase}, 'idle', '93-05 WR1-a: renewStatus reports idle');
+    }
+
+    # WR1-b (no trigger): the candidate failed while the same build stayed active -> the sentence stays.
+    {
+        local $Plugins::SpotOn::Soloist::ACTIVE  = '1.3.8.70';
+        local $Plugins::SpotOn::Soloist::RENEWAL = { phase => 'failed', detail => 'glibc_too_old:GLIBC_2.38', active_at_attempt => '1.3.8.70', last_attempt_at => 1000 };
+        my $p = $info->();
+        is(($p->{soloistRenewal} || {})->{text}, 'S:PLUGIN_SPOTON_SOLOIST_FAIL_GLIBC', '93-05 WR1-b: same active build as at the attempt -> the failure sentence stays');
+        is(($p->{soloistRenewal} || {})->{phase}, 'failed', '93-05 WR1-b: phase stays failed');
+        is(($p->{soloistFailure} || {})->{reason}, 'glibc_too_old:GLIBC_2.38', '93-05 WR1-b: soloistFailure carries the reason');
+        my $st = eval { $S->renewStatus() } || {};
+        is(($st->{renewal} || {})->{phase}, 'failed', '93-05 WR1-b: renewStatus reports failed');
+    }
+
+    # WR1-c (no trigger): a state written by an older version carries no stamp -> reads as before.
+    {
+        local $Plugins::SpotOn::Soloist::ACTIVE  = '1.3.8.70';
+        local $Plugins::SpotOn::Soloist::RENEWAL = { phase => 'failed', detail => 'download_empty', last_attempt_at => 1000 };
+        is(($info->()->{soloistRenewal} || {})->{phase}, 'failed', '93-05 WR1-c: an unstamped failed state (older version) still shows');
+    }
+
+    # WR1-d (no trigger): the first install failed and the binary is still missing -> the stamp '' equals the missing version.
+    {
+        local $Plugins::SpotOn::Soloist::ACTIVE  = undef;
+        local $Plugins::SpotOn::Soloist::RENEWAL = { phase => 'failed', detail => 'download_empty', active_at_attempt => '', last_attempt_at => 1000 };
+        is(($info->()->{soloistRenewal} || {})->{phase}, 'failed', '93-05 WR1-d: binary still missing after a failed first install -> the sentence stays');
+    }
+
+    # WR1-e: second facet - the binary is missing today for a NEWER reason than the stored failed renewal.
+    {
+        local $Plugins::SpotOn::Soloist::ACTIVE  = undef;
+        local $Plugins::SpotOn::Soloist::RENEWAL = { phase => 'failed', detail => 'download_empty', active_at_attempt => '', last_attempt_at => 1000 };
+        local $Plugins::SpotOn::Soloist::PROBE   = { reason => $lib, soname => 'libatomic.so.1', at => 2000 };
+        is(($info->()->{soloistFailure} || {})->{reason}, $lib, '93-05 WR1-e: a probe failure newer than the failed renewal wins (today\'s cause)');
+    }
+    # WR1-f (no trigger): the probe failure is OLDER than the failed renewal -> the renewal's reason stays.
+    {
+        local $Plugins::SpotOn::Soloist::ACTIVE  = undef;
+        local $Plugins::SpotOn::Soloist::RENEWAL = { phase => 'failed', detail => 'download_empty', active_at_attempt => '', last_attempt_at => 3000 };
+        local $Plugins::SpotOn::Soloist::PROBE   = { reason => $lib, soname => 'libatomic.so.1', at => 2000 };
+        is(($info->()->{soloistFailure} || {})->{reason}, 'download_empty', '93-05 WR1-f: a probe failure older than the failed renewal does not displace it');
+    }
+};
+
 
 done_testing();

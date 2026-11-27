@@ -63,7 +63,15 @@
 				[% IF soloistUnsupportedOS %]
 				<span id="soloist-binary-status" data-state="unsupported" style="color: red">&#9679; [% 'PLUGIN_SPOTON_SOLOIST_UNSUPPORTED_OS' | string %]</span>
 				[% ELSIF soloistMissing %]
+				[%# 93-02 (D-10): a known failure (failed renewal, or the probe of a failed
+				    first install) replaces the "will be downloaded" promise; the reason text
+				    only ever goes through | html. Same id and data-state, so the poll below
+				    still turns the line ready once a version arrives. #%]
+				[% IF soloistFailure.text %]
+				<span id="soloist-binary-status" data-state="missing" style="color: orange">&#9679; [% soloistFailure.text | html %]</span>
+				[% ELSE %]
 				<span id="soloist-binary-status" data-state="missing" style="color: red">&#9679; [% 'PLUGIN_SPOTON_SOLOIST_BINARY_MISSING' | string %]</span>
+				[% END %]
 				[% ELSIF soloistKeyMissing %]
 				<span id="soloist-binary-status" data-state="ready" style="color: orange">&#9679; [% 'PLUGIN_SPOTON_SOLOIST_KEY_MISSING' | string %]</span>
 				[% ELSE %]
@@ -138,7 +146,8 @@
 			<button type="button" id="soloistRenewBtn" class="submit" onclick="spotonSoloistRenew()"
 				data-started-text="[% 'PLUGIN_SPOTON_SOLOIST_RENEWAL_STARTED' | string | html %]"
 				data-busy-text="[% 'PLUGIN_SPOTON_SOLOIST_RENEWAL_BUSY' | string | html %]"
-				data-unsupported-text="[% 'PLUGIN_SPOTON_SOLOIST_RENEWAL_UNSUPPORTED' | string | html %]">
+				data-unsupported-text="[% 'PLUGIN_SPOTON_SOLOIST_RENEWAL_UNSUPPORTED' | string | html %]"
+				data-no-key-text="[% 'PLUGIN_SPOTON_SOLOIST_FAIL_NO_KEY' | string | html %]">
 				[% 'PLUGIN_SPOTON_SOLOIST_RENEW_NOW_BUTTON' | string %]
 			</button>
 			<span id="soloistRenewResult" style="margin-left:10px"></span>
@@ -630,6 +639,7 @@
 			var text = status === 'started' ? btn.dataset.startedText
 				: status === 'busy' ? btn.dataset.busyText
 				: status === 'unsupported' ? btn.dataset.unsupportedText
+				: status === 'no_key' ? btn.dataset.noKeyText
 				: (status || 'error');
 			result.textContent = text;
 			btn.disabled = false;
@@ -657,7 +667,9 @@
 			var result = document.getElementById('soloistRenewResult');
 			var renewal = data && data.renewal;
 			if (!renewal) { return; }
-			var text = renewal.phase + (renewal.detail ? ' (' + renewal.detail + ')' : '');
+			// 93-02 (D-10): the same plain sentence the page renders (built server-side by
+			// the one _renewalText); the bare phase only while no text exists yet.
+			var text = renewal.text || renewal.phase;
 			result.textContent = text;
 			if (renewal.phase === 'done' || renewal.phase === 'same_version' || renewal.phase === 'failed') {
 				return;    // terminal state -- stop polling, next page load shows the final rendered text

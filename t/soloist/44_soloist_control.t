@@ -4053,7 +4053,7 @@ my $D49_0L3Z = 'spotify:track:0l3zOe0a5HH4uAw6ZS89dn';    # M1 cell 2: its LMS s
 # ============================================================
 # 79-78 D-50: a mid-title stall on the current Browse title (the daemon's own
 # `playing -> buffering` with position_sync speed 0 at a non-zero position)
-# that does not heal within HANG_REPLAY_DEADLINE_MS (2.25 s) is answered with
+# that does not heal within HANG_REPLAY_DEADLINE_MS (the deadline) is answered with
 # one armed `play uri` of the same title plus a seek to the stall position
 # (the S2 mechanism of the beta5-skip-latenz spike). Real frames:
 # t/fixtures/soloist/d50-hang-*.frames (M1 cell 2, m1-c2/frames.jsonl:56-72).
@@ -4062,6 +4062,9 @@ my $D49_0L3Z = 'spotify:track:0l3zOe0a5HH4uAw6ZS89dn';    # M1 cell 2: its LMS s
 # it needs no wall clock.
 # ============================================================
 my $D50_HM = 'spotify:track:1JhNmwO8Y04b4XidpSrytb';    # M1 cell 2 title 1: the 9195 ms stall
+
+# 93-01: the replay deadline in seconds, read from the constant so a retune is one line in Control.pm.
+my $D50_DL = Plugins::SpotOn::Soloist::Control::HANG_REPLAY_DEADLINE_MS() / 1000;
 
 # d50_frames($name) -> ( [ epoch, decoded frame ], ... ): a `.frames` fixture with its `#ts=... epoch=...` comments.
 sub d50_frames {
@@ -4141,7 +4144,7 @@ sub d50_session {
 }
 
 # --- D50-1 (RED on HEAD, real frames): the 9195 ms stall of m1-c2 title 1 (frames 56-69 = fixture 0..13), no heal
-# within 2.25 s -> exactly one armed `play` of the same uri, postSeek = the stall frame's position_ms, one WARN line.
+# within the deadline -> exactly one armed `play` of the same uri, postSeek = the stall frame's position_ms, one WARN line.
 {
     my @fx = d50_frames('d50-hang-midtitle.frames');
     is(scalar(@fx), 17, "D50-1 setup: the fixture holds the seventeen real frames of m1-c2 lines 56-72");
@@ -4155,10 +4158,10 @@ sub d50_session {
     my $n = scalar @{ $ws->sent };
     @IO::Socket::INET::REQUESTS = ();
     @Slim::Utils::Log::WARNINGS = ();
-    d50_fire($onset + 2.25 + 0.01);
+    d50_fire($onset + $D50_DL + 0.01);
 
     is_deeply([ d50_plays($ws, $n) ], [ [ 'play', { uri => $D50_HM } ] ],
-        "D50-1: a stall that did not heal within 2.25 s -> exactly one play of the same title");
+        "D50-1: a stall that did not heal within the deadline -> exactly one play of the same title");
     is(scalar(@{ $ws->sent }) - $n, 1, "D50-1: and nothing else goes to the daemon");
     is(scalar(grep { ${ $_->{bufref} } =~ m{^POST /seek-arm} } @IO::Socket::INET::REQUESTS), 1,
         "D50-1: the play is armed (one loopback /seek-arm call)");
@@ -4180,7 +4183,7 @@ sub d50_session {
     d50_at($onset + 1.0, sub { $ctl->onEvent($st); });
     is($ctl->observed->{status}, 'buffering', "D50-1b setup: the repeated buffering frame leaves the status unfrozen");
     my $n = scalar @{ $ws->sent };
-    d50_fire($onset + 2.25 + 0.01);
+    d50_fire($onset + $D50_DL + 0.01);
     is(scalar(d50_plays($ws, $n)), 1, "D50-1b: the watch survives the repeated buffering frame and the replay goes out");
     is(($ctl->pending || {})->{postSeek}, 9195, "D50-1b: postSeek is the stall frame's position_ms, not a projection");
     d50_done($ctl);
@@ -4192,7 +4195,7 @@ sub d50_session {
     my $onset = $fx[13][0];
     my ($ctl, $daemon, $ws) = d50_session('aa:bb:cc:dd:ee:c1', $D50_HM, $fx[0][0] - 0.05);
     d50_feed($ctl, \@fx, 0, 13);
-    d50_fire($onset + 2.25 + 0.01);
+    d50_fire($onset + $D50_DL + 0.01);
     my $n = scalar @{ $ws->sent };
     d50_feed($ctl, \@fx, 14, 16);
     d50_fire($onset + 30);
@@ -4201,16 +4204,16 @@ sub d50_session {
     d50_done($ctl);
 }
 
-# --- D50-3: the deadline is 2.25 s -- at onset + 2.0 s nothing has been sent yet
+# --- D50-3: nothing is sent at the deadline minus 0.25 s, one play follows once the deadline passed
 {
     my @fx = d50_frames('d50-hang-midtitle.frames');
     my $onset = $fx[13][0];
     my ($ctl, $daemon, $ws) = d50_session('aa:bb:cc:dd:ee:c2', $D50_HM, $fx[0][0] - 0.05);
     d50_feed($ctl, \@fx, 0, 13);
     my $n = scalar @{ $ws->sent };
-    d50_fire($onset + 2.0);
-    is(scalar(@{ $ws->sent }), $n, "D50-3: at onset + 2.0 s nothing is sent (the deadline is 2.25 s)");
-    d50_fire($onset + 2.25 + 0.01);
+    d50_fire($onset + $D50_DL - 0.25);
+    is(scalar(@{ $ws->sent }), $n, "D50-3: at the deadline minus 0.25 s nothing is sent");
+    d50_fire($onset + $D50_DL + 0.01);
     is(scalar(d50_plays($ws, $n)), 1, "D50-3: the replay follows once the deadline passed");
     d50_done($ctl);
 }
@@ -4225,7 +4228,7 @@ sub d50_session {
     my $onset = $fx[13][0];
     my ($ctl, $daemon, $ws) = d50_session('aa:bb:cc:dd:ee:c3', $D50_HM, $fx[0][0] - 0.05);
     d50_feed($ctl, \@fx, 0, 13);
-    my $tReplay = $onset + 2.25 + 0.01;
+    my $tReplay = $onset + $D50_DL + 0.01;
     d50_fire($tReplay);
     is($ctl->observed->{hangReplays}{$D50_HM}, 1, "D50-2b setup: one replay was sent");
 
@@ -4387,7 +4390,7 @@ sub d50_plant_stall {
     d50_at($onset + 1.0, sub { $ctl->onEvent({ type => 'playback_changed', status => 'paused' }); });
     ok(!$ctl->observed->{hangWatch}, "D50-16: an app pause inside the deadline cancels the watch");
     my $n = scalar @{ $ws->sent };
-    d50_fire($onset + 2.25 + 0.01);
+    d50_fire($onset + $D50_DL + 0.01);
     is(scalar(d50_plays($ws, $n)), 0, "D50-16: no replay at the deadline -- the user's pause is not undone");
     is($ctl->observed->{status}, 'paused', "D50-16: the title stays paused");
     d50_done($ctl);
@@ -4401,7 +4404,7 @@ sub d50_plant_stall {
     my ($ctl, $daemon, $ws) = d50_session('aa:bb:cc:dd:ee:ca', $D50_PR, $fx[0][0] - 0.05);
     d50_feed($ctl, \@fx, 0, 10);
     my $n = scalar @{ $ws->sent };
-    d50_fire($onset + 2.25 + 0.01);
+    d50_fire($onset + $D50_DL + 0.01);
     is_deeply([ d50_plays($ws, $n) ], [ [ 'play', { uri => $D50_PR } ] ], "D50-9: the cold-start stall is replayed once");
     is(($ctl->pending || {})->{postSeek}, 9566, "D50-9: at the stall position 9566");
     d50_done($ctl);
@@ -4467,13 +4470,13 @@ sub d50_plant_stall {
     my @fx = d50_frames('d50-hang-midtitle.frames');
     my ($c2, $d2, $w2) = d50_session('aa:bb:cc:dd:ee:a0', $D50_HM, $fx[0][0] - 0.05);
     d50_feed($c2, \@fx, 0, 13);
-    my $t1 = $fx[13][0] + 2.25 + 0.01;
+    my $t1 = $fx[13][0] + $D50_DL + 0.01;
     d50_fire($t1);
     is($c2->observed->{hangReplays}{$D50_HM}, 1, "D50-14 setup: replay 1 sent");
     d50_at($t1 + 0.05, sub { $c2->onEvent($fx[0][1]); });    # the echo of the replay's play
     my $pos2 = d50_plant_stall($c2, \@fx, $t1 + 0.3, $t1 + 6.0, 9195);
     ok($c2->observed->{hangWatch}, "D50-14 setup: the second stall (planted, 5.7 s after the replay's playing) armed a watch");
-    my $t2 = $t1 + 6.0 + 2.25 + 0.01;
+    my $t2 = $t1 + 6.0 + $D50_DL + 0.01;
     d50_fire($t2);
     is($c2->observed->{hangReplays}{$D50_HM}, 2, "D50-14: replay 2 sent");
     is(($c2->pending || {})->{postSeek}, $pos2, "D50-14: replay 2 seeks to the second stall's own position");
@@ -4560,6 +4563,9 @@ sub d50_plant_stall {
 # ============================================================
 
 # --- D50-19 (the measured end shape): duration 12.195 s, the real 9195 stall sits 3.0 s before the end.
+# 93-01 note for D50-19..D50-24: the fixture frames carry a daemon duration of 238893 ms (meta.daemon_duration); the end
+# decisions read the minimum with the seeded LMS-side value, so that value is ignored only because the seeded 12.195 s
+# is smaller. The "unknown duration" cases (D50-21, D50-21b, D50-24) delete BOTH fields.
 {
     my @fx = d50_frames('d50-hang-midtitle.frames');
     my $onset = $fx[13][0];
@@ -4570,7 +4576,7 @@ sub d50_plant_stall {
     ok(!$ctl->observed->{hangWatch}, "D50-19: a stall 3.0 s before the known end arms no watch (near_end)");
     my $n = scalar @{ $ws->sent };
     @Slim::Utils::Log::WARNINGS = ();
-    d50_fire($onset + 2.25 + 0.01);
+    d50_fire($onset + $D50_DL + 0.01);
     is(scalar(d50_plays($ws, $n)), 0, "D50-19: no replay play at a title end");
     is(scalar(grep { /Control: hang replay/ } @Slim::Utils::Log::WARNINGS), 0, "D50-19: no `Control: hang replay` WARN line");
     d50_done($ctl);
@@ -4585,7 +4591,7 @@ sub d50_plant_stall {
     d50_feed($ctl, \@fx, 0, 13);
     ok(!$ctl->observed->{hangWatch}, "D50-20: a stall 70 ms inside the margin arms no watch (near_end)");
     my $n = scalar @{ $ws->sent };
-    d50_fire($onset + 2.25 + 0.01);
+    d50_fire($onset + $D50_DL + 0.01);
     is(scalar(d50_plays($ws, $n)), 0, "D50-20: and no replay play");
     d50_done($ctl);
 }
@@ -4600,13 +4606,13 @@ sub d50_plant_stall {
     my $onset = $fx[13][0];
     my ($ctl, $daemon, $ws) = d50_session('aa:bb:cc:dd:ee:95', $D50_HM, $fx[0][0] - 0.05);
     d50_feed($ctl, \@fx, 0, 12);
-    delete $ctl->observed->{meta}{$D50_HM}{duration};
+    delete $ctl->observed->{meta}{$D50_HM}{$_} for qw(duration daemon_duration);    # 93-01: unknown on BOTH sides
     d50_feed($ctl, \@fx, 13, 13);
     ok($ctl->observed->{hangWatch}, "D50-21 setup: with the duration unknown the stall armed the watch");
     d50_at($onset + 1.0, sub { $ctl->noteDuration($D50_HM, 12.195); });
     my $n = scalar @{ $ws->sent };
     @Slim::Utils::Log::WARNINGS = ();
-    d50_fire($onset + 2.25 + 0.01);
+    d50_fire($onset + $D50_DL + 0.01);
     is(scalar(d50_plays($ws, $n)), 0, "D50-21: the duration learned during the watch stops the replay");
     is(scalar(grep { /Control: hang replay/ } @Slim::Utils::Log::WARNINGS), 0, "D50-21: no hang replay WARN line");
     ok(!$ctl->observed->{hangWatch}, "D50-21: no watch is left");
@@ -4624,7 +4630,7 @@ sub d50_plant_stall {
     my $onset = $fx[13][0];
     my ($ctl, $daemon, $ws) = d50_session('aa:bb:cc:dd:ee:99', $D50_HM, $fx[0][0] - 0.05);
     d50_feed($ctl, \@fx, 0, 12);
-    delete $ctl->observed->{meta}{$D50_HM}{duration};
+    delete $ctl->observed->{meta}{$D50_HM}{$_} for qw(duration daemon_duration);    # 93-01: unknown on BOTH sides
     d50_feed($ctl, \@fx, 13, 13);
     ok($ctl->observed->{hangWatch}, "D50-21b setup: with the duration unknown the stall armed the watch");
     my $later = d50_clone($fx[13][1]);
@@ -4636,7 +4642,7 @@ sub d50_plant_stall {
     d50_at($onset + 1.0, sub { $ctl->noteDuration($D50_HM, 12.195); });
     my $n = scalar @{ $ws->sent };
     @Slim::Utils::Log::WARNINGS = ();
-    d50_fire($onset + 2.25 + 0.01);
+    d50_fire($onset + $D50_DL + 0.01);
     is(scalar(d50_plays($ws, $n)), 0, "D50-21b: the stall position (9195) decides, not the moved anchor (5000): no replay");
     is(scalar(grep { /Control: hang replay/ } @Slim::Utils::Log::WARNINGS), 0, "D50-21b: no hang replay WARN line");
     d50_done($ctl);
@@ -4660,7 +4666,7 @@ sub d50_plant_stall {
     is($ctl->observed->{hangWatch}{position_ms}, 9195, "D50-21c setup: the watch still holds the stall frame's position");
     my $n = scalar @{ $ws->sent };
     @Slim::Utils::Log::WARNINGS = ();
-    d50_fire($onset + 2.25 + 0.01);
+    d50_fire($onset + $D50_DL + 0.01);
     is(scalar(d50_plays($ws, $n)), 1, "D50-21c: the stall position (9195) decides, not the moved anchor (9700): the replay goes out");
     is(($ctl->pending || {})->{postSeek}, 9195, "D50-21c: and it seeks to the stall frame's position, not to the anchor");
     is(scalar(grep { /Control: hang replay \S+ pos=9195 / } @Slim::Utils::Log::WARNINGS), 1, "D50-21c: one hang replay WARN line at pos=9195");
@@ -4730,6 +4736,207 @@ sub d50_plant_stall {
     else {
         fail("D50-22b: row $_ skipped, _hangNearEnd is missing") for 1 .. 3;
     }
+}
+
+# --- 93-01 (D-07a, R2): chilly incident cases CH-A..CH-E.
+# 2026-11-27 on the Pi player chilly: LMS's catalog duration of 0d42 was 534.666 s, the file the daemon plays 528.320 s.
+# The natural end shows as `buffering` standing one sink lead (3408 ms) before the FILE's end (stall 525412), which lay
+# 9254 ms before LMS's end: outside the 6 s margin, so the watch armed and the replay discarded the prepared successor.
+# Frames are clones of the real d50-hang-midtitle.frames (frame types and fields of m1-c2), retargeted to the 0d42 uri:
+# the pre-open frames carry the catalog value in whole seconds, the playing / burst playback_state frames the file value.
+# The LMS-side value enters through requestTrack opts.duration (the production path ProtocolHandler -> Backend::Soloist ->
+# Control::requestTrack -> noteDuration) or a later noteDuration call, never by hand-seeding observed.meta (debug addendum C).
+my $CH_URI  = 'spotify:track:0d42cuJo95uPxug6rl88lt';
+my $CH_NEXT = 'spotify:track:2FrlMBJ5pDWcPlZOePVqff';
+
+# ch_frames(cat_ms, file_ms, stall_ms [, nodur]) -> clones of the real midtitle frames retargeted to the 0d42 uri
+# (nodur: every duration_ms removed, a daemon that reports no length).
+sub ch_frames {
+    my (%a) = @_;
+    my @fx = d50_frames('d50-hang-midtitle.frames');
+    die "fixture shape changed" unless @fx == 17;
+    my @f = map { [ $_->[0], d50_clone($_->[1]) ] } @fx;
+
+    for my $i (0, 3, 8, 12) {    # the four frames that carry an item
+        my $it = $f[$i][1]{item};
+        $it->{uri} = $CH_URI;
+        $it->{decorations}{playback}{duration_ms} = ($i <= 3 ? $a{cat_ms} : $a{file_ms});
+    }
+    if ($a{nodur}) {    # a daemon that reports no length at all: every duration_ms key of every frame goes
+        my $strip; $strip = sub {
+            my ($n) = @_;
+            if (ref($n) eq 'HASH')  { delete $n->{duration_ms}; $strip->($_) for values %$n; }
+            elsif (ref($n) eq 'ARRAY') { $strip->($_) for @$n; }
+        };
+        $strip->($_->[1]) for @f;
+    }
+
+    # the burst (fixture 11..13) moves to the stall position; the position follows the daemon's own timestamps exactly
+    # (anchor = frame 10: position 3 at its timestamp, speed 1), so the seek_pre_burst guard is met.
+    my $tsA = $f[10][1]{position}{timestamp_ms};
+    my $pA  = $f[10][1]{position}{position_ms};
+    my $tsB = $tsA + ($a{stall_ms} - $pA);
+    my @dt  = map { $fx[$_][0] - $fx[11][0] } 11, 12, 13;
+    for my $k (0 .. 2) {
+        my $i = 11 + $k;
+        $f[$i][0] = $tsB / 1000 + $dt[$k];
+        if ($f[$i][1]{position}) {
+            $f[$i][1]{position}{position_ms}  = $a{stall_ms};
+            $f[$i][1]{position}{timestamp_ms} = $tsB;
+        }
+    }
+
+    return @f;
+}
+
+# ch_run(mac, lms (s), cat_ms, file_ms, stall_ms [, late]) -> hashref of what the stall caused.
+sub ch_run {
+    my (%a) = @_;
+    my @f = ch_frames(%a);
+    my ($ctl, $daemon, $ws) = d50_session($a{mac}, $CH_URI, $f[0][0] - 0.05, no_request => 1, observed => { meta => {} });
+    d50_at($f[0][0] - 0.05, sub { $ctl->requestTrack($CH_URI, 0, $a{late} ? {} : { duration => $a{lms} }); });
+    if ($a{late}) {
+        # CH-E: the LMS-side value lands AFTER the daemon's playing frame (async refetch -> noteDuration, unconditional overwrite)
+        d50_feed($ctl, \@f, 0, 10);
+        d50_at($f[10][0] + 0.001, sub { $ctl->noteDuration($CH_URI, $a{lms}); });
+        d50_feed($ctl, \@f, 11, 12);
+    }
+    else {
+        d50_feed($ctl, \@f, 0, 12);
+    }
+    $ctl->observed->{queueHead}  = { uri => $CH_NEXT };
+    $ctl->observed->{queuedByUs} = { $CH_NEXT => 1 };
+    @IO::Socket::INET::NEAR_END_WRITES = ();
+    d50_feed($ctl, \@f, 13, 13);
+
+    my %r;
+    $r{track}   = $ctl->observed->{track};
+    $r{armed}   = $ctl->observed->{hangWatch} ? 1 : 0;
+    $r{lms_dur} = $ctl->observed->{meta}{$CH_URI}{duration};
+    my $n = scalar @{ $ws->sent };
+    @Slim::Utils::Log::WARNINGS = ();
+    d50_fire($f[13][0] + $D50_DL + 0.01);
+    $r{plays}  = scalar(d50_plays($ws, $n));
+    $r{warns}  = scalar(grep { /Control: hang replay/ } @Slim::Utils::Log::WARNINGS);
+    $r{replay_pos} = (map { /pos=(\d+) / ? $1 : () } grep { /Control: hang replay/ } @Slim::Utils::Log::WARNINGS)[0];
+    ($r{near_end_ms}) = map { /^POST \/near-end\?ms=(\d+)/ ? $1 : () } @IO::Socket::INET::NEAR_END_WRITES;
+    $r{near_end_n}    = scalar(grep { /^POST \/near-end/ } @IO::Socket::INET::NEAR_END_WRITES);
+    d50_done($ctl);
+    Slim::Utils::Timers::killTimers($ctl, \&Plugins::SpotOn::Soloist::Control::_earlyEndFallback);
+    Slim::Utils::Timers::killTimers($ctl, \&Plugins::SpotOn::Soloist::Control::_outcomeWaitFire);
+    return \%r;
+}
+
+# CH-A (the incident, RED on the unfixed code): LMS 534.666 s, file 528.320 s, stall 525412 ms.
+{
+    my $r = ch_run(mac => 'aa:bb:cc:dd:ee:a1', lms => 534.666, cat_ms => 535000, file_ms => 528320, stall_ms => 525412);
+    is($r->{track}, $CH_URI, "93-01 CH-A setup: the frames put the daemon on 0d42");
+    is($r->{lms_dur}, 534.666, "93-01 CH-A setup: meta.duration stays LMS's catalog value (the daemon's 528320 is kept apart)");
+    ok(!$r->{armed}, "93-01 CH-A: a stall 3408 ms before the FILE end arms no watch (near_end on the smaller duration)");
+    is($r->{plays}, 0, "93-01 CH-A: and no replay play goes out");
+    is($r->{warns}, 0, "93-01 CH-A: and no `Control: hang replay` WARN line");
+    is($r->{near_end_n}, 1, "93-01 CH-A: exactly one /near-end mark is posted");
+    is($r->{near_end_ms}, 2908, "93-01 CH-A: the end-gap mark carries the file's remaining (528320 - 525412 = 2908 ms)");
+}
+
+# CH-B (counterfactual): the same frames with the LMS value equal to the file's 528.320 s -> unchanged by the fix.
+{
+    my $r = ch_run(mac => 'aa:bb:cc:dd:ee:a2', lms => 528.320, cat_ms => 528000, file_ms => 528320, stall_ms => 525412);
+    ok(!$r->{armed}, "93-01 CH-B: LMS duration = file duration -> no watch");
+    is($r->{plays}, 0, "93-01 CH-B: no replay play");
+    is($r->{warns}, 0, "93-01 CH-B: no hang replay WARN line");
+    is($r->{near_end_ms}, 2908, "93-01 CH-B: the end-gap mark carries 2908 ms (528320 - 525412)");
+}
+
+# CH-C (reverse deviation, the 5jkm numbers: LMS 173.746 s SHORTER than the file 177.693 s; stall = eof 178193 - 3408).
+# Under R2 both end decisions read the minimum, which is LMS's value: the guard holds (no watch), and the mark keeps
+# today's clamped ms=0. R1 (daemon first) would post the true remaining 2908; that flip is the recorded follow-up
+# (.planning/todos/pending/2026-11-27-d50-reverse-deviation-and-sibling-readers.md): this is the pin to flip.
+{
+    my $r = ch_run(mac => 'aa:bb:cc:dd:ee:a3', lms => 173.746, cat_ms => 174000, file_ms => 177693, stall_ms => 174785);
+    ok(!$r->{armed}, "93-01 CH-C: LMS shorter than the file -> the guard holds (no watch)");
+    is($r->{plays}, 0, "93-01 CH-C: no replay play");
+    is($r->{near_end_ms}, 0, "93-01 CH-C: R2 keeps LMS's clamped ms=0 (R1 would give 2908, follow-up)");
+}
+
+# CH-D (control): a REAL mid-title stall far from both ends is still answered, also with the incident's mismatch.
+{
+    my $r = ch_run(mac => 'aa:bb:cc:dd:ee:a4', lms => 534.666, cat_ms => 535000, file_ms => 528320, stall_ms => 200000);
+    ok($r->{armed}, "93-01 CH-D: a mid-title stall at 200000 ms arms the watch");
+    is($r->{plays}, 1, "93-01 CH-D: and exactly one replay goes out");
+    is($r->{replay_pos}, 200000, "93-01 CH-D: at the stall frame's position");
+    is($r->{near_end_ms}, undef, "93-01 CH-D: no end-gap mark for a mid-title stall");
+}
+
+# CH-E (late LMS value): the daemon's frames fill the file length, then LMS's catalog value 534.666 arrives mid-title
+# through noteDuration (unconditional overwrite of meta.duration); the daemon value must survive it.
+{
+    my $r = ch_run(mac => 'aa:bb:cc:dd:ee:a5', lms => 534.666, cat_ms => 535000, file_ms => 528320, stall_ms => 525412, late => 1);
+    ok(!$r->{armed}, "93-01 CH-E: the late LMS value does not undo the daemon's file length: no watch");
+    is($r->{plays}, 0, "93-01 CH-E: no replay play");
+    is($r->{near_end_ms}, 2908, "93-01 CH-E: the mark carries 2908 ms");
+}
+
+# --- 93-01 (D-07b): the deadline of 4000 ms and the natural end WITHOUT any usable duration.
+# With no length on either side the guard cannot hold, the watch arms at the natural end; the successor's track_changed
+# (the daemon's own title change, SpotOn's queued successor) must cancel it before the deadline. The measured delay
+# eof -> successor on the Pi was 3.11 s at most over 36 ends (.planning/debug/d50-natural-end-table.md).
+# ns_run(mac, [succ_s]) -> hashref: the CH-A frames with every duration_ms removed, no LMS value, a successor
+# track_changed at onset + succ_s (when given); times are absolute (3.11 s, 4.0 s), not read from the constant, so the
+# cases fail on a deadline that is not 4000 ms.
+sub ns_run {
+    my (%a) = @_;
+    my @f = ch_frames(cat_ms => 0, file_ms => 0, stall_ms => 525412, nodur => 1);
+    my ($ctl, $daemon, $ws) = d50_session($a{mac}, $CH_URI, $f[0][0] - 0.05, no_request => 1, observed => { meta => {} });
+    d50_at($f[0][0] - 0.05, sub { $ctl->requestTrack($CH_URI, 0, {}); });
+    d50_feed($ctl, \@f, 0, 12);
+    $ctl->observed->{queueHead}  = { uri => $CH_NEXT };
+    $ctl->observed->{queuedByUs} = { $CH_NEXT => 1 };
+    d50_feed($ctl, \@f, 13, 13);
+    my $onset = $f[13][0];
+    my %r = (ctl => $ctl, ws => $ws, onset => $onset, daemon => $daemon);    # Control holds its daemon weakly: keep it alive
+    $r{armed} = $ctl->observed->{hangWatch} ? 1 : 0;
+    $r{n0}    = scalar @{ $ws->sent };
+    @Slim::Utils::Log::WARNINGS = ();
+    $r{dur} = $ctl->_effectiveDuration($CH_URI);
+    return \%r;
+}
+sub ns_done {
+    my ($r) = @_;
+    d50_done($r->{ctl});
+    Slim::Utils::Timers::killTimers($r->{ctl}, \&Plugins::SpotOn::Soloist::Control::_earlyEndFallback);
+    Slim::Utils::Timers::killTimers($r->{ctl}, \&Plugins::SpotOn::Soloist::Control::_outcomeWaitFire);
+}
+
+# D50-NS: successor at onset + 3.11 s (the Pi maximum) -> no replay ever, the watch is gone at 3.11 s.
+{
+    my $succ_s = 3.11;    # .planning/debug/d50-natural-end-table.md: max eof -> successor over the 36 Pi ends
+    my $r = ns_run(mac => 'aa:bb:cc:dd:ee:b1');
+    my $ctl = $r->{ctl};
+    ok(!defined($r->{dur}), "93-01 D50-NS setup: no usable duration on either side");
+    ok($r->{armed}, "93-01 D50-NS setup: with no duration the natural end arms the watch (old behaviour)");
+    d50_fire($r->{onset} + $succ_s - 0.01);
+    is(scalar(d50_plays($r->{ws}, $r->{n0})), 0, "93-01 D50-NS: no replay before the successor arrives at onset + 3.11 s");
+    my $chg = d50_clone((d50_frames('d50-hang-midtitle.frames'))[0][1]);
+    $chg->{item}{uri} = $CH_NEXT;
+    d50_at($r->{onset} + $succ_s, sub { $ctl->onEvent($chg); });
+    ok(!$ctl->observed->{hangWatch}, "93-01 D50-NS: the successor's track_changed at onset + 3.11 s cancelled the watch");
+    d50_fire($r->{onset} + 30);
+    is(scalar(d50_plays($r->{ws}, $r->{n0})), 0, "93-01 D50-NS: and no replay ever goes out");
+    is(scalar(grep { /Control: hang replay/ } @Slim::Utils::Log::WARNINGS), 0, "93-01 D50-NS: no `Control: hang replay` WARN line");
+    ns_done($r);
+}
+
+# D50-NS-ctl: the same frames without a successor -> nothing before onset + 4.0 s, exactly one replay after it.
+{
+    my $r = ns_run(mac => 'aa:bb:cc:dd:ee:b2');
+    ok($r->{armed}, "93-01 D50-NS-ctl setup: the watch is armed");
+    d50_fire($r->{onset} + 4.0 - 0.01);
+    is(scalar(d50_plays($r->{ws}, $r->{n0})), 0, "93-01 D50-NS-ctl: nothing is sent before onset + 4.0 s");
+    d50_fire($r->{onset} + 4.0 + 0.01);
+    is(scalar(d50_plays($r->{ws}, $r->{n0})), 1, "93-01 D50-NS-ctl: exactly one replay goes out after onset + 4.0 s");
+    is(scalar(grep { /Control: hang replay/ } @Slim::Utils::Log::WARNINGS), 1, "93-01 D50-NS-ctl: with one WARN line");
+    ns_done($r);
 }
 
 # ============================================================
@@ -6003,7 +6210,7 @@ my $PC_DS_BAD   = 'http://127.0.0.1:24879/stream?uri=spotify:track:eeNext/../Tit
     d50_feed($ctl, \@fx, 0, 13);
     ok($ctl->observed->{hangWatch}, "D50-23: a stall 55 ms outside the margin arms the watch");
     my $n = scalar @{ $ws->sent };
-    d50_fire($onset + 2.25 + 0.01);
+    d50_fire($onset + $D50_DL + 0.01);
     is_deeply([ d50_plays($ws, $n) ], [ [ 'play', { uri => $D50_HM } ] ], "D50-23: and is replayed exactly once");
     is(($ctl->pending || {})->{postSeek}, 9195, "D50-23: the pending play carries postSeek 9195");
     d50_done($ctl);
@@ -6015,12 +6222,12 @@ my $PC_DS_BAD   = 'http://127.0.0.1:24879/stream?uri=spotify:track:eeNext/../Tit
     my $onset = $fx[13][0];
     my ($ctl, $daemon, $ws) = d50_session('aa:bb:cc:dd:ee:98', $D50_HM, $fx[0][0] - 0.05);
     d50_feed($ctl, \@fx, 0, 12);
-    delete $ctl->observed->{meta}{$D50_HM}{duration};
+    delete $ctl->observed->{meta}{$D50_HM}{$_} for qw(duration daemon_duration);    # 93-01: unknown on BOTH sides
     d50_feed($ctl, \@fx, 13, 13);
     ok(!defined($ctl->observed->{meta}{$D50_HM}{duration}), "D50-24 setup: the duration is unknown at the onset");
     ok($ctl->observed->{hangWatch}, "D50-24: the unknown duration still arms the watch");
     my $n = scalar @{ $ws->sent };
-    d50_fire($onset + 2.25 + 0.01);
+    d50_fire($onset + $D50_DL + 0.01);
     is_deeply([ d50_plays($ws, $n) ], [ [ 'play', { uri => $D50_HM } ] ], "D50-24: and is replayed exactly once");
     is(($ctl->pending || {})->{postSeek}, 9195, "D50-24: the pending play carries postSeek 9195");
     d50_done($ctl);
@@ -18114,6 +18321,127 @@ sub ac_acct  { my ($id) = @_; return { key => ac_key($id), short => substr($id, 
         is(scalar($plain->()), 0, "90.1 WR-01 (Control): ... and not as a start (the change handler is the only door)");
         $done->();
     }
+}
+
+# --- 93-04 (D-08 deferred by the user, 2026-11-27 "Zurueckstellen + Warnzeile"): a log-only WARN for the REAL refusal shape.
+# M1 k6 (t/fixtures/soloist/d51-refused-start-m1.frames, m1-c3/frames.jsonl:83-87): LMS asked for W (7CjWEAWojuqS4dLPbxuEMr),
+# the daemon failed it (TrackFailed) and opened a DIFFERENT, non-successor title X (7lLaJXlL5tvcUgMK00zYM5) paused at 0 ms / speed 0.
+# Control's own play of W is still pending when X arrives, X is classified `foreign`. The WARN names W, X and the player, once per
+# W, and does nothing else: no boundary, no command, no state the playback reads. The cases below pin the shape and every
+# no-trigger neighbour: a genuine prefetch successor (W2), an app-driven change (no pending play of Control's own / connect),
+# a foreign title that plays or whose position rises, mirrored frames of an inactive device (W4).
+my $RW_W = 'spotify:track:7CjWEAWojuqS4dLPbxuEMr';
+my $RW_X = 'spotify:track:7lLaJXlL5tvcUgMK00zYM5';
+
+# rw_run($mac, $mutate, %session_opts) -> { warns => [lines], ctl, daemon, ws }: the five real frames of the fixture fed at their own
+# epochs into a Control that asked for W at fixture start - 0.05 s. $mutate (optional) edits the cloned frames in place.
+sub rw_run {
+    my ($mac, $mutate, %o) = @_;
+    my @fx = map { [ $_->[0], d50_clone($_->[1]) ] } d50_frames('d51-refused-start-m1.frames');
+    die "fixture shape changed" unless @fx == 5;
+    $mutate->(\@fx) if $mutate;
+    my ($ctl, $daemon, $ws) = d50_session($mac, $RW_W, $fx[0][0] - 0.05, %o);
+    @Slim::Utils::Log::WARNINGS = ();
+    d50_feed($ctl, \@fx, 0, $#fx);
+    my @w = grep { /Control: refused title suspected/ } @Slim::Utils::Log::WARNINGS;
+    return { warns => \@w, ctl => $ctl, daemon => $daemon, ws => $ws, fx => \@fx };
+}
+
+# WARN-B (RED on the code before this step, real frames): exactly one WARN with W, X and the mac; nothing else goes out.
+{
+    my $mac = 'aa:bb:cc:dd:93:01';
+    my $r = rw_run($mac);
+    is($r->{ctl}->observed->{track}, $RW_X, "93-04 WARN-B setup: the frames put the daemon on the foreign title X");
+    is(scalar(@{ $r->{warns} }), 1, "93-04 WARN-B: the refusal shape produces exactly one WARN");
+    like($r->{warns}[0] // '', qr/^Control: refused title suspected \Q$RW_W\E -> foreign \Q$RW_X\E paused at 0 \(\Q$mac\E\)$/,
+        "93-04 WARN-B: the line names the wanted uri, the foreign uri, position 0 and the player");
+    is_deeply($r->{ws}->sent, [ [ 'play', { uri => $RW_W } ] ],
+        "93-04 WARN-B: log only -- the daemon got nothing but Control's own play of W");
+}
+
+# WARN-ONCE: the same frames again (a re-announcement, a second paused frame of the same episode) add no second line.
+{
+    my $r = rw_run('aa:bb:cc:dd:93:02', sub { my $fx = shift; push @$fx, map { [ $_->[0] + 1, d50_clone($_->[1]) ] } @$fx[0 .. 4]; });
+    is(scalar(@{ $r->{warns} }), 1, "93-04 WARN-ONCE: ten frames (the episode twice) -> still exactly one WARN");
+}
+
+# WARN-W2 (no trigger): X is the successor SpotOn itself queued (a genuine prefetch hit) -> no line.
+{
+    my $r = rw_run('aa:bb:cc:dd:93:03', undef, observed => { queuedByUs => { $RW_X => 1 } });
+    is(scalar(@{ $r->{warns} }), 0, "93-04 WARN-W2: a title SpotOn queued as successor (prefetch hit) is no refusal");
+}
+
+# WARN-APP (no trigger): an app-driven change -- no pending play of Control's own (browse) ...
+{
+    my $r = rw_run('aa:bb:cc:dd:93:04', undef, no_request => 1);
+    is(scalar(@{ $r->{warns} }), 0, "93-04 WARN-APP: without a pending play of Control's own the same frames raise no line");
+}
+
+# ... and in connect mode.
+{
+    my $r = rw_run('aa:bb:cc:dd:93:05', undef, mode => 'connect', no_request => 1);
+    is(scalar(@{ $r->{warns} }), 0, "93-04 WARN-APP: mode connect raises no line");
+}
+
+# WARN-PLAY (no trigger): the foreign title plays and its position rises (an autoplay / app change that works).
+{
+    my $r = rw_run('aa:bb:cc:dd:93:06', sub {
+        my $fx = shift;
+        $fx->[1][1]{status} = 'playing';
+        $fx->[3][1]{status} = 'playing';
+        $fx->[3][1]{position} = { position_ms => 5000, timestamp_ms => 1793835490450, speed => 1 };
+        $fx->[4][1]{position} = { position_ms => 5000, timestamp_ms => 1793835490450, speed => 1 };
+    });
+    is(scalar(@{ $r->{warns} }), 0, "93-04 WARN-PLAY: a foreign title that plays with a rising position raises no line");
+}
+
+# WARN-POS (no trigger): paused, but not at position 0 (a title the user paused in the app) -> no line.
+{
+    my $r = rw_run('aa:bb:cc:dd:93:07', sub {
+        my $fx = shift;
+        $fx->[3][1]{position} = { position_ms => 41000, timestamp_ms => 1793835485450, speed => 0 };
+        $fx->[4][1]{position} = { position_ms => 41000, timestamp_ms => 1793835485450, speed => 0 };
+    });
+    is(scalar(@{ $r->{warns} }), 0, "93-04 WARN-POS: paused at a non-zero position raises no line");
+}
+
+# WARN-W4 (no trigger): mirrored account-wide frames while this daemon is known inactive.
+{
+    my $r = rw_run('aa:bb:cc:dd:93:08', undef, observed => { is_active => 0 });
+    is(scalar(@{ $r->{warns} }), 0, "93-04 WARN-W4: frames mirrored onto an inactive device raise no line");
+}
+
+
+# --- 93-05 WR-02 (user: fix now, 2026-11-27): the review's neighbour of the no-trigger cases. LMS asks for X, and for W before X's echo
+# has arrived (a rapid skip): the pending slot then holds Control's own `play W`, X's own track_changed lands in the foreign branch and
+# its start frames (paused at 0 / speed 0) complete the refusal shape -- although nothing was refused (Control asked for X itself) and W
+# plays afterwards. The detector must not take a title Control itself requested for the "foreign" one.
+# WARN-SUP (RED on the code before this step; the same frames as WARN-B, the wanted/foreign roles filled by two own requests):
+{
+    my $mac = 'aa:bb:cc:dd:93:09';
+    my @fx = map { [ $_->[0], d50_clone($_->[1]) ] } d50_frames('d51-refused-start-m1.frames');
+    my ($ctl, $daemon, $ws) = d50_session($mac, $RW_X, $fx[0][0] - 0.10);    # Control's own play of X (the title the frames announce)
+    d50_at($fx[0][0] - 0.05, sub { $ctl->requestTrack($RW_W, 0, {}); });    # ... superseded by the newer play of W before X's echo
+    is_deeply($ws->sent, [ [ 'play', { uri => $RW_X } ], [ 'play', { uri => $RW_W } ] ],
+        "93-05 WARN-SUP setup: both own plays went out, X first");
+    is(($ctl->pending || {})->{uri}, $RW_W, "93-05 WARN-SUP setup: the pending slot holds the newer play of W");
+    @Slim::Utils::Log::WARNINGS = ();
+    d50_feed($ctl, \@fx, 0, $#fx);
+    my @w = grep { /Control: refused title suspected/ } @Slim::Utils::Log::WARNINGS;
+    is(scalar(@w), 0, "93-05 WARN-SUP: the echo of a superseded own play (paused at 0 while the newer play is pending) raises no refusal line");
+}
+
+# WARN-SUP2 (no trigger kept): a title Control NEVER asked for, same frames, same pending newer play -> the line still fires.
+{
+    my $mac = 'aa:bb:cc:dd:93:0a';
+    my @fx = map { [ $_->[0], d50_clone($_->[1]) ] } d50_frames('d51-refused-start-m1.frames');
+    my $OTHER = 'spotify:track:7OtherOwnPlayXXXXXXXX';
+    my ($ctl, $daemon, $ws) = d50_session($mac, $OTHER, $fx[0][0] - 0.10);
+    d50_at($fx[0][0] - 0.05, sub { $ctl->requestTrack($RW_W, 0, {}); });
+    @Slim::Utils::Log::WARNINGS = ();
+    d50_feed($ctl, \@fx, 0, $#fx);
+    my @w = grep { /Control: refused title suspected \Q$RW_W\E -> foreign \Q$RW_X\E/ } @Slim::Utils::Log::WARNINGS;
+    is(scalar(@w), 1, "93-05 WARN-SUP2: a foreign title Control did not request itself still raises the line (the exclusion is narrow)");
 }
 
 

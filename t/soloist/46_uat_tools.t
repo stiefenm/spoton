@@ -6129,6 +6129,19 @@ subtest 'd50-hang-replay-category' => sub {
     unlike($body, qr/Control: dispatch play/, 'd50: an unrelated line stays out of the category');
 };
 
+# 93-04 (D-08 deferred by the user): the log-only WARN of a suspected refused title (Control.pm _refusedNote) has its own category,
+# so a field report's window prints the line instead of only counting it (rule 4). An unrelated dispatch line stays out of it.
+subtest 'd08-refused-title-suspected-category' => sub {
+    my $hdr = 'server.log: D-08 refused title suspected (Control: refused title suspected <uri> -> foreign <uri> paused at 0; Control.pm _refusedNote)';
+    my ($exit, $stdout, $stderr) = $d34_run_srv->(
+        '[26-10-26 12:00:06.0000] Plugins::SpotOn::Soloist::Control::_refusedNote (6900) Control: refused title suspected spotify:track:7CjWEAWojuqS4dLPbxuEMr -> foreign spotify:track:7lLaJXlL5tvcUgMK00zYM5 paused at 0 (02:00:00:5a:11:01)');
+    is($exit, 0, '93-04: extract-run.pl exits 0') or diag("stderr: $stderr");
+    my $body = $d34_section->($stdout, $hdr);
+    like($body, qr/Control: refused title suspected spotify:track:7CjWEAWojuqS4dLPbxuEMr -> foreign spotify:track:7lLaJXlL5tvcUgMK00zYM5 paused at 0 \(02:00:00:5a:11:01\)/,
+        '93-04: the refused-title WARN lands in its own category');
+    unlike($body, qr/Control: dispatch play/, '93-04: an unrelated line stays out of the category');
+};
+
 # ============================================================
 # 90-02 (GAP-02): the PR #212 evidence lines and the untimed shim startup section. SYNTHETIC input, real line FORMS: the
 # server.log lines are the Control.pm / Squeezebox.pm format strings as written in the tree (the leftover-connect subtest

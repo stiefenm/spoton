@@ -1125,8 +1125,13 @@ sub renewStatus {
         };
     }
 
+    require Slim::Utils::Strings;
+    my $renewal = Plugins::SpotOn::Soloist::renewalState();
+    my ($renewalText, $renewalPhase) = _renewalText(
+        $renewal, $activeVersion, Plugins::SpotOn::Soloist::hasKey() ? 1 : 0, \&Slim::Utils::Strings::string);
+
     return {
-        renewal          => Plugins::SpotOn::Soloist::renewalState(),
+        renewal          => { %$renewal, phase => $renewalPhase, text => $renewalText },
         generation       => $generation,
         active_version   => $activeVersion,
         expiry_days      => Plugins::SpotOn::Soloist::expiryDaysRemaining(),
@@ -1194,6 +1199,104 @@ sub platformFit {
     return Plugins::SpotOn::Unified::DaemonManager->soloistGlibcOk ? 1 : 0;
 }
 
+# 93-02 (D-10): every Soloist failure reason (the renewal detail or the first
+# install's probe reason, inventory in 93-RESEARCH.md Finding 3a) reads as one
+# plain sentence with the next step. One ordered table: first match wins; the
+# builder returns the sprintf arguments. An unknown reason gets the generic
+# sentence with the raw code in brackets. No sentence promises a retry: a
+# renewal is only retried when one is due.
+my @FAILURE_TABLE = (
+    [ qr/^glibc_too_old(?::GLIBC_([0-9][0-9.]*))?$/,  'PLUGIN_SPOTON_SOLOIST_FAIL_GLIBC',
+        sub { return ($1 // _minGlibc()); } ],
+    [ qr/^missing_library:(.+)$/,                     'PLUGIN_SPOTON_SOLOIST_FAIL_LIBRARY',
+        sub { my $so = $1; return ($so, Plugins::SpotOn::Soloist::packageHintFor($so)); } ],
+    [ qr/^(?:download_failed(?::.*)?|download_empty|stalled)$/, 'PLUGIN_SPOTON_SOLOIST_FAIL_DOWNLOAD', sub { return (); } ],
+    [ qr/^below_minimum$/,                            'PLUGIN_SPOTON_SOLOIST_FAIL_BELOW_MINIMUM', sub { return (); } ],
+    [ qr/^(?:expired|exited_rc_\d+|spawn_failed|no_expiry_line|smoke_failed|smoke_exception|CDN still serves the expired build)$/,
+                                                      'PLUGIN_SPOTON_SOLOIST_FAIL_START', sub { return (); } ],
+    [ qr/^(?:tar_failed|no_binary|escapes_dir|move_failed|extract_failed(?::.*)?|promote_move_failed|activation_failed)$/,
+                                                      'PLUGIN_SPOTON_SOLOIST_FAIL_INSTALL', sub { return (); } ],
+    [ qr/^version_unparsable$/,                       'PLUGIN_SPOTON_SOLOIST_FAIL_VERSION', sub { return (); } ],
+    [ qr/^no_key$/,                                   'PLUGIN_SPOTON_SOLOIST_FAIL_NO_KEY', sub { return (); } ],
+);
+
+# The glibc floor named when a probe reason carries no version of its own.
+sub _minGlibc {
+    my $v = eval { require Plugins::SpotOn::Unified::DaemonManager; Plugins::SpotOn::Unified::DaemonManager::SOLOIST_MIN_GLIBC() };
+    return $v // '2.38';
+}
+
+# _failureText($reason, $string) -> the sentence. Arguments reach sprintf as
+# arguments, never as the format; the template renders the text through html.
+sub _failureText {
+    my ($reason, $string) = @_;
+    $reason = 'unknown' unless defined $reason && length $reason;
+
+    for my $row (@FAILURE_TABLE) {
+        my ($re, $key, $args) = @$row;
+        next unless $reason =~ $re;
+        my @args = $args->();
+        return sprintf($string->($key), @args);
+    }
+    return sprintf($string->('PLUGIN_SPOTON_SOLOIST_FAIL_OTHER'), $reason);
+}
+
+# 93-02 (D-09): the renewal text chain of settingsInfo, shared with the
+# renewStatus poll so the page and the poll say the same thing.
+# _renewalText($renewal, $version, $hasKey, $string) -> ($text, $effectivePhase)
+# A failed/no_key state while a key is stored is a leftover (the state has TTL
+# never and older versions wrote it on a click before any key existed): it
+# reads as idle with no text.
+sub _renewalText {
+    my ($renewal, $version, $hasKey, $string) = @_;
+
+    my $phase = $renewal->{phase} || 'idle';
+    my $text  = '';
+
+    if ($phase eq 'failed' && ($renewal->{detail} // '') eq 'no_key' && $hasKey) {
+        return ('', 'idle');
+    }
+
+    # 93-05 (WR-01): a failed renewal is a leftover once a different build is
+    # active than at the attempt (the state has TTL never; a binary that became
+    # active since, e.g. after the missing library was installed, makes the
+    # sentence obsolete). A state without the stamp (older version) reads as
+    # before, and a candidate that failed while the same build stayed active
+    # keeps its sentence.
+    if ($phase eq 'failed' && exists $renewal->{active_at_attempt}
+        && ($renewal->{active_at_attempt} // '') ne ($version // '')) {
+        return ('', 'idle');
+    }
+
+    if ($phase =~ /^(?:downloading|extracting|smoke|promoting)$/) {
+        $text = sprintf($string->('PLUGIN_SPOTON_SOLOIST_RENEWAL_RUNNING'), $phase);
+    }
+    elsif ($phase eq 'done') {
+        $text = sprintf($string->('PLUGIN_SPOTON_SOLOIST_RENEWAL_DONE'), $version || '?');
+    }
+    elsif ($phase eq 'same_version') {
+        $text = sprintf($string->('PLUGIN_SPOTON_SOLOIST_RENEWAL_SAME_VERSION'), $version || '?');
+    }
+    elsif ($phase eq 'failed') {
+        $text = _failureText($renewal->{detail}, $string);
+    }
+    elsif ($phase eq 'rolled_back') {
+        # Phase 83.3 plan 04 (D-07): $renewal->{detail} carries the
+        # human-readable "why" _rollbackAfterSwitch passed as `reason`.
+        $text = sprintf($string->('PLUGIN_SPOTON_SOLOIST_ROLLED_BACK'),
+            $renewal->{from_version} || '?', $renewal->{to_version} || '?', $renewal->{detail} || '?');
+    }
+    elsif ($phase eq 'rollback_impossible') {
+        $text = sprintf($string->('PLUGIN_SPOTON_SOLOIST_ROLLBACK_IMPOSSIBLE'), $renewal->{detail} || 'unknown');
+    }
+    elsif ($phase eq 'blocked') {
+        # Phase 83.3 plan 05 (D-09): renewBinary() short-circuits while a
+        # valid placed binary is active.
+        $text = $string->('PLUGIN_SPOTON_SOLOIST_RENEWAL_BLOCKED_PLACED');
+    }
+    return ($text, $phase);
+}
+
 # settingsInfo($paramRef, %fmt) -- fills the Soloist template keys of the
 # Settings page (moved from Settings.pm::handler in 84-08; the values and
 # their conditions are unchanged). Settings calls every registered
@@ -1236,6 +1339,32 @@ sub settingsInfo {
     my $savedBackend = $prefs->get('backend') || 'librespot';
     $paramRef->{soloistHint} = ($savedBackend eq 'librespot' && !$soloistHasKey && $class->platformFit) ? 1 : 0;
     $paramRef->{soloistSwitchOffer} = ($savedBackend eq 'librespot' && $soloistHasKey && $class->platformFit) ? 1 : 0;
+
+    # 83.3 D-04/D-16: renewal state + the pre-formatted status text the
+    # template shows next to the "Renew Soloist now" button. 93-02: computed
+    # before the early return (the soloist-fields div is rendered hidden under
+    # librespot too), through the same _renewalText the status poll uses, and
+    # soloistFailure is the one struct behind the failure line.
+    my $renewal = Plugins::SpotOn::Soloist::renewalState();
+    my ($renewalText, $renewalPhase) = _renewalText($renewal, $soloistVersion, $soloistHasKey, $string);
+    $paramRef->{soloistRenewal} = { %$renewal, phase => $renewalPhase, text => $renewalText };
+    # One failure struct for page and poll: the failed renewal (a stale no_key
+    # leftover reads idle above and never gets here), else the last version
+    # probe failure while the binary is missing -- a failed FIRST install
+    # writes no renewal state, only that in-memory probe record.
+    $paramRef->{soloistFailure} = undef;
+    # 93-05 (WR-01): while the binary is missing, a probe failure newer than
+    # the stored failed renewal is today's cause and wins over it.
+    my $probe = $paramRef->{soloistMissing} ? $class->startCheck : undef;
+    my $probeReason = ($probe && defined $probe->{reason} && length $probe->{reason}) ? $probe->{reason} : undef;
+    my $probeNewer  = defined $probeReason && ($probe->{at} // 0) > ($renewal->{last_attempt_at} // 0);
+    if ($renewalPhase eq 'failed' && $renewalText ne '' && !$probeNewer) {
+        my $reason = $renewal->{detail} // 'unknown';
+        $paramRef->{soloistFailure} = { reason => $reason, text => $renewalText };
+    }
+    elsif (defined $probeReason) {
+        $paramRef->{soloistFailure} = { reason => $probeReason, text => _failureText($probeReason, $string) };
+    }
 
     # D-01/D-02 (Phase 73 Task 3): per-player daemon/pairing status for the
     # Settings status table -- one row per connected player. Only computed
@@ -1351,36 +1480,6 @@ sub settingsInfo {
     # 83.3 D-04/D-16: renewal state + the pre-formatted status text the
     # template shows next to the "Renew Soloist now" button, and the
     # download page link + terms sentence.
-    my $renewal = Plugins::SpotOn::Soloist::renewalState();
-    my $phase   = $renewal->{phase} || 'idle';
-    my $renewalText = '';
-    if ($phase =~ /^(?:downloading|extracting|smoke|promoting)$/) {
-        $renewalText = sprintf($string->('PLUGIN_SPOTON_SOLOIST_RENEWAL_RUNNING'), $phase);
-    }
-    elsif ($phase eq 'done') {
-        $renewalText = sprintf($string->('PLUGIN_SPOTON_SOLOIST_RENEWAL_DONE'), $soloistVersion || '?');
-    }
-    elsif ($phase eq 'same_version') {
-        $renewalText = sprintf($string->('PLUGIN_SPOTON_SOLOIST_RENEWAL_SAME_VERSION'), $soloistVersion || '?');
-    }
-    elsif ($phase eq 'failed') {
-        $renewalText = sprintf($string->('PLUGIN_SPOTON_SOLOIST_RENEWAL_FAILED'), $renewal->{detail} || 'unknown');
-    }
-    elsif ($phase eq 'rolled_back') {
-        # Phase 83.3 plan 04 (D-07): $renewal->{detail} carries the
-        # human-readable "why" _rollbackAfterSwitch passed as `reason`.
-        $renewalText = sprintf($string->('PLUGIN_SPOTON_SOLOIST_ROLLED_BACK'),
-            $renewal->{from_version} || '?', $renewal->{to_version} || '?', $renewal->{detail} || '?');
-    }
-    elsif ($phase eq 'rollback_impossible') {
-        $renewalText = sprintf($string->('PLUGIN_SPOTON_SOLOIST_ROLLBACK_IMPOSSIBLE'), $renewal->{detail} || 'unknown');
-    }
-    elsif ($phase eq 'blocked') {
-        # Phase 83.3 plan 05 (D-09): renewBinary() short-circuits while a
-        # valid placed binary is active.
-        $renewalText = $string->('PLUGIN_SPOTON_SOLOIST_RENEWAL_BLOCKED_PLACED');
-    }
-    $paramRef->{soloistRenewal} = { %$renewal, text => $renewalText };
     $paramRef->{soloistDownloadUrl} = Plugins::SpotOn::Soloist::SOLOIST_DOWNLOAD_PAGE();
 
     # 83.3 D-08/D-09/D-10/D-11 (plan 05): the placed-binary fallback folder

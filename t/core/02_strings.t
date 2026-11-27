@@ -43,6 +43,15 @@ SKIP: {
         PLUGIN_SPOTON_CONNECT_POWER_OFF
         PLUGIN_SPOTON_CONNECT_POWER_OFF_DESC
         PLUGIN_SPOTON_CONNECT_POWER_OFF_LABEL
+        PLUGIN_SPOTON_SOLOIST_FAIL_NO_KEY
+        PLUGIN_SPOTON_SOLOIST_FAIL_GLIBC
+        PLUGIN_SPOTON_SOLOIST_FAIL_LIBRARY
+        PLUGIN_SPOTON_SOLOIST_FAIL_DOWNLOAD
+        PLUGIN_SPOTON_SOLOIST_FAIL_BELOW_MINIMUM
+        PLUGIN_SPOTON_SOLOIST_FAIL_START
+        PLUGIN_SPOTON_SOLOIST_FAIL_INSTALL
+        PLUGIN_SPOTON_SOLOIST_FAIL_VERSION
+        PLUGIN_SPOTON_SOLOIST_FAIL_OTHER
         PLUGIN_SPOTON_CONNECT_OFF_SOLOIST_NOTE
         PLUGIN_SPOTON_CONNECTED_AS
         PLUGIN_SPOTON_ACCOUNT_REMOVE_CONFIRM
@@ -368,6 +377,24 @@ SKIP: {
     is(scalar(keys %{ $langs_of{PLUGIN_SPOTON_MFY_RADIOS} || {} }), 11, "91: PLUGIN_SPOTON_MFY_RADIOS has exactly the eleven shipped languages");
     is(scalar(grep { $langs_of{PLUGIN_SPOTON_MFY_RADIOS}{$_} =~ /[\x{2013}\x{2014}]/ } keys %{ $langs_of{PLUGIN_SPOTON_MFY_RADIOS} || {} }), 0,
         "91: PLUGIN_SPOTON_MFY_RADIOS carries no em or en dash");
+
+    # 93-02 (D-10): the nine Soloist failure sentences exist in exactly the eleven shipped languages,
+    # non-empty, without an em or en dash. %s placeholders are counted so a translation cannot drop one.
+    my %fail_args = (
+        PLUGIN_SPOTON_SOLOIST_FAIL_GLIBC => 1, PLUGIN_SPOTON_SOLOIST_FAIL_LIBRARY => 2, PLUGIN_SPOTON_SOLOIST_FAIL_OTHER => 1,
+    );
+    for my $key (qw(PLUGIN_SPOTON_SOLOIST_FAIL_NO_KEY PLUGIN_SPOTON_SOLOIST_FAIL_GLIBC PLUGIN_SPOTON_SOLOIST_FAIL_LIBRARY
+                    PLUGIN_SPOTON_SOLOIST_FAIL_DOWNLOAD PLUGIN_SPOTON_SOLOIST_FAIL_BELOW_MINIMUM PLUGIN_SPOTON_SOLOIST_FAIL_START
+                    PLUGIN_SPOTON_SOLOIST_FAIL_INSTALL PLUGIN_SPOTON_SOLOIST_FAIL_VERSION PLUGIN_SPOTON_SOLOIST_FAIL_OTHER)) {
+        for my $lang (qw(CS DA DE EN ES FR IT NL NO PL SV)) {
+            ok(defined $langs_of{$key}{$lang} && length $langs_of{$key}{$lang}, "93-02: $key has a $lang translation");
+            my $n = () = ($langs_of{$key}{$lang} // '') =~ /%s/g;
+            is($n, $fail_args{$key} // 0, "93-02: $key $lang carries exactly " . ($fail_args{$key} // 0) . ' %s placeholder(s)');
+        }
+        is(scalar(keys %{ $langs_of{$key} || {} }), 11, "93-02: $key has exactly the eleven shipped languages");
+        my @dash = grep { $langs_of{$key}{$_} =~ /[\x{2013}\x{2014}]/ } keys %{ $langs_of{$key} || {} };
+        is(scalar(@dash), 0, "93-02: $key carries no em or en dash");
+    }
 
     # 79-69 T2 (GH #151, D-36): the three tokens of the power-off-after-Connect setting exist in
     # all eleven languages, and no value carries an em or en dash (plain "-" only).

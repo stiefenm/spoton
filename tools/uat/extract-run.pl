@@ -572,6 +572,12 @@ my @SRV_CATS = (
     # entry stays last, see their comment).
     { name => 'server.log: D-50 hang replay (Control: hang replay <uri> pos=<ms>; Control.pm _hangReplayFire)',
       pat  => qr/Control: hang replay spotify:/,                                       count => 1 },
+    # 93-04 (D-08 deferred by the user 2026-11-27): the log-only WARN of a suspected refused title (Control.pm _refusedNote, once
+    # per wanted title): own play of W, then a foreign non-successor title paused at 0. Without a category of its own the line
+    # would only be counted (rule 4), never printed, and a field report's window would not carry the real shape. Sits before the
+    # four 84.3 entries for the same reason as the D-50 entry above.
+    { name => 'server.log: D-08 refused title suspected (Control: refused title suspected <uri> -> foreign <uri> paused at 0; Control.pm _refusedNote)',
+      pat  => qr/Control: refused title suspected spotify:/,                            count => 1 },
     # 84.3-03 (D-09): the context-end settle (Connect.pm _settleNow, 84.3-01) leaves FOUR kinds of
     # server.log line that no category printed -- they were only counted (rule 4), so a guarded hit
     # (or its absence) could be proven only by hand-grepping. The four entries below sit BEFORE the

@@ -352,6 +352,19 @@ sub reset_env {
 
     my $spotonDir = catdir($cache_dir, 'spoton');
     remove_tree($spotonDir) if -d $spotonDir;
+    seed_key();
+}
+
+# 93-02 (D-09): renewBinary() now refuses without a stored key, so every
+# case that drives the real renewBinary starts with one (reset_env ends with
+# seed_key). The key is a fixed dummy; nothing reads its content.
+sub key_file { return catfile($cache_dir, 'spoton', 'soloist', 'spak.key'); }
+sub seed_key {
+    make_path(dirname(key_file()));
+    open(my $kfh, '>', key_file()) or die "seed_key: $!";
+    print $kfh 'k' x 32;
+    close($kfh);
+    chmod(0600, key_file());
 }
 
 sub bin_dir       { return catdir($cache_dir, 'spoton', 'soloist', 'x86_64-linux'); }
@@ -1022,5 +1035,72 @@ sub seed_active_binary {
         "Case 13 (79-57 #177): garbage stdout with exit 0 still reads version_unparsable");
     $Slim::Networking::SimpleAsyncHTTP::candidate_script = undef;
 }
+
+# ============================================================
+# 93-02 D-09: renewBinary() without a stored key answers 'no_key' before it
+# stages anything and writes no renewal state. The answer order stays
+# unsupported -> blocked:placed_binary_active -> busy -> no_key.
+# ============================================================
+subtest '93-02 D-09: renew without a key' => sub {
+    # NK-1: no key -> 'no_key', state untouched, no download, no lock held.
+    reset_env();
+    seed_active_binary('1.3.8.68');
+    Plugins::SpotOn::Soloist::_setRenewalState(phase => 'idle');
+    unlink key_file();
+    my $before = Plugins::SpotOn::Soloist::renewalState();
+    my $r = Plugins::SpotOn::Soloist::renewBinary(reason => 'manual');
+    is($r, 'no_key', '93-02 NK-1: renewBinary(manual) without a key answers no_key');
+    is_deeply(Plugins::SpotOn::Soloist::renewalState(), $before,
+        '93-02 NK-1: the renewal state is untouched (no state write for no_key)');
+    is(scalar(@Slim::Networking::SimpleAsyncHTTP::created), 0, '93-02 NK-1: no download was started');
+    is(Plugins::SpotOn::Soloist::lifecycleInFlight(), undef, '93-02 NK-1: no lifecycle lock is held afterwards');
+    Plugins::SpotOn::Soloist::_setLifecycleInFlight(undef);
+    seed_key();
+
+    # NK-2: with the seeded key the same call still starts (Case 1 unchanged).
+    reset_env();
+    seed_active_binary('1.3.8.68');
+    my $r2 = Plugins::SpotOn::Soloist::renewBinary(reason => 'manual');
+    is($r2, 'started', "93-02 NK-2: with a stored key renewBinary(manual) still answers 'started'");
+    Plugins::SpotOn::Soloist::_setLifecycleInFlight(undef);
+
+    # NK-7: busy keeps its precedence over no_key.
+    reset_env();
+    seed_active_binary('1.3.8.68');
+    my $first = Plugins::SpotOn::Soloist::renewBinary(reason => 'manual');
+    is($first, 'started', "93-02 NK-7: the first call (key present) answers 'started'");
+    unlink key_file();
+    my $second = Plugins::SpotOn::Soloist::renewBinary(reason => 'manual');
+    is($second, 'busy', "93-02 NK-7: with a renewal in flight and the key gone the answer is 'busy', not no_key");
+    Plugins::SpotOn::Soloist::_setLifecycleInFlight(undef);
+    seed_key();
+};
+
+# ------------------------------------------------------------
+# 93-05 WR-01: every terminal renewal state carries the version that was
+# active when the attempt ended (active_at_attempt), so the settings page can
+# tell "the cause may be gone" (a binary became active since) from "still the
+# same build" at render time.
+# ------------------------------------------------------------
+subtest '93-05 WR-01: active_at_attempt stamp' => sub {
+    reset_env();
+    seed_active_binary('1.3.8.68');
+    $Slim::Networking::SimpleAsyncHTTP::auto_mode         = 'success';
+    $Slim::Networking::SimpleAsyncHTTP::candidate_version = '1.3.8.1';
+    Plugins::SpotOn::Soloist::renewBinary(reason => 'manual');
+    is(Plugins::SpotOn::Soloist::renewalState()->{phase}, 'failed', '93-05 AA-0: setup - a candidate below the minimum fails the renewal');
+    is(Plugins::SpotOn::Soloist::renewalState()->{active_at_attempt}, '1.3.8.68',
+        '93-05 AA-1: a failed renewal with an active build stamps that build');
+
+    reset_env();
+    $Slim::Networking::SimpleAsyncHTTP::auto_mode         = 'success';
+    $Slim::Networking::SimpleAsyncHTTP::candidate_version = '1.3.8.1';
+    Plugins::SpotOn::Soloist::renewBinary(reason => 'manual');
+    is(Plugins::SpotOn::Soloist::renewalState()->{phase}, 'failed', '93-05 AA-0: setup - the failure without an installed binary');
+    my $st = Plugins::SpotOn::Soloist::renewalState();
+    ok(exists $st->{active_at_attempt}, '93-05 AA-2: a failure with no binary installed still carries the stamp key');
+    is($st->{active_at_attempt}, '', '93-05 AA-2: the stamp is the empty string when no build was active');
+};
+
 
 done_testing();

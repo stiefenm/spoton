@@ -64,9 +64,19 @@ use constant FROZEN_POSITION_TOLERANCE_MS => 500;
 # buffering`); the stall lasts 9 s to more than 20 s. An armed `play uri` of
 # the same title plus a seek restarts it in 0.05 s in about half the cases
 # (spike S2, a new range request). Values chosen from the M1 data
-# (.planning/debug/beta5-skip-latenz.md ## M1):
-#  - HANG_REPLAY_DEADLINE_MS: D-50 says "about 2-2.5 s"; the 1.73 s self-heal
-#    of m1-c2 k2 stays untouched, the 8.71 s and 10.01 s stalls get a replay.
+# (.planning/debug/resolved/beta5-skip-latenz.md ## M1):
+#  - HANG_REPLAY_DEADLINE_MS: 4000 (93-01 D-07b, was 2250 from D-50's "about
+#    2-2.5 s"). A natural title end shows as the same `buffering` stall and
+#    resolves by itself when the successor's track_changed cancels the watch
+#    (_hangTrackChanged), independent of any duration. The virtual sink is
+#    3000 ms deep, plus 1000 ms slack: eof -> successor measured 3.11 s at
+#    most over 36 Pi ends on 2026-11-27 (.planning/debug/d50-natural-end-table.md).
+#    The 1.73 s self-heal of m1-c2 k2 stays untouched, the 8.71 s and 10.01 s
+#    stalls still get a replay, about 1.75 s later than before. User decision
+#    D-07b 2026-11-27 after the Fable opinion. The sink depth T_ms comes only
+#    from the service environment variable SPOTON_FAKEPULSE_VSINK_MS (default
+#    3000, Perl never sets it): a deeper sink is an operator choice that eats
+#    the slack.
 #  - HANG_MIN_PLAYING_S: M1 condition (b), the title's own `playing` was seen
 #    at least about 1 s earlier (start-up frames come 0.02-0.11 s after the
 #    command, before the title ever reported playing).
@@ -99,7 +109,7 @@ use constant FROZEN_POSITION_TOLERANCE_MS => 500;
 #    the margin", not "near_end alone prevented a watch": near_end is guard 8,
 #    playing_seen, suppress and seek_pre_burst come after it. Without DEBUG a
 #    stall in the last 6 s leaves no line.
-use constant HANG_REPLAY_DEADLINE_MS => 2250;
+use constant HANG_REPLAY_DEADLINE_MS => 4000;
 use constant HANG_MIN_PLAYING_S      => 1;
 use constant HANG_SUPPRESS_S         => 5;
 use constant HANG_REPLAY_MAX         => 2;
@@ -3285,6 +3295,13 @@ sub _execute {
                 # two slot sends in one list supersede in list order.
                 my $prev = $self->pending;
                 $superseded = ($prev && $prev->{cmd} eq 'play') ? $prev->{cb} : undef;
+                # 93-05 (WR-02): remember the uri of a play a newer play replaced -- its own track_changed may still come
+                # and is no foreign title (read only by _refusedSuspectArm, the log-only refused-title detector).
+                if ($prev && $prev->{cmd} eq 'play' && defined $prev->{uri} && ($slot->{uri} // '') ne $prev->{uri}) {
+                    my $sup = $self->observed->{supersededPlays} ||= [];
+                    unshift @$sup, $prev->{uri};
+                    splice(@$sup, 8) if @$sup > 8;
+                }
                 $doKillTimer->(\&_t1Fire);
                 $self->pending({
                     %$slot,
@@ -5969,6 +5986,8 @@ sub _onFrameTrackChanged {
         $self->_prefetchContinueMark($uri, $prev, \%endGapPre)
             if $self->mode eq 'browse' && $queuedByUsMatch && !$forwardedNext && !$self->pending && !$mirrored;
 
+        $self->_refusedSuspectArm($uri, $queuedByUsMatch, $forwardedNext, $mirrored);    # 93-04: log-only, before observed.track moves
+
         $self->_noteItemKind($uri);    # 79-68
         $self->observed->{track}  = $uri;
         delete $self->observed->{reloadArm};    # 79-52: a title change retires the re-load arm
@@ -6048,6 +6067,7 @@ sub _onFramePlaybackChanged {
         $self->observed->{status} = $status;
         $self->_noteHoldRelease($status, undef, $prevStatus, $self->observed->{track});    # 79 D-31
         $self->_noteHangStatus($status, $prevStatus, $mode);    # 79-78 D-50
+        $self->_refusedNote($status, undef, undef);    # 93-04: log-only suspicion of a refused title
         # D-02 (unchanged from SoloistWS:731): a natural end plants a
         # boundary so the bounded serve gets a clean EOF. A transient
         # 'paused' arriving while a play is pending (fixture: +21ms) is
@@ -6182,6 +6202,8 @@ sub _onFramePositionSync {
             $self->observed->{status} = 'playing';
         }
 
+        $self->_refusedNote(undef, $p->{position_ms}, $p->{speed});    # 93-04: log-only suspicion of a refused title
+
         # D-D3/D-04 (83.1-02 Task 2): position_sync is the daemon's own
         # ~10s ticker -- the detection point for "LMS steht, Daemon spielt".
         $self->_checkSplitBrain;
@@ -6233,7 +6255,7 @@ sub _hangTrackChanged {
 
     my $o = $self->observed;
     my $written;
-    delete @{$o}{qw(hangPre playingSince)};
+    delete @{$o}{qw(hangPre playingSince refusedSuspect)};    # 93-04: a title change retires the refusal suspicion
     # 90-07: the continuation mark ends with a change to another title
     delete $o->{prefetchContinue} if ref($o->{prefetchContinue}) eq 'HASH' && ($o->{prefetchContinue}{uri} // '') ne $uri;
     $self->_cancelHangWatch('track_changed');
@@ -6278,15 +6300,32 @@ sub _hangTrackChanged {
     return $written;
 }
 
+# _effectiveDuration($self, $uri) -- 93-01 (D-07a, R2): where Control believes a title ends, in seconds: the
+# smaller of the defined positive values of meta.duration (LMS's catalog length) and meta.daemon_duration (the
+# daemon's file length from its playback_state frames). The minimum can only move the end toward the file's real
+# end, so a guard built on it never replays more than the LMS-only value did. undef when neither side knows it.
+sub _effectiveDuration {
+    my ($self, $uri) = @_;
+
+    return undef unless defined $uri;
+    my $meta = $self->observed->{meta};
+    my $m    = (ref($meta) eq 'HASH' && ref($meta->{$uri}) eq 'HASH') ? $meta->{$uri} : undef;
+    return undef unless $m;
+    my @known = grep { defined($_) && $_ > 0 } $m->{duration}, $m->{daemon_duration};
+    return undef unless @known;
+    my $min = shift @known;
+    for my $d (@known) { $min = $d if $d < $min; }
+    return $min;
+}
+
 # _hangNearEnd($self, $uri, $posMs) -- 79-78 D-50 / 261111-vi4: 1 when the title's duration is known
-# (observed.meta, seconds) and $posMs lies within HANG_END_MARGIN_MS of its end, else 0. An unknown
+# (_effectiveDuration, seconds) and $posMs lies within HANG_END_MARGIN_MS of its end, else 0. An unknown
 # duration (no meta entry, no duration, 0) or an undefined uri/position is 0: the old behaviour.
 sub _hangNearEnd {
     my ($self, $uri, $posMs) = @_;
 
     return 0 unless defined $uri && defined $posMs;
-    my $meta = $self->observed->{meta};
-    my $dur  = (ref($meta) eq 'HASH' && ref($meta->{$uri}) eq 'HASH') ? $meta->{$uri}{duration} : undef;
+    my $dur = $self->_effectiveDuration($uri);
     return 0 unless defined $dur && $dur > 0;
     return ($posMs >= $dur * 1000 - HANG_END_MARGIN_MS) ? 1 : 0;
 }
@@ -6370,8 +6409,7 @@ sub _postNearEnd {
     my $leftHead = ref($lms) eq 'HASH' && $lms->{ $head->{uri} } && ref($left) eq 'HASH'
         && defined $head->{uid} && ($left->{ $head->{uid} } // '') eq $head->{uri};
     return unless $ownHead || $leftHead;
-    my $meta = $o->{meta};
-    my $dur  = (ref($meta) eq 'HASH' && ref($meta->{$uri}) eq 'HASH') ? $meta->{$uri}{duration} : undef;
+    my $dur  = $self->_effectiveDuration($uri);    # 93-01 (D-07a, R2): min(LMS, daemon file length)
     return unless defined $dur && $dur > 0;
     my $remaining = int($dur * 1000 - $posMs);
     $remaining = 0 if $remaining < 0;
@@ -6796,6 +6834,63 @@ sub _cancelHangWatch {
 # noteDuration may have delivered it during the watch) and sends exactly the S2 action: an armed `play uri` of the same title with a
 # seek to the stall frame's own position_ms (M1: within 0.6 s of what the listener heard; never the
 # wall-clock projection, which the spike used and which repeats 2-3 s).
+# 93-04 (D-08 deferred by the user 2026-11-27, "Zurueckstellen + Warnzeile"; 93-03-D08-RECORDING.md D08_SHAPE_B): a LOG-ONLY
+# warning for the refusal shape the M1 recording showed (m1-c3 k6, daemon.slice.txt:1172-1195). LMS asked for W, Control's own
+# play of W was still pending, the daemon failed W (TrackFailed) and opened a DIFFERENT title X that is no queued successor and
+# no app change, paused at position 0 / speed 0, and stayed there. Control classifies X `foreign` and, until a later fix, does
+# nothing about it. This code only RECORDS: no boundary, no command, no write to any state a playback decision reads (the one
+# field it owns is observed.refusedSuspect / refusedWarned). A field report then carries the real frames the deferred repair
+# needs. One line per W (refusedWarned remembers the last W warned about, a consecutive repeat stays quiet).
+#
+# _refusedSuspectArm($uri, $queuedByUsMatch, $forwardedNext, $mirrored) -- called from the foreign branch of _onFrameTrackChanged
+# (observed.track is still the previous title). Arms the suspicion only when ALL hold: browse mode, the daemon is not a known
+# mirror (W4), the pending command is Control's own `play` of another uri W (an app-driven change has no such pending), and X is
+# neither a title SpotOn queued (prefetch hit, W2) nor a forwarded app next.
+sub _refusedSuspectArm {
+    my ($self, $uri, $queuedByUsMatch, $forwardedNext, $mirrored) = @_;
+
+    return unless $self->mode eq 'browse';
+    return if $mirrored || $queuedByUsMatch || $forwardedNext;
+    my $pending = $self->pending;
+    return unless $pending && ($pending->{cmd} // '') eq 'play' && defined $pending->{uri} && $pending->{uri} ne $uri;
+    # 93-05 (WR-02): X is a title Control itself asked for and then replaced by a newer play (a rapid skip) -> its own echo, no refusal.
+    return if grep { $_ eq $uri } @{ $self->observed->{supersededPlays} || [] };
+    $self->observed->{refusedSuspect} = { wanted => $pending->{uri}, uri => $uri, paused => 0, zero => 0 };
+    return;
+}
+
+# _refusedNote($self, $status, $posMs, $speed) -- one frame's status and/or position (undef = the frame carries none) for the
+# suspicion. `playing`, a position other than 0 and a speed above 0 end it; `paused` and a position 0 at speed 0 mark it, and the
+# frame that completes both (in either order) writes the line once. Called from playback_changed, playback_state, position_sync.
+sub _refusedNote {
+    my ($self, $status, $posMs, $speed) = @_;
+
+    my $o = $self->observed;
+    my $s = $o->{refusedSuspect};
+    return unless ref($s) eq 'HASH';
+    return unless defined $o->{track} && $o->{track} eq $s->{uri};
+
+    if (defined $status) {
+        if    ($status eq 'paused')  { $s->{paused} = 1; }
+        elsif ($status eq 'playing') { delete $o->{refusedSuspect}; return; }
+    }
+    if (defined $posMs) {
+        if ($posMs == 0 && defined $speed && !$speed) { $s->{zero} = 1; }
+        else { delete $o->{refusedSuspect}; return; }
+    }
+    return unless $s->{paused} && $s->{zero};
+
+    delete $o->{refusedSuspect};
+    return unless $self->mode eq 'browse' && !$self->_knownInactive;
+    my $wanted = $self->wanted->{uri};
+    return unless defined $wanted && $wanted eq $s->{wanted};    # Control has moved on (a newer play of its own)
+    return if defined $o->{refusedWarned} && $o->{refusedWarned} eq $s->{wanted};
+    $o->{refusedWarned} = $s->{wanted};
+    $log->warn(sprintf("Control: refused title suspected %s -> foreign %s paused at 0 (%s)",
+        $s->{wanted}, $s->{uri}, ($self->mac // '?')));
+    return;
+}
+
 sub _hangReplayFire {
     my $self = shift;
 
@@ -6900,11 +6995,24 @@ sub _onFramePlaybackState {
             # releases the held successCb before the T_meta timer runs) and
             # break those pre-existing assertions. playback_state is
             # Fall-3's own fixture and carries no such conflicting test.
+            # 93-01 (D-07a): this value stays the LMS-first fallback of meta.duration; the daemon's file length is
+            # ALSO kept apart in meta.daemon_duration below, for the end decisions only.
             my $playback = (ref($item->{decorations}) eq 'HASH') ? $item->{decorations}{playback} : undef;
             if (ref($playback) eq 'HASH' && defined $playback->{duration_ms}
                 && !defined $self->observed->{meta}{$uri}{duration})
             {
                 $self->noteDuration($uri, $playback->{duration_ms} / 1000);
+            }
+
+            # 93-01 (D-07a, R2): the LMS value stays authoritative for meta.duration (every other reader keeps it).
+            # The daemon's own file length is kept apart in meta.daemon_duration, written from EVERY frame that
+            # carries a positive value (latest wins), whether or not LMS supplied one: the Soloist plays a FILE
+            # whose length differs from LMS's catalog length by several seconds for some titles (5 of 40 titles on
+            # 2026-11-27 on the Pi, 0d42: LMS 534.666 s, file 528.320 s). Only the two end decisions read it,
+            # through _effectiveDuration (the smaller value). It must not go through noteDuration: that releases
+            # a held successCb and is overwritten by every LMS call.
+            if (ref($playback) eq 'HASH' && defined $playback->{duration_ms} && $playback->{duration_ms} > 0) {
+                $self->observed->{meta}{$uri}{daemon_duration} = $playback->{duration_ms} / 1000;
             }
         }
 
@@ -6961,6 +7069,11 @@ sub _onFramePlaybackState {
                     (defined $uri && $uri =~ /^spotify:(?:track|episode):[A-Za-z0-9]+$/) ? $uri : undef, $posMs);
             }
         }
+
+        # 93-04: log-only suspicion of a refused title (status plus the position block of this frame)
+        $self->_refusedNote($msg->{status},
+            ref($msg->{position}) eq 'HASH' ? $msg->{position}{position_ms} : $msg->{position},
+            ref($msg->{position}) eq 'HASH' ? $msg->{position}{speed} : undef);
 
         if (defined $msg->{volume}) {
             # 82-05 (D-06, Task 6): the same echo/grace rule as the

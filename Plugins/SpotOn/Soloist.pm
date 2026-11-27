@@ -786,9 +786,11 @@ sub hasPreviousGeneration {
 }
 
 # renewBinary(%opts) -- reason => 'expiry'|'exit10'|'manual' (required).
-# Returns synchronously: 'unsupported' (Windows/macOS/no arch), 'busy' (a
-# renewal or a plan-05 placed-binary check is already running, or a plain
-# ensureBinary()-triggered download is in flight), or 'started'. The actual
+# Returns synchronously: 'unsupported' (Windows/macOS/no arch),
+# 'blocked:placed_binary_active', 'busy' (a renewal or a plan-05 placed-binary
+# check is already running, or a plain ensureBinary()-triggered download is in
+# flight), 'no_key' (93-02: no Soloist key stored, nothing staged or written),
+# or 'started'. The actual
 # outcome is async -- poll renewalState() or pass opts{cb}.
 sub renewBinary {
     my (%opts) = @_;
@@ -805,6 +807,11 @@ sub renewBinary {
     }
 
     return 'busy' if $lifecycleInFlight || $downloadInFlight;
+
+    # 93-02 (D-09): without a stored key the smoke test could only answer
+    # no_key, after a pointless download and a never-expiring failed state
+    # that outlived the key. Refuse before anything is staged or written.
+    return 'no_key' unless hasKey();
 
     $lifecycleInFlight = 'renewal';
     $_activeRenewal = { archInfo => $archInfo, opts => \%opts, done => 0 };
@@ -877,7 +884,13 @@ sub _finishRenewal {
     # from the previous write, so a detail-less terminal phase (done,
     # same_version) must explicitly overwrite a stale detail rather than
     # omit the key.
-    my %fields = (phase => $phase, detail => $detail, last_attempt_at => time());
+    # 93-05 (WR-01): active_at_attempt = the build that was active when this
+    # attempt ended ('' = none). The settings page treats a failed state as a
+    # leftover once a different build is active (the cause may be gone: the
+    # library was installed, the OS upgraded); a candidate that fails while
+    # the old build stays active keeps its sentence.
+    my %fields = (phase => $phase, detail => $detail, last_attempt_at => time(),
+                  active_at_attempt => (activeVersion() // ''));
     _setRenewalState(%fields);
 
     my $opts = $_activeRenewal->{opts} || {};

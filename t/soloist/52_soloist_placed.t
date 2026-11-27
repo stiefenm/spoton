@@ -356,6 +356,19 @@ sub reset_env {
 
     # checkPlacedBinary()/renewBinary() both gate on backend eq 'soloist'.
     preferences('plugin.spoton')->set('backend', 'soloist');
+    seed_key();
+}
+
+# 93-02 (D-09): renewBinary() now refuses without a stored key, so every
+# case that drives the real renewBinary starts with one (reset_env ends with
+# seed_key). The key is a fixed dummy; nothing reads its content.
+sub key_file { return catfile($cache_dir, 'spoton', 'soloist', 'spak.key'); }
+sub seed_key {
+    make_path(dirname(key_file()));
+    open(my $kfh, '>', key_file()) or die "seed_key: $!";
+    print $kfh 'k' x 32;
+    close($kfh);
+    chmod(0600, key_file());
 }
 
 sub bin_dir       { return catdir($cache_dir, 'spoton', 'soloist', 'x86_64-linux'); }
@@ -1172,5 +1185,28 @@ sub empty_manual_dir {
     is(Plugins::SpotOn::Soloist::placedState()->{reason}, 'version_unparsable',
         "Case 17 (79-57 #177): garbage stdout with exit 0 still reads version_unparsable");
 }
+
+# ============================================================
+# 93-02 D-09: the placed-binary answer keeps its precedence over no_key.
+# ============================================================
+subtest '93-02 D-09: placed binary keeps precedence over no_key' => sub {
+    reset_env();
+    seed_active_binary('1.3.8.68');
+    make_path(manual_dir());
+    my $archivePath = catfile(manual_dir(), 'soloist_release_x86_64.tar.gz');
+    build_archive($archivePath, '1.3.8.70');
+
+    $Plugins::SpotOn::Unified::SoloistDaemon::SMOKE_OK   = 1;
+    $Plugins::SpotOn::Unified::SoloistDaemon::SMOKE_INFO = { days => 80, version => '1.3.8.70' };
+    Plugins::SpotOn::Soloist::checkPlacedBinary();
+    ok(Plugins::SpotOn::Soloist::_placedBinaryIsValid(), '93-02 NK-6 setup: placed binary is valid (days 80)');
+
+    unlink key_file();
+    is(Plugins::SpotOn::Soloist::renewBinary(reason => 'expiry'), 'blocked:placed_binary_active',
+        '93-02 NK-6: reason expiry without a key is still blocked:placed_binary_active');
+    is(Plugins::SpotOn::Soloist::renewBinary(reason => 'manual'), 'blocked:placed_binary_active',
+        '93-02 NK-6: reason manual without a key is still blocked:placed_binary_active');
+    seed_key();
+};
 
 done_testing();

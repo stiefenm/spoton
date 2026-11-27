@@ -518,18 +518,122 @@ PLUGIN_SPOTON_SOLOIST_RENEWAL_SAME_VERSION
 	PL	Spotify wciąż udostępnia zainstalowaną wersję %s - nie ma czego odnawiać, sprawdzimy ponownie jutro.
 	SV	Spotify levererar fortfarande den installerade versionen %s - inget att förnya, kontrollerar igen imorgon.
 
-PLUGIN_SPOTON_SOLOIST_RENEWAL_FAILED
-	CS	Obnova selhala (%s) - zkusíme to znovu zítra.
-	DA	Fornyelse mislykkedes (%s) - prøver igen i morgen.
-	DE	Erneuerung fehlgeschlagen (%s) - wird morgen erneut versucht.
-	EN	Renewal failed (%s) -- will retry tomorrow.
-	ES	La renovación falló (%s) - se reintentará mañana.
-	FR	Échec du renouvellement (%s) - nouvelle tentative demain.
-	IT	Rinnovo non riuscito (%s) - si riproverà domani.
-	NL	Vernieuwing mislukt (%s) - wordt morgen opnieuw geprobeerd.
-	NO	Fornyelse mislyktes (%s) - prøver igjen i morgen.
-	PL	Odnowienie nie powiodło się (%s) - spróbujemy ponownie jutro.
-	SV	Förnyelsen misslyckades (%s) - försöker igen imorgon.
+PLUGIN_SPOTON_SOLOIST_FAIL_NO_KEY
+	CS	Zadejte výše klíč Soloist a poté stiskněte „Obnovit Soloist nyní“.
+	DA	Indtast Soloist-nøglen ovenfor, og tryk derefter på „Forny Soloist nu“.
+	DE	Geben Sie oben den Soloist-Key ein und drücken Sie dann „Soloist jetzt erneuern“.
+	EN	Enter the Soloist key above, then press Renew Soloist now.
+	ES	Introduce arriba la clave de Soloist y pulsa después «Renovar Soloist ahora».
+	FR	Saisissez la clé Soloist ci-dessus, puis appuyez sur « Renouveler Soloist maintenant ».
+	IT	Inserisci qui sopra la chiave di Soloist, poi premi «Rinnova Soloist ora».
+	NL	Voer hierboven de Soloist-sleutel in en druk dan op „Soloist nu vernieuwen“.
+	NO	Skriv inn Soloist-nøkkelen ovenfor, og trykk deretter på «Forny Soloist nå».
+	PL	Wpisz powyżej klucz Soloist, a następnie naciśnij „Odnów Soloist teraz“.
+	SV	Ange Soloist-nyckeln ovan och tryck sedan på ”Förnya Soloist nu”.
+
+PLUGIN_SPOTON_SOLOIST_FAIL_GLIBC
+	CS	Systém je příliš starý: Soloist vyžaduje glibc %s nebo novější (Debian 13, Ubuntu 24.04, Raspberry Pi OS Trixie nebo novější). Aktualizujte systém nebo zvolte backend librespot.
+	DA	Systemet er for gammelt: Soloist kræver glibc %s eller nyere (Debian 13, Ubuntu 24.04, Raspberry Pi OS Trixie eller nyere). Opdater systemet, eller vælg librespot-backend.
+	DE	System zu alt: Soloist benötigt glibc %s oder neuer (Debian 13, Ubuntu 24.04, Raspberry Pi OS Trixie oder neuer). Aktualisieren Sie das System oder wählen Sie das Backend librespot.
+	EN	System too old: Soloist needs glibc %s or newer (Debian 13, Ubuntu 24.04, Raspberry Pi OS Trixie or newer). Update the system or select the librespot backend.
+	ES	Sistema demasiado antiguo: Soloist necesita glibc %s o posterior (Debian 13, Ubuntu 24.04, Raspberry Pi OS Trixie o posterior). Actualiza el sistema o selecciona el backend librespot.
+	FR	Système trop ancien : Soloist nécessite glibc %s ou plus récent (Debian 13, Ubuntu 24.04, Raspberry Pi OS Trixie ou plus récent). Mettez le système à jour ou sélectionnez le backend librespot.
+	IT	Sistema troppo vecchio: Soloist richiede glibc %s o successiva (Debian 13, Ubuntu 24.04, Raspberry Pi OS Trixie o successiva). Aggiorna il sistema o seleziona il backend librespot.
+	NL	Systeem te oud: Soloist heeft glibc %s of nieuwer nodig (Debian 13, Ubuntu 24.04, Raspberry Pi OS Trixie of nieuwer). Werk het systeem bij of kies de librespot-backend.
+	NO	Systemet er for gammelt: Soloist krever glibc %s eller nyere (Debian 13, Ubuntu 24.04, Raspberry Pi OS Trixie eller nyere). Oppdater systemet, eller velg librespot-backend.
+	PL	System jest zbyt stary: Soloist wymaga glibc %s lub nowszej (Debian 13, Ubuntu 24.04, Raspberry Pi OS Trixie lub nowszy). Zaktualizuj system albo wybierz backend librespot.
+	SV	Systemet är för gammalt: Soloist kräver glibc %s eller nyare (Debian 13, Ubuntu 24.04, Raspberry Pi OS Trixie eller nyare). Uppdatera systemet eller välj librespot-backend.
+
+PLUGIN_SPOTON_SOLOIST_FAIL_LIBRARY
+	CS	Chybí systémová knihovna %s. Nainstalujte %s a poté stiskněte „Obnovit Soloist nyní“.
+	DA	Systembiblioteket %s mangler. Installer %s, og tryk derefter på „Forny Soloist nu“.
+	DE	Die Systembibliothek %s fehlt. Installieren Sie %s und drücken Sie dann „Soloist jetzt erneuern“.
+	EN	The system library %s is missing. Install %s, then press Renew Soloist now.
+	ES	Falta la biblioteca del sistema %s. Instala %s y pulsa después «Renovar Soloist ahora».
+	FR	La bibliothèque système %s est absente. Installez %s, puis appuyez sur « Renouveler Soloist maintenant ».
+	IT	Manca la libreria di sistema %s. Installa %s, poi premi «Rinnova Soloist ora».
+	NL	De systeembibliotheek %s ontbreekt. Installeer %s en druk dan op „Soloist nu vernieuwen“.
+	NO	Systembiblioteket %s mangler. Installer %s, og trykk deretter på «Forny Soloist nå».
+	PL	Brakuje biblioteki systemowej %s. Zainstaluj %s, a następnie naciśnij „Odnów Soloist teraz“.
+	SV	Systembiblioteket %s saknas. Installera %s och tryck sedan på ”Förnya Soloist nu”.
+
+PLUGIN_SPOTON_SOLOIST_FAIL_DOWNLOAD
+	CS	Stažení Soloist nebylo dokončeno. Zkontrolujte síťové připojení hostitele LMS a poté stiskněte „Obnovit Soloist nyní“.
+	DA	Download af Soloist blev ikke fuldført. Kontroller netværksforbindelsen på LMS-værten, og tryk derefter på „Forny Soloist nu“.
+	DE	Der Download von Soloist wurde nicht abgeschlossen. Prüfen Sie die Netzwerkverbindung des LMS-Rechners und drücken Sie dann „Soloist jetzt erneuern“.
+	EN	The Soloist download did not complete. Check the network connection of the LMS host, then press Renew Soloist now.
+	ES	La descarga de Soloist no se completó. Comprueba la conexión de red del equipo con LMS y pulsa después «Renovar Soloist ahora».
+	FR	Le téléchargement de Soloist n'a pas abouti. Vérifiez la connexion réseau de l'hôte LMS, puis appuyez sur « Renouveler Soloist maintenant ».
+	IT	Il download di Soloist non è stato completato. Controlla la connessione di rete dell'host LMS, poi premi «Rinnova Soloist ora».
+	NL	De download van Soloist is niet voltooid. Controleer de netwerkverbinding van de LMS-host en druk dan op „Soloist nu vernieuwen“.
+	NO	Nedlastingen av Soloist ble ikke fullført. Kontroller nettverkstilkoblingen til LMS-verten, og trykk deretter på «Forny Soloist nå».
+	PL	Pobieranie Soloist nie zostało ukończone. Sprawdź połączenie sieciowe hosta LMS, a następnie naciśnij „Odnów Soloist teraz“.
+	SV	Nedladdningen av Soloist slutfördes inte. Kontrollera nätverksanslutningen för LMS-värden och tryck sedan på ”Förnya Soloist nu”.
+
+PLUGIN_SPOTON_SOLOIST_FAIL_BELOW_MINIMUM
+	CS	Spotify momentálně nabízí sestavení Soloist starší, než SpotOn přijímá. Zkuste to později nebo umístěte novější sestavení ručně.
+	DA	Spotify tilbyder i øjeblikket en Soloist-version, der er ældre, end SpotOn accepterer. Prøv igen senere, eller placer en nyere version manuelt.
+	DE	Spotify bietet derzeit einen Soloist-Build an, der älter ist, als SpotOn akzeptiert. Versuchen Sie es später erneut oder legen Sie einen neueren Build von Hand ab.
+	EN	Spotify currently offers a Soloist build older than SpotOn accepts. Try again later or place a newer build by hand.
+	ES	Spotify ofrece ahora mismo una versión de Soloist más antigua de lo que SpotOn acepta. Inténtalo más tarde o coloca a mano una versión más reciente.
+	FR	Spotify propose actuellement une version de Soloist plus ancienne que celle acceptée par SpotOn. Réessayez plus tard ou placez une version plus récente à la main.
+	IT	Spotify offre al momento una versione di Soloist più vecchia di quella accettata da SpotOn. Riprova più tardi oppure inserisci a mano una versione più recente.
+	NL	Spotify biedt op dit moment een Soloist-versie aan die ouder is dan SpotOn accepteert. Probeer het later opnieuw of plaats handmatig een nieuwere versie.
+	NO	Spotify tilbyr for øyeblikket en Soloist-versjon som er eldre enn SpotOn godtar. Prøv igjen senere, eller plasser en nyere versjon manuelt.
+	PL	Spotify oferuje obecnie wersję Soloist starszą, niż akceptuje SpotOn. Spróbuj ponownie później albo umieść nowszą wersję ręcznie.
+	SV	Spotify erbjuder just nu en Soloist-version som är äldre än vad SpotOn accepterar. Försök igen senare eller placera en nyare version manuellt.
+
+PLUGIN_SPOTON_SOLOIST_FAIL_START
+	CS	Stažené sestavení Soloist se nespustilo. Podrobnosti najdete v diagnostické zprávě.
+	DA	Den downloadede Soloist-version startede ikke. Diagnoserapporten viser detaljerne.
+	DE	Der heruntergeladene Soloist-Build ist nicht gestartet. Der Diagnosebericht zeigt die Einzelheiten.
+	EN	The downloaded Soloist build did not start. The diagnostic report shows the details.
+	ES	La versión de Soloist descargada no se inició. El informe de diagnóstico muestra los detalles.
+	FR	La version de Soloist téléchargée ne s'est pas lancée. Le rapport de diagnostic en donne les détails.
+	IT	La versione di Soloist scaricata non si è avviata. Il rapporto diagnostico mostra i dettagli.
+	NL	De gedownloade Soloist-versie is niet gestart. Het diagnoserapport toont de details.
+	NO	Den nedlastede Soloist-versjonen startet ikke. Diagnoserapporten viser detaljene.
+	PL	Pobrana wersja Soloist nie uruchomiła się. Szczegóły pokazuje raport diagnostyczny.
+	SV	Den nedladdade Soloist-versionen startade inte. Diagnosrapporten visar detaljerna.
+
+PLUGIN_SPOTON_SOLOIST_FAIL_INSTALL
+	CS	Stažené sestavení Soloist se nepodařilo nainstalovat. Zkontrolujte volné místo na disku a oprávnění složky mezipaměti LMS.
+	DA	Den downloadede Soloist-version kunne ikke installeres. Kontroller ledig diskplads og rettighederne til LMS-cachemappen.
+	DE	Der heruntergeladene Soloist-Build konnte nicht installiert werden. Prüfen Sie den freien Speicherplatz und die Zugriffsrechte des LMS-Cache-Ordners.
+	EN	The downloaded Soloist build could not be installed. Check free disk space and the permissions of the LMS cache folder.
+	ES	No se pudo instalar la versión de Soloist descargada. Comprueba el espacio libre en disco y los permisos de la carpeta de caché de LMS.
+	FR	La version de Soloist téléchargée n'a pas pu être installée. Vérifiez l'espace disque libre et les droits du dossier de cache de LMS.
+	IT	Non è stato possibile installare la versione di Soloist scaricata. Controlla lo spazio libero su disco e i permessi della cartella cache di LMS.
+	NL	De gedownloade Soloist-versie kon niet worden geïnstalleerd. Controleer de vrije schijfruimte en de rechten van de LMS-cachemap.
+	NO	Den nedlastede Soloist-versjonen kunne ikke installeres. Kontroller ledig diskplass og rettighetene til LMS-hurtigbuffermappen.
+	PL	Nie udało się zainstalować pobranej wersji Soloist. Sprawdź wolne miejsce na dysku i uprawnienia folderu pamięci podręcznej LMS.
+	SV	Den nedladdade Soloist-versionen kunde inte installeras. Kontrollera ledigt diskutrymme och behörigheterna för LMS cache-mapp.
+
+PLUGIN_SPOTON_SOLOIST_FAIL_VERSION
+	CS	Stažené sestavení Soloist oznámilo neočekávanou verzi. Podrobnosti najdete v diagnostické zprávě.
+	DA	Den downloadede Soloist-version meldte en uventet version. Diagnoserapporten viser detaljerne.
+	DE	Der heruntergeladene Soloist-Build hat eine unerwartete Version gemeldet. Der Diagnosebericht zeigt die Einzelheiten.
+	EN	The downloaded Soloist build reported an unexpected version. The diagnostic report shows the details.
+	ES	La versión de Soloist descargada informó de una versión inesperada. El informe de diagnóstico muestra los detalles.
+	FR	La version de Soloist téléchargée a signalé une version inattendue. Le rapport de diagnostic en donne les détails.
+	IT	La versione di Soloist scaricata ha riportato una versione inattesa. Il rapporto diagnostico mostra i dettagli.
+	NL	De gedownloade Soloist-versie meldde een onverwachte versie. Het diagnoserapport toont de details.
+	NO	Den nedlastede Soloist-versjonen meldte en uventet versjon. Diagnoserapporten viser detaljene.
+	PL	Pobrana wersja Soloist zgłosiła nieoczekiwany numer wersji. Szczegóły pokazuje raport diagnostyczny.
+	SV	Den nedladdade Soloist-versionen rapporterade en oväntad version. Diagnosrapporten visar detaljerna.
+
+PLUGIN_SPOTON_SOLOIST_FAIL_OTHER
+	CS	Soloist se nepodařilo nainstalovat (%s). Podrobnosti najdete v diagnostické zprávě.
+	DA	Soloist kunne ikke installeres (%s). Diagnoserapporten viser detaljerne.
+	DE	Soloist konnte nicht installiert werden (%s). Der Diagnosebericht zeigt die Einzelheiten.
+	EN	Soloist could not be installed (%s). The diagnostic report shows the details.
+	ES	No se pudo instalar Soloist (%s). El informe de diagnóstico muestra los detalles.
+	FR	Soloist n'a pas pu être installé (%s). Le rapport de diagnostic en donne les détails.
+	IT	Non è stato possibile installare Soloist (%s). Il rapporto diagnostico mostra i dettagli.
+	NL	Soloist kon niet worden geïnstalleerd (%s). Het diagnoserapport toont de details.
+	NO	Soloist kunne ikke installeres (%s). Diagnoserapporten viser detaljene.
+	PL	Nie udało się zainstalować Soloist (%s). Szczegóły pokazuje raport diagnostyczny.
+	SV	Soloist kunde inte installeras (%s). Diagnosrapporten visar detaljerne.
 
 PLUGIN_SPOTON_SOLOIST_HEALTH_RESTARTED
 	CS	Soloist pro %s restartován: %s (%s)
