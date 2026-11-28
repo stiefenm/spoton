@@ -1,6 +1,6 @@
 # Upgrading from SpotOn 3.5.x to 4.0
 
-This page is for you if you used SpotOn 3.5.x and got SpotOn 4.0 through the LMS plugin manager. It tells you what is different, what to do right after the update, and what to do if something does not work. You do not need to have followed the forum or the beta versions.
+This page is for you if you used SpotOn 3.5.x and got SpotOn 4.0 or a later 4.x version (for example 4.1.0) through the LMS plugin manager; 4.1 changes nothing in the steps below. It tells you what is different, what to do right after the update, and what to do if something does not work. You do not need to have followed the forum or the beta versions.
 
 After the update an account can be marked "Please pair this account once". Pairing it once in the Spotify app is all it needs. If no account is marked, there is nothing to do.
 

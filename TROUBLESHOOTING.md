@@ -152,7 +152,7 @@ If the issue persists, collect a diagnostic bundle and include your Docker setup
 
 **Symptoms:** With the Soloist backend, a short silence at a title change, or the last seconds of a quietly ending title are cut off.
 
-**Cause:** Since 4.1.0-beta.2, SpotOn hands the next title over without a gap: when Soloist moves on to the next title by itself, SpotOn lets LMS start the next title's stream after a small buffer instead of waiting for a full one. Two cases are known limitations:
+**Cause:** Since 4.1.0, SpotOn hands the next title over without a gap: when Soloist moves on to the next title by itself, SpotOn lets LMS start the next title's stream after a small buffer instead of waiting for a full one. Two cases are known limitations:
 - A seek into the last seconds of a title (roughly the last 15 seconds) keeps the old behaviour. The next title change can still have a short silence, and in a sync group LMS may skip the first seconds of the next title.
 - In Spotify Connect mode (the Spotify app started the playback), the gap at the first title change after a seek is unchanged.
 
@@ -160,15 +160,15 @@ If the issue persists, collect a diagnostic bundle and include your Docker setup
 
 ### Soloist: end of a title cut off with the DisableShuffle plugin
 
-**Symptoms:** With the Soloist backend and a playlist or album started from the Spotify app, the last seconds of each title are cut off (up to about 10 seconds). Before 4.1.0-beta.4, the first title repeated instead and playback stopped after it.
+**Symptoms:** With the Soloist backend and a playlist or album started from the Spotify app, the last seconds of each title are cut off (up to about 10 seconds). Before 4.1.0, the first title repeated instead and playback stopped after it.
 
 **Cause:** The **DisableShuffle** plugin has an option **Disable Add to Playlist**. When it is set to Yes, the plugin jumps to every entry that is added to the LMS queue. SpotOn adds the next title to the queue shortly before the current one ends, so the plugin starts it right away.
 
-**Solution:** In the DisableShuffle settings, set **Disable Add to Playlist** to No (its default), or disable the plugin. Since 4.1.0-beta.4 the playlist plays through either way; the option only costs the end of each title. See [#234](https://github.com/stiefenm/spoton/issues/234).
+**Solution:** In the DisableShuffle settings, set **Disable Add to Playlist** to No (its default), or disable the plugin. Since 4.1.0 the playlist plays through either way; the option only costs the end of each title. See [#234](https://github.com/stiefenm/spoton/issues/234).
 
 ### Several Spotify accounts on Soloist players
 
-**What the Account row means:** since 4.1.0-beta.3 the SpotOn status page shows an **Account** row for each Soloist player. `paired` means Soloist on that player is signed in to the Spotify account you set up in SpotOn. `guest ...abcd` (the last 4 characters of the account id) means someone else connected to that player from their own Spotify app, for example a family member, and Soloist stayed signed in to their account. Several accounts can play on different Soloist players of one LMS at the same time.
+**What the Account row means:** since 4.1.0 the SpotOn status page shows an **Account** row for each Soloist player. `paired` means Soloist on that player is signed in to the Spotify account you set up in SpotOn. `guest ...abcd` (the last 4 characters of the account id) means someone else connected to that player from their own Spotify app, for example a family member, and Soloist stayed signed in to their account. Several accounts can play on different Soloist players of one LMS at the same time.
 
 **While a player shows `guest`:**
 - A title you start from LMS (Browse) on that player also plays on the guest's Spotify account, not on yours.

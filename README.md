@@ -56,7 +56,7 @@ SpotOn plays audio through one of two backends, chosen in SpotOn Settings:
 
 ### Platforms
 
-| Platform | Backends | Tested for this release |
+| Platform | Backends | Tested (release test of 4.0.0) |
 |----------|----------|-------------------------|
 | x86_64 Linux | librespot, Soloist | Yes: fresh install and upgrade from 3.5.8 on Debian 13 with LMS 9.1.1 |
 | aarch64 Linux (Raspberry Pi 4/5, 64-bit OS) | librespot, Soloist | Yes: Soloist on a Raspberry Pi with Debian 13 (Trixie) and LMS 9.1.1 |
